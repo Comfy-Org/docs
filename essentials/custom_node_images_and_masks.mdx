@@ -1,5 +1,102 @@
 ---
-title: "Images and Masks"
+title: "Images, Latents, and Masks"
 ---
 
-Example code for working with images and masks
+## pytorch, tensors, and torch.Tensor 
+
+All the core number crunching in Comfy is done by [pytorch](https://pytorch.org/). If your custom nodes are going
+to get into the guts of stable diffusion you will need to become familiar with this library, which is way beyond
+the scope of this introduction.
+
+However, many custom nodes will need to manipulate images, latents and masks, each of which are represented internally
+as `torch.Tensor`, so you'll want to bookmark the 
+[documentation for torch.Tensor](https://pytorch.org/docs/stable/tensors.html).
+
+`torch.Tensor` represents a tensor, which is the mathematical generalisation of a vector or matrix to any number of dimensions.
+A tensor's _rank_ is the number of dimensions it has (so a vector has _rank_ 1, a matrix _rank_ 2); its _shape_ descibes the
+size of each dimension. 
+
+So an RGB image (of height H and width W) might be thought of as three arrays (one for each color channel), each measuring H x W,
+which could be represented as a tensor with _shape_ `[H,W,3]`. In Comfy images almost always come in a batch (even if the batch
+only contains a single image). `torch` always places the batch dimension first, so Comfy images have _shape_ `[B,H,W,3]`, generally
+written as `[B,H,W,C]` where C stands for Channels.
+
+### squeeze, unsqueeze, and reshape
+
+If a tensor has a dimension of size 1 (known as a collapsed dimension), it is equivalent to the same tensor with that dimension removed
+(a batch with 1 image is just an image). Removing such a collapsed dimension is referred to as squeezing, and
+inserting one is known as unsqueezing. 
+
+<Warning>Some torch code, and some custom node authors, will return a squeezed tensor when a dimension is collapsed - such 
+as when a batch has only one member. This is a common cause of bugs!</Warning>
+
+To represent the same data in a different shape is referred to as reshaping. This often requires you to know
+the underlying data structure, so handle with care!
+
+### Important notation
+
+`torch.Tensor` supports most Python slice notation, iteration, and other common list-like operations. A tensor 
+also has a `.shape` attribute which returns its size as a `torch.Size` (which is a subclass of `tuple` and can 
+be treated as such).
+
+There are three other important bits of notation you'll often see:
+
+- `torch.Tensor` supports the use of `None` in slice notation
+to indicate the insertion of a dimension of size 1.
+
+- `:` is frequently used when slicing a tensor; this simply means 'keep the whole dimension'. 
+It's like using `a[start:end]` in Python, but omitting the start point and end point.
+
+- in methods which require a shape to be passed, it is often passed as a `tuple` of the dimensions, in 
+which a single dimension can be given the size `-1`, indicating that the size of this dimension should
+be calculated based on the total size of the data.
+
+<Warning>When returing a tuple, which just contains a tensor, if you forget the trailing comma, 
+it will be treated as `Tensor` not `tuple[Tensor]`. Because tensors support Python iteration, 
+an iterator will iterate over the first dimension of the tensor.</Warning>
+
+## Images
+
+An IMAGE is a `torch.Tensor` with shape `[B,H,W,C]`, `C=3`. If you are going to save or load images, you will 
+need to convert to and from `PIL.Image` format - see the code snippets below! Note that some `pytorch` operations
+offer (or expect) `[B,C,H,W]`, known as 'channel first', for reasons of computational efficiency. Just be careful.
+
+### Working with PIL.Image
+
+If you want to load and save images, you'll want to use PIL:
+```python
+from PIL import Image, ImageOps
+```
+
+Load an image into a batch of size 1 (based on `LoadImage` source code in `nodes.py`)
+```python
+i = Image.open(image_path)
+i = ImageOps.exif_transpose(i)
+if i.mode == 'I':
+    i = i.point(lambda i: i * (1 / 255))
+image = i.convert("RGB")
+image = np.array(image).astype(np.float32) / 255.0
+image = torch.from_numpy(image)[None,]
+```
+
+Save a batch of images (based on `SaveImage` source code in `nodes.py`)
+```python     
+for (batch_number, image) in enumerate(images):
+    i = 255. * image.cpu().numpy()
+    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+    filepath = # some path that takes the batch number into account
+    img.save(filepath)
+```
+
+## Masks
+
+A MASK is a `torch.Tensor` with shape `[B,C,H,W]` with `C=1`. However, it is not unusual for the `C` channel
+and/or the `B` channel to be squeezed. So it's always worth checking (I generally suggest dropping a breakpoint
+into the code)
+
+## Latents
+
+A LATENT is a `dict`; the latent sample is referenced by the key `samples` and has shape `[B,C,H,W]`, with `C=4`.
+
+<Tip>MASK and LATENT are channel first, IMAGE is channel last</Tip>
+
