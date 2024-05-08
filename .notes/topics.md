@@ -13,9 +13,10 @@ api events (addEventListener) (*)
 The ComfyNode object
 Inputs, outputs and widgets
 Custom widgets  (*)
-Adding to the menus (node, canvas)
+Adding to the menus (node, canvas) and preferences/settings
 Other key JavaScript objects (prompt, app, graph, workflow) and methods you might want to hijack
 Group nodes  (*)
+Groups
 
 
 ## Server-Client messaging:
