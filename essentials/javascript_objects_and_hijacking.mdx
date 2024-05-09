@@ -2,34 +2,81 @@
 title: "Comfy Objects"
 ---
 
-## Function hijacking
+## LiteGraph
 
-A common JavaScript idiom used in extensions is to hijack 
-existing function calls and insert additional behaviour. This can apply to the 
-behaviour of a node, or of the core Comfy objects, in particular `app` (the Comfy application)
-and `graph` (an extended `LiteGraph` object representing the graph).
+The Comfy UI is built on top of [LiteGraph](https://github.com/jagenjo/litegraph.js). 
+Much of the Comfy functionality is provided by LiteGraph, so if developing more complex
+nodes you will probably find it helpful to clone that repository and browse the documentation, 
+which can be found at `doc/index.html`.
 
-A reminder of the basic idiom:
-```Javascript
-const the_original_function = the_object.the_function
-the_object.the_function = function() {
-    // might want to do something before the original code
-    var return_value = the_original_function?.apply(this, arguments);
-    // or after, possibly depending on, or changing, the return value
-    return return_value
-}
-```
+## ComfyApp
 
+The `app` object (always accessible by `import { app } from "../../scripts/app.js";`) represents the Comfy application running in the browser,
+and contains a number of useful properties and functions, some of which are listed below.
 
-## App
+<Warning>Hijacking functions on `app` is not recommended, as Comfy is under constant development, and core behavior may change.</Warning>
+
+### Properties
+
+Important properties of `app` include (this is not an exhaustive list):
+
+|property|contents|
+|-|-|
+|`canvas`|An LGraphCanvas object, representing the current user inferface. It contains some potentially interesting properties, such as `node_over` and `selected_nodes`.|
+|`canvasEl`|The DOM `<canvas>` element|
+|`graph`|A reference to the LGraph object describing the current graph|
+|`runningNodeId`|During execution, the node currently being executed|
+|`ui`|Provides access to some UI elements, such as the queue, menu, and dialogs|
+
+`canvas` (for graphical elements) and `graph` (for logical connections) are probably the ones you are most likely to want to access. 
+
+### Functions
+
+Again, there are many. A few significant ones are:
+
+|function|notes|
+|-|-|
+|graphToPrompt|Convert the graph into a prompt that can be sent to the Python server|
+|loadGraphData|Load a graph|
+|queuePrompt|Sumbit a prompt to the queue|
+|registerExtension|You've seen this one - used to add an extension|
 
 ## LGraph
 
-### LLink
+The `LGraph` object is part of the LiteGraph framework, and represents the current logical state of the graph (nodes and links). 
+If you want to manipulate the graph, the LiteGraph documentation (at `doc/index.html` if you clone `https://github.com/jagenjo/litegraph.js`) 
+describes the functions you will need.
+
+You can use `graph` to obtain details of nodes and links, for example:
+
+```Javascript
+const ComfyNode_object_for_my_node = app.graph._nodes_by_id(my_node_id) 
+ComfyNode_object_for_my_node.inputs.forEach(input => {
+    const link_id = input.link;
+    if (link_id) {
+        const LLink_object = app.graph.links[link_id]
+        const id_of_upstream_node = LLink_object.origin_id
+        // etc
+    }
+});
+```
+
+## LLink
+
+The `LLink` object, accessible through `graph.links`, represents a single link in the graph, from node `link.origin_id` output slot `link.origin_slot`
+to node `link.target_id` slot `link.target_slot`. It also has a string representing the data type, in `link.type`, and `link.id`.
+
+`LLink`s are created in the `connect` method of a `LGraphNode` (of which `ComfyNode` is a subclass). 
+
+<Tip>Avoid creating your own LLink objects - use the LiteGraph functions instead.</Tip>
 
 ## ComfyNode
 
-<Tip>This description applies to a normal node. 
+`ComfyNode` is a subclass of `LGraphNode`, and the LiteGraph documentation is therefore helpful for more generic
+operations. However, Comfy has significantly extended the LiteGraph core behaviour, and also does not make 
+use of all LiteGraph functionality.
+
+<Tip>The description that follows applies to a normal node. 
 Group nodes, primitive nodes, notes, and redirect nodes have different properties.</Tip>
 
 A `ComfyNode` object represents a node in the current workflow. It has a number of important properties 
@@ -56,7 +103,7 @@ async nodeCreated(node) {
 |`graph`|A reference to the LGraph object|
 |`id`|A unique id|
 |`input_type`|A list of the input types (eg "STRING", "MODEL", "CLIP" etc). Generally matches the Python INPUT_TYPES|
-|`inputs`|A list of inputs, each a dictionary containing keys `.name`, `.type`, `.color_on` (input dot color), and `.link` (the id of the LLink in `graph.links`)|
+|`inputs`|A list of inputs (discussed below)|
 |`mode`|Normally 0, set to 2 if the node is muted and 4 if the node is bypassed. Values of 1 and 3 are not used by Comfy|
 |`order`|The node's position in the execution order. Set by `Lgraph.computeExecutionOrder()` when the prompt is submitted|
 |`pos`|The [x,y] position of the node on the canvas|
@@ -76,4 +123,40 @@ There are a very large number of functions (85, last time I counted). A selectio
 |function|notes|
 |-|-|
 
-## Widgets
+## Inputs and Widgets
+
+Inputs and Widgets represent the two ways that data can be fed into a node. In general a widget can be 
+converted to an input, but not all inputs can be converted to a widget (as many datatypes can't be
+entered through a UI element).
+
+`node.inputs` is a list of the current inputs (colored dots on the left hand side of the node),
+specifying their `.name`, `.type`, and `.link` (a reference to the connected `LLink` in `app.graph.links`). 
+
+If an input is a widget which has been converted, it also holds a reference to the, now inactive, widget in `.widget`.
+
+`node.widgets` is a list of all widgets, whether or not they have been converted to an input. A widget has:
+
+|property/function|notes|
+|-|-|
+|`callback`|A function called when the widget value is changed|
+|`last_y`|The vertical position of the widget in the node|
+|`name`|The (unique within a node) widget name|
+|`options`|As specified in the Python code (such as default, min, and max)|
+|`type`|The name of the widget type (see below) in lowercase|
+|`value`|The current widget value. This is a property with `get` and `set` methods|
+
+### Widget Types
+
+`app.widgets` is a dictionary of currently registered widget types, keyed in the UPPER CASE version of the name of the type. 
+Build in Comfy widgets types include the self explainatory `BOOLEAN`, `INT`, and `FLOAT`, 
+as well as `STRING` (which comes in two flavours, single line and multiline),
+`COMBO` for dropdown selection from a list, and `IMAGEUPLOAD`, used in Load Image nodes.
+
+Custom widget types can be added by providing a `getCustomWidgets` method in your extension.
+{/* TODO add link */}
+
+### Linked widgets
+
+Widgets can also be linked - the built in behaviour of `seed` and `control_after_generate`, for example. 
+A linked widget has `.type = 'base_widget_type:base_widget_name'`; so `control_after_generate` may have
+type `int:seed`.
