@@ -5,6 +5,8 @@ subclassing nodes
 execution order
 custom data types
 
+Some real life examples
+
 ## Client
 
 
@@ -18,6 +20,8 @@ Other key JavaScript objects (prompt, app, graph, workflow) and methods you migh
 Group nodes  (*)
 Groups
 
+Some real life examples
+
 
 ## Server-Client messaging:
 
@@ -27,7 +31,7 @@ existing api events (search #addApiUpdateHandlers() in app)
 adding python server calls (JS calling Python)
 sending custom messages (Python messaging JS)
 
-
+Some real life examples
 
 ## Bits and pieces
 
