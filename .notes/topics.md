@@ -1,48 +1,31 @@
-## Server
 
-hidden inputs
-subclassing nodes
-execution order
-custom data types
+Next few PRs will include, in roughly this order:
 
-Some real life examples
+some server real life examples
+- a few to start, like on the client side, then add as we go
 
-## Client
+server-client messages
+- overview
+- existing api calls 
+- existing api events (search #addApiUpdateHandlers() in app)
+- adding python server calls (JS calling Python)
+- sending custom messages (Python messaging JS)
 
+more server topics
+- hidden inputs
+- subclassing 
+- execution order
+- custom data types
 
-api events (addEventListener) (*)
-Custom widgets  (*)
-Group nodes  (*)
-Groups
+advanced client topic
+- Groups
+- Custom widgets 
+- Group nodes 
+- Primitive nodes, Redirects
+- Node size and drawing (more on DOM widgets)
 
-Some real life examples
+Other things to consider
+- What changes require a Comfy restart v. page reload
+- Adding css 
+- A glossary
 
-
-## Server-Client messaging:
-
-overview
-existing api calls
-existing api events (search #addApiUpdateHandlers() in app)
-adding python server calls (JS calling Python)
-sending custom messages (Python messaging JS)
-
-Some real life examples
-
-## Bits and pieces
-
-What changes require a Comfy restart v. page reload
-Adding css 
-
-        const head = document.getElementsByTagName('HEAD')[0];
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.type = 'text/css';
-        link.href = 'extensions/cg-use-everywhere/ue.css';
-        head.appendChild(link);
-
-
-## Glossary
-
-Probably good to define a bunch of things:
-LiteGraph
-graph
