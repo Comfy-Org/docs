@@ -1,0 +1,192 @@
+---
+title: "Walkthrough"
+---
+
+This page will take you step-by=-step through the process of creating a custom node 
+that takes a batch of images, and returns one of the images. Initially, the node
+will return the image which is, on average, the lightest in color; we'll then extend
+it to have a range of selection criteria, and then finally add some client side code.
+
+This page assumes very little knowledge of Python or Javascript.
+
+After this walkthrough, dive into the details of [server side code](./custom_node_server_overview), 
+[client side code](./custom_node_server_overview), or [client-server comms](./comms_overview).
+
+## The Basic Node
+
+### Setting up 
+
+All code for this custom node will be in a single directory. So start by locating the 
+`custom_nodes` directory in your `ComfyUI` folder, and create a new directory in it,
+named (for instance) `image_selector`. This new directory is the base directory for all 
+code related to the new custom node.
+
+### The Python Framework
+
+The basic structure of a custom node is described in detail [later](./custom_node_server_overview).
+We begin with the bare necessities:
+
+```Python
+class ImageSelector:
+    CATEGORY = "example"
+    @classmethod    
+    def INPUT_TYPES(s):
+        return { "required":  { "images": ("IMAGE",), } }
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "choose_image"
+```
+
+A custom node is a Python class, which must include these four things: `CATEGORY`, 
+which specifies where in the add new node menu the custom node will be located, 
+`INPUT_TYPES`, which is a class method defining what inputs the node will take
+(see [later](./custom_node_server_overview#input-types) for details of the dictionary returned),
+`RETURN_TYPES`, which defines what outputs the node will produce, and `FUNCTION`, the name
+of the function that will be called when the node is executed.
+
+<Tip>Notice that the data type for input and output is `IMAGE` (singular) even though 
+we expect to receive a batch of images, and return just one. In Comfy, `IMAGE` means
+image batch, and a single image is treated as a batch of size 1.</Tip>
+
+### Add the main function
+
+The main function, `choose_image`, receives named arguments as defined in `INPUT_TYPES`, and
+returns a `tuple` as defined in `RETURN_TYPES`. Since we're dealing with images, which are internally
+stored as `torch.Tensor`, 
+
+```Python
+import torch
+```
+
+Then add the function to your class. The datatype for image is `torch.Tensor` with shape `[B,H,W,C]`,
+where `B` is the batch size and `C` is the number of channels - 3, for RGB. If we iterate over such
+a tensor, we will get a series of `B` tensors of shape `[H,W,C]`. The `.flatten()` method turns 
+this into a one dimensional tensor, of length `H*W*C`, `torch.mean()` takes the mean, and `.item()`
+turns a single value tensor into a Python float. 
+
+```Python
+    def choose_image(self, images):
+        brightness = list(torch.mean(image.flatten()).item() for image in images)
+        brightest = brightness.index(max(brightness))
+        result = images[brightest].unsqueeze(0)
+        return (result,)
+```
+
+Notes on those last two lines: 
+
+- `images[brightest]` will return a Tensor of shape `[H,W,C]`. `unsqueeze` is used to insert a (length 1) dimension at, in this case, dimension zero, to give 
+us `[B,H,W,C]` with `B=1`: a single image.
+- in `return (result,)`, the trailing comma is essential to ensure you return a tuple.
+
+### Deploy the node
+
+To make Comfy recognize the new node, we need to turn the directory `image_selector` into a Python module,
+by adding `__init__.py`, which looks like this:
+
+```Python
+from .image_selector_node import ImageSelector
+
+NODE_CLASS_MAPPINGS = {
+    "Image Selector" : ImageSelector,
+}
+
+__all__ = ['NODE_CLASS_MAPPINGS']
+```
+
+Here we are just exporting `NODE_CLASS_MAPPINGS`, 
+which gives each new custom node a unique name, mapped to the class.
+
+### Run Comfy
+
+Start (or restart) the Comfy server and you should see, in the list of custom nodes, a line like this:
+
+```
+0.0 seconds: [your path]\ComfyUI\custom_nodes\image_selector
+
+```
+
+Reload the Comfy page in your browser, and under `example` in the `Add Node` menu, you'll find `image_selector`.
+If you don't, look in the Python console output for an error!
+
+## Add some options
+
+That node is maybe a bit boring, so we might add some options; a widget that allows you to 
+choose the brightest image, or the reddest, bluest, or greenest. Edit your Python to add another input,
+so `INPUT_TYPES` looks like:
+
+```Python
+    @classmethod    
+    def INPUT_TYPES(s):
+        return { "required":  { "images": ("IMAGE",), 
+                                "mode": (["brightest", "reddest", "greenest", "bluest"],)} }
+```
+
+Then update the main function. We'll use a fairly naive definition of 'reddest' as being the average
+`R` value of the pixels divided by the average of all three colors. So:
+
+```Python
+    def choose_image(self, images, mode):
+        batch_size = images.shape[0]
+        brightness = list(torch.mean(image.flatten()).item() for image in images)
+        if (mode=="brightest"):
+            scores = brightness
+        else:
+            channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
+            absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
+            scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
+        best = scores.index(max(scores))
+        result = images[best].unsqueeze(0)
+        return (result,)
+```
+
+## Tweak the UI
+
+Maybe we'd like a bit of visual feedback, so let's send a little text message to be displayed.
+
+### Send a message from server
+
+This requires two lines to be added to the Python code:
+
+```Python
+from server import PromptServer
+```
+
+and, at the end of the `choose_image` method, add a line to send a message to the front end (`send_sync` takes a message
+type, which should be unique, and a dictionary)
+
+```Python
+        PromptServer.instance.send_sync("example.imageselector.textmessage", {"message":f"Picked image {best+1}"})
+        return (result,)
+```
+
+### Write a client extension
+
+To add some Javascript to the client, create a subdirectory, `js` in your custom node directory, and modify the end of `__init__.py` 
+to tell Comfy about it by exporting `WEB_DIRECTORY`:
+
+```Python
+WEB_DIRECTORY = "./js"
+__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+```
+
+The client extension is save as a `.js` file in the `js` subdirectory, so create `image_selector/js/image_selector.js` with the 
+code below. (For more, see [client side coding](./javascript_overview)).
+
+```Javascript
+import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
+
+app.registerExtension({
+	name: "example.imageselector",
+    async setup() {
+        function messageHandler(event) { alert(event.detail.message); }
+        api.addEventListener("example.imageselector.textmessage", messageHandler);
+    },
+})
+```
+
+All we've done is to register an extension, and in its `setup()` method, added a listener for the message type we are sending,
+and read the dictionary we sent (which is stored in `event.detail`)
+
+Stop the Comfy server, start it again, reload the webpage, and run your workflow.
+
+
