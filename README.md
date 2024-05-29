@@ -28,3 +28,10 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 ```
 
 This will only generate the MDX files for each endpoint. You need to add a link to these files in `mint.json`, and the up-to-date API spec will be shown on that doc page.
+
+
+## Contributing
+
+Please just create a PR and we will review it within a few days. 
+
+Or talk to us on our [discord](https://discord.com/invite/comfycontrib) :)
