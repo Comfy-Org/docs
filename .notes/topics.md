@@ -12,6 +12,7 @@ more server topics
 - custom data types
 - returning a dictionary instead of a tuple
 - sending progress messages
+- more notes on Tensor (element-wise, logical (the 'if not v' trap)) - move the stuff from Images Masks etc and expand on it
 
 advanced client topic
 - Groups
