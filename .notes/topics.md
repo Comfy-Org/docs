@@ -11,6 +11,7 @@ more server topics
 - execution order
 - custom data types
 - sending progress messages
+- more datatypes - GUIDER, SAMPLER, SIGMAS
 
 advanced client topic
 - Groups
