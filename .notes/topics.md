@@ -1,8 +1,4 @@
 
-Next few PRs will include, in roughly this order:
-
-some server real life examples
-- a few to start, like on the client side, then add as we go
 
 
 more server topics
@@ -11,7 +7,7 @@ more server topics
 - execution order
 - custom data types
 - sending progress messages
-- more datatypes - GUIDER, SAMPLER, SIGMAS
+- more datatypes - NOISE, GUIDER, SAMPLER, SIGMAS
 
 advanced client topic
 - Groups
@@ -25,3 +21,8 @@ Other things to consider
 - Adding css 
 - A glossary
 
+sd theory stuff in the Comfy context (do we want this?)
+- what is a model anyway?
+- LoRAs
+- noise and sigmas
+- sigmas and noise
