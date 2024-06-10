@@ -1,17 +1,13 @@
 
-Next few PRs will include, in roughly this order:
-
-some server real life examples
-- a few to start, like on the client side, then add as we go
-
+examples of different node classes (see issue #12)
 
 more server topics
 - hidden inputs
 - subclassing 
 - execution order
 - custom data types
-- returning a dictionary instead of a tuple
 - sending progress messages
+- more datatypes - NOISE, GUIDER, SAMPLER, SIGMAS
 
 advanced client topic
 - Groups
@@ -25,3 +21,8 @@ Other things to consider
 - Adding css 
 - A glossary
 
+sd theory stuff in the Comfy context (do we want this?)
+- what is a model anyway?
+- LoRAs
+- noise and sigmas
+- sigmas and noise

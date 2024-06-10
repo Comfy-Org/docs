@@ -2,58 +2,13 @@
 title: "Images, Latents, and Masks"
 ---
 
-## pytorch, tensors, and torch.Tensor 
+When working with these datatypes, you will need to know about the `torch.Tensor` class. 
+Complete documentation is [here](https://pytorch.org/docs/stable/tensors.html), or 
+an introduction to the key concepts required for Comfy [here](./tensors).
 
-All the core number crunching in Comfy is done by [pytorch](https://pytorch.org/). If your custom nodes are going
-to get into the guts of stable diffusion you will need to become familiar with this library, which is way beyond
-the scope of this introduction.
+<Warning>If your node has a single output which is a tensor, remember to return `(image,)` not `(image)`</Warning>
 
-However, many custom nodes will need to manipulate images, latents and masks, each of which are represented internally
-as `torch.Tensor`, so you'll want to bookmark the 
-[documentation for torch.Tensor](https://pytorch.org/docs/stable/tensors.html).
-
-`torch.Tensor` represents a tensor, which is the mathematical generalization of a vector or matrix to any number of dimensions.
-A tensor's _rank_ is the number of dimensions it has (so a vector has _rank_ 1, a matrix _rank_ 2); its _shape_ describes the
-size of each dimension. 
-
-So an RGB image (of height H and width W) might be thought of as three arrays (one for each color channel), each measuring H x W,
-which could be represented as a tensor with _shape_ `[H,W,3]`. In Comfy images almost always come in a batch (even if the batch
-only contains a single image). `torch` always places the batch dimension first, so Comfy images have _shape_ `[B,H,W,3]`, generally
-written as `[B,H,W,C]` where C stands for Channels.
-
-### squeeze, unsqueeze, and reshape
-
-If a tensor has a dimension of size 1 (known as a collapsed dimension), it is equivalent to the same tensor with that dimension removed
-(a batch with 1 image is just an image). Removing such a collapsed dimension is referred to as squeezing, and
-inserting one is known as unsqueezing. 
-
-<Warning>Some torch code, and some custom node authors, will return a squeezed tensor when a dimension is collapsed - such 
-as when a batch has only one member. This is a common cause of bugs!</Warning>
-
-To represent the same data in a different shape is referred to as reshaping. This often requires you to know
-the underlying data structure, so handle with care!
-
-### Important notation
-
-`torch.Tensor` supports most Python slice notation, iteration, and other common list-like operations. A tensor 
-also has a `.shape` attribute which returns its size as a `torch.Size` (which is a subclass of `tuple` and can 
-be treated as such).
-
-There are three other important bits of notation you'll often see:
-
-- `torch.Tensor` supports the use of `None` in slice notation
-to indicate the insertion of a dimension of size 1.
-
-- `:` is frequently used when slicing a tensor; this simply means 'keep the whole dimension'. 
-It's like using `a[start:end]` in Python, but omitting the start point and end point.
-
-- in methods which require a shape to be passed, it is often passed as a `tuple` of the dimensions, in 
-which a single dimension can be given the size `-1`, indicating that the size of this dimension should
-be calculated based on the total size of the data.
-
-<Warning>When returning a tuple, which just contains a tensor, if you forget the trailing comma, 
-it will be treated as `Tensor` not `tuple[Tensor]`. Because tensors support Python iteration, 
-an iterator will iterate over the first dimension of the tensor.</Warning>
+Most of the concepts below are illustrated in the [example code snippets](./custom_node_snippets).
 
 ## Images
 
@@ -68,68 +23,32 @@ If you want to load and save images, you'll want to use PIL:
 from PIL import Image, ImageOps
 ```
 
-Load an image into a batch of size 1 (based on `LoadImage` source code in `nodes.py`)
-```python
-i = Image.open(image_path)
-i = ImageOps.exif_transpose(i)
-if i.mode == 'I':
-    i = i.point(lambda i: i * (1 / 255))
-image = i.convert("RGB")
-image = np.array(image).astype(np.float32) / 255.0
-image = torch.from_numpy(image)[None,]
-```
-
-Save a batch of images (based on `SaveImage` source code in `nodes.py`)
-```python     
-for (batch_number, image) in enumerate(images):
-    i = 255. * image.cpu().numpy()
-    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-    filepath = # some path that takes the batch number into account
-    img.save(filepath)
-```
-
 ## Masks
 
-A MASK is a `torch.Tensor` with shape `[B,H,W]`. In computing contexts, masks have binary values (0 or 1) and are used to indicate which pixels should undergo specific operations. In digital photography, masks have values in a range from 0 to 1 and are often used to alter transparency, adjust filters, or composite layers. 
+A MASK is a `torch.Tensor` with shape `[B,H,W]`. 
+In many contexts, masks have binary values (0 or 1), which are used to indicate which pixels should undergo specific operations. 
+In some cases values between 0 and 1 are used indicate an extent of masking, (for instance, to alter transparency, adjust filters, or composite layers). 
 
 ### Masks from the Load Image Node
 
-The `LoadImage` node uses an image's alpha channel (the "A" in "RGBA") to create MASKs. The values from the alpha channel are normalized to the range [0,1] (torch.float32) and then inverted. The `LoadImage` node always produces a MASK output when loading an image. Many images (like JPEGs) don't have an alpha channel. In these cases, `LoadImage` creates a default mask with the shape `[1, 64, 64]`.
+The `LoadImage` node uses an image's alpha channel (the "A" in "RGBA") to create MASKs. 
+The values from the alpha channel are normalized to the range [0,1] (torch.float32) and then inverted. 
+The `LoadImage` node always produces a MASK output when loading an image. Many images (like JPEGs) don't have an alpha channel. 
+In these cases, `LoadImage` creates a default mask with the shape `[1, 64, 64]`.
 
 ### Understanding Mask Shapes
 
-In libraries like `numpy`, `PIL`, and many others, single-channel images (like masks) are typically represented as 2D arrays. This means the `C` (channel) dimension is implicit, and thus unlike IMAGE types, MASKs have only three dimensions: `[B, H, W]`. 
+In libraries like `numpy`, `PIL`, and many others, single-channel images (like masks) are typically represented as 2D arrays, shape `[H,W]`.
+This means the `C` (channel) dimension is implicit, and thus unlike IMAGE types, batches of MASKs have only three dimensions: `[B, H, W]`. 
+It is not uncommon to encounter a mask which has had the `B` dimension implicitly squeezed, giving a tensor `[H,W]`.
 
-To use a MASK with an IMAGE, you will often have to match shapes by unsqueezing. Keep in mind that you are unsqueezing the `C` dim, so you should `unsqueeze(3)`, or more easily: `unsqueeze(-1)`
-
-### Inverting Masks
-
-Inverting a mask is a straightforward process:
-
-```python
-mask = 1.0 - mask
-```
-
-Given the initial normalization of pixel values to the range [0,1] (torch.float32), and their subsequent or eventual conversion to binary (0 or 1), the operation `mask = 1.0 - mask` effectively inverts each pixel.
-
-### Using Masks as Transparency Layers
-
-When used for tasks like inpainting or segmentation, the MASK's values will eventually be rounded to the nearest integer so that they are binary — 0 indicating regions to be ignored and 1 indicating regions to be targeted. However, this doesn't happen until the MASK is passed to those nodes. This flexibility allows you to use MASKs as as you would in digital photography contexts as a transparency layer:
-
-```python
-# Invert mask back to original transparency layer
-mask = 1.0 - mask
-
-# Unsqueeze the `C` (channels) dimension
-mask = mask.unsqueeze(-1)
-
-# Concatenate ("cat") along the `C` dimension
-rgba_image = torch.cat((rgb_image, mask), dim=-1)
-```
+To use a MASK, you will often have to match shapes by unsqueezing to produce a shape `[B,H,W,C]` with `C=1`
+To unsqueezing the `C` dimension, so you should `unsqueeze(-1)`, to unsqueeze `B`, you `unsqueeze(0)`. 
+If your node receives a MASK as input, you would be wise to always check `len(mask.shape)`. 
 
 ## Latents
 
 A LATENT is a `dict`; the latent sample is referenced by the key `samples` and has shape `[B,C,H,W]`, with `C=4`.
 
-<Tip>MASK and LATENT are channel first, IMAGE is channel last</Tip>
+<Tip>LATENT is channel first, IMAGE is channel last</Tip>
 
