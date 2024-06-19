@@ -16,7 +16,7 @@ npx mintlify dev
 
 ### Create a PR
 
-Create a PR. Once it is accepted Vercel will deploy the change to https://comfydocs.org.
+Create a PR. Once it is accepted Vercel will deploy the change to https://docs.comfy.org/
 
 ### Generating API Reference Docs
 
