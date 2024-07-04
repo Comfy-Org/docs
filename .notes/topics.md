@@ -2,7 +2,6 @@
 examples of different node classes (see issue #12)
 
 more server topics
-- hidden inputs
 - subclassing 
 - execution order
 - custom data types
