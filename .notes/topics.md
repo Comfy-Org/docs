@@ -4,7 +4,6 @@ examples of different node classes (see issue #12)
 more server topics
 - subclassing 
 - execution order
-- custom data types
 - sending progress messages
 - more datatypes - NOISE, GUIDER, SAMPLER, SIGMAS
 
