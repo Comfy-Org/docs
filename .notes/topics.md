@@ -5,7 +5,6 @@ more server topics
 - subclassing 
 - execution order
 - sending progress messages
-- more datatypes - NOISE, GUIDER, SAMPLER, SIGMAS
 
 advanced client topic
 - Groups
