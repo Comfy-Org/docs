@@ -3,7 +3,9 @@ examples of different node classes (see issue #12)
 
 more server topics
 - subclassing 
-- execution order
+- execution order  [defer?]
+
+comms
 - sending progress messages
 
 advanced client topic
