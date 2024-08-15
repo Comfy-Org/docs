@@ -1,0 +1,107 @@
+---
+title: "Lazy Evaluation"
+---
+
+## Lazy Evaluation
+
+By default, all `required` and `optional` inputs are evaluated before a node can be run. Sometimes, however, an
+input won't necessarily be used and evaluating it would result in unnecessary processing. Here are some examples
+of nodes where lazy evaluation may be beneficial:
+1. A `ModelMergeSimple` node where the ratio is either `0.0` (in which case the first model doesn't need to be loaded)
+or `1.0` (in which case the second model doesn't need to be loaded).
+2. Interpolation between two images where the ratio (or mask) is either entirely `0.0` or entirely `1.0`.
+3. A Switch node where one input determines which of the other inputs will be passed through.
+
+<Tip>There is very little cost in making an input lazy. If it's something you can do, you generally should.</Tip>
+
+### Creating Lazy Inputs
+
+There are two steps to making an input a "lazy" input. They are:
+
+1. Mark the input as lazy in the dictionary returned by `INPUT_TYPES`
+2. Define a method named `check_lazy_status` (note: *not* a class method) that will be called prior to evaluation to determine if any more inputs are necessary.
+
+To demonstrate these, we'll make a "MixImages" node that interpolates between two images according to a mask. If the entire mask is `0.0`, we don't need to evaluate any part of the tree leading up to the second image. If the entire mask is `1.0`, we can skip evaluating the first image.
+
+#### Defining `INPUT_TYPES`
+
+Declaring that an input is lazy is as simple as adding a `lazy: True` key-value pair to the input's options dictionary.
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+In this example, `image1` and `image2` are both marked as lazy inputs, but `mask` will always be evaluated.
+
+#### Defining `check_lazy_status`
+
+A `check_lazy_status` method is called if there are one or more lazy inputs that are not yet available. This method receives the same arguments as the standard execution function. All available inputs are passed in with their final values while unavailable lazy inputs have a value of `None`.
+
+The responsibility of the `check_lazy_status` function is to return a list of the names of any lazy inputs that are needed to proceed. If all lazy inputs are available, the function should return an empty list.
+
+Note that `check_lazy_status` may be called multiple times. (For example, you might find after evaluating one lazy input that you need to evaluate another.)
+
+<Tip>Note that because the function uses actual input values, it is *not* a class method.</Tip>
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### Full Example
+
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # Not trying to handle different batch sizes here just to keep the demo simple
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        result = image1 * (1. - mask) + image2 * mask,
+        return (result[0],)
+```
+
