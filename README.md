@@ -101,10 +101,7 @@ eg. If the Getting Started group has all been translated, we can do this:
 
 ```
 
-```
-
-
-```
+Refer to Mintlify documentation on [Versions](https://mintlify.com/docs/settings/versioning#versioning) for more info.
 
 #### Adding a new language
 
@@ -117,4 +114,4 @@ If a language does not exist yet, add it in `mint.json` under versions. So if yo
   }]
 ```
 
-The locale will enable translation of Mintlify default UI component text. This is optional. The full list of locales are [here](https://mintlify.com/docs/settings/global#param-locale).
+The locale will translate Mintlify default UI components' text. This is optional. The full list of locales are [here](https://mintlify.com/docs/settings/global#param-locale).
