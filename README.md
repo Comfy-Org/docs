@@ -1,4 +1,5 @@
 # ComfyUI Documentation
+| [English](./README.md) | [中文](./README.zh-CN.md) |
 
 ## Development
 
@@ -8,7 +9,7 @@ Install the [Mintlify CLI](https://www.npmjs.com/package/mintlify) to preview th
 npm i mintlify
 ```
 
-Run the following command at the root of your documentation (where mint.json is)
+Run the following command at the root of your documentation (where docs.json is)
 
 ```
 npx mintlify dev
@@ -27,7 +28,7 @@ cd registry/api-reference # Keep API files separated by products.
 npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 ```
 
-This will only generate the MDX files for each endpoint. You need to add a link to these files in `mint.json`, and the up-to-date API spec will be shown on that doc page.
+This will only generate the MDX files for each endpoint. You need to add a link to these files in `docs.json`, and the up-to-date API spec will be shown on that doc page.
 
 ## Contributing
 
@@ -35,83 +36,108 @@ Please just create a PR and we will review it within a few days.
 
 Or talk to us on our [discord](https://discord.com/invite/comfyorg)
 
+The documentation is built with Mintlify, please refer to [Mintlify documentation](https://mintlify.com/docs) to learn how to use it.
+
 ### i18n Contributions
 
-Mintlify uses versioning as a way to add additional locales. To add a translation of a page, follow these instructions:
+Mintlify uses versioning to add other languages. To add a translation of a page, follow these instructions:
 
-1. Create a file under the language code with the same exact filename of the original english filename.
+1. Create a file under the language code with the same exact filename of the original English filename.
 
-eg. If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. Make sure you include the version in the new file:
-
-```
----
-title: ""
-description: ""
-version: "Chinese"
----
-```
-
-2. Change the original file to be English version
-
-Files without versions appear in all versions, so we need to make sure the English file does not appear in the Chinese translation.
+For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. Make sure you include the version in the new file:
 
 ```
 ---
 title: ""
 description: ""
-version: "English"
 ---
 ```
 
-3. Update navigation for `mint.json`
+2. Update navigation for `docs.json`
 
-If you translated a single page, just add the new translated page to the navigation group.
+Please refer to [Mintlify Localization](https://mintlify.com/docs/navigation/localization) for configuration details.
+
+If you translated a single page, just add the new translated page path to the corresponding language navigation group, and it will be displayed in that language version.
 
 For `introduction.mdx`:
 
 ```
-  "pages": [
-    "get_started/introduction",
-    "zh-CN/get_started/introduction",
-  ...
-  ]
+  "navigation": {
+    "languages": [
+      {
+        "language": "en",
+        "anchors": [
+          {
+            "anchor": "Introduction",
+            "groups": [
+              {
+                "group": "Get Started",
+                "pages": [
+                  "get_started/introduction",
+                ...
+                ]
+              },
+            ...
+          }
+        ]
+      },
+      {
+        "language": "cn",
+        "anchors": [
+          {
+            "anchor": "入门指南",
+            "icon": "book-open",
+            "groups": [
+              {
+                "group": "开始行动",
+                "pages": [
+                  "zh-CN/get_started/introduction",
+                  ...
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+    ...
+  }
 ```
 
-Mintlify will automatically filter out pages that are not the current version (in our case language).
+Mintlify will automatically determine which pages to display in different language versions based on the `language` configuration.
 
-If all the pages in a group are translated, you should make a copy of the entire group for the specific version.
+Currently, Mintlify supports localization for English (en), Chinese (cn), Spanish (es), French (fr), Japanese (jp), Portuguese (pt), Brazilian Portuguese (pt-BR), and German (de).
 
-eg. If the Getting Started group has all been translated, we can do this:
-
-```
-{
-  "group": "Get Started",
-  "version": "English"
-  "pages": [
-    ...English pages
-  ]
-},
-{
-  "group": “入门指南",
-  "version": "Chinese"
-  "pages": [
-    ...Chinese pages
-  ]
-}
-
-```
-
-Refer to Mintlify documentation on [Versions](https://mintlify.com/docs/settings/versioning#versioning) for more info.
+For more information, please refer to the Mintlify documentation on [Mintlify Localization](https://mintlify.com/docs/navigation/localization).
 
 #### Adding a new language
 
-If a language does not exist yet, add it in `mint.json` under versions. So if you are adding Portuguese, make this change:
+If a language doesn't exist yet, for example, if you want to add a French translation of `introduction.mdx`, you should create a new `fr-FR` folder in the root directory, complete the translation, and then add the following content under `languages` in `docs.json`:
 
 ```
-"versions": [{
-    "name": "Português",
-    "locale": "pt-BR"
-  }]
+{
+  "languages": [
+    ...
+    {
+        "language": "fr",
+        "anchors": [
+          {
+            "anchor": "Guide",
+            "icon": "book-open",
+            "groups": [
+              {
+                "group": "Get Started",
+                "pages": [
+                  "fr-FR/get_started/introduction",
+                  ...
+                ]
+              }
+            ]
+          }
+        ]
+      }
+  ]
+}
 ```
 
 The locale will translate Mintlify default UI components' text. This is optional. The full list of locales are [here](https://mintlify.com/docs/settings/global#param-locale).
