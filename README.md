@@ -44,14 +44,9 @@ Mintlify uses versioning to add other languages. To add a translation of a page,
 
 1. Create a file under the language code with the same exact filename of the original English filename.
 
-For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. Make sure you include the version in the new file:
+For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. 
 
-```
----
-title: ""
-description: ""
----
-```
+Specifications for file editing can be found in the Writing Content section of the [Mintlify] (https://mintlify.com/docs/page) document
 
 2. Update navigation for `docs.json`
 
@@ -66,10 +61,7 @@ For `introduction.mdx`:
     "languages": [
       {
         "language": "en",
-        "anchors": [
-          {
-            "anchor": "Introduction",
-            "groups": [
+        "groups": [
               {
                 "group": "Get Started",
                 "pages": [
@@ -78,16 +70,11 @@ For `introduction.mdx`:
                 ]
               },
             ...
-          }
         ]
       },
       {
         "language": "cn",
-        "anchors": [
-          {
-            "anchor": "入门指南",
-            "icon": "book-open",
-            "groups": [
+         "groups": [
               {
                 "group": "开始行动",
                 "pages": [
@@ -96,8 +83,6 @@ For `introduction.mdx`:
                 ]
               }
             ]
-          }
-        ]
       }
     ]
     ...
@@ -120,11 +105,7 @@ If a language doesn't exist yet, for example, if you want to add a French transl
     ...
     {
         "language": "fr",
-        "anchors": [
-          {
-            "anchor": "Guide",
-            "icon": "book-open",
-            "groups": [
+        "groups": [
               {
                 "group": "Get Started",
                 "pages": [
@@ -132,9 +113,7 @@ If a language doesn't exist yet, for example, if you want to add a French transl
                   ...
                 ]
               }
-            ]
-          }
-        ]
+          ]
       }
   ]
 }

@@ -45,14 +45,9 @@ Mintlify 使用版本控制来添加其他语言。要添加页面的翻译，�
 
 1. 在语言代码下创建与原始英文文件名完全相同的文件。
 
-例如：如果你要将 `introduction.mdx` 翻译成中文，请在 `zh-CN/get_started/introduction.mdx` 下创建文件。确保在新文件中包含版本：
+例如：如果你要将 `introduction.mdx` 翻译成中文，请在 `zh-CN/get_started/introduction.mdx` 下创建文件。
 
-```
----
-title: ""
-description: ""
----
-```
+文件编辑的规范可以参考 [Mintlify](https://mintlify.com/docs/page) 文档中Writing Content（内容撰写）部分的章节
 
 3. 更新 `doocs.json` 的导航
 
@@ -67,10 +62,7 @@ description: ""
     "languages": [
       {
         "language": "en",
-        "anchors": [
-          {
-            "anchor": "Introduction",
-            "groups": [
+        "groups": [
               {
                 "group": "Get Started",
                 "pages": [
@@ -79,16 +71,11 @@ description: ""
                 ]
               },
             ...
-          }
         ]
       },
       {
         "language": "cn",
-        "anchors": [
-          {
-            "anchor": "入门指南",
-            "icon": "book-open",
-            "groups": [
+         "groups": [
               {
                 "group": "开始行动",
                 "pages": [
@@ -97,8 +84,6 @@ description: ""
                 ]
               }
             ]
-          }
-        ]
       }
     ]
     ...
@@ -121,21 +106,15 @@ Mintlify 会根据 `language` 的配置自动来确定具体不同语言版本�
     ...
     {
         "language": "fr",
-        "anchors": [
-          {
-            "anchor": "入门指南",
-            "icon": "book-open",
-            "groups": [
+        "groups": [
               {
-                "group": "开始行动",
+                "group": "Get Started",
                 "pages": [
                   "fr-FR/get_started/introduction",
                   ...
                 ]
               }
-            ]
-          }
-        ]
+          ]
       }
   ]
 }
