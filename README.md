@@ -125,8 +125,12 @@ The locale will translate Mintlify default UI components' text. This is optional
 
 When adding workflow examples to the documentation, please:
 
+1. Take your output from ComfyUI (PNG, WebP), and add the models urls to the workflow so a user will have them when they drag in the workflow. You can use this [tool](https://comfyui-embeded-workflow-editor.vercel.app/) to edit the metadata of the PNG or WebP file.
+
+[![Video Title](https://img.youtube.com/vi/_zYbP8w7G8A/0.jpg)](https://youtu.be/_zYbP8w7G8A)
+
 1. Upload your workflow JSON and preview image to the [example_workflows repository](https://github.com/Comfy-Org/example_workflows)
-2. Use the raw GitHub content URL in your documentation. To convert a GitHub file URL to a raw content URL:
+1. Use the raw GitHub content URL in your documentation. To convert a GitHub file URL to a raw content URL:
    - Start with your GitHub file URL:
      ```
      https://github.com/Comfy-Org/example_workflows/blob/main/your-workflow.json
