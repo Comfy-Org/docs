@@ -120,3 +120,23 @@ If a language doesn't exist yet, for example, if you want to add a French transl
 ```
 
 The locale will translate Mintlify default UI components' text. This is optional. The full list of locales are [here](https://mintlify.com/docs/settings/global#param-locale).
+
+#### Contributing Workflow Examples
+
+When adding workflow examples to the documentation, please:
+
+1. Upload your workflow JSON and preview image to the [example_workflows repository](https://github.com/Comfy-Org/example_workflows)
+2. Use the raw GitHub content URL in your documentation. To convert a GitHub file URL to a raw content URL:
+   - Start with your GitHub file URL:
+     ```
+     https://github.com/Comfy-Org/example_workflows/blob/main/your-workflow.json
+     ```
+   - Change it to raw.githubusercontent.com and remove '/blob':
+     ```
+     https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/your-workflow.json
+     ```
+   
+   You can also click the "Raw" button on the GitHub file page and copy the URL directly.
+
+This ensures the workflow metadata is preserved in the docs site when dragging it into ComfyUI.
+
