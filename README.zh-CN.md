@@ -121,3 +121,29 @@ Mintlify 会根据 `language` 的配置自动来确定具体不同语言版本�
 ```
 
 locale 将翻译 Mintlify 默认 UI 组件的文本。这是可选的。完整的 locale 列表在[这里](https://mintlify.com/docs/settings/global#param-locale)。
+
+#### 贡献工作流示例
+
+向文档中添加工作流示例时，请遵循以下步骤：
+
+1. 使用 ComfyUI 输出的工作流文件（PNG/WebP），并在元数据中添加模型下载链接。用户拖入工作流时将自动获取这些资源。可以使用这个[在线工具](https://comfyui-embeded-workflow-editor.vercel.app/)编辑 PNG/WebP 文件的元数据。
+
+[![视频教程](https://img.youtube.com/vi/_zYbP8w7G8A/0.jpg)](https://youtu.be/_zYbP8w7G8A)
+
+2. 将工作流 JSON 文件和预览图上传至 [example_workflows 仓库](https://github.com/Comfy-Org/example_workflows)
+3. 在文档中使用 GitHub 原始内容链接。转换 GitHub 文件链接的方法：
+   - 原始 GitHub 文件链接格式：
+     ```
+     https://github.com/Comfy-Org/example_workflows/blob/main/your-workflow.json
+     ```
+   - 转换为原始内容链接：
+     ```
+     https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/your-workflow.json
+     ```
+     转换方法：
+     - 将域名改为 raw.githubusercontent.com
+     - 移除路径中的 '/blob'
+   
+   也可以直接在 GitHub 文件页面点击 "Raw" 按钮获取原始链接。
+
+这样可以确保在文档站点中拖入工作流时，元数据信息能完整保留到 ComfyUI 中。
