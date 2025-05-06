@@ -1,0 +1,178 @@
+---
+title: "PixVerse Text to Video - ComfyUI 原生节点文档"
+description: "使用PixVerse的AI技术将文本描述转换为视频的节点"
+sidebarTitle: "PixVerse Text to Video"
+icon: "circle"
+---
+
+![ComfyUI 原生 PixVerse Text to Video 节点](/images/built-in-nodes/api_nodes/pixverse/pixverse-text-to-video.jpg)
+
+PixVerse Text to Video 节点通过连接 PixVerse 的文本到视频 API，让用户能够使用文本描述生成高质量视频内容。用户可以通过调整各种参数如视频质量、持续时间和动作模式等来满足不同的创作需求。
+
+## 参数说明
+
+### 必选参数
+
+| 参数              | 类型     | 默认值                | 说明                           |
+|------------------|----------|----------------------|-------------------------------|
+| prompt           | 字符串    | ""                   | 描述要生成视频内容的文本提示词     |
+| aspect_ratio     | 选择项    | -                    | 输出视频的宽高比                 |
+| quality          | 选择项    | PixverseQuality.res_540p | 生成视频的质量级别           |
+| duration_seconds | 选择项    | -                    | 生成视频的持续时间                |
+| motion_mode      | 选择项    | -                    | 视频的动作模式                   |
+| seed             | 整数      | 0                    | 生成过程的随机种子，控制生成结果的一致性 |
+
+### 可选参数
+
+| 参数              | 类型              | 默认值  | 说明                           |
+|------------------|-------------------|--------|-------------------------------|
+| negative_prompt  | 字符串             | ""     | 指定不希望在视频中出现的元素       |
+| pixverse_template| PIXVERSE_TEMPLATE | None   | 可选的PixVerse模板配置，用于影响生成风格 |
+
+### 特殊限制
+
+- 当选择1080p质量时，只支持normal动作模式且持续时间固定为5秒
+- 当选择非5秒持续时间时，只支持normal动作模式
+
+### 输出
+
+| 输出   | 类型   | 说明          |
+|--------|--------|--------------|
+| VIDEO  | 视频   | 生成的视频结果 |
+
+
+## 源码参考
+
+[节点源码 (更新于2025-05-05)]
+
+```python
+
+class PixverseTextToVideoNode(ComfyNodeABC):
+    """
+    Generates videos synchronously based on prompt and output_size.
+    """
+
+    RETURN_TYPES = (IO.VIDEO,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/video/Pixverse"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the video generation",
+                    },
+                ),
+                "aspect_ratio": (
+                    [ratio.value for ratio in PixverseAspectRatio],
+                ),
+                "quality": (
+                    [resolution.value for resolution in PixverseQuality],
+                    {
+                        "default": PixverseQuality.res_540p,
+                    },
+                ),
+                "duration_seconds": ([dur.value for dur in PixverseDuration],),
+                "motion_mode": ([mode.value for mode in PixverseMotionMode],),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 2147483647,
+                        "control_after_generate": True,
+                        "tooltip": "Seed for video generation.",
+                    },
+                ),
+            },
+            "optional": {
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "An optional text description of undesired elements on an image.",
+                    },
+                ),
+                "pixverse_template": (
+                    PixverseIO.TEMPLATE,
+                    {
+                        "tooltip": "An optional template to influence style of generation, created by the Pixverse Template node."
+                    }
+                )
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        quality: str,
+        duration_seconds: int,
+        motion_mode: str,
+        seed,
+        negative_prompt: str=None,
+        pixverse_template: int=None,
+        auth_token=None,
+        **kwargs,
+    ):
+        # 1080p is limited to 5 seconds duration
+        # only normal motion_mode supported for 1080p or for non-5 second duration
+        if quality == PixverseQuality.res_1080p:
+            motion_mode = PixverseMotionMode.normal
+            duration_seconds = PixverseDuration.dur_5
+        elif duration_seconds != PixverseDuration.dur_5:
+            motion_mode = PixverseMotionMode.normal
+
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/pixverse/video/text/generate",
+                method=HttpMethod.POST,
+                request_model=PixverseTextVideoRequest,
+                response_model=PixverseVideoResponse,
+            ),
+            request=PixverseTextVideoRequest(
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                quality=quality,
+                duration=duration_seconds,
+                motion_mode=motion_mode,
+                negative_prompt=negative_prompt if negative_prompt else None,
+                template_id=pixverse_template,
+                seed=seed,
+            ),
+            auth_token=auth_token,
+        )
+        response_api = operation.execute()
+
+        if response_api.Resp is None:
+            raise Exception(f"Pixverse request failed: '{response_api.ErrMsg}'")
+
+        operation = PollingOperation(
+            poll_endpoint=ApiEndpoint(
+                path=f"/proxy/pixverse/video/result/{response_api.Resp.video_id}",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=PixverseGenerationStatusResponse,
+            ),
+            completed_statuses=[PixverseStatus.successful],
+            failed_statuses=[PixverseStatus.contents_moderation, PixverseStatus.failed, PixverseStatus.deleted],
+            status_extractor=lambda x: x.Resp.status,
+            auth_token=auth_token,
+        )
+        response_poll = operation.execute()
+
+        vid_response = requests.get(response_poll.Resp.url)
+        return (VideoFromFile(BytesIO(vid_response.content)),)
+
+``` 

@@ -1,0 +1,177 @@
+---
+title: "MiniMax Text to Video - ComfyUI 原生节点文档"
+description: "使用 MiniMax AI将文本描述转换为视频的节点"
+sidebarTitle: "MiniMax Text to Video"
+icon: "circle"
+---
+
+![ComfyUI 原生 MiniMax Text to Video 节点](/images/built-in-nodes/api_nodes/minimax/minimax-text-to-video.jpg)
+
+MiniMax Text to Video 节点通过连接 MiniMax 的API，允许用户利用文本提示词生成高质量、流畅的视频内容。该节点支持不同的视频生成模型，可以创建各种风格和类型的短视频片段。
+
+## 参数说明
+
+### 必需参数
+
+| 参数        | 类型   | 默认值   | 说明                                                      |
+| ----------- | ------ | -------- | ---------------------------------------------------- |
+| prompt_text | 字符串 | ""       | 用于指导视频生成的文本提示词                              |
+| model       | 选择项 | "T2V-01" | 使用的视频生成模型，可选值包括"T2V-01"和"T2V-01-Director" |
+| seed        | 整数   | 0        | 生成的随机种子，影响初始噪声创建，默认值为0             |
+
+### 输出
+
+| 输出  | 类型 | 说明           |
+| ----- | ---- | -------------- |
+| VIDEO | 视频 | 生成的视频结果 |
+
+## 源码参考
+
+[节点源码 (更新于2025-05-03)] 
+
+```python
+
+class MinimaxTextToVideoNode:
+    """
+    Generates videos synchronously based on a prompt, and optional parameters using Minimax's API.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "prompt_text": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Text prompt to guide the video generation",
+                    },
+                ),
+                "model": (
+                    [
+                        "T2V-01",
+                        "T2V-01-Director",
+                    ],
+                    {
+                        "default": "T2V-01",
+                        "tooltip": "Model to use for video generation",
+                    },
+                ),
+            },
+            "optional": {
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "The random seed used for creating the noise.",
+                    },
+                ),
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    RETURN_TYPES = ("VIDEO",)
+    DESCRIPTION = "Generates videos from prompts using Minimax's API"
+    FUNCTION = "generate_video"
+    CATEGORY = "api node/video/Minimax"
+    API_NODE = True
+    OUTPUT_NODE = True
+
+    def generate_video(
+        self,
+        prompt_text,
+        seed=0,
+        model="T2V-01",
+        image: torch.Tensor=None, # used for ImageToVideo
+        subject: torch.Tensor=None, # used for SubjectToVideo
+        auth_token=None,
+    ):
+        '''
+        Function used between Minimax nodes - supports T2V, I2V, and S2V, based on provided arguments.
+        '''
+        # upload image, if passed in
+        image_url = None
+        if image is not None:
+            image_url = upload_images_to_comfyapi(image, max_images=1, auth_token=auth_token)[0]
+
+        # TODO: figure out how to deal with subject properly, API returns invalid params when using S2V-01 model
+        subject_reference = None
+        if subject is not None:
+            subject_url = upload_images_to_comfyapi(subject, max_images=1, auth_token=auth_token)[0]
+            subject_reference = [SubjectReferenceItem(image=subject_url)]
+
+
+        video_generate_operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/minimax/video_generation",
+                method=HttpMethod.POST,
+                request_model=MinimaxVideoGenerationRequest,
+                response_model=MinimaxVideoGenerationResponse,
+            ),
+            request=MinimaxVideoGenerationRequest(
+                model=Model(model),
+                prompt=prompt_text,
+                callback_url=None,
+                first_frame_image=image_url,
+                subject_reference=subject_reference,
+                prompt_optimizer=None,
+            ),
+            auth_token=auth_token,
+        )
+        response = video_generate_operation.execute()
+
+        task_id = response.task_id
+        if not task_id:
+            raise Exception(f"Minimax generation failed: {response.base_resp}")
+
+        video_generate_operation = PollingOperation(
+            poll_endpoint=ApiEndpoint(
+                path="/proxy/minimax/query/video_generation",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=MinimaxTaskResultResponse,
+                query_params={"task_id": task_id},
+            ),
+            completed_statuses=["Success"],
+            failed_statuses=["Fail"],
+            status_extractor=lambda x: x.status.value,
+            auth_token=auth_token,
+        )
+        task_result = video_generate_operation.execute()
+
+        file_id = task_result.file_id
+        if file_id is None:
+            raise Exception("Request was not successful. Missing file ID.")
+        file_retrieve_operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/minimax/files/retrieve",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=MinimaxFileRetrieveResponse,
+                query_params={"file_id": int(file_id)},
+            ),
+            request=EmptyRequest(),
+            auth_token=auth_token,
+        )
+        file_result = file_retrieve_operation.execute()
+
+        file_url = file_result.file.download_url
+        if file_url is None:
+            raise Exception(
+                f"No video was found in the response. Full response: {file_result.model_dump()}"
+            )
+        logging.info(f"Generated video URL: {file_url}")
+
+        video_io = download_url_to_bytesio(file_url)
+        if video_io is None:
+            error_msg = f"Failed to download video from {file_url}"
+            logging.error(error_msg)
+            raise Exception(error_msg)
+        return (VideoFromFile(video_io),)
+```

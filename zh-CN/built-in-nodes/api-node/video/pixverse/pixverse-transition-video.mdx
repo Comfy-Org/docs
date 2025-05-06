@@ -1,0 +1,183 @@
+---
+title: "PixVerse Transition Video - ComfyUI 原生节点文档"
+description: "使用 PixVerse 的AI技术创建从起始帧到结束帧平滑过渡的视频"
+sidebarTitle: "PixVerse Transition Video"
+icon: "circle"
+---
+
+![ComfyUI 原生 PixVerse Transition Video 节点](/images/built-in-nodes/api_nodes/pixverse/pixverse-transition-video.jpg)
+
+PixVerse Transition Video 节点连接到 PixVerse 的过渡视频生成 API，允许你提供开始和结束图像，生成在两者之间平滑过渡的视频序列。节点会自动创建所有中间帧，产生流畅的变换效果，特别适合创建变形、场景转换和对象演变等视觉效果。
+
+## 参数说明
+
+### 必需参数
+
+| 参数             | 类型   | 默认值                     | 说明                                 |
+| ---------------- | ------ | -------------------------- | ------------------------------------ |
+| first_frame      | 图像   | -                          | 视频的起始帧图像                     |
+| last_frame       | 图像   | -                          | 视频的结束帧图像                     |
+| prompt           | 字符串 | ""                         | 描述视频内容和过渡效果的文本提示词   |
+| quality          | 选择项 | "PixverseQuality.res_540p" | 生成视频的质量级别                   |
+| duration_seconds | 选择项 | -                          | 生成视频的持续时间                   |
+| motion_mode      | 选择项 | -                          | 视频的动作模式                       |
+| seed             | 整数   | 0                          | 生成过程的随机种子，范围0-2147483647 |
+
+### 可选参数
+
+| 参数              | 类型              | 默认值 | 说明                                 |
+| ----------------- | ----------------- | ------ | ------------------------------------ |
+| negative_prompt   | 字符串            | ""     | 指定不希望在视频中出现的元素         |
+| pixverse_template | PIXVERSE_TEMPLATE | None   | 可选的PixVerse模板配置，影响生成风格 |
+
+### 参数限制说明
+
+- 当quality设置为1080p时，动作模式(motion_mode)会强制设为normal，持续时间(duration_seconds)会强制设为5秒
+- 当持续时间(duration_seconds)不等于5秒时，动作模式(motion_mode)会强制设为normal
+
+### 输出
+
+| 输出  | 类型 | 说明           |
+| ----- | ---- | -------------- |
+| VIDEO | 视频 | 生成的视频结果 |
+
+## 源码参考
+
+```python
+
+class PixverseTransitionVideoNode(ComfyNodeABC):
+    """
+    Generates videos synchronously based on prompt and output_size.
+    """
+
+    RETURN_TYPES = (IO.VIDEO,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/video/Pixverse"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "first_frame": (
+                    IO.IMAGE,
+                ),
+                "last_frame": (
+                    IO.IMAGE,
+                ),
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the video generation",
+                    },
+                ),
+                "quality": (
+                    [resolution.value for resolution in PixverseQuality],
+                    {
+                        "default": PixverseQuality.res_540p,
+                    },
+                ),
+                "duration_seconds": ([dur.value for dur in PixverseDuration],),
+                "motion_mode": ([mode.value for mode in PixverseMotionMode],),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 2147483647,
+                        "control_after_generate": True,
+                        "tooltip": "Seed for video generation.",
+                    },
+                ),
+            },
+            "optional": {
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "An optional text description of undesired elements on an image.",
+                    },
+                ),
+                "pixverse_template": (
+                    PixverseIO.TEMPLATE,
+                    {
+                        "tooltip": "An optional template to influence style of generation, created by the Pixverse Template node."
+                    }
+                )
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        first_frame: torch.Tensor,
+        last_frame: torch.Tensor,
+        prompt: str,
+        quality: str,
+        duration_seconds: int,
+        motion_mode: str,
+        seed,
+        negative_prompt: str=None,
+        pixverse_template: int=None,
+        auth_token=None,
+        **kwargs,
+    ):
+        first_frame_id = upload_image_to_pixverse(first_frame, auth_token=auth_token)
+        last_frame_id = upload_image_to_pixverse(last_frame, auth_token=auth_token)
+
+        # 1080p is limited to 5 seconds duration
+        # only normal motion_mode supported for 1080p or for non-5 second duration
+        if quality == PixverseQuality.res_1080p:
+            motion_mode = PixverseMotionMode.normal
+            duration_seconds = PixverseDuration.dur_5
+        elif duration_seconds != PixverseDuration.dur_5:
+            motion_mode = PixverseMotionMode.normal
+
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/pixverse/video/transition/generate",
+                method=HttpMethod.POST,
+                request_model=PixverseTransitionVideoRequest,
+                response_model=PixverseVideoResponse,
+            ),
+            request=PixverseTransitionVideoRequest(
+                first_frame_img=first_frame_id,
+                last_frame_img=last_frame_id,
+                prompt=prompt,
+                quality=quality,
+                duration=duration_seconds,
+                motion_mode=motion_mode,
+                negative_prompt=negative_prompt if negative_prompt else None,
+                template_id=pixverse_template,
+                seed=seed,
+            ),
+            auth_token=auth_token,
+        )
+        response_api = operation.execute()
+
+        if response_api.Resp is None:
+            raise Exception(f"Pixverse request failed: '{response_api.ErrMsg}'")
+
+        operation = PollingOperation(
+            poll_endpoint=ApiEndpoint(
+                path=f"/proxy/pixverse/video/result/{response_api.Resp.video_id}",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=PixverseGenerationStatusResponse,
+            ),
+            completed_statuses=[PixverseStatus.successful],
+            failed_statuses=[PixverseStatus.contents_moderation, PixverseStatus.failed, PixverseStatus.deleted],
+            status_extractor=lambda x: x.Resp.status,
+            auth_token=auth_token,
+        )
+        response_poll = operation.execute()
+
+        vid_response = requests.get(response_poll.Resp.url)
+        return (VideoFromFile(BytesIO(vid_response.content)),)
+``` 
