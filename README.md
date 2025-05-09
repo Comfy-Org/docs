@@ -30,6 +30,15 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 
 This will only generate the MDX files for each endpoint. You need to add a link to these files in `docs.json`, and the up-to-date API spec will be shown on that doc page.
 
+
+## Special Note on File Save Locations
+
+Due to the necessity of adjusting article paths during documentation, changing these paths might render original links inaccessible, as they are already used in numerous articles and templates.
+- Since the organization of the document directory can be reorganized through the `docs.json` file, we generally do not change the original document's file location unless absolutely necessary.
+- If adjustments are needed, please modify `docs.json` to reorganize the files.
+- If changes are essential, please add redirection rules in the `docs.json` file.
+
+
 ## Contributing
 
 Please just create a PR and we will review it within a few days.
