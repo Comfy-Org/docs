@@ -1,0 +1,93 @@
+---
+title: "消息传递"
+---
+
+## 消息传递机制
+
+在工作流执行期间（或当执行队列状态发生变化时），`PromptExecutor` 会
+通过 `PromptServer` 实例的 `send_sync` 方法向客户端回传消息。
+
+这些消息由 `api.js` 文件中定义的 `socket` 事件监听器负责接收（截至本文撰写时，该监听器大致位于第 90 行，您也可以通过搜索 `this.socket.addEventListener` 找到它）。
+该监听器会为每种已知的消息类型创建一个 `CustomEvent` 对象，并将其派发给所有已注册的相应监听器。
+
+扩展程序可以遵循标准的 Javascript 模式来注册事件接收（此操作通常在 `setup()` 函数中完成）：
+
+```Javascript
+api.addEventListener(message_type, messageHandler);
+```
+
+如果 `message_type` 并非内置消息类型，系统会自动将其添加至已知消息类型列表。
+注册的 `messageHandler` 函数在被调用时，会接收到一个 `CustomEvent` 对象。
+该对象是对 `socket` 事件的扩展，额外增加了一个 `.detail` 属性，此属性是一个包含了服务器所发送数据的字典。因此，通常的使用方式如下：
+
+```Javascript
+function messageHandler(event) {
+    if (event.detail.node == aNodeIdThatIsInteresting) { // 判断是否为目标节点
+        // 利用 event.detail.other_things 中的数据执行相应操作
+    }
+}
+```
+
+### 内置消息类型
+
+在工作流执行期间（或当执行队列状态发生变化时），`PromptExecutor` 会通过 `PromptServer` 实例的 `send_sync` 方法向客户端发送以下类型的消息。
+扩展程序可以注册监听这些消息中的任意一种。
+
+| 事件类型 (event)        | 触发时机                                                                   | 数据内容 (data)                                                                                                |
+| ----------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `execution_start`       | 当一个提示 (prompt) 即将开始执行时                                          | `prompt_id` (提示ID)                                                                                           |
+| `execution_error`       | 当执行过程中发生错误时                                                  | `prompt_id` (提示ID)，以及其他附加错误信息                                                                    |
+| `execution_interrupted` | 当某个节点抛出 `InterruptProcessingException` 异常导致执行中断时         | `prompt_id` (提示ID)、`node_id` (节点ID)、`node_type` (节点类型) 以及 `executed` (一个包含已执行节点ID的列表)         |
+| `execution_cached`      | 在执行开始阶段                                                              | `prompt_id` (提示ID)、`nodes` (一个节点ID列表，这些节点的缓存输出将被复用，因此这些节点会被跳过执行)                 |
+| `executing`             | 当一个新节点即将开始执行时                                                | `node` (当前执行的节点ID，若为 `None` 则表示整个提示执行完毕)、`prompt_id` (提示ID)                                |
+| `executed`              | 当一个节点执行完毕并返回了用户界面 (UI) 元素时                               | `node` (节点ID)、`prompt_id` (提示ID)、`output` (节点返回的UI数据)                                               |
+| `progress`              | 在执行某个实现了特定进度报告钩子 (hook) 的节点期间                           | `node` (节点ID)、`prompt_id` (提示ID)、`value` (当前进度值)、`max` (最大进度值)                                     |
+| `status`                | 当执行队列的状态发生变化时                                                | `exec_info` (一个字典，其中包含 `queue_remaining`，表示队列中剩余的任务数量)                               |
+
+### 关于 `executed` 消息的使用
+
+值得注意的是，`executed` 消息并非在每个节点完成执行时都会发送（这一点与 `executing` 消息不同），
+它仅在节点执行后需要更新用户界面时才会触发。
+
+要实现这一点，节点的Python主执行函数需要返回一个字典，而非通常的元组：
+
+```python
+# 在主执行函数的末尾
+        return { "ui": a_new_dictionary, "result": the_tuple_of_output_values }
+```
+
+这样，`a_new_dictionary` 的内容便会作为 `executed` 消息中 `output` 字段的值发送给客户端。
+如果节点本身没有输出（即不产生传递给下游节点的数据），那么返回字典中的 `result` 键可以省略（例如，可以参考 `nodes.py` 文件中 `SaveImage` 节点的实现方式）。
+
+### 自定义消息类型
+
+如前所述，在客户端，只需为自定义的消息类型名称注册一个监听器，即可轻松添加对新消息类型的处理。
+
+```Javascript
+api.addEventListener("my.custom.message", messageHandler);
+```
+
+在服务器端，实现方式同样简洁：
+
+```Python
+from server import PromptServer
+# 然后，（通常）在您的节点主执行函数中
+        PromptServer.instance.send_sync("my.custom.message", a_dictionary)
+```
+
+#### 获取当前节点 ID (node\_id)
+
+大多数内置消息的 `node` 字段都包含了当前正在执行的节点 ID。在自定义消息中，您很可能也需要包含此信息。
+
+在服务器端，可以通过一个隐藏输入来获取节点 ID。这需要在节点的 `INPUT_TYPES` 字典中添加一个 `hidden` 键来实现：
+
+```Python
+    @classmethod    
+    def INPUT_TYPES(s):
+        return {"required" : { }, # 此处填写您节点所需的常规输入
+                "hidden": { "node_id": "UNIQUE_ID" } } # 添加此 hidden 键以获取节点ID
+
+    def my_main_function(self, required_inputs, node_id): # node_id 会作为参数传入
+        # 执行某些操作...
+        PromptServer.instance.send_sync("my.custom.message", {"node": node_id, "other_things": etc}) # 在消息中包含节点ID
+```
