@@ -1,0 +1,109 @@
+---
+title: "执行模型反转指南"
+---
+
+[PR #2666](https://github.com/comfyanonymous/ComfyUI/pull/2666) 将执行模型从原先的“后端到前端”递归方式，转变为“前端到后端”的拓扑排序方式。尽管多数自定义节点预计仍能照常工作，本指南旨在帮助自定义节点开发者识别那些*可能*因此变更而出现问题的情况。
+
+## 不兼容变更
+### Monkey Patching
+
+任何曾对执行模型进行 `Monkey Patching` （猴子补丁）的代码，在新模型下很可能失效。值得注意的是，此 `PR` 带来的执行性能已超越多数主流 `Monkey Patching` 方案，因此许多此类补丁已无必要。
+
+### 可选输入验证
+
+在此 `PR` 更新前，系统仅对那些完全通过一连串 `\"required\"` （必需）输入连接到输出节点的节点进行验证。如果您的自定义节点以往仅通过 `\"optional\"` （可选）输入连接，那么之前可能并未发现其验证失败的情况。
+
+<Tip>如果您的节点输出此前已能连接至 `\"required\"` （必需）输入，那么本节内容对您的影响可能不大。本节主要针对那些使用自定义数据类型，并且其节点仅通过 `\"optional\"` （可选）输入进行连接的自定义节点开发者。</Tip>
+
+以下列出了一些可能导致验证失败的情形及建议解决方案：
+
+- 为了配置自定义小部件（widget），在不适合进行比较的类型（如字典）上使用了保留的[附加参数](/custom-nodes/backend/datatypes#additional-parameters)（例如 `min` 和 `max`）。
+    - 将所用的附加参数更改为非保留关键字，例如 `uiMin` 和 `uiMax`。*（推荐方案）*
+        ```python
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "my_size": ("VEC2", {"uiMin": 0.0, "uiMax": 1.0}),
+                }
+            }
+        ```
+
+    - 为该输入定义一个自定义的 [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) 函数，从而跳过对其的验证。*（快速方案）*
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, my_size):
+            return True
+        ```
+
+- 使用了复合类型（例如 `CUSTOM_A,CUSTOM_B`）
+    - （作为输出时）定义并使用类似 `MakeSmartType` 的包装器 [见于此 PR 的单元测试](https://github.com/comfyanonymous/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R2)
+        ```python
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": (MakeSmartType("FOO,BAR"), {}),
+                    }
+                }
+
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+    - （作为输入时）定义一个自定义的 [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) 函数，使其接受 `input_types` 参数，从而跳过类型验证。
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, input_types):
+            return True
+        ```
+    - （输入输出均适用，且便捷）定义并使用 `@VariantSupport` 装饰器 [见于此 PR 的单元测试](https://github.com/comfyanonymous/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R15)
+        ```python
+        @VariantSupport
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": ("FOO,BAR", {}),
+                    }
+                }
+            
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+
+- 在图（graph）定义中将列表（例如 `[1, 2, 3]`）用作常量（例如，代表一个 `VEC3` 类型的常量输入）。此用法在旧版中需配合前端扩展。并且，此前大小恰好为 `2` 的列表本身就会导致失败——它们会被视为无效链接。
+    - 将列表包装在形如 `{ "value": [1, 2, 3] }` 的字典中。
+
+### 执行顺序
+
+执行顺序以往便会因节点的 `ID` 不同而变化，如今，缓存值的不同也可能导致执行顺序的改变。通常而言，除了图结构所固有的约束外，执行顺序应被视为不确定的，并可能随时调整。
+
+切勿依赖特定的执行顺序。
+
+*HIC SUNT DRACONES*
+
+## 新增功能
+
+### 验证更改
+
+为了缓解前述[可选输入验证](#optional-input-validation)变更带来的影响，`VALIDATE_INPUTS` 函数新增了若干特性。
+
+- 对于由 `VALIDATE_INPUTS` 函数接收的输入，系统将不再执行默认验证流程。
+- `VALIDATE_INPUTS` 函数现支持接收 `**kwargs` 参数。一旦使用，节点创建者将被视为已自行处理所有输入的验证。
+- `VALIDATE_INPUTS` 函数可以接收一个名为 `input_types` 的参数。该参数是一个字典，其中包含了每个通过链接接入的输入及其对应连接输出的类型。若定义了此参数，系统将跳过对该节点所有输入的类型验证。
+
+更多详情请参阅 [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) 文档。
+
+### Lazy Evaluation
+
+输入现支持 `Lazy Evaluation` （惰性求值），即可以先判断是否确实需要某个输入值，再决定是否执行其连接的上游节点及其所有依赖节点。更多信息请参见[惰性求值](/custom-nodes/backend/lazy_evaluation)。
+
+### Node Expansion
+
+在运行时，节点可以动态扩展为一个子图（subgraph）。该机制使得通过尾递归（tail-recursion）实现循环等复杂逻辑成为可能。更多信息请参见[节点扩展](/custom-nodes/backend/expansion)。
