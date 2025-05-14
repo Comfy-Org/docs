@@ -3,16 +3,12 @@
 
 ## Development
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mintlify) to preview the documentation changes locally. To install, use the following command
+
+To preview documentation changes locally, first install dependencies and then start the development server:
 
 ```
-npm i mintlify
-```
-
-Run the following command at the root of your documentation (where docs.json is)
-
-```
-npx mintlify dev
+npm i
+npm run dev
 ```
 
 ### Create a PR
