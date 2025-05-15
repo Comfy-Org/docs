@@ -1,0 +1,135 @@
+---
+title: "Wan Vace To Video - ComfyUI 原生节点文档"
+description: "使用阿里通义万相的高分辨率视频生成 API 创建视频"
+sidebarTitle: "Wan Vace To Video"
+icon: "circle"
+---
+
+![Wan Vace To Video](/images/built-in-nodes/conditioning/video-models/wan-vace-to-video.jpg)
+
+Wan Vace To Video 节点允许您通过文本提示词生成视频，并支持多种输入方式，包括文本、图像、视频、遮罩和控制信号等。
+
+该节点将输入的条件（提示词）、控制视频和遮罩组合起来，生成高质量的视频。它首先对输入进行预处理和编码，然后应用条件信息来生成最终的视频潜在表示。
+当提供参考图像时，它会被作为视频的起始参考。控制视频和遮罩可以用来引导生成过程，让生成的视频更符合的预期。
+
+## 参数说明
+
+### 必选参数
+
+| 参数名     | 类型         | 默认值 | 范围              | 说明                     |
+| ---------- | ------------ | ------ | ----------------- | ------------------------ |
+| positive   | CONDITIONING | -      | -                 | 正面提示词条件           |
+| negative   | CONDITIONING | -      | -                 | 负面提示词条件           |
+| vae        | VAE          | -      | -                 | 用于编码/解码的VAE模型   |
+| width      | INT          | 832    | 16-MAX_RESOLUTION | 生成视频的宽度，步长为16 |
+| height     | INT          | 480    | 16-MAX_RESOLUTION | 生成视频的高度，步长为16 |
+| length     | INT          | 81     | 1-MAX_RESOLUTION  | 生成视频的帧数，步长为4  |
+| batch_size | INT          | 1      | 1-4096            | 批处理大小               |
+| strength   | FLOAT        | 1.0    | 0.0-1000.0        | 条件强度，步长为0.01     |
+
+### 可选参数
+| 参数名          | 类型  | 说明                                   |
+| --------------- | ----- | -------------------------------------- |
+| control_video   | IMAGE | 控制视频，用于引导生成过程             |
+| control_masks   | MASK  | 控制遮罩，定义视频中哪些区域应受到控制 |
+| reference_image | IMAGE | 参考图像，作为视频生成的起点或参考（单张）     |
+
+### 输出参数
+
+| 参数名      | 类型         | 说明                                                                                                                                                                         |
+| ----------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| positive    | CONDITIONING | 处理后的正面提示词条件                                                                                                                                                         |
+| negative    | CONDITIONING | 处理后的负面提示词条件                                                                                                                                                         |
+| latent      | LATENT       | 生成的视频潜在表示                                                                                                                                                            |
+| trim_latent | INT          | 裁剪潜在表示的参数，默认值为0。当提供参考图像时，该值会被设置为参考图像在潜在空间中的形状尺寸。它指示下游节点需要从生成的潜在表示中裁剪掉多少来自参考图像的内容，确保最终视频输出中参考图像的影响被适当控制。 |
+
+
+## 源码
+
+[源码更新时间: 2025-05-15]
+
+```Python
+class WanVaceToVideo:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"positive": ("CONDITIONING", ),
+                             "negative": ("CONDITIONING", ),
+                             "vae": ("VAE", ),
+                             "width": ("INT", {"default": 832, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
+                             "height": ("INT", {"default": 480, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
+                             "length": ("INT", {"default": 81, "min": 1, "max": nodes.MAX_RESOLUTION, "step": 4}),
+                             "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1000.0, "step": 0.01}),
+                },
+                "optional": {"control_video": ("IMAGE", ),
+                             "control_masks": ("MASK", ),
+                             "reference_image": ("IMAGE", ),
+                }}
+
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT", "INT")
+    RETURN_NAMES = ("positive", "negative", "latent", "trim_latent")
+    FUNCTION = "encode"
+
+    CATEGORY = "conditioning/video_models"
+
+    EXPERIMENTAL = True
+
+    def encode(self, positive, negative, vae, width, height, length, batch_size, strength, control_video=None, control_masks=None, reference_image=None):
+        latent_length = ((length - 1) // 4) + 1
+        if control_video is not None:
+            control_video = comfy.utils.common_upscale(control_video[:length].movedim(-1, 1), width, height, "bilinear", "center").movedim(1, -1)
+            if control_video.shape[0] < length:
+                control_video = torch.nn.functional.pad(control_video, (0, 0, 0, 0, 0, 0, 0, length - control_video.shape[0]), value=0.5)
+        else:
+            control_video = torch.ones((length, height, width, 3)) * 0.5
+
+        if reference_image is not None:
+            reference_image = comfy.utils.common_upscale(reference_image[:1].movedim(-1, 1), width, height, "bilinear", "center").movedim(1, -1)
+            reference_image = vae.encode(reference_image[:, :, :, :3])
+            reference_image = torch.cat([reference_image, comfy.latent_formats.Wan21().process_out(torch.zeros_like(reference_image))], dim=1)
+
+        if control_masks is None:
+            mask = torch.ones((length, height, width, 1))
+        else:
+            mask = control_masks
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(1)
+            mask = comfy.utils.common_upscale(mask[:length], width, height, "bilinear", "center").movedim(1, -1)
+            if mask.shape[0] < length:
+                mask = torch.nn.functional.pad(mask, (0, 0, 0, 0, 0, 0, 0, length - mask.shape[0]), value=1.0)
+
+        control_video = control_video - 0.5
+        inactive = (control_video * (1 - mask)) + 0.5
+        reactive = (control_video * mask) + 0.5
+
+        inactive = vae.encode(inactive[:, :, :, :3])
+        reactive = vae.encode(reactive[:, :, :, :3])
+        control_video_latent = torch.cat((inactive, reactive), dim=1)
+        if reference_image is not None:
+            control_video_latent = torch.cat((reference_image, control_video_latent), dim=2)
+
+        vae_stride = 8
+        height_mask = height // vae_stride
+        width_mask = width // vae_stride
+        mask = mask.view(length, height_mask, vae_stride, width_mask, vae_stride)
+        mask = mask.permute(2, 4, 0, 1, 3)
+        mask = mask.reshape(vae_stride * vae_stride, length, height_mask, width_mask)
+        mask = torch.nn.functional.interpolate(mask.unsqueeze(0), size=(latent_length, height_mask, width_mask), mode='nearest-exact').squeeze(0)
+
+        trim_latent = 0
+        if reference_image is not None:
+            mask_pad = torch.zeros_like(mask[:, :reference_image.shape[2], :, :])
+            mask = torch.cat((mask_pad, mask), dim=1)
+            latent_length += reference_image.shape[2]
+            trim_latent = reference_image.shape[2]
+
+        mask = mask.unsqueeze(0)
+        positive = node_helpers.conditioning_set_values(positive, {"vace_frames": control_video_latent, "vace_mask": mask, "vace_strength": strength})
+        negative = node_helpers.conditioning_set_values(negative, {"vace_frames": control_video_latent, "vace_mask": mask, "vace_strength": strength})
+
+        latent = torch.zeros([batch_size, 16, latent_length, height // 8, width // 8], device=comfy.model_management.intermediate_device())
+        out_latent = {}
+        out_latent["samples"] = latent
+        return (positive, negative, out_latent, trim_latent)
+
+```
