@@ -1,0 +1,101 @@
+name: Redirect Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.mdx'
+      - 'docs.json'
+
+jobs:
+  check-redirects:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Check for moved files and redirects
+        id: check-redirects
+        run: |
+          # Get list of deleted MDX files (potentially moved)
+          DELETED_FILES=$(git log --name-only --diff-filter=D --pretty=format: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | sort | uniq)
+          
+          # Exit if no MDX files were deleted
+          if [ -z "$DELETED_FILES" ]; then
+            echo "No MDX files were deleted. Skipping redirect check."
+            exit 0
+          fi
+          
+          echo "Deleted files (potentially moved):"
+          echo "$DELETED_FILES"
+          echo "------------------------"
+          
+          # Check if redirects are added in docs.json for deleted files
+          DOCS_JSON_CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "docs.json" && echo "true" || echo "false")
+          
+          if [ "$DOCS_JSON_CHANGED" = "false" ]; then
+            echo "⚠️ WARNING: docs.json was not modified even though files were deleted/moved."
+            echo "If you have moved files, you should add redirects in docs.json."
+            
+            # Exit with a warning but don't fail the check if docs.json wasn't modified
+            # This handles cases where files are actually being deleted, not moved
+            exit 0
+          fi
+          
+          # Check docs.json content for redirects
+          echo "Checking docs.json for redirects..."
+          
+          # Get the current content of docs.json
+          DOCS_JSON_CONTENT=$(cat docs.json)
+          
+          # Check each deleted file
+          MISSING_REDIRECTS=()
+          for deleted_file in $DELETED_FILES; do
+            # Remove .mdx extension
+            SOURCE_PATH="${deleted_file%.mdx}"
+            
+            # Check if a redirect exists for this path
+            if echo "$DOCS_JSON_CONTENT" | grep -q "\"source\": \"/${SOURCE_PATH}\"" || echo "$DOCS_JSON_CONTENT" | grep -q "\"source\": \"${SOURCE_PATH}\""; then
+              echo "✅ Found redirect for moved file: ${deleted_file}"
+            else
+              echo "❌ Missing redirect in docs.json for: ${deleted_file}"
+              MISSING_REDIRECTS+=("${deleted_file}")
+            fi
+          done
+          
+          # If any redirects are missing, fail the check
+          if [ ${#MISSING_REDIRECTS[@]} -gt 0 ]; then
+            echo "------------------------"
+            echo "❌ The following files were moved but missing redirects in docs.json:"
+            for missing in "${MISSING_REDIRECTS[@]}"; do
+              echo "- $missing"
+            done
+            echo "------------------------"
+            echo "Please add redirects in docs.json for moved files using the format:"
+            echo '{
+  "redirects": [
+    {
+      "source": "/path/to/old-file",
+      "destination": "/path/to/new-file"
+    }
+  ]
+}'
+            echo "------------------------"
+            echo "For more information, see the documentation in README.md"
+            exit 1
+          else
+            echo "------------------------"
+            echo "✅ All moved files have corresponding redirects in docs.json."
+          fi
