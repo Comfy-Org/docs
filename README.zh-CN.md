@@ -38,6 +38,17 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 - 如需调整，请修改 `docs.json` 来调整文件的组织
 - 如果一定需要调整，请在 `docs.json` 文件中调整增加重定向规则。
 
+> **重要提示**：当你移动或重命名MDX文件时，必须在 `docs.json` 文件中添加重定向规则。GitHub Action 将检查重定向规则，如果缺少重定向规则，PR 将无法通过检查。重定向规则应遵循以下格式：
+> ```json
+> "redirects": [
+>   {
+>     "source": "/path/to/old-file",
+>     "destination": "/path/to/new-file"
+>   }
+> ]
+> ```
+> 同时不要忘记在 `zh-CN` 目录中包含相应的中文翻译文件！
+
 ## 贡献
 
 请直接创建 PR，我们会在几天内进行审核。
@@ -55,6 +66,8 @@ Mintlify 使用版本控制来添加其他语言。要添加页面的翻译，�
 例如：如果你要将 `introduction.mdx` 翻译成中文，请在 `zh-CN/get_started/introduction.mdx` 下创建文件。
 
 文件编辑的规范可以参考 [Mintlify](https://mintlify.com/docs/page) 文档中Writing Content（内容撰写）部分的章节
+
+> **重要提示**：当你修改英文文档中的现有 MDX 文件时，必须同时更新 `zh-CN` 目录中的对应文件。GitHub Action 将自动检查此事项，如果相应的中文翻译未更新，PR 将无法通过检查。
 
 3. 更新 `doocs.json` 的导航
 

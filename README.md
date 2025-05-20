@@ -34,6 +34,17 @@ Due to the necessity of adjusting article paths during documentation, changing t
 - If adjustments are needed, please modify `docs.json` to reorganize the files.
 - If changes are essential, please add redirection rules in the `docs.json` file.
 
+> **Important**: When you move or rename an MDX file, you MUST add a redirect in the `docs.json` file. A GitHub Action will check for redirects and fail the PR if they are missing. Redirects should follow this format:
+> ```json
+> "redirects": [
+>   {
+>     "source": "/path/to/old-file",
+>     "destination": "/path/to/new-file"
+>   }
+> ]
+> ```
+> Don't forget to include the corresponding Chinese translation file in the `zh-CN` directory as well!
+
 
 ## Contributing
 
@@ -51,7 +62,9 @@ Mintlify uses versioning to add other languages. To add a translation of a page,
 
 For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. 
 
-Specifications for file editing can be found in the Writing Content section of the [Mintlify] (https://mintlify.com/docs/page) document
+Specifications for file editing can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document
+
+> **Important**: When you modify an existing MDX file in the English documentation, you must also update the corresponding file in the `zh-CN` directory. A GitHub Action will automatically check for this and fail the PR if the corresponding Chinese translations are not updated.
 
 2. Update navigation for `docs.json`
 
