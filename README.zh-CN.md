@@ -56,6 +56,8 @@ Mintlify 使用版本控制来添加其他语言。要添加页面的翻译，�
 
 文件编辑的规范可以参考 [Mintlify](https://mintlify.com/docs/page) 文档中Writing Content（内容撰写）部分的章节
 
+> **重要提示**：当你修改英文文档中的现有 MDX 文件时，必须同时更新 `zh-CN` 目录中的对应文件。GitHub Action 将自动检查此事项，如果相应的中文翻译未更新，PR 将无法通过检查。
+
 3. 更新 `doocs.json` 的导航
 
 对应配置请参考 [Mintlify 本地化配置](https://mintlify.com/docs/navigation/localization)

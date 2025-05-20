@@ -51,7 +51,9 @@ Mintlify uses versioning to add other languages. To add a translation of a page,
 
 For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. 
 
-Specifications for file editing can be found in the Writing Content section of the [Mintlify] (https://mintlify.com/docs/page) document
+Specifications for file editing can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document
+
+> **Important**: When you modify an existing MDX file in the English documentation, you must also update the corresponding file in the `zh-CN` directory. A GitHub Action will automatically check for this and fail the PR if the corresponding Chinese translations are not updated.
 
 2. Update navigation for `docs.json`
 

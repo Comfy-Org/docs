@@ -1,0 +1,79 @@
+name: Chinese Translation Sync Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.mdx'
+      - '!zh-CN/**/*.mdx'
+
+jobs:
+  check-zh-cn-translations:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Check changed MDX files have zh-CN equivalents
+        id: check-translations
+        run: |
+          # Get list of changed MDX files
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/")
+          
+          # Exit if no MDX files were changed
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No MDX files changed outside of zh-CN directory. Skipping check."
+            exit 0
+          fi
+          
+          echo "Changed MDX files outside zh-CN directory:"
+          echo "$CHANGED_FILES"
+          echo "------------------------"
+          
+          # Check each file
+          MISSING_TRANSLATIONS=()
+          for file in $CHANGED_FILES; do
+            # The expected zh-CN path
+            zh_file="zh-CN/${file}"
+            
+            # Check if the corresponding zh-CN file was also modified
+            if git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "^${zh_file}$"; then
+              echo "✅ Found corresponding change: ${zh_file}"
+            else
+              # Check if the zh-CN file exists at all
+              if [ -f "${zh_file}" ]; then
+                echo "❌ Missing update to existing file: ${zh_file}"
+                MISSING_TRANSLATIONS+=("${zh_file}")
+              else
+                echo "❌ Missing equivalent file: ${zh_file}"
+                MISSING_TRANSLATIONS+=("${zh_file}")
+              fi
+            fi
+          done
+          
+          # If any translations are missing, fail the check
+          if [ ${#MISSING_TRANSLATIONS[@]} -gt 0 ]; then
+            echo "------------------------"
+            echo "❌ The following translations need to be updated:"
+            for missing in "${MISSING_TRANSLATIONS[@]}"; do
+              echo "- $missing"
+            done
+            echo "------------------------"
+            echo "Please update the corresponding Chinese (zh-CN) translations for the modified files."
+            exit 1
+          else
+            echo "------------------------"
+            echo "✅ All changed MDX files have corresponding zh-CN updates."
+          fi
