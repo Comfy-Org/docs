@@ -38,6 +38,17 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 - 如需调整，请修改 `docs.json` 来调整文件的组织
 - 如果一定需要调整，请在 `docs.json` 文件中调整增加重定向规则。
 
+> **重要提示**：当你移动或重命名MDX文件时，必须在 `docs.json` 文件中添加重定向规则。GitHub Action 将检查重定向规则，如果缺少重定向规则，PR 将无法通过检查。重定向规则应遵循以下格式：
+> ```json
+> "redirects": [
+>   {
+>     "source": "/path/to/old-file",
+>     "destination": "/path/to/new-file"
+>   }
+> ]
+> ```
+> 同时不要忘记在 `zh-CN` 目录中包含相应的中文翻译文件！
+
 ## 贡献
 
 请直接创建 PR，我们会在几天内进行审核。

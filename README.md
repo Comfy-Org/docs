@@ -34,6 +34,17 @@ Due to the necessity of adjusting article paths during documentation, changing t
 - If adjustments are needed, please modify `docs.json` to reorganize the files.
 - If changes are essential, please add redirection rules in the `docs.json` file.
 
+> **Important**: When you move or rename an MDX file, you MUST add a redirect in the `docs.json` file. A GitHub Action will check for redirects and fail the PR if they are missing. Redirects should follow this format:
+> ```json
+> "redirects": [
+>   {
+>     "source": "/path/to/old-file",
+>     "destination": "/path/to/new-file"
+>   }
+> ]
+> ```
+> Don't forget to include the corresponding Chinese translation file in the `zh-CN` directory as well!
+
 
 ## Contributing
 
