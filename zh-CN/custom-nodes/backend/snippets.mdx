@@ -1,0 +1,88 @@
+---
+title: "带注释的示例"
+---
+
+不断增长的示例代码片段集合……
+
+## 图像与蒙版
+
+### 加载图像
+
+将图像加载为批量大小为1（基于 `nodes.py` 中的 `LoadImage` 源代码）
+```python
+i = Image.open(image_path)
+i = ImageOps.exif_transpose(i)
+if i.mode == 'I':
+    i = i.point(lambda i: i * (1 / 255))
+image = i.convert("RGB")
+image = np.array(image).astype(np.float32) / 255.0
+image = torch.from_numpy(image)[None,]
+```
+
+### 保存图像批量
+
+保存一批图像（基于 `nodes.py` 中的 `SaveImage` 源代码）
+```python     
+for (batch_number, image) in enumerate(images):
+    i = 255. * image.cpu().numpy()
+    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+    filepath = # some path that takes the batch number into account
+    img.save(filepath)
+```
+
+### 反转蒙版
+
+反转蒙版是一个简单的过程。由于蒙版已被归一化到 [0,1] 区间：
+
+```python
+mask = 1.0 - mask
+```
+
+### 将蒙版转换为图像形状
+
+```Python
+# 我们需要 [B,H,W,C]，其中 C = 1
+if len(mask.shape)==2: # 当前为 [H,W]，插入 B 和 C 作为第1维
+    mask = mask[None,:,:,None]
+elif len(mask.shape)==3 and mask.shape[2]==1: # 当前为 [H,W,C]
+    mask = mask[None,:,:,:]
+elif len(mask.shape)==3:                      # 当前为 [B,H,W]
+    mask = mask[:,:,:,None]
+```
+
+### 将蒙版用作透明层
+
+当用于修复或分割等任务时，蒙版的值最终会被四舍五入为最接近的整数，使其为二值——0表示要忽略的区域，1表示要处理的区域。但在蒙版传递到这些节点之前，这一步不会发生。这种灵活性允许你像在数码摄影中那样，将蒙版用作透明层：
+
+```python
+# 将蒙版反转回原始透明层
+mask = 1.0 - mask
+
+# 扩展 `C`（通道）维度
+mask = mask.unsqueeze(-1)
+
+# 沿 `C` 维拼接（cat）
+rgba_image = torch.cat((rgb_image, mask), dim=-1)
+```
+
+## 噪声
+
+### 创建噪声变体
+
+以下是一个创建混合两个噪声源的噪声对象的示例。通过调整 `weight2`，可以用来生成轻微不同的噪声变体。
+
+```python
+class Noise_MixedNoise:
+    def __init__(self, nosie1, noise2, weight2):
+        self.noise1  = noise1
+        self.noise2  = noise2
+        self.weight2 = weight2
+
+    @property
+    def seed(self): return self.noise1.seed
+
+    def generate_noise(self, input_latent:torch.Tensor) -> torch.Tensor:
+        noise1 = self.noise1.generate_noise(input_latent)
+        noise2 = self.noise2.generate_noise(input_latent)
+        return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+```

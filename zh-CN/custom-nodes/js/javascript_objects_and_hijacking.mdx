@@ -1,0 +1,238 @@
+---
+title: "Comfy 对象"
+---
+
+## LiteGraph
+
+Comfy UI 构建于 [LiteGraph](https://github.com/jagenjo/litegraph.js) 之上。
+Comfy 的许多功能都由 LiteGraph 提供，因此如果你要开发更复杂的节点，建议克隆该仓库并查阅文档，文档位于 `doc/index.html`。
+
+## ComfyApp
+
+`app` 对象（始终可通过 `import { app } from "../../scripts/app.js";` 获取）代表在浏览器中运行的 Comfy 应用，包含许多有用的属性和函数，部分如下所示。
+
+<Warning>不建议劫持 `app` 上的函数，因为 Comfy 正在持续开发，核心行为可能会变化。</Warning>
+
+### 属性
+
+`app` 的重要属性包括（非完整列表）：
+
+| 属性            | 内容                                                                                          |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| `canvas`        | 一个 LGraphCanvas 对象，代表当前用户界面。包含如 `node_over` 和 `selected_nodes` 等有用属性。 |
+| `canvasEl`      | DOM `<canvas>` 元素                                                                           |
+| `graph`         | 指向当前图的 LGraph 对象的引用                                                                |
+| `runningNodeId` | 执行期间，当前正在执行的节点                                                                  |
+| `ui`            | 可访问部分 UI 元素，如队列、菜单和对话框                                                      |
+
+`canvas`（用于图形元素）和 `graph`（用于逻辑连接）大概率是你最常用的。
+
+### 函数
+
+同样，函数也有很多。以下是一些重要的：
+
+| 函数              | 说明                                      |
+| ----------------- | ----------------------------------------- |
+| graphToPrompt     | 将图转换为可发送到 Python 服务器的 prompt |
+| loadGraphData     | 加载一个图                                |
+| queuePrompt       | 将 prompt 提交到队列                      |
+| registerExtension | 你已经见过——用于添加扩展                  |
+
+## LGraph
+
+`LGraph` 对象是 LiteGraph 框架的一部分，代表当前图的逻辑状态（节点和连线）。
+如果你想操作图，LiteGraph 文档（克隆 `https://github.com/jagenjo/litegraph.js` 后在 `doc/index.html`）描述了你需要的函数。
+
+你可以用 `graph` 获取节点和连线的详细信息，例如：
+
+```Javascript
+const ComfyNode_object_for_my_node = app.graph._nodes_by_id(my_node_id) 
+ComfyNode_object_for_my_node.inputs.forEach(input => {
+    const link_id = input.link;
+    if (link_id) {
+        const LLink_object = app.graph.links[link_id]
+        const id_of_upstream_node = LLink_object.origin_id
+        // 等等
+    }
+});
+```
+
+## LLink
+
+`LLink` 对象可通过 `graph.links` 访问，代表图中一条从节点 `link.origin_id` 的输出槽 `link.origin_slot` 到节点 `link.target_id` 的输入槽 `link.target_slot` 的连线。它还有一个字符串类型 `link.type` 和 `link.id`。
+
+`LLink` 是在 `LGraphNode`（`ComfyNode` 是其子类）的 `connect` 方法中创建的。
+
+<Tip>避免自己创建 LLink 对象——请使用 LiteGraph 的相关函数。</Tip>
+
+## ComfyNode
+
+`ComfyNode` 是 `LGraphNode` 的子类，因此 LiteGraph 文档对于通用操作也很有帮助。不过，Comfy 对 LiteGraph 的核心行为做了大量扩展，也没有用到 LiteGraph 的全部功能。
+
+<Tip>以下描述适用于普通节点。
+分组节点、原始节点、注释节点和重定向节点有不同的属性。</Tip>
+
+`ComfyNode` 对象代表当前工作流中的一个节点。它有许多重要属性和大量可用或可劫持的函数，用于修改行为。
+
+为了更全面地了解节点对象，你可以在扩展中插入如下代码，并在 `console.log` 处打断点。创建新节点时即可用调试器查看节点。
+
+```Javascript
+async nodeCreated(node) {
+    console.log("nodeCreated")
+}
+```
+
+### 属性
+
+| 属性              | 内容                                                                               |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `bgcolor`         | 节点的背景色，默认 undefined                                                       |
+| `comfyClass`      | 节点对应的 Python 类                                                               |
+| `flags`           | 包含节点状态相关标志的字典。特别是 `flags.collapsed` 表示节点是否折叠。            |
+| `graph`           | 指向 LGraph 对象的引用                                                             |
+| `id`              | 唯一 id                                                                            |
+| `input_type`      | 输入类型列表（如 "STRING"、"MODEL"、"CLIP" 等）。通常与 Python 的 INPUT_TYPES 匹配 |
+| `inputs`          | 输入列表（见下文）                                                                 |
+| `mode`            | 通常为 0，静音为 2，旁路为 4。1 和 3 未被 Comfy 使用                               |
+| `order`           | 节点的执行顺序。由 `LGraph.computeExecutionOrder()` 在提交 prompt 时设置           |
+| `pos`             | 节点在画布上的 [x,y] 位置                                                          |
+| `properties`      | 包含 "Node name for S&R" 的字典，由 LiteGraph 使用                                 |
+| `properties_info` | `properties` 中条目的类型和默认值                                                  |
+| `size`            | 节点在画布上的宽高                                                                 |
+| `title`           | 显示标题                                                                           |
+| `type`            | 节点类的唯一名称（来自 Python）                                                    |
+| `widgets`         | 小部件列表（见下文）                                                               |
+| `widgets_values`  | 小部件的当前值列表                                                                 |
+
+
+### 函数
+
+函数非常多（上次统计有 85 个）。以下是部分常用函数。
+大多数函数未被 Comfy 修改，仍为 LiteGraph 核心代码。
+
+#### 输入、输出、小部件
+
+| 函数                   | 说明                                                                      |
+| ---------------------- | ------------------------------------------------------------------------- |
+| Inputs / Outputs       | 大多数有同名的输出方法：s/In/Out/                                         |
+| `addInput`             | 创建新输入，需指定名称和类型                                              |
+| `addInputs`            | `addInput` 的数组版本                                                     |
+| `findInputSlot`        | 通过输入名查找槽索引                                                      |
+| `findInputSlotByType`  | 按类型查找输入。可选参数优先或仅使用空闲槽                                |
+| `removeInput`          | 按槽索引移除输入                                                          |
+| `getInputNode`         | 获取连接到该输入的节点。输出等价方法为 `getOutputNodes`，返回列表         |
+| `getInputLink`         | 获取连接到该输入的 LLink。无输出等价方法                                  |
+| Widgets                |                                                                           |
+| `addWidget`            | 添加标准 Comfy 小部件                                                     |
+| `addCustomWidget`      | 添加自定义小部件（在 `getComfyWidgets` 钩子中定义）                       |
+| `addDOMWidget`         | 添加由 DOM 元素定义的小部件                                               |
+| `convertWidgetToInput` | 如果 `isConvertableWidget` 允许，将小部件转为输入（见 `widgetInputs.js`） |
+
+#### 连接
+
+| 函数                  | 说明                                                 |
+| --------------------- | ---------------------------------------------------- |
+| `connect`             | 将本节点输出连接到其他节点输入                       |
+| `connectByType`       | 按类型将输出连接到其他节点——连接到第一个可用的匹配槽 |
+| `connectByTypeOutput` | 按类型将输入连接到其他节点输出                       |
+| `disconnectInput`     | 移除输入（按名称或索引）上的所有连线                 |
+| `disconnectOutput`    | 断开输出与指定节点输入的连接                         |
+| `onConnectionChange`  | 每个节点都会调用。`side==1` 表示是本节点的输入       |
+| `onConnectInput`      | 在建立连接前调用。如果返回 `false`，则拒绝连接       |
+
+#### 显示
+
+| 函数               | 说明                                                           |
+| ------------------ | -------------------------------------------------------------- |
+| `setDirtyCanvas`   | 指定前景（节点）和/或背景（连线和图像）需要重绘                |
+| `onDrawBackground` | 用 `CanvasRenderingContext2D` 对象绘制背景。Comfy 用于渲染图像 |
+| `onDrawForeground` | 用 `CanvasRenderingContext2D` 对象绘制节点                     |
+| `getTitle`         | 要显示的标题                                                   |
+| `collapse`         | 切换节点折叠状态                                               |
+
+<Warning>`collapse` 命名不准确；它实际上是切换折叠状态。
+它接受一个布尔参数，可用于覆盖 `node.collapsable === false`。</Warning>
+
+#### 其他
+
+| 函数         | 说明                                                     |
+| ------------ | -------------------------------------------------------- |
+| `changeMode` | 用于设置节点为旁路（`mode == 4`）或非旁路（`mode == 0`） |
+
+
+## 输入与小部件
+
+输入和小部件是向节点输入数据的两种方式。一般来说，小部件可以转为输入，但并非所有输入都能转为小部件（许多数据类型无法通过 UI 元素输入）。
+
+`node.inputs` 是当前所有输入的列表（节点左侧的彩色圆点），包含 `.name`、`.type` 和 `.link`（指向 `app.graph.links` 中的 LLink）。
+
+如果输入是已转换的小部件，还会在 `.widget` 中保存对该小部件（现已失效）的引用。
+
+`node.widgets` 是所有小部件的列表，无论是否已转为输入。小部件有：
+
+| 属性/函数  | 说明                                                |
+| ---------- | --------------------------------------------------- |
+| `callback` | 小部件值变化时调用的函数                            |
+| `last_y`   | 小部件在节点中的垂直位置                            |
+| `name`     | 小部件名称（节点内唯一）                            |
+| `options`  | Python 代码中指定的选项（如默认值、最小值、最大值） |
+| `type`     | 小部件类型名称（见下文），小写                      |
+| `value`    | 当前小部件值。此属性有 get/set 方法                 |
+
+### 小部件类型
+
+`app.widgets` 是当前已注册小部件类型的字典，键为类型名的大写。
+Comfy 内置小部件类型包括直观的 `BOOLEAN`、`INT`、`FLOAT`，
+还有 `STRING`（分单行和多行）、
+`COMBO`（下拉列表选择）、`IMAGEUPLOAD`（用于加载图片节点）。
+
+可通过在扩展中提供 `getCustomWidgets` 方法添加自定义小部件类型。
+{/* TODO add link */}
+
+### 关联小部件
+
+小部件也可以关联——如内置的 `seed` 和 `control_after_generate`。
+关联小部件的 `.type = 'base_widget_type:base_widget_name'`；如 `control_after_generate` 可能有类型 `int:seed`。
+
+## Prompt
+
+当你在 Comfy 中点击"Queue Prompt"按钮时，会调用 `app.graphToPrompt()` 方法，将当前图转换为可发送到服务器的 prompt。
+
+`app.graphToPrompt` 返回一个对象（下称 `prompt`），包含 `output` 和 `workflow` 两个属性。
+
+### output
+
+`prompt.output` 将图中每个节点的 `node_id` 映射为一个对象，包含两个属性：
+
+- `prompt.output[node_id].class_type`，自定义节点类的唯一名称（在 Python 代码中定义）
+- `prompt.output[node_id].inputs`，包含每个输入（或小部件）的值，是一个从输入名到以下内容的映射：
+    - 如果是小部件，则为选中的值
+    - 如果有连线，则为一个数组，内容为（`upstream_node_id`, `upstream_node_output_slot`）
+    - 如果是已转为输入但未连接的小部件，则为 undefined
+    - 其他未连接的输入不会出现在 `.inputs` 中
+
+<Tip>注意，描述已连接输入的数组中的 `upstream_node_id` 是字符串而不是整数。</Tip>
+
+### workflow
+
+`prompt.workflow` 包含以下属性：
+
+- `config` - 额外配置项字典（默认空）
+- `extra` - 包含工作流额外信息的字典。默认有：
+    - `extra.ds` - 描述当前图视图（`scale` 和 `offset`）
+- `groups` - 工作流中的所有分组
+- `last_link_id` - 最后添加的连线 id
+- `last_node_id` - 最后添加的节点 id
+- `links` - 图中所有连线的列表。每项为五个整数和一个字符串的数组：
+    - (`link_id`, `upstream_node_id`, `upstream_node_output_slot`, `downstream_node_id`, `downstream_node_input_slot`, `data type`)
+- `nodes` - 图中所有节点的列表。每项为节点部分属性的映射，见[上文](#comfynode)
+    - 包含属性：`flags`、`id`、`inputs`、`mode`、`order`、`pos`、`properties`、`size`、`type`、`widgets_values`
+    - 另外，除非节点没有输出，还会有 `outputs` 属性，为该节点所有输出的列表，每项包含：
+        - `name` - 输出名称
+        - `type` - 输出数据类型
+        - `links` - 从该输出出发的所有连线的 `link_id` 列表（无连接时为空数组或 null）
+        - `shape` - 绘制输出时的形状（默认 3，表示圆点）
+        - `slot_index` - 输出的槽编号
+- `version` - LiteGraph 版本号（当前为 `0.4`）
+
+<Tip>无输出的节点没有 `nodes.output` 属性，而不是空列表。</Tip>
