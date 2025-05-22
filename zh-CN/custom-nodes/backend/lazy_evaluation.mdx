@@ -1,0 +1,143 @@
+---
+title: "延迟求值"
+---
+
+## 延迟求值
+
+默认情况下，在节点运行之前，所有 `required` 和 `optional` 输入都会被求值。然而，有时某些输入可能不会被使用，对其进行求值会导致不必要的处理。以下是一些可能从延迟求值中受益的节点示例：
+1. 一个 `ModelMergeSimple` 节点，其中比例要么是 `0.0`（这种情况下不需要加载第一个模型）
+要么是 `1.0`（这种情况下不需要加载第二个模型）。
+2. 两个图像之间的插值，其中比例（或蒙版）要么完全是 `0.0` 要么完全是 `1.0`。
+3. 一个 Switch 节点，其中一个输入决定其他输入中的哪一个会被传递。
+
+<Tip>将输入设置为延迟求值的成本非常低。如果可以实现，通常都应该这样做。</Tip>
+
+### 创建延迟输入
+
+将输入设置为"延迟"输入需要两个步骤：
+
+1. 在 `INPUT_TYPES` 返回的字典中将输入标记为延迟
+2. 定义一个名为 `check_lazy_status` 的方法（注意：*不是*类方法），该方法将在求值之前被调用来确定是否需要更多输入。
+
+为了演示这些，我们将创建一个"MixImages"节点，它根据蒙版在两个图像之间进行插值。如果整个蒙版都是 `0.0`，我们不需要对第二个图像之前的任何部分进行求值。如果整个蒙版都是 `1.0`，我们可以跳过对第一个图像的求值。
+
+#### 定义 `INPUT_TYPES`
+
+将输入声明为延迟输入很简单，只需在输入的选项字典中添加一个 `lazy: True` 键值对即可。
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+在这个例子中，`image1` 和 `image2` 都被标记为延迟输入，但 `mask` 总是会被求值。
+
+#### 定义 `check_lazy_status`
+
+一个 `check_lazy_status` 方法在存在一个或多个尚未可用的延迟输入时被调用。这个方法接收与标准执行函数相同的参数。所有可用的输入都会以其最终值传递，而不可用的延迟输入则会有一个 `None` 值。
+
+`check_lazy_status` 方法的责任是返回一个列表，其中包含任何需要继续执行的延迟输入的名称。如果所有延迟输入都可用，该方法应返回一个空列表。
+
+注意，`check_lazy_status` 方法可能会被多次调用。例如，你可能在评估一个延迟输入后发现需要评估另一个延迟输入。
+
+<Tip>注意，因为该方法使用实际的输入值，所以它*不是*类方法。</Tip>
+
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### 完整示例
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # Not trying to handle different batch sizes here just to keep the demo simple
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        result = image1 * (1. - mask) + image2 * mask,
+        return (result[0],)
+```
+
+## 执行阻塞
+
+虽然延迟求值是推荐的方式来"禁用"图的一部分，但有时你想要禁用一个没有实现延迟求值的 `OUTPUT` 节点。如果是你开发的节点，你应该按照以下方式添加延迟求值：
+
+1. 添加一个 `enabled` 的必需（如果这是一个新节点）或可选（如果你关心向后兼容性）输入，默认值为 `True`
+2. 将所有其他输入设置为延迟输入
+3. 仅在 `enabled` 为 `True` 时评估其他输入
+
+如果你无法控制该节点，你可以使用 `comfy_execution.graph.ExecutionBlocker`。这个特殊对象可以作为任何输出端口的返回值。任何接收到 `ExecutionBlocker` 作为输入的节点都会跳过执行，并将该 `ExecutionBlocker` 作为其所有输出返回。
+
+<Tip>**ExecutionBlocker 故意设计为无法阻止其向前传播。** 如果你认为需要这种功能，你应该使用延迟求值。</Tip>
+
+### 使用方法
+
+有两种方式可以构造和使用 `ExecutionBlocker`：
+
+1. 向构造函数传入 `None` 来静默阻止执行。这在阻止执行是成功运行的一部分时很有用——比如禁用某个输出。
+
+```python
+def silent_passthrough(self, passthrough, blocked):
+    if blocked:
+        return (ExecutionBlocker(None),)
+    else:
+        return (passthrough,)
+```
+
+2. 向构造函数传入一个字符串，当节点因接收到该对象而被阻止执行时显示错误消息。这在你想显示有意义的错误消息时很有用，比如当有人使用无意义的输出时——例如，加载不包含 VAE 的模型时的 `VAE` 输出。
+
+```python
+def load_checkpoint(self, ckpt_name):
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # 这个错误信息比在后续节点中出现 "'NoneType' has no attribute" 错误更有用
+        vae = ExecutionBlocker(f"No VAE contained in the loaded model {ckpt_name}")
+    return (model, clip, vae)
+```
+

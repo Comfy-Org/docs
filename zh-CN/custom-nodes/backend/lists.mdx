@@ -1,0 +1,69 @@
+---
+title: "数据列表"
+---
+
+## 长度为一的处理
+
+在内部，Comfy 服务器将从一个节点流向下一个节点的数据表示为 Python `list`，通常长度为 1，类型为相关的数据类型。
+在正常操作中，当一个节点返回输出时，输出 `tuple` 中的每个元素都会被单独包裹在一个长度为 1 的列表中；然后当下一个节点被调用时，数据会被解包并传递给主函数。
+
+<Tip>通常你无需担心这一点，因为 Comfy 会自动进行包裹和解包。</Tip>
+
+<Tip>这与批处理无关。例如，一个批次（如潜变量或图像）是列表中的*单个条目*（参见 [张量数据类型](./images_and_masks)）</Tip>
+
+## 列表处理
+
+在某些情况下，单个工作流会处理多个数据实例，此时内部数据将是包含多个数据实例的列表。
+例如，逐个处理一系列图像以避免 VRAM 不足，或处理不同尺寸的图像。
+
+默认情况下，Comfy 会按顺序处理列表中的值：
+- 如果输入是不同长度的 `list`，较短的会通过重复最后一个值进行填充
+- 主方法会针对输入列表中的每个值调用一次
+- 输出也是 `list`，每个输出的长度与最长的输入相同
+
+相关代码可在 `execution.py` 的 `map_node_over_list` 方法中找到。
+
+然而，由于 Comfy 会将节点输出包裹为长度为 1 的 `list`，如果自定义节点返回的 `tuple` 中包含一个 `list`，该 `list` 会被包裹并作为单个数据处理。
+为了告诉 Comfy 返回的列表不应被包裹，而是作为一系列数据进行顺序处理，节点应提供一个类属性 `OUTPUT_IS_LIST`，它是一个与 `RETURN_TYPES` 长度相同的 `tuple[bool]`，用于指定哪些输出应如此处理。
+
+节点也可以重写默认的输入行为，在一次调用中接收整个列表。这可以通过设置类属性 `INPUT_IS_LIST` 为 `True` 实现。
+
+以下是内置节点的一个（带注释的）示例——`ImageRebatch` 接收一个或多个图像批次（作为列表接收，因为 `INPUT_IS_LIST = True`），并将它们重新分批为所需大小的批次。
+
+<Tip>`INPUT_IS_LIST` 是节点级别的——所有输入都会被同样处理。因此，`batch_size` 控件的值通过 `batch_size[0]` 获取。</Tip>
+
+```Python
+
+class ImageRebatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "images": ("IMAGE",),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}) }}
+    RETURN_TYPES = ("IMAGE",)
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (True, )
+    FUNCTION = "rebatch"
+    CATEGORY = "image/batch"
+
+    def rebatch(self, images, batch_size):
+        batch_size = batch_size[0]    # 所有输入都是列表，所以 batch_size 是 list[int]
+
+        output_list = []
+        all_images = []
+        for img in images:                    # 每个 img 是一个图像批次
+            for i in range(img.shape[0]):     # 每个 i 是一张单独的图像
+                all_images.append(img[i:i+1])
+
+        for i in range(0, len(all_images), batch_size): # 按 batch_size 分块，每块组成一个新批次
+            output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # 如果图像批次宽高不同会报错！
+
+        return (output_list,)
+```
+
+
+
+
+
+
+#### INPUT_IS_LIST
+

@@ -1,0 +1,48 @@
+---
+title: "节点扩展"
+---
+
+## 节点扩展
+
+通常，当节点执行时，执行函数会立即返回该节点的输出结果。"节点扩展"是一种相对高级的技术，允许节点返回一个新的子图节点，该子图将替代原节点在图中。这种技术使自定义节点能够实现循环功能。
+
+### 简单示例
+
+首先，这里是一个节点扩展的简单示例：
+
+<Tip>我们强烈建议在创建子图时使用 `GraphBuilder` 类。这不是强制性的，但它可以防止您犯许多容易犯的错误。</Tip>
+```python
+def load_and_merge_checkpoints(self, checkpoint_path1, checkpoint_path2, ratio):
+    from comfy_execution.graph_utils import GraphBuilder # 通常在文件顶部
+    graph = GraphBuilder()
+    checkpoint_node1 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path1)
+    checkpoint_node2 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path2)
+    merge_model_node = graph.node("ModelMergeSimple", model1=checkpoint_node1.out(0), model2=checkpoint_node2.out(0), ratio=ratio)
+    merge_clip_node = graph.node("ClipMergeSimple", clip1=checkpoint_node1.out(1), clip2=checkpoint_node2.out(1), ratio=ratio)
+    return {
+        # 返回 (MODEL, CLIP, VAE) 输出
+        "result": (merge_model_node.out(0), merge_clip_node.out(0), checkpoint_node1.out(2)),
+        "expand": graph.finalize(),
+    }
+```
+
+虽然这个节点以前可以通过手动调用 ComfyUI 内部来实现，但使用扩展意味着每个子节点将单独缓存（所以如果你更改 `model2`，你不需要重新加载 `model1`）。
+
+### 要求
+
+为了执行节点扩展，一个节点必须返回一个包含以下键的字典：
+1. `result`: 一个包含节点输出的元组。这可能是一个混合的最终值（像你从正常节点返回的那样）和节点输出。
+2. `expand`: 要执行扩展的最终图。如果您不使用 `GraphBuilder`，请参见下文。
+
+#### 不使用 GraphBuilder 的额外要求
+
+`expand` 键的格式与 ComfyUI API 格式相同。以下要求由 `GraphBuilder` 处理，但如果您选择不使用它，则必须手动处理：
+
+1. 节点 ID 必须在整个图中唯一。（这包括在多次使用列表时由于使用列表而导致的同一节点的多次执行。）
+2. 节点 ID 必须确定且在多次执行图中一致（包括由于缓存而导致的部分执行）。
+
+即使您不想使用 `GraphBuilder` 来实际构建图（例如，因为您从文件加载了图的原始 JSON），您也可以使用 `GraphBuilder.alloc_prefix()` 函数生成一个前缀，并使用 `comfy.graph_utils.add_graph_prefix` 修复现有图以满足这些要求。
+
+### 高效的子图缓存
+
+虽然您可以向子图中的节点传递非文字输入（如 torch 张量），但这可能会抑制子图内部的缓存。当可能时，您应该传递子图对象的链接，而不是节点本身。（您可以在输入的[附加参数](./datatypes#additional-parameters)中声明一个 `rawLink` 来轻松实现这一点。）

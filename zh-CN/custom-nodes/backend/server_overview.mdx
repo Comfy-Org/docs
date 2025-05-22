@@ -1,0 +1,159 @@
+---
+title: "属性"
+description: "自定义节点的属性"
+---
+
+### 简单示例
+
+下面是“反转图片节点”的代码，概述了自定义节点开发中的关键概念。
+
+```python
+class InvertImageNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "image_in" : ("IMAGE", {}) },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image_out",)
+    CATEGORY = "examples"
+    FUNCTION = "invert"
+
+    def invert(self, image_in):
+        image_out = 1 - image_in
+        return (image_out,)
+```
+
+### 主要属性
+
+每个自定义节点都是一个 Python 类，具有以下关键属性：
+
+#### INPUT_TYPES
+
+顾名思义，`INPUT_TYPES` 定义了节点的输入。该方法返回一个 `dict`，**必须**包含 `required` 键，也**可以**包含 `optional` 和/或 `hidden` 键。`required` 和 `optional` 输入的唯一区别在于，`optional` 输入可以不连接。  
+关于 `hidden` 输入的更多信息，参见 [隐藏输入](./more_on_inputs#hidden-inputs)。
+
+每个键的值又是一个 `dict`，其中的键值对指定输入的名称和类型。类型由一个 `tuple` 定义，第一个元素是数据类型，第二个元素是包含附加参数的 `dict`。
+
+这里我们只有一个必需输入，名为 `image_in`，类型为 `IMAGE`，没有额外参数。
+
+注意，与接下来几个属性不同，`INPUT_TYPES` 是一个 `@classmethod`。这样做的目的是让下拉小部件中的选项（比如要加载的 checkpoint 名称）可以在运行时由 Comfy 动态计算。我们稍后会详细介绍这一点。{/* TODO 写好后补充链接 */}
+
+#### RETURN_TYPES
+
+一个由 `str` 组成的 `tuple`，定义了节点返回的数据类型。如果节点没有输出，也必须提供 `RETURN_TYPES = ()`。
+<Warning>如果你只有一个输出，记得加上逗号：`RETURN_TYPES = ("IMAGE",)`。这是 Python 创建元组所必需的。</Warning>
+
+#### RETURN_NAMES
+
+用于标记输出的名称。此项为可选；如果省略，名称将直接使用 `RETURN_TYPES` 的小写形式。
+
+#### CATEGORY
+
+节点在 ComfyUI **添加节点** 菜单中的分类。可以用路径指定子菜单，例如 `examples/trivial`。
+
+#### FUNCTION
+
+节点执行时应调用的 Python 函数名。
+
+该函数以命名参数的方式被调用。所有 `required`（和 `hidden`）输入都会包含在内；`optional` 输入只有在连接时才会包含，因此你应在函数定义中为它们提供默认值（或用 `**kwargs` 捕获）。
+
+该函数返回一个与 `RETURN_TYPES` 对应的元组。即使没有返回内容，也必须返回元组（`return ()`）。同样，如果只有一个输出，记得加上逗号 `return (image_out,)`！
+
+### 执行控制扩展
+
+Comfy 的一个很棒的特性是它会缓存输出，并且只会执行那些结果可能与上次运行不同的节点。这可以极大地加快许多工作流的速度。
+
+本质上，这通过识别哪些节点会产生输出（比如 Image Preview 和 Save Image 节点，这些节点总是会被执行），然后反向追踪哪些节点提供了自上次运行以来可能已更改的数据。
+
+自定义节点有两个可选特性可以协助这一过程。
+
+#### OUTPUT_NODE
+
+默认情况下，节点不会被视为输出节点。设置 `OUTPUT_NODE = True` 可以指定该节点为输出节点。
+
+#### IS_CHANGED
+
+默认情况下，如果节点的任何输入或小部件发生变化，Comfy 会认为该节点已更改。这通常是正确的，但在某些情况下你可能需要重写此行为，例如节点使用了随机数（且未指定种子——此时最好提供一个种子输入，以便用户可以控制可复现性并避免不必要的执行）、加载了可能已在外部更改的输入，或有时会忽略某些输入（因此不需要仅因这些输入变化而执行）。
+
+<Warning>注意，IS_CHANGED 的返回值不应为 `bool` 类型。</Warning>
+
+`IS_CHANGED` 接收与主函数（由 `FUNCTION` 指定）相同的参数，并可以返回任意 Python 对象。该对象会与上次运行时返回的对象进行比较，如果 `is_changed != is_changed_old`，则认为节点已更改（相关代码在 `execution.py` 中）。
+
+由于 `True == True`，如果节点返回 `True` 表示已更改，实际上会被认为未更改！如果不是为了兼容现有节点，这一行为本可以在 Comfy 代码中修正。
+
+如果你希望节点始终被认为已更改（不推荐，因为这会阻止 Comfy 优化执行流程），可以 `return float("NaN")`。这会返回一个 `NaN`，它与任何值都不相等，甚至与另一个 `NaN` 也不相等。
+
+一个实际检查变化的好例子是内置的 LoadImage 节点的代码，它会加载图片并返回哈希值：
+```python
+    @classmethod
+    def IS_CHANGED(s, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, 'rb') as f:
+            m.update(f.read())
+        return m.digest().hex()
+```
+
+### 其他属性
+
+还有三个属性可以用来修改 Comfy 对节点的默认处理方式。
+
+#### INPUT_IS_LIST, OUTPUT_IS_LIST
+
+用于控制数据的顺序处理，详见[后文](./lists.mdx)。
+
+### VALIDATE_INPUTS
+
+如果定义了类方法 `VALIDATE_INPUTS`，则在工作流开始执行前会被调用。  
+`VALIDATE_INPUTS` 如果输入有效应返回 `True`，否则返回一个描述错误的字符串（这会阻止执行）。
+
+#### 常量校验
+<Warning>注意，`VALIDATE_INPUTS` 只会接收到在工作流中定义为常量的输入。任何来自其他节点的输入都不会在 `VALIDATE_INPUTS` 中可用。</Warning>
+
+`VALIDATE_INPUTS` 只会收到其签名中请求的输入（即 `inspect.getfullargspec(obj_class.VALIDATE_INPUTS).args` 返回的参数）。通过这种方式接收的输入不会经过默认校验规则。例如，在下面的代码片段中，前端会使用 `foo` 输入指定的 `min` 和 `max`，但后端不会强制校验。
+
+```python
+class CustomNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "foo" : ("INT", {"min": 0, "max": 10}) },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, foo):
+        # YOLO，啥都行！
+        return True
+```
+
+此外，如果该函数接收 `**kwargs`，则会收到所有可用输入，并且所有这些输入都将跳过校验，就像显式指定一样。
+
+#### 类型校验
+
+如果 `VALIDATE_INPUTS` 方法接收一个名为 `input_types` 的参数，则会传入一个字典，键为每个连接到其他节点输出的输入名，值为该输出的类型。
+
+当存在此参数时，所有输入类型的默认校验都会被跳过。下面是一个利用前端允许指定多种类型的例子：
+
+```python
+class AddNumbers:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input1" : ("INT,FLOAT", {"min": 0, "max": 1000}),
+                "input2" : ("INT,FLOAT", {"min": 0, "max": 1000})
+            },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        # input1 和 input2 的 min/max 仍然会被校验，因为
+        # 我们没有将 `input1` 或 `input2` 作为参数接收
+        if input_types["input1"] not in ("INT", "FLOAT"):
+            return "input1 必须是 INT 或 FLOAT 类型"
+        if input_types["input2"] not in ("INT", "FLOAT"):
+            return "input2 必须是 INT 或 FLOAT 类型"
+        return True
+```
