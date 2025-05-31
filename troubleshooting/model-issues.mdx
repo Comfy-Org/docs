@@ -10,36 +10,39 @@ icon: "cube"
 
 **Common error messages:**
 - `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [4, 4, 1, 1], expected input[1, 16, 144, 112] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [320, 4, 3, 3], expected input[2, 16, 192, 128] to have 4 channels, but got 16 channels instead`
 - `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
 - `Tensors must have same number of dimensions: got 2 and 3`
 
-**Root cause:** Using models from different architecture families together (e.g., Flux models with SD1.5 components)
+**Root cause:** Using models from different architecture families together
 
 ### Solutions
 
 1. **Verify model family compatibility:**
-   - **Flux models** require 16-channel VAE and Flux-compatible components
-   - **SD1.5/SDXL models** require 4-channel VAE and SD-compatible components
-   - **SD3 models** have their own specific requirements
+   - **Flux models** use 16-channel latent space with dual text encoder conditioning (CLIP-L + T5-XXL)
+   - **SD1.5 models** use 4-channel latent space with single CLIP ViT-L/14 text encoder
+   - **SDXL models** use 4-channel latent space with dual text encoders (CLIP ViT-L/14 + OpenCLIP ViT-bigG/14)
+   - **SD3 models** use 16-channel latent space with triple text encoder conditioning (CLIP-L + OpenCLIP bigG + T5-XXL)
 
 2. **Common mismatch scenarios and fixes:**
 
-   **Flux + SD VAE mismatch:**
+   **Flux + wrong VAE:**
    ```
-   Problem: Using SD1.5 VAE with Flux checkpoint
-   Fix: Use Flux-compatible VAE (e.g., ae.safetensors from Flux releases)
+   Problem: Using taesd or sdxl_vae.safetensors with Flux checkpoint
+   Fix: Use ae.safetensors (Flux VAE) from Hugging Face Flux releases
+   ```
+
+   **Flux + incorrect CLIP configuration:**
+   ```
+   Problem: Using t5xxl_fp8_e4m3fn.safetensors in both CLIP slots of DualClipLoader
+   Fix: Use t5xxl_fp8_e4m3fn.safetensors in one slot and clip_l.safetensors in the other
    ```
 
    **ControlNet architecture mismatch:**
    ```
-   Problem: SD1.5 ControlNet with SD3/Flux checkpoint  
+   Problem: SD1.5 ControlNet with different architecture checkpoint
    Fix: Use ControlNet models designed for your checkpoint architecture
-   ```
-
-   **Video model channel conflicts:**
-   ```
-   Problem: Video control models expecting specific channel counts
-   Fix: Use model-specific loader nodes (e.g., WAN Video Model Loader)
    ```
 
 3. **Quick diagnostics:**
@@ -50,20 +53,24 @@ icon: "cube"
    ```
 
 4. **Prevention strategies:**
-   - Keep all workflow components within the same model family
-   - Download complete model packages from same source/release
-   - Use ComfyUI Manager's model compatibility indicators
-   - Test workflows with default examples before customizing
+   - Keep all workflow models within the same architecture family
+   - Download complete model packages from same source/release (often all in a Hugging Face repo)
+   - When trying new models, start with the template workflows or official ComfyUI workflow examples before customizing
 
 ## Missing Models Error
 
-**Error message:** "Model not found" or "Checkpoint loader failed"
+**Example error message:** 
+```
+Prompt execution failed
+Prompt outputs failed validation:
+CheckpointLoaderSimple:
+- Value not in list: ckpt_name: 'model-name.safetensors' not in []
+```
 
 ### Solutions
 
 1. **Download required models:**
    - Use ComfyUI Manager to auto-download models
-   - Check [Models documentation](/development/core-concepts/models) for detailed information
    - Verify models are in correct subfolders
 
 2. **Check model paths:**
@@ -74,99 +81,23 @@ icon: "cube"
    - **Embeddings**: `models/embeddings/`
 
 3. **Share models between UIs or use custom paths:**
-   - See [Adding External Model Paths](/development/core-concepts/models#adding-external-model-paths) for detailed instructions
-   - Edit `extra_models_config.yaml` file to add custom model directories
+   - See [ComfyUI Model Sharing and Custom Model Directory Configuration](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration) for detailed instructions
+   - Edit `extra_model_paths.yaml` file to add custom model directories
 
 ### Model Search Path Configuration
 
-If you have models in custom locations, you can configure ComfyUI to find them:
-
-#### YAML Config File Locations
-- **Windows**: `%APPDATA%\ComfyUI\extra_models_config.yaml`
-- **macOS**: `~/Library/Application Support/ComfyUI/extra_models_config.yaml`
-- **Linux**: `~/.config/ComfyUI/extra_models_config.yaml`
-
-#### Example Configuration
-```yaml
-additional_model_paths:
-  checkpoints: /path/to/your/checkpoints/
-  loras: /path/to/your/loras/
-  controlnet: /path/to/your/controlnet/
-  vae: /path/to/your/vae/
-```
-
-#### Desktop Application Paths
-For ComfyUI Desktop users:
-- **Windows**: `C:\Users\YourUsername\AppData\Roaming\ComfyUI\extra_models_config.yaml`
-- **macOS**: Open Finder, press `Cmd+Shift+G` and enter `~/Library/Application Support/ComfyUI`
-- **Linux**: Navigate to `~/.config/ComfyUI`
+If you have models in custom locations, see the detailed guide for [ComfyUI Model Sharing and Custom Model Directory Configuration](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration) to configure ComfyUI to find them.
 
 ## Model Loading Errors
 
-**Error message:** "Error loading checkpoint" or "Corrupted model file"
+**Error message:** "Error while deserializing header"
 
 ### Solutions
 
 1. **Re-download the model** - File may be corrupted during download
 2. **Check available disk space** - Ensure enough space for model loading (models can be 2-15GB+)
-3. **Verify model format** - Ensure model is compatible (.safetensors, .ckpt, .pth)
-4. **Check file permissions** - Ensure ComfyUI can read the model files
-5. **Test with different model** - Verify if issue is model-specific or system-wide
-
-### Specific Loading Issues
-
-**"Failed to load checkpoint" with safetensors:**
-```bash
-# Check if model file is corrupted
-python -c "import safetensors; safetensors.torch.load_file('path/to/model.safetensors')"
-```
-
-**"Pickle loading error" with .ckpt files:**
-- .ckpt files use Python pickle format and may have compatibility issues
-- Convert to .safetensors format using model conversion tools
-- Download .safetensors version if available
-
-**"CUDA out of memory" during model loading:**
-```bash
-# Use CPU offloading flags
-python main.py --lowvram
-python main.py --novram  # For very low VRAM systems
-```
-
-## Model Version Compatibility
-
-### Checkpoint Model Versions
-
-**SD 1.5 Models:**
-- File size: ~2-4GB
-- Compatible with: SD 1.5 VAE, SD 1.5 ControlNet, most LoRAs
-- Common files: `v1-5-pruned-emaonly.ckpt`, `realisticVisionV60_B1_noVAE.safetensors`
-
-**SDXL Models:**
-- File size: ~6-7GB  
-- Compatible with: SDXL VAE, SDXL ControlNet, SDXL LoRAs
-- Common files: `sd_xl_base_1.0.safetensors`, `juggernautXL_v8Rundiffusion.safetensors`
-
-**SD3 Models:**
-- File size: ~8-12GB
-- Compatible with: SD3-specific components only
-- Common files: `sd3_medium_incl_clips_t5xxlfp8.safetensors`
-
-**Flux Models:**
-- File size: ~12-24GB
-- Compatible with: Flux VAE (ae.safetensors), T5 text encoders
-- Common files: `flux1-dev.safetensors`, `flux1-schnell.safetensors`
-
-### VAE Compatibility
-
-**SD 1.5/SDXL VAE (4-channel):**
-- `vae-ft-mse-840000-ema-pruned.safetensors`
-- `sdxl_vae.safetensors`
-
-**Flux VAE (16-channel):**
-- `ae.safetensors` (from Flux releases)
-
-**Important:** Never mix VAE types between different model architectures!
+3. **Check file permissions** - Ensure ComfyUI can read the model files
+4. **Test with different model** - Verify if issue is model-specific or system-wide
 
 ## Model Performance Issues
 
@@ -184,9 +115,9 @@ python main.py --novram  # For very low VRAM systems
    - Move models to SSD if using HDD
    - Use NVMe SSD for best performance
 
-3. **Enable model caching:**
+3. **Adjust caching settings:**
    ```bash
-   python main.py --cache-lru 5  # Cache 5 most recent models
+   python main.py --cache-classic       # Use the old style (aggressive) caching. 
    ```
 
 ### Memory Issues with Large Models
@@ -207,78 +138,6 @@ python main.py --force-fp16
 
 # Reduce attention memory usage
 python main.py --use-pytorch-cross-attention
-```
-
-## Model File Management
-
-### Organizing Models
-
-**Recommended folder structure:**
-```
-models/
-├── checkpoints/
-│   ├── sd15/
-│   ├── sdxl/ 
-│   ├── sd3/
-│   └── flux/
-├── loras/
-│   ├── sd15/
-│   ├── sdxl/
-│   └── flux/
-├── vae/
-├── controlnet/
-└── embeddings/
-```
-
-### Model Cleanup
-
-**Remove unused models:**
-1. Check disk usage: Large models consume significant space
-2. Archive old models you don't use frequently
-3. Keep only one version of each model type you actively use
-
-**Check model usage:**
-```bash
-# Find largest model files
-find models/ -name "*.safetensors" -o -name "*.ckpt" | xargs ls -lah | sort -k5 -h
-```
-
-## Advanced Model Troubleshooting
-
-### Model Metadata Issues
-
-**Check model information:**
-```python
-# For safetensors models
-import safetensors
-metadata = safetensors.torch.load_file("model.safetensors", device="cpu").keys()
-print(list(metadata))
-```
-
-### Custom Model Integration
-
-**For developers adding custom models:**
-1. Ensure proper model registration in ComfyUI
-2. Verify input/output tensor shapes match expectations
-3. Test with minimal workflow before complex integration
-4. Document model requirements and limitations
-
-### Debugging Model Loading
-
-**Enable verbose logging:**
-```bash
-python main.py --verbose
-```
-
-**Check model loading in Python:**
-```python
-import torch
-try:
-    model = torch.load("model.ckpt", map_location="cpu")
-    print("Model loaded successfully")
-    print(f"Keys: {list(model.keys())}")
-except Exception as e:
-    print(f"Loading failed: {e}")
 ```
 
 <Note>
