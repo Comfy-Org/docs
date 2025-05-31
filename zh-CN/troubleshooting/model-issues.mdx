@@ -1,0 +1,286 @@
+---
+title: "模型问题"
+description: "故障排除模型相关问题，包括架构不匹配、缺少模型和加载错误"
+icon: "cube"
+---
+
+## 模型架构不匹配
+
+**症状：** 生成过程中出现张量维度错误，特别是在 VAE 解码阶段
+
+**常见错误消息：**
+- `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
+- `Tensors must have same number of dimensions: got 2 and 3`
+
+**根本原因：** 将来自不同架构系列的模型混合使用（例如，Flux 模型与 SD1.5 组件）
+
+### 解决方案
+
+1. **验证模型系列兼容性：**
+   - **Flux 模型**需要 16 通道 VAE 和 Flux 兼容组件
+   - **SD1.5/SDXL 模型**需要 4 通道 VAE 和 SD 兼容组件
+   - **SD3 模型**有其特定要求
+
+2. **常见不匹配场景和修复：**
+
+   **Flux + SD VAE 不匹配：**
+   ```
+   问题：将 SD1.5 VAE 与 Flux 检查点一起使用
+   修复：使用 Flux 兼容的 VAE（例如 Flux 发布中的 ae.safetensors）
+   ```
+
+   **ControlNet 架构不匹配：**
+   ```
+   问题：SD1.5 ControlNet 与 SD3/Flux 检查点
+   修复：使用为您的检查点架构设计的 ControlNet 模型
+   ```
+
+   **视频模型通道冲突：**
+   ```
+   问题：视频控制模型期望特定通道数
+   修复：使用特定模型的加载器节点（例如 WAN 视频模型加载器）
+   ```
+
+3. **快速诊断：**
+   ```bash
+   # 检查错误是否发生在 VAE 解码阶段
+   # 寻找 "expected input[X, Y, Z] to have N channels, but got M channels"
+   # Y 值表示通道数：4 = SD 模型，16 = Flux 模型
+   ```
+
+4. **预防策略：**
+   - 将所有工作流组件保持在同一模型系列内
+   - 从同一来源/发布下载完整的模型包
+   - 使用 ComfyUI 管理器的模型兼容性指示器
+   - 在自定义之前使用默认示例测试工作流
+
+## 缺少模型错误
+
+**错误消息：** "找不到模型"或"检查点加载器失败"
+
+### 解决方案
+
+1. **下载所需模型：**
+   - 使用 ComfyUI 管理器自动下载模型
+   - 检查[模型文档](/zh-CN/development/core-concepts/models)获取详细信息
+   - 验证模型在正确的子文件夹中
+
+2. **检查模型路径：**
+   - **检查点**：`models/checkpoints/`
+   - **VAE**：`models/vae/`
+   - **LoRA**：`models/loras/`
+   - **ControlNet**：`models/controlnet/`
+   - **嵌入**：`models/embeddings/`
+
+3. **在 UI 之间共享模型或使用自定义路径：**
+   - 参见[添加外部模型路径](/zh-CN/development/core-concepts/models#adding-external-model-paths)获取详细说明
+   - 编辑 `extra_models_config.yaml` 文件添加自定义模型目录
+
+### 模型搜索路径配置
+
+如果您的模型在自定义位置，可以配置 ComfyUI 找到它们：
+
+#### YAML 配置文件位置
+- **Windows**：`%APPDATA%\ComfyUI\extra_models_config.yaml`
+- **macOS**：`~/Library/Application Support/ComfyUI/extra_models_config.yaml`
+- **Linux**：`~/.config/ComfyUI/extra_models_config.yaml`
+
+#### 示例配置
+```yaml
+additional_model_paths:
+  checkpoints: /path/to/your/checkpoints/
+  loras: /path/to/your/loras/
+  controlnet: /path/to/your/controlnet/
+  vae: /path/to/your/vae/
+```
+
+#### 桌面应用路径
+对于 ComfyUI 桌面用户：
+- **Windows**：`C:\Users\YourUsername\AppData\Roaming\ComfyUI\extra_models_config.yaml`
+- **macOS**：打开访达，按 `Cmd+Shift+G` 并输入 `~/Library/Application Support/ComfyUI`
+- **Linux**：导航到 `~/.config/ComfyUI`
+
+## 模型加载错误
+
+**错误消息：** "加载检查点时出错"或"模型文件损坏"
+
+### 解决方案
+
+1. **重新下载模型** - 下载过程中文件可能已损坏
+2. **检查可用磁盘空间** - 确保有足够的空间用于模型加载（模型可能 2-15GB+）
+3. **验证模型格式** - 确保模型兼容（.safetensors、.ckpt、.pth）
+4. **检查文件权限** - 确保 ComfyUI 可以读取模型文件
+5. **使用不同模型测试** - 验证问题是模型特定的还是系统范围的
+
+### 特定加载问题
+
+**safetensors "加载检查点失败"：**
+```bash
+# 检查模型文件是否损坏
+python -c "import safetensors; safetensors.torch.load_file('path/to/model.safetensors')"
+```
+
+**.ckpt 文件 "Pickle 加载错误"：**
+- .ckpt 文件使用 Python pickle 格式，可能有兼容性问题
+- 使用模型转换工具转换为 .safetensors 格式
+- 如果可用，下载 .safetensors 版本
+
+**模型加载时 "CUDA 内存不足"：**
+```bash
+# 使用 CPU 卸载标志
+python main.py --lowvram
+python main.py --novram  # 对于极低显存系统
+```
+
+## 模型版本兼容性
+
+### 检查点模型版本
+
+**SD 1.5 模型：**
+- 文件大小：~2-4GB
+- 兼容：SD 1.5 VAE、SD 1.5 ControlNet、大多数 LoRA
+- 常见文件：`v1-5-pruned-emaonly.ckpt`、`realisticVisionV60_B1_noVAE.safetensors`
+
+**SDXL 模型：**
+- 文件大小：~6-7GB  
+- 兼容：SDXL VAE、SDXL ControlNet、SDXL LoRA
+- 常见文件：`sd_xl_base_1.0.safetensors`、`juggernautXL_v8Rundiffusion.safetensors`
+
+**SD3 模型：**
+- 文件大小：~8-12GB
+- 兼容：仅 SD3 特定组件
+- 常见文件：`sd3_medium_incl_clips_t5xxlfp8.safetensors`
+
+**Flux 模型：**
+- 文件大小：~12-24GB
+- 兼容：Flux VAE（ae.safetensors）、T5 文本编码器
+- 常见文件：`flux1-dev.safetensors`、`flux1-schnell.safetensors`
+
+### VAE 兼容性
+
+**SD 1.5/SDXL VAE（4 通道）：**
+- `vae-ft-mse-840000-ema-pruned.safetensors`
+- `sdxl_vae.safetensors`
+
+**Flux VAE（16 通道）：**
+- `ae.safetensors`（来自 Flux 发布）
+
+**重要：** 绝不要在不同模型架构之间混合 VAE 类型！
+
+## 模型性能问题
+
+### 模型加载缓慢
+
+**症状：** 切换模型或开始生成时长时间延迟
+
+**解决方案：**
+1. **将模型保持在显存中：**
+   ```bash
+   python main.py --highvram
+   ```
+
+2. **使用更快的存储：**
+   - 如果使用 HDD，将模型移至 SSD
+   - 使用 NVMe SSD 获得最佳性能
+
+3. **启用模型缓存：**
+   ```bash
+   python main.py --cache-lru 5  # 缓存 5 个最近使用的模型
+   ```
+
+### 大型模型的内存问题
+
+**"RuntimeError: CUDA out of memory"：**
+
+```bash
+# 渐进式内存减少
+python main.py --lowvram          # 首先尝试
+python main.py --novram           # 如果 lowvram 不够
+python main.py --cpu              # 最后手段
+```
+
+**模型特定的内存优化：**
+```bash
+# 强制更低精度
+python main.py --force-fp16
+
+# 减少注意力内存使用
+python main.py --use-pytorch-cross-attention
+```
+
+## 模型文件管理
+
+### 组织模型
+
+**推荐的文件夹结构：**
+```
+models/
+├── checkpoints/
+│   ├── sd15/
+│   ├── sdxl/ 
+│   ├── sd3/
+│   └── flux/
+├── loras/
+│   ├── sd15/
+│   ├── sdxl/
+│   └── flux/
+├── vae/
+├── controlnet/
+└── embeddings/
+```
+
+### 模型清理
+
+**移除未使用的模型：**
+1. 检查磁盘使用：大型模型消耗大量空间
+2. 归档您不经常使用的旧模型
+3. 只保留您积极使用的每种模型类型的一个版本
+
+**检查模型使用情况：**
+```bash
+# 查找最大的模型文件
+find models/ -name "*.safetensors" -o -name "*.ckpt" | xargs ls -lah | sort -k5 -h
+```
+
+## 高级模型故障排除
+
+### 模型元数据问题
+
+**检查模型信息：**
+```python
+# 对于 safetensors 模型
+import safetensors
+metadata = safetensors.torch.load_file("model.safetensors", device="cpu").keys()
+print(list(metadata))
+```
+
+### 自定义模型集成
+
+**对于添加自定义模型的开发者：**
+1. 确保在 ComfyUI 中正确注册模型
+2. 验证输入/输出张量形状符合预期
+3. 在复杂集成之前使用最小工作流测试
+4. 记录模型要求和限制
+
+### 调试模型加载
+
+**启用详细日志记录：**
+```bash
+python main.py --verbose
+```
+
+**在 Python 中检查模型加载：**
+```python
+import torch
+try:
+    model = torch.load("model.ckpt", map_location="cpu")
+    print("模型加载成功")
+    print(f"键: {list(model.keys())}")
+except Exception as e:
+    print(f"加载失败: {e}")
+```
+
+<Note>
+有关其他模型配置和设置信息，请参见[模型文档](/zh-CN/development/core-concepts/models)。
+</Note>
