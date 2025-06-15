@@ -45,6 +45,22 @@ Due to the necessity of adjusting article paths during documentation, changing t
 > ```
 > Don't forget to include the corresponding Chinese translation file in the `zh-CN` directory as well!
 
+## About built-in node document
+
+ComfyUI now has a built-in node help menu for both built-in nodes and custom nodes. All built-in node documentation will now be maintained in [this repo](https://github.com/Comfy-Org/embedded-docs).
+
+###  Synchronization frequency
+
+We will regularly sync updated documentation from the corresponding repository to docs.comfy.org weekly to ensure content synchronization and updates. If you would like to contribute to the documentation, please submit PRs and updates to [this repo](https://github.com/Comfy-Org/embedded-docs).
+
+### Node Documentation File Organization
+
+For node documentation, we will use a single-level directory structure under the `built-in-node` folder for the following reasons:
+- ComfyUI may adjust node categories and directories during updates, using multi-level directory hierarchies means frequent adjustments to node documentation
+- These frequent adjustments mean we need to frequently add redirects and checks
+- Mintlify supports setting document hierarchy in the `docs.json` file, so we can make unified changes in that file
+
+> Due to historical updates, some existing documents use different folder hierarchies. We will no longer adjust these files, but new files will use a single-level directory
 
 ## Contributing
 
