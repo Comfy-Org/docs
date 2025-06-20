@@ -73,7 +73,7 @@ rgba_image = torch.cat((rgb_image, mask), dim=-1)
 
 ```python
 class Noise_MixedNoise:
-    def __init__(self, nosie1, noise2, weight2):
+    def __init__(self, noise1, noise2, weight2):
         self.noise1  = noise1
         self.noise2  = noise2
         self.weight2 = weight2
@@ -85,4 +85,194 @@ class Noise_MixedNoise:
         noise1 = self.noise1.generate_noise(input_latent)
         noise2 = self.noise2.generate_noise(input_latent)
         return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+```
+
+## 模型操作
+
+### 克隆和修改模型
+
+```python
+def modify_model(self, model, modification_strength):
+    # 始终克隆模型以避免修改原始模型
+    cloned_model = model.clone()
+    
+    # 应用修改
+    def patch_function(model_function):
+        def patched_function(x, timestep, context, **kwargs):
+            # 在这里应用你的修改逻辑
+            result = model_function(x, timestep, context, **kwargs)
+            return result * modification_strength
+        return patched_function
+    
+    # 应用补丁
+    cloned_model.set_model_unet_function_wrapper(patch_function)
+    return (cloned_model,)
+```
+
+### 合并模型
+
+```python
+def merge_models(self, model1, model2, ratio):
+    # 克隆第一个模型作为基础
+    merged_model = model1.clone()
+    
+    # 获取模型状态字典
+    state_dict1 = model1.model.state_dict()
+    state_dict2 = model2.model.state_dict()
+    
+    # 合并权重
+    merged_state_dict = {}
+    for key in state_dict1.keys():
+        if key in state_dict2:
+            merged_state_dict[key] = (
+                state_dict1[key] * (1.0 - ratio) + 
+                state_dict2[key] * ratio
+            )
+        else:
+            merged_state_dict[key] = state_dict1[key]
+    
+    # 加载合并后的权重
+    merged_model.model.load_state_dict(merged_state_dict)
+    return (merged_model,)
+```
+
+## 条件处理
+
+### 修改条件信息
+
+```python
+def modify_conditioning(self, conditioning, strength_multiplier):
+    # 条件是一个列表，每个元素包含 [tensor, dict]
+    modified_conditioning = []
+    
+    for cond_tensor, cond_dict in conditioning:
+        # 修改条件张量
+        modified_tensor = cond_tensor * strength_multiplier
+        
+        # 复制条件字典（可选择性修改）
+        modified_dict = cond_dict.copy()
+        modified_dict['strength'] = strength_multiplier
+        
+        modified_conditioning.append([modified_tensor, modified_dict])
+    
+    return (modified_conditioning,)
+```
+
+### 合并条件
+
+```python
+def combine_conditioning(self, cond1, cond2, ratio):
+    if len(cond1) != len(cond2):
+        raise ValueError("Conditioning lists must have the same length")
+    
+    combined_conditioning = []
+    for (tensor1, dict1), (tensor2, dict2) in zip(cond1, cond2):
+        # 确保张量形状匹配
+        if tensor1.shape != tensor2.shape:
+            raise ValueError("Conditioning tensors must have the same shape")
+        
+        # 线性插值合并
+        combined_tensor = tensor1 * (1.0 - ratio) + tensor2 * ratio
+        
+        # 合并字典信息
+        combined_dict = dict1.copy()
+        combined_dict.update(dict2)
+        combined_dict['blend_ratio'] = ratio
+        
+        combined_conditioning.append([combined_tensor, combined_dict])
+    
+    return (combined_conditioning,)
+```
+
+## 批处理操作
+
+### 分割批次
+
+```python
+def split_batch(self, images, batch_size):
+    # 输入: [B, H, W, C]
+    total_images = images.shape[0]
+    output_batches = []
+    
+    for i in range(0, total_images, batch_size):
+        end_idx = min(i + batch_size, total_images)
+        batch = images[i:end_idx]
+        output_batches.append(batch)
+    
+    return (output_batches,)
+```
+
+### 合并批次
+
+```python
+def merge_batches(self, image_batches):
+    # 检查所有批次的形状是否兼容
+    if not image_batches:
+        raise ValueError("No batches provided")
+    
+    # 获取参考形状（除了批次维度）
+    ref_shape = image_batches[0].shape[1:]
+    for batch in image_batches:
+        if batch.shape[1:] != ref_shape:
+            raise ValueError("All batches must have the same H, W, C dimensions")
+    
+    # 沿批次维度连接
+    merged = torch.cat(image_batches, dim=0)
+    return (merged,)
+```
+
+## 设备和内存管理
+
+### 设备转换
+
+```python
+def ensure_same_device(self, tensor1, tensor2):
+    # 确保两个张量在同一设备上
+    if tensor1.device != tensor2.device:
+        tensor2 = tensor2.to(tensor1.device)
+    return tensor1, tensor2
+
+def move_to_device(self, tensor, device_name="cuda"):
+    # 安全地移动张量到指定设备
+    try:
+        if device_name == "cuda" and torch.cuda.is_available():
+            return tensor.cuda()
+        elif device_name == "cpu":
+            return tensor.cpu()
+        else:
+            return tensor
+    except RuntimeError as e:
+        print(f"Failed to move tensor to {device_name}: {e}")
+        return tensor
+```
+
+### 内存优化
+
+```python
+def memory_efficient_processing(self, large_tensor):
+    # 处理大张量时的内存优化
+    original_device = large_tensor.device
+    
+    # 如果在 GPU 上且内存不足，移到 CPU
+    if original_device.type == 'cuda':
+        try:
+            # 尝试在 GPU 上处理
+            result = expensive_operation(large_tensor)
+        except torch.cuda.OutOfMemoryError:
+            print("GPU memory insufficient, processing on CPU")
+            # 移到 CPU 处理
+            cpu_tensor = large_tensor.cpu()
+            result = expensive_operation(cpu_tensor)
+            # 移回原设备
+            result = result.to(original_device)
+            # 清理 CPU 张量
+            del cpu_tensor
+    else:
+        result = expensive_operation(large_tensor)
+    
+    # 清理 GPU 缓存
+    if original_device.type == 'cuda':
+        torch.cuda.empty_cache()
+    
+    return (result,)
 ```

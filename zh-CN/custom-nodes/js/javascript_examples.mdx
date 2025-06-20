@@ -129,3 +129,309 @@ async nodeCreated(node) {
     }
 }
 ```
+
+## 自定义小部件
+
+### 创建滑块小部件
+
+```javascript
+app.registerExtension({
+    name: "my.custom.slider",
+    async getCustomWidgets() {
+        return {
+            CUSTOM_SLIDER(node, inputName, inputData, app) {
+                const widget = node.addWidget("slider", inputName, inputData[1]?.default || 0, (value) => {
+                    // 小部件值变化时的回调
+                    console.log(`${inputName} changed to: ${value}`);
+                }, {
+                    min: inputData[1]?.min || 0,
+                    max: inputData[1]?.max || 100,
+                    step: inputData[1]?.step || 1
+                });
+                
+                return { widget };
+            }
+        };
+    }
+});
+```
+
+### 创建文件上传小部件
+
+```javascript
+app.registerExtension({
+    name: "my.file.upload",
+    async getCustomWidgets() {
+        return {
+            FILE_UPLOAD(node, inputName, inputData, app) {
+                const fileInput = document.createElement("input");
+                fileInput.type = "file";
+                fileInput.accept = inputData[1]?.accept || "*/*";
+                
+                fileInput.addEventListener("change", (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        // 处理文件上传
+                        const formData = new FormData();
+                        formData.append("file", file);
+                        
+                        fetch("/upload", {
+                            method: "POST",
+                            body: formData
+                        }).then(response => response.json())
+                          .then(data => {
+                              console.log("File uploaded:", data);
+                              // 更新节点状态
+                          });
+                    }
+                });
+                
+                const widget = node.addDOMWidget(inputName, "file", fileInput);
+                return { widget };
+            }
+        };
+    }
+});
+```
+
+## 节点通信
+
+### 服务器到客户端消息
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+app.registerExtension({
+    name: "my.server.communication",
+    async setup() {
+        // 监听来自服务器的自定义消息
+        api.addEventListener("my_custom_event", (event) => {
+            const data = event.detail;
+            console.log("Received from server:", data);
+            
+            // 根据消息更新 UI
+            if (data.type === "progress") {
+                updateProgressBar(data.progress);
+            } else if (data.type === "error") {
+                showErrorMessage(data.message);
+            }
+        });
+    }
+});
+
+function updateProgressBar(progress) {
+    // 更新进度条显示
+    const progressBar = document.getElementById("my-progress-bar");
+    if (progressBar) {
+        progressBar.style.width = `${progress}%`;
+    }
+}
+
+function showErrorMessage(message) {
+    // 显示错误消息
+    alert(`Error: ${message}`);
+}
+```
+
+### 客户端到服务器消息
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+// 发送自定义消息到服务器
+function sendCustomMessage(nodeId, messageType, data) {
+    api.fetchApi("/custom_message", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            node_id: nodeId,
+            message_type: messageType,
+            data: data
+        })
+    }).then(response => response.json())
+      .then(result => {
+          console.log("Server response:", result);
+      })
+      .catch(error => {
+          console.error("Error sending message:", error);
+      });
+}
+```
+
+## 高级 UI 定制
+
+### 自定义节点外观
+
+```javascript
+app.registerExtension({
+    name: "my.custom.appearance",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeType.comfyClass === "MySpecialNode") {
+            // 自定义节点颜色
+            nodeType.prototype.bgcolor = "#2a2a2a";
+            nodeType.prototype.color = "#ffffff";
+            
+            // 自定义绘制方法
+            const originalOnDrawBackground = nodeType.prototype.onDrawBackground;
+            nodeType.prototype.onDrawBackground = function(ctx, canvas) {
+                // 调用原始绘制方法
+                originalOnDrawBackground?.apply(this, arguments);
+                
+                // 添加自定义绘制
+                ctx.fillStyle = "#ff6b6b";
+                ctx.fillRect(this.pos[0] - 5, this.pos[1] - 5, 10, 10);
+            };
+            
+            // 自定义标题
+            const originalGetTitle = nodeType.prototype.getTitle;
+            nodeType.prototype.getTitle = function() {
+                const originalTitle = originalGetTitle?.apply(this, arguments) || this.title;
+                return `🌟 ${originalTitle}`;
+            };
+        }
+    }
+});
+```
+
+### 动态更新节点输入
+
+```javascript
+app.registerExtension({
+    name: "my.dynamic.inputs",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeType.comfyClass === "DynamicInputNode") {
+            const originalOnConnectionsChange = nodeType.prototype.onConnectionsChange;
+            nodeType.prototype.onConnectionsChange = function(side, slot, connect, link_info, output) {
+                const result = originalOnConnectionsChange?.apply(this, arguments);
+                
+                if (side === 1 && connect) { // 输入连接
+                    // 根据连接的输出类型动态添加输入
+                    const outputType = link_info.type;
+                    if (outputType === "IMAGE" && !this.inputs.find(input => input.name === "mask")) {
+                        this.addInput("mask", "MASK");
+                    }
+                }
+                
+                return result;
+            };
+        }
+    }
+});
+```
+
+## 工作流操作
+
+### 自动保存工作流
+
+```javascript
+import { app } from "../../scripts/app.js";
+
+app.registerExtension({
+    name: "my.auto.save",
+    async setup() {
+        let saveTimeout;
+        
+        // 监听图变化
+        const originalOnChange = app.graph.onchange;
+        app.graph.onchange = function() {
+            originalOnChange?.apply(this, arguments);
+            
+            // 延迟保存，避免频繁保存
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                autoSaveWorkflow();
+            }, 5000); // 5秒后保存
+        };
+    }
+});
+
+function autoSaveWorkflow() {
+    const workflow = app.graph.serialize();
+    const timestamp = new Date().toISOString();
+    const filename = `auto_save_${timestamp}.json`;
+    
+    // 保存到本地存储
+    localStorage.setItem(`workflow_${timestamp}`, JSON.stringify(workflow));
+    
+    console.log(`Workflow auto-saved as ${filename}`);
+}
+```
+
+### 批量节点操作
+
+```javascript
+app.registerExtension({
+    name: "my.batch.operations",
+    async setup() {
+        // 添加批量操作菜单
+        const originalGetCanvasMenuOptions = LGraphCanvas.prototype.getCanvasMenuOptions;
+        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+            const options = originalGetCanvasMenuOptions.apply(this, arguments);
+            
+            options.push(null); // 分隔线
+            options.push({
+                content: "批量操作",
+                has_submenu: true,
+                callback: (value, options, e, menu, node) => {
+                    const submenu = new LiteGraph.ContextMenu([
+                        "全部静音",
+                        "全部取消静音", 
+                        "删除所有断开连接的节点",
+                        "对齐选中节点"
+                    ], {
+                        event: e,
+                        callback: (action) => {
+                            performBatchOperation(action);
+                        },
+                        parentMenu: menu
+                    });
+                }
+            });
+            
+            return options;
+        };
+    }
+});
+
+function performBatchOperation(action) {
+    const nodes = app.graph._nodes;
+    
+    switch(action) {
+        case "全部静音":
+            nodes.forEach(node => node.mode = 2);
+            break;
+            
+        case "全部取消静音":
+            nodes.forEach(node => node.mode = 0);
+            break;
+            
+        case "删除所有断开连接的节点":
+            const connectedNodes = new Set();
+            app.graph.links.forEach(link => {
+                connectedNodes.add(link.origin_id);
+                connectedNodes.add(link.target_id);
+            });
+            
+            nodes.forEach(node => {
+                if (!connectedNodes.has(node.id)) {
+                    app.graph.remove(node);
+                }
+            });
+            break;
+            
+        case "对齐选中节点":
+            const selectedNodes = app.canvas.selected_nodes;
+            if (selectedNodes && Object.keys(selectedNodes).length > 1) {
+                const nodeList = Object.values(selectedNodes);
+                const minY = Math.min(...nodeList.map(n => n.pos[1]));
+                nodeList.forEach(node => {
+                    node.pos[1] = minY;
+                });
+            }
+            break;
+    }
+    
+    app.graph.setDirtyCanvas(true, true);
+}
