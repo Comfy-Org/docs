@@ -1,0 +1,546 @@
+---
+title: "本地化与国际化"
+---
+
+ComfyUI 为自定义节点的本地化提供了全面支持，允许开发者创建能够在不同语言和地区无缝工作的节点。
+
+## 概述
+
+ComfyUI 的本地化系统会自动扫描自定义节点目录中的翻译文件，并将其提供给后端和前端使用。该系统支持多种语言，并提供动态语言切换的 API。
+
+## 文件结构
+
+自定义节点应按以下结构组织其本地化文件：
+
+```
+custom_nodes/
+└── your_node_pack/
+    ├── __init__.py
+    ├── nodes.py
+    └── locales/
+        ├── en/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        ├── zh/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        ├── ja/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        └── fr/
+            ├── main.json
+            ├── commands.json
+            └── settings.json
+```
+
+## 翻译文件类型
+
+### main.json
+包含节点定义、描述和核心功能的翻译：
+
+```json
+{
+  "nodes": {
+    "MyCustomNode": {
+      "title": "我的自定义节点",
+      "description": "强大的图像处理节点",
+      "inputs": {
+        "image": "输入图像",
+        "strength": "处理强度",
+        "mode": "处理模式"
+      },
+      "outputs": {
+        "result": "处理结果"
+      },
+      "modes": {
+        "enhance": "增强",
+        "denoise": "降噪", 
+        "sharpen": "锐化"
+      }
+    }
+  },
+  "categories": {
+    "image/processing": "图像处理",
+    "utilities": "实用工具"
+  }
+}
+```
+
+### commands.json
+包含菜单项和用户操作的翻译：
+
+```json
+{
+  "menu": {
+    "process_image": "处理图像",
+    "reset_settings": "重置设置",
+    "export_result": "导出结果"
+  },
+  "actions": {
+    "processing": "处理中...",
+    "complete": "处理完成",
+    "error": "处理错误"
+  }
+}
+```
+
+### settings.json
+包含配置选项的翻译：
+
+```json
+{
+  "settings": {
+    "enable_gpu": "启用 GPU 加速",
+    "memory_limit": "内存限制 (GB)",
+    "cache_size": "缓存大小",
+    "auto_save": "自动保存结果"
+  },
+  "tooltips": {
+    "enable_gpu": "在可用时使用 GPU 进行更快的处理",
+    "memory_limit": "此节点的最大内存使用量",
+    "cache_size": "保留在缓存中的结果数量"
+  }
+}
+```
+
+## 后端集成
+
+### 自动翻译加载
+
+ComfyUI 在服务器启动时自动加载翻译：
+
+```python
+import os
+import json
+from pathlib import Path
+
+def load_translations():
+    """为此自定义节点包加载翻译。"""
+    current_dir = Path(__file__).parent
+    locales_dir = current_dir / "locales"
+    
+    translations = {}
+    
+    if locales_dir.exists():
+        for lang_dir in locales_dir.iterdir():
+            if lang_dir.is_dir():
+                lang_code = lang_dir.name
+                translations[lang_code] = {}
+                
+                for json_file in lang_dir.glob("*.json"):
+                    try:
+                        with open(json_file, 'r', encoding='utf-8') as f:
+                            translations[lang_code][json_file.stem] = json.load(f)
+                    except Exception as e:
+                        print(f"加载翻译文件 {json_file} 时出错: {e}")
+    
+    return translations
+
+TRANSLATIONS = load_translations()
+```
+
+### 在节点中使用翻译
+
+```python
+from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
+
+class LocalizedNode(ComfyNodeABC):
+    """支持多语言的节点。"""
+    
+    @classmethod
+    def get_translation(cls, key, lang="zh", default=None):
+        """获取特定键和语言的翻译。"""
+        try:
+            keys = key.split('.')
+            value = TRANSLATIONS.get(lang, {}).get('main', {})
+            
+            for k in keys:
+                value = value.get(k, {})
+            
+            return value if isinstance(value, str) else default or key
+        except:
+            return default or key
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        current_lang = cls.get_current_language()
+        
+        return {
+            "required": {
+                "image": (IO.IMAGE, {
+                    "tooltip": cls.get_translation("nodes.LocalizedNode.inputs.image", current_lang)
+                }),
+                "strength": (IO.FLOAT, {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 2.0,
+                    "tooltip": cls.get_translation("nodes.LocalizedNode.inputs.strength", current_lang)
+                }),
+                "mode": (["enhance", "denoise", "sharpen"], {
+                    "default": "enhance",
+                    "tooltip": cls.get_translation("nodes.LocalizedNode.inputs.mode", current_lang)
+                }),
+            }
+        }
+    
+    @classmethod
+    def get_current_language(cls):
+        """从 ComfyUI 获取当前语言设置。"""
+        return "zh"
+    
+    RETURN_TYPES = (IO.IMAGE,)
+    FUNCTION = "process"
+    CATEGORY = "localized"
+    
+    def process(self, image, strength, mode):
+        return (image,)
+```
+
+## 前端集成
+
+### 在 JavaScript 中访问翻译
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+class LocalizationManager {
+    constructor() {
+        this.translations = {};
+        this.currentLanguage = 'zh';
+        this.loadTranslations();
+    }
+    
+    async loadTranslations() {
+        try {
+            const response = await api.fetchApi("/i18n");
+            const data = await response.json();
+            this.translations = data;
+        } catch (error) {
+            console.error("加载翻译失败:", error);
+        }
+    }
+    
+    setLanguage(language) {
+        this.currentLanguage = language;
+        this.updateUI();
+    }
+    
+    translate(key, language = null) {
+        const lang = language || this.currentLanguage;
+        const keys = key.split('.');
+        let value = this.translations[lang];
+        
+        for (const k of keys) {
+            if (value && typeof value === 'object') {
+                value = value[k];
+            } else {
+                return key;
+            }
+        }
+        
+        return typeof value === 'string' ? value : key;
+    }
+    
+    updateUI() {
+        document.querySelectorAll('[data-i18n]').forEach(element => {
+            const key = element.getAttribute('data-i18n');
+            element.textContent = this.translate(key);
+        });
+        
+        document.querySelectorAll('[data-i18n-tooltip]').forEach(element => {
+            const key = element.getAttribute('data-i18n-tooltip');
+            element.title = this.translate(key);
+        });
+    }
+}
+
+const i18n = new LocalizationManager();
+
+app.registerExtension({
+    name: "Localization",
+    setup() {
+        window.i18n = i18n;
+    },
+    
+    beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.display_name) {
+            const localizedTitle = i18n.translate(`nodes.${nodeData.name}.title`);
+            if (localizedTitle !== `nodes.${nodeData.name}.title`) {
+                nodeData.display_name = localizedTitle;
+            }
+        }
+        
+        if (nodeData.input && nodeData.input.required) {
+            Object.keys(nodeData.input.required).forEach(inputName => {
+                const localizedName = i18n.translate(`nodes.${nodeData.name}.inputs.${inputName}`);
+                if (localizedName !== `nodes.${nodeData.name}.inputs.${inputName}`) {
+                    const inputConfig = nodeData.input.required[inputName];
+                    if (Array.isArray(inputConfig) && inputConfig.length > 1 && typeof inputConfig[1] === 'object') {
+                        inputConfig[1].display_name = localizedName;
+                    }
+                }
+            });
+        }
+    }
+});
+```
+
+## 高级本地化功能
+
+### 动态语言切换
+
+```javascript
+class ComfyI18n {
+    constructor() {
+        this.currentLanguage = this.detectLanguage();
+        this.translations = {};
+        this.fallbackLanguage = 'en';
+        this.loadTranslations();
+    }
+    
+    detectLanguage() {
+        const browserLang = navigator.language.split('-')[0];
+        const supportedLanguages = ['en', 'zh', 'ja', 'fr', 'de', 'es', 'ru', 'ko'];
+        
+        if (supportedLanguages.includes(browserLang)) {
+            return browserLang;
+        }
+        
+        return 'zh';
+    }
+    
+    async loadTranslations() {
+        try {
+            const response = await api.fetchApi("/i18n");
+            const data = await response.json();
+            this.translations = data;
+            this.updateAllUI();
+        } catch (error) {
+            console.error("加载翻译失败:", error);
+        }
+    }
+    
+    setLanguage(language) {
+        if (this.currentLanguage !== language) {
+            this.currentLanguage = language;
+            this.updateAllUI();
+            this.saveLanguagePreference(language);
+        }
+    }
+    
+    saveLanguagePreference(language) {
+        localStorage.setItem('comfyui_language', language);
+    }
+    
+    translate(key, params = {}) {
+        const translation = this.getTranslation(key, this.currentLanguage) || 
+                          this.getTranslation(key, this.fallbackLanguage) || 
+                          key;
+        
+        return this.interpolate(translation, params);
+    }
+    
+    getTranslation(key, language) {
+        const keys = key.split('.');
+        let value = this.translations[language];
+        
+        for (const k of keys) {
+            if (value && typeof value === 'object') {
+                value = value[k];
+            } else {
+                return null;
+            }
+        }
+        
+        return typeof value === 'string' ? value : null;
+    }
+    
+    interpolate(template, params) {
+        return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+            return params[key] !== undefined ? params[key] : match;
+        });
+    }
+    
+    formatNumber(number, options = {}) {
+        return new Intl.NumberFormat(this.currentLanguage, options).format(number);
+    }
+    
+    formatDate(date, options = {}) {
+        return new Intl.DateTimeFormat(this.currentLanguage, options).format(date);
+    }
+    
+    updateAllUI() {
+        document.querySelectorAll('[data-i18n]').forEach(element => {
+            const key = element.getAttribute('data-i18n');
+            const params = this.parseDataParams(element);
+            element.textContent = this.translate(key, params);
+        });
+        
+        document.querySelectorAll('[data-i18n-tooltip]').forEach(element => {
+            const key = element.getAttribute('data-i18n-tooltip');
+            const params = this.parseDataParams(element);
+            element.title = this.translate(key, params);
+        });
+        
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(element => {
+            const key = element.getAttribute('data-i18n-placeholder');
+            const params = this.parseDataParams(element);
+            element.placeholder = this.translate(key, params);
+        });
+        
+        window.dispatchEvent(new CustomEvent('languageChanged', {
+            detail: { language: this.currentLanguage }
+        }));
+    }
+    
+    parseDataParams(element) {
+        const paramsAttr = element.getAttribute('data-i18n-params');
+        if (!paramsAttr) return {};
+        
+        try {
+            return JSON.parse(paramsAttr);
+        } catch (error) {
+            console.warn("无效的 i18n 参数:", paramsAttr);
+            return {};
+        }
+    }
+}
+
+const comfyI18n = new ComfyI18n();
+window.comfyI18n = comfyI18n;
+```
+
+## 最佳实践
+
+### 翻译文件组织
+
+1. **层次结构**: 以逻辑层次组织翻译
+2. **一致命名**: 在各语言间使用一致的命名约定
+3. **上下文信息**: 为翻译者提供上下文注释
+4. **复数处理**: 为每种语言适当处理复数形式
+
+```json
+{
+  "nodes": {
+    "ImageProcessor": {
+      "title": "图像处理器",
+      "description": "具有多种滤镜的高级图像处理",
+      "inputs": {
+        "image": "输入图像",
+        "filter": "滤镜类型",
+        "strength": "滤镜强度"
+      },
+      "outputs": {
+        "result": "处理结果"
+      },
+      "messages": {
+        "processing": "正在处理图像...",
+        "complete": "处理完成",
+        "error": "处理失败: {{error}}"
+      }
+    }
+  },
+  "ui": {
+    "buttons": {
+      "apply": "应用",
+      "reset": "重置",
+      "cancel": "取消"
+    },
+    "status": {
+      "ready": "就绪",
+      "working": "工作中...",
+      "error": "错误"
+    }
+  }
+}
+```
+
+### 测试本地化
+
+```javascript
+function testTranslations() {
+    const testKeys = [
+        'nodes.MyNode.title',
+        'ui.buttons.apply',
+        'messages.error'
+    ];
+    
+    const languages = ['en', 'zh', 'ja', 'fr'];
+    
+    languages.forEach(lang => {
+        console.log(`测试语言: ${lang}`);
+        testKeys.forEach(key => {
+            const translation = comfyI18n.translate(key);
+            if (translation === key) {
+                console.warn(`${lang} 中缺少 ${key} 的翻译`);
+            }
+        });
+    });
+}
+
+function testInterpolation() {
+    const template = comfyI18n.translate('messages.processing_count', {
+        count: 5,
+        total: 10
+    });
+    console.log('插值测试:', template);
+}
+```
+
+### 性能考虑
+
+1. **延迟加载**: 仅在需要时加载翻译
+2. **缓存**: 缓存翻译字符串以避免重复查找
+3. **回退策略**: 始终提供回退以防止 UI 损坏
+4. **包大小**: 考虑 Web 部署的翻译包大小
+
+```javascript
+class OptimizedI18n {
+    constructor() {
+        this.cache = new Map();
+        this.loadedLanguages = new Set();
+    }
+    
+    async loadLanguage(language) {
+        if (this.loadedLanguages.has(language)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/i18n/${language}.json`);
+            const translations = await response.json();
+            this.translations[language] = translations;
+            this.loadedLanguages.add(language);
+        } catch (error) {
+            console.error(`加载语言 ${language} 失败:`, error);
+        }
+    }
+    
+    translate(key, language = this.currentLanguage) {
+        const cacheKey = `${language}:${key}`;
+        
+        if (this.cache.has(cacheKey)) {
+            return this.cache.get(cacheKey);
+        }
+        
+        const translation = this.getTranslation(key, language);
+        this.cache.set(cacheKey, translation);
+        
+        return translation;
+    }
+}
+```
+
+## 与 ComfyUI 核心集成
+
+本地化系统与 ComfyUI 现有基础设施无缝集成：
+
+1. **服务器集成**: 通过 `/i18n` 端点提供翻译
+2. **前端集成**: JavaScript 扩展可通过 API 访问翻译
+3. **节点注册**: 在注册期间应用本地化节点信息
+4. **UI 更新**: 语言更改触发所有组件的 UI 更新
+
+这个全面的本地化系统确保自定义节点能够为用户提供原生体验，无论他们偏好哪种语言。

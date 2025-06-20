@@ -129,3 +129,1362 @@ async nodeCreated(node) {
     }
 }
 ```
+
+## 自定义小部件
+
+### 创建滑块小部件
+
+```javascript
+app.registerExtension({
+    name: "my.custom.slider",
+    async getCustomWidgets() {
+        return {
+            CUSTOM_SLIDER(node, inputName, inputData, app) {
+                const widget = node.addWidget("slider", inputName, inputData[1]?.default || 0, (value) => {
+                    // 小部件值变化时的回调
+                    console.log(`${inputName} changed to: ${value}`);
+                }, {
+                    min: inputData[1]?.min || 0,
+                    max: inputData[1]?.max || 100,
+                    step: inputData[1]?.step || 1
+                });
+                
+                return { widget };
+            }
+        };
+    }
+});
+```
+
+### 创建文件上传小部件
+
+```javascript
+app.registerExtension({
+    name: "my.file.upload",
+    async getCustomWidgets() {
+        return {
+            FILE_UPLOAD(node, inputName, inputData, app) {
+                const fileInput = document.createElement("input");
+                fileInput.type = "file";
+                fileInput.accept = inputData[1]?.accept || "*/*";
+                
+                fileInput.addEventListener("change", (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        // 处理文件上传
+                        const formData = new FormData();
+                        formData.append("file", file);
+                        
+                        fetch("/upload", {
+                            method: "POST",
+                            body: formData
+                        }).then(response => response.json())
+                          .then(data => {
+                              console.log("File uploaded:", data);
+                              // 更新节点状态
+                          });
+                    }
+                });
+                
+                const widget = node.addDOMWidget(inputName, "file", fileInput);
+                return { widget };
+            }
+        };
+    }
+});
+```
+
+## 节点通信
+
+### 服务器到客户端消息
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+app.registerExtension({
+    name: "my.server.communication",
+    async setup() {
+        // 监听来自服务器的自定义消息
+        api.addEventListener("my_custom_event", (event) => {
+            const data = event.detail;
+            console.log("Received from server:", data);
+            
+            // 根据消息更新 UI
+            if (data.type === "progress") {
+                updateProgressBar(data.progress);
+            } else if (data.type === "error") {
+                showErrorMessage(data.message);
+            }
+        });
+    }
+});
+
+function updateProgressBar(progress) {
+    // 更新进度条显示
+    const progressBar = document.getElementById("my-progress-bar");
+    if (progressBar) {
+        progressBar.style.width = `${progress}%`;
+    }
+}
+
+function showErrorMessage(message) {
+    // 显示错误消息
+    alert(`Error: ${message}`);
+}
+```
+
+### 客户端到服务器消息
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+// 发送自定义消息到服务器
+function sendCustomMessage(nodeId, messageType, data) {
+    api.fetchApi("/custom_message", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            node_id: nodeId,
+            message_type: messageType,
+            data: data
+        })
+    }).then(response => response.json())
+      .then(result => {
+          console.log("Server response:", result);
+      })
+      .catch(error => {
+          console.error("Error sending message:", error);
+      });
+}
+```
+
+## 高级 UI 定制
+
+### 自定义节点外观
+
+```javascript
+app.registerExtension({
+    name: "my.custom.appearance",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeType.comfyClass === "MySpecialNode") {
+            // 自定义节点颜色
+            nodeType.prototype.bgcolor = "#2a2a2a";
+            nodeType.prototype.color = "#ffffff";
+            
+            // 自定义绘制方法
+            const originalOnDrawBackground = nodeType.prototype.onDrawBackground;
+            nodeType.prototype.onDrawBackground = function(ctx, canvas) {
+                // 调用原始绘制方法
+                originalOnDrawBackground?.apply(this, arguments);
+                
+                // 添加自定义绘制
+                ctx.fillStyle = "#ff6b6b";
+                ctx.fillRect(this.pos[0] - 5, this.pos[1] - 5, 10, 10);
+            };
+            
+            // 自定义标题
+            const originalGetTitle = nodeType.prototype.getTitle;
+            nodeType.prototype.getTitle = function() {
+                const originalTitle = originalGetTitle?.apply(this, arguments) || this.title;
+                return `🌟 ${originalTitle}`;
+            };
+        }
+    }
+});
+```
+
+### 动态更新节点输入
+
+```javascript
+app.registerExtension({
+    name: "my.dynamic.inputs",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeType.comfyClass === "DynamicInputNode") {
+            const originalOnConnectionsChange = nodeType.prototype.onConnectionsChange;
+            nodeType.prototype.onConnectionsChange = function(side, slot, connect, link_info, output) {
+                const result = originalOnConnectionsChange?.apply(this, arguments);
+                
+                if (side === 1 && connect) { // 输入连接
+                    // 根据连接的输出类型动态添加输入
+                    const outputType = link_info.type;
+                    if (outputType === "IMAGE" && !this.inputs.find(input => input.name === "mask")) {
+                        this.addInput("mask", "MASK");
+                    }
+                }
+                
+                return result;
+            };
+        }
+    }
+});
+```
+
+## 工作流操作
+
+### 自动保存工作流
+
+```javascript
+import { app } from "../../scripts/app.js";
+
+app.registerExtension({
+    name: "my.auto.save",
+    async setup() {
+        let saveTimeout;
+        
+        // 监听图变化
+        const originalOnChange = app.graph.onchange;
+        app.graph.onchange = function() {
+            originalOnChange?.apply(this, arguments);
+            
+            // 延迟保存，避免频繁保存
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                autoSaveWorkflow();
+            }, 5000); // 5秒后保存
+        };
+    }
+});
+
+function autoSaveWorkflow() {
+    const workflow = app.graph.serialize();
+    const timestamp = new Date().toISOString();
+    const filename = `auto_save_${timestamp}.json`;
+    
+    // 保存到本地存储
+    localStorage.setItem(`workflow_${timestamp}`, JSON.stringify(workflow));
+    
+    console.log(`Workflow auto-saved as ${filename}`);
+}
+```
+
+### 批量节点操作
+
+```javascript
+app.registerExtension({
+    name: "my.batch.operations",
+    async setup() {
+        // 添加批量操作菜单
+        const originalGetCanvasMenuOptions = LGraphCanvas.prototype.getCanvasMenuOptions;
+        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+            const options = originalGetCanvasMenuOptions.apply(this, arguments);
+            
+            options.push(null); // 分隔线
+            options.push({
+                content: "批量操作",
+                has_submenu: true,
+                callback: (value, options, e, menu, node) => {
+                    const submenu = new LiteGraph.ContextMenu([
+                        "全部静音",
+                        "全部取消静音", 
+                        "删除所有断开连接的节点",
+                        "对齐选中节点"
+                    ], {
+                        event: e,
+                        callback: (action) => {
+                            performBatchOperation(action);
+                        },
+                        parentMenu: menu
+                    });
+                }
+            });
+            
+            return options;
+        };
+    }
+});
+
+function performBatchOperation(action) {
+    const nodes = app.graph._nodes;
+    
+    switch(action) {
+        case "全部静音":
+            nodes.forEach(node => node.mode = 2);
+            break;
+            
+        case "全部取消静音":
+            nodes.forEach(node => node.mode = 0);
+            break;
+            
+        case "删除所有断开连接的节点":
+            const connectedNodes = new Set();
+            app.graph.links.forEach(link => {
+                connectedNodes.add(link.origin_id);
+                connectedNodes.add(link.target_id);
+            });
+            
+            nodes.forEach(node => {
+                if (!connectedNodes.has(node.id)) {
+                    app.graph.remove(node);
+                }
+            });
+            break;
+            
+        case "对齐选中节点":
+            const selectedNodes = app.canvas.selected_nodes;
+            if (selectedNodes && Object.keys(selectedNodes).length > 1) {
+                const nodeList = Object.values(selectedNodes);
+                const minY = Math.min(...nodeList.map(n => n.pos[1]));
+                nodeList.forEach(node => {
+                    node.pos[1] = minY;
+                });
+            }
+            break;
+    }
+    
+    app.graph.setDirtyCanvas(true, true);
+}
+
+## 虚拟节点和自定义小部件
+
+### 创建虚拟节点
+
+```javascript
+// 基于 ComfyUI_frontend 源码的虚拟节点实现
+app.registerExtension({
+  name: "Comfy.VirtualNodes",
+  registerCustomNodes() {
+    // 注释节点 - 不参与计算但提供文档功能
+    class NoteNode extends LGraphNode {
+      constructor(title) {
+        super(title);
+        
+        // 设置节点外观
+        this.color = "#332922";
+        this.bgcolor = "#593930";
+        this.groupcolor = "#3f251b";
+        
+        // 标记为虚拟节点
+        this.isVirtualNode = true;
+        this.serialize_widgets = true;
+        
+        // 初始化属性
+        if (!this.properties) {
+          this.properties = { text: "" };
+        }
+        
+        // 创建文本小部件
+        this.addWidget("text", "note", this.properties.text, (value) => {
+          this.properties.text = value;
+        }, { multiline: true });
+        
+        // 设置节点大小
+        this.size = [400, 200];
+      }
+      
+      // 重写序列化方法
+      serialize() {
+        const data = super.serialize();
+        data.properties = this.properties;
+        return data;
+      }
+      
+      // 重写配置方法
+      configure(data) {
+        super.configure(data);
+        if (data.properties) {
+          this.properties = data.properties;
+          if (this.widgets && this.widgets[0]) {
+            this.widgets[0].value = this.properties.text;
+          }
+        }
+      }
+    }
+    
+    // Markdown 注释节点
+    class MarkdownNoteNode extends LGraphNode {
+      constructor(title) {
+        super(title);
+        
+        this.color = "#332922";
+        this.bgcolor = "#593930";
+        this.groupcolor = "#3f251b";
+        this.isVirtualNode = true;
+        this.serialize_widgets = true;
+        
+        if (!this.properties) {
+          this.properties = { text: "" };
+        }
+        
+        // 使用 Markdown 小部件
+        ComfyWidgets.MARKDOWN(
+          this,
+          'text',
+          ['STRING', { default: this.properties.text }],
+          app
+        );
+        
+        this.size = [400, 300];
+      }
+    }
+    
+    // 注册节点类型
+    LiteGraph.registerNodeType("Note", NoteNode);
+    LiteGraph.registerNodeType("MarkdownNote", MarkdownNoteNode);
+    
+    NoteNode.category = "utils";
+    MarkdownNoteNode.category = "utils";
+  }
+});
+```
+
+### 高级原始节点（Primitive Node）
+
+```javascript
+// 基于 ComfyUI_frontend 源码的高级原始节点实现
+class AdvancedPrimitiveNode extends LGraphNode {
+  constructor(title) {
+    super(title);
+    
+    // 添加输出连接
+    this.addOutput("connect to widget input", "*");
+    this.serialize_widgets = true;
+    this.isVirtualNode = true;
+    
+    // 控制值数组，用于存储不同类型的值
+    this.controlValues = [];
+    this.lastType = null;
+    
+    // 替换属性名称
+    const replacePropertyName = "Replace widget with input";
+    if (!this.properties || !(replacePropertyName in this.properties)) {
+      this.addProperty(replacePropertyName, false, "boolean");
+    }
+  }
+  
+  // 应用到图形时的配置
+  applyToGraph(extraLinks = []) {
+    if (!this.outputs[0].links?.length) return;
+    
+    const links = [...this.outputs[0].links, ...extraLinks];
+    
+    // 为每个连接的节点配置小部件
+    for (const linkId of links) {
+      const link = this.graph.links[linkId];
+      if (!link) continue;
+      
+      const node = this.graph.getNodeById(link.target_id);
+      const input = node.inputs[link.target_slot];
+      
+      if (input.widget) {
+        this.configureWidgetForNode(node, input);
+      }
+    }
+  }
+  
+  // 为节点配置小部件
+  configureWidgetForNode(node, input) {
+    const widgetName = input.widget.name;
+    const widget = node.widgets?.find(w => w.name === widgetName);
+    
+    if (widget) {
+      // 设置小部件配置获取函数
+      if (!input.widget.getConfig) {
+        input.widget.getConfig = () => this.getWidgetConfig(widgetName);
+      }
+      
+      // 同步小部件值
+      if (this.controlValues.length > 0) {
+        widget.value = this.controlValues[0];
+      }
+    }
+  }
+  
+  // 连接变化时的处理
+  onConnectionsChange(type, slotIndex, isConnected, linkInfo, ioSlot) {
+    if (type === LiteGraph.OUTPUT) {
+      if (isConnected) {
+        this.onFirstConnection(linkInfo, ioSlot);
+      } else if (!this.outputs[0].links?.length) {
+        this.onLastDisconnect();
+      }
+    }
+  }
+  
+  // 第一次连接时的处理
+  onFirstConnection(linkInfo, ioSlot) {
+    const node = this.graph.getNodeById(linkInfo.target_id);
+    const input = node.inputs[linkInfo.target_slot];
+    
+    if (input.widget) {
+      this.createWidgetForInput(input);
+    }
+  }
+  
+  // 为输入创建小部件
+  createWidgetForInput(input) {
+    const widgetType = input.type;
+    const config = input.widget?.getConfig?.() || [null, {}];
+    
+    // 移除现有小部件
+    this.removeWidgets();
+    
+    // 创建新小部件
+    let widget;
+    if (widgetType in ComfyWidgets) {
+      widget = ComfyWidgets[widgetType](this, "value", config, app);
+    } else {
+      // 默认文本小部件
+      widget = this.addWidget("text", "value", "", null, config[1]);
+    }
+    
+    if (widget) {
+      widget.type = widgetType;
+      this.controlValues = [widget.value];
+      
+      // 设置小部件回调
+      const originalCallback = widget.callback;
+      widget.callback = (value) => {
+        this.controlValues[0] = value;
+        this.propagateValue(value);
+        if (originalCallback) {
+          originalCallback.call(widget, value);
+        }
+      };
+    }
+  }
+  
+  // 传播值到连接的节点
+  propagateValue(value) {
+    if (!this.outputs[0].links) return;
+    
+    for (const linkId of this.outputs[0].links) {
+      const link = this.graph.links[linkId];
+      if (!link) continue;
+      
+      const node = this.graph.getNodeById(link.target_id);
+      const input = node.inputs[link.target_slot];
+      
+      if (input.widget) {
+        const widget = node.widgets?.find(w => w.name === input.widget.name);
+        if (widget && widget.value !== value) {
+          widget.value = value;
+          if (widget.callback) {
+            widget.callback(value);
+          }
+        }
+      }
+    }
+  }
+  
+  // 移除所有小部件
+  removeWidgets() {
+    if (this.widgets) {
+      for (let i = this.widgets.length - 1; i >= 0; i--) {
+        this.removeWidget(i);
+      }
+    }
+  }
+  
+  // 最后一个连接断开时的处理
+  onLastDisconnect() {
+    this.removeWidgets();
+    this.controlValues = [];
+    this.lastType = null;
+  }
+}
+
+// 注册高级原始节点
+app.registerExtension({
+  name: "Comfy.AdvancedPrimitiveNode",
+  registerCustomNodes() {
+    LiteGraph.registerNodeType("AdvancedPrimitiveNode", AdvancedPrimitiveNode);
+    AdvancedPrimitiveNode.category = "utils";
+  }
+});
+```
+
+### 小部件输入转换系统
+
+```javascript
+// 基于 ComfyUI_frontend 的小部件输入转换实现
+app.registerExtension({
+  name: "Comfy.WidgetInputConversion",
+  
+  beforeRegisterNodeDef(nodeType, nodeData, app) {
+    // 图形配置时的处理
+    const originalOnGraphConfigured = nodeType.prototype.onGraphConfigured;
+    nodeType.prototype.onGraphConfigured = function() {
+      if (originalOnGraphConfigured) {
+        originalOnGraphConfigured.apply(this, arguments);
+      }
+      
+      if (!this.inputs) return;
+      this.widgets = this.widgets || [];
+      
+      // 处理输入小部件
+      for (const input of this.inputs) {
+        if (input.widget) {
+          const name = input.widget.name;
+          
+          // 设置配置获取函数
+          if (!input.widget.getConfig) {
+            input.widget.getConfig = () => this.getWidgetConfig(name);
+          }
+          
+          // 检查对应的小部件是否存在
+          const widget = this.widgets.find(w => w.name === name);
+          if (!widget) {
+            // 移除无效的输入
+            const inputIndex = this.inputs.findIndex(i => i === input);
+            this.removeInput(inputIndex);
+          }
+        }
+      }
+    };
+    
+    // 双击输入自动连接原始节点
+    const originalOnInputDblClick = nodeType.prototype.onInputDblClick;
+    nodeType.prototype.onInputDblClick = function(slot, ...args) {
+      const result = originalOnInputDblClick?.apply(this, [slot, ...args]);
+      
+      const input = this.inputs[slot];
+      if (!input.widget) {
+        // 检查是否是支持的输入类型
+        if (!(input.type in ComfyWidgets) && 
+            !this.isComboInput(input)) {
+          return result;
+        }
+      }
+      
+      // 创建原始节点
+      const primitiveNode = LiteGraph.createNode("PrimitiveNode");
+      if (!primitiveNode) return result;
+      
+      app.graph.add(primitiveNode);
+      
+      // 计算不重叠的位置
+      const pos = [this.pos[0] - primitiveNode.size[0] - 30, this.pos[1]];
+      while (this.isNodeAtPosition(pos)) {
+        pos[1] += LiteGraph.NODE_TITLE_HEIGHT;
+      }
+      
+      primitiveNode.pos = pos;
+      primitiveNode.connect(0, this, slot);
+      primitiveNode.title = input.name;
+      
+      return result;
+    };
+    
+    // 辅助方法：检查位置是否有节点
+    nodeType.prototype.isNodeAtPosition = function(pos) {
+      for (const node of app.graph.nodes) {
+        if (node.pos[0] === pos[0] && node.pos[1] === pos[1]) {
+          return true;
+        }
+      }
+      return false;
+    };
+    
+    // 辅助方法：检查是否是组合输入
+    nodeType.prototype.isComboInput = function(input) {
+      const config = input.widget?.getConfig?.();
+      return config && config[0] instanceof Array;
+    };
+    
+    // 辅助方法：获取小部件配置
+    nodeType.prototype.getWidgetConfig = function(name) {
+      const widget = this.widgets?.find(w => w.name === name);
+      if (!widget) return [null, {}];
+      
+      // 返回小部件的类型和配置
+      return [widget.type, widget.options || {}];
+    };
+  }
+});
+```
+
+## 高级自定义小部件
+
+### 颜色选择器小部件
+
+```javascript
+app.registerExtension({
+  name: "Comfy.ColorPickerWidget",
+  init() {
+    // 颜色选择器小部件
+    function ColorPickerWidget(node, inputName, inputData, app) {
+      const widget = node.addWidget("text", inputName, "#ffffff", function(value) {
+        // 验证颜色格式
+        if (!/^#[0-9A-F]{6}$/i.test(value)) {
+          value = "#ffffff";
+        }
+        this.value = value;
+      });
+      
+      widget.type = "color_picker";
+      
+      // 自定义绘制
+      const originalDraw = widget.draw;
+      widget.draw = function(ctx, node, width, y, height) {
+        // 绘制颜色预览
+        ctx.fillStyle = this.value;
+        ctx.fillRect(width - 30, y + 2, 25, height - 4);
+        
+        // 绘制边框
+        ctx.strokeStyle = "#666";
+        ctx.strokeRect(width - 30, y + 2, 25, height - 4);
+        
+        // 调用原始绘制方法
+        if (originalDraw) {
+          originalDraw.call(this, ctx, node, width - 35, y, height);
+        }
+      };
+      
+      // 添加点击事件
+      widget.mouse = function(event, pos, node) {
+        if (event.type === "pointerdown") {
+          // 检查是否点击了颜色预览区域
+          const rect = node.getBounding();
+          const x = pos[0] - rect[0];
+          const y = pos[1] - rect[1];
+          
+          if (x > node.size[0] - 30 && x < node.size[0] - 5) {
+            // 打开颜色选择器
+            this.openColorPicker();
+            return true;
+          }
+        }
+        return false;
+      };
+      
+      widget.openColorPicker = function() {
+        // 创建颜色选择器输入
+        const input = document.createElement("input");
+        input.type = "color";
+        input.value = this.value;
+        input.style.position = "absolute";
+        input.style.left = "-9999px";
+        
+        input.addEventListener("change", (e) => {
+          this.value = e.target.value;
+          document.body.removeChild(input);
+        });
+        
+        document.body.appendChild(input);
+        input.click();
+      };
+      
+      return widget;
+    }
+    
+    // 注册自定义小部件
+    ComfyWidgets.COLOR_PICKER = ColorPickerWidget;
+  }
+});
+```
+
+### 范围滑块小部件
+
+```javascript
+app.registerExtension({
+  name: "Comfy.RangeSliderWidget",
+  init() {
+    // 范围滑块小部件
+    function RangeSliderWidget(node, inputName, inputData, app) {
+      const config = inputData[1] || {};
+      const min = config.min || 0;
+      const max = config.max || 100;
+      const step = config.step || 1;
+      const defaultValue = config.default || [min, max];
+      
+      const widget = node.addWidget("text", inputName, `${defaultValue[0]}-${defaultValue[1]}`, function(value) {
+        // 解析范围值
+        const parts = value.split("-");
+        if (parts.length === 2) {
+          const low = Math.max(min, Math.min(max, parseFloat(parts[0]) || min));
+          const high = Math.max(low, Math.min(max, parseFloat(parts[1]) || max));
+          this.value = `${low}-${high}`;
+          this.range = [low, high];
+        }
+      });
+      
+      widget.type = "range_slider";
+      widget.range = defaultValue;
+      
+      // 自定义绘制
+      widget.draw = function(ctx, node, width, y, height) {
+        const range = this.range || [min, max];
+        const lowPercent = (range[0] - min) / (max - min);
+        const highPercent = (range[1] - min) / (max - min);
+        
+        // 绘制滑块轨道
+        ctx.fillStyle = "#333";
+        ctx.fillRect(10, y + height/2 - 2, width - 20, 4);
+        
+        // 绘制选中范围
+        const startX = 10 + (width - 20) * lowPercent;
+        const endX = 10 + (width - 20) * highPercent;
+        ctx.fillStyle = "#4a9eff";
+        ctx.fillRect(startX, y + height/2 - 2, endX - startX, 4);
+        
+        // 绘制滑块手柄
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(startX, y + height/2, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(endX, y + height/2, 6, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 绘制数值
+        ctx.fillStyle = "#fff";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(this.value, width/2, y + height - 5);
+      };
+      
+      return widget;
+    }
+    
+    // 注册自定义小部件
+    ComfyWidgets.RANGE_SLIDER = RangeSliderWidget;
+  }
+});
+```
+
+## 节点生命周期管理
+
+### 完整的节点生命周期处理
+
+```javascript
+app.registerExtension({
+  name: "Comfy.NodeLifecycleManager",
+  
+  nodeCreated(node, app) {
+    // 节点创建时的初始化
+    console.log(`节点已创建: ${node.type}`);
+    
+    // 添加创建时间戳
+    node.createdAt = Date.now();
+    
+    // 为特定类型的节点添加额外功能
+    if (node.type === "MyCustomNode") {
+      this.setupCustomNode(node);
+    }
+    
+    // 添加通用的节点统计功能
+    this.addNodeStatistics(node);
+  },
+  
+  setupCustomNode(node) {
+    // 添加自定义属性
+    node.customData = {
+      processCount: 0,
+      lastProcessTime: null,
+      errors: [],
+      performance: {
+        totalTime: 0,
+        averageTime: 0
+      }
+    };
+    
+    // 重写节点的执行方法
+    const originalOnExecuted = node.onExecuted;
+    node.onExecuted = function(message) {
+      const startTime = Date.now();
+      
+      this.customData.processCount++;
+      this.customData.lastProcessTime = startTime;
+      
+      // 更新节点标题显示处理次数
+      this.title = `${this.type} (${this.customData.processCount})`;
+      
+      if (originalOnExecuted) {
+        originalOnExecuted.call(this, message);
+      }
+      
+      // 计算性能统计
+      const endTime = Date.now();
+      const executionTime = endTime - startTime;
+      this.customData.performance.totalTime += executionTime;
+      this.customData.performance.averageTime = 
+        this.customData.performance.totalTime / this.customData.processCount;
+    };
+    
+    // 添加错误处理
+    const originalOnExecutionError = node.onExecutionError;
+    node.onExecutionError = function(error) {
+      this.customData.errors.push({
+        error: error,
+        timestamp: Date.now()
+      });
+      
+      // 限制错误历史记录数量
+      if (this.customData.errors.length > 10) {
+        this.customData.errors.shift();
+      }
+      
+      // 更新节点外观显示错误状态
+      this.bgcolor = "#4a1a1a"; // 红色背景表示错误
+      
+      if (originalOnExecutionError) {
+        originalOnExecutionError.call(this, error);
+      }
+    };
+  },
+  
+  addNodeStatistics(node) {
+    // 添加右键菜单选项
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      options.push(null); // 分隔线
+      options.push({
+        content: "📊 查看节点统计",
+        callback: () => {
+          this.showNodeStatistics();
+        }
+      });
+      
+      if (this.customData && this.customData.errors.length > 0) {
+        options.push({
+          content: "🗑️ 清除错误历史",
+          callback: () => {
+            this.customData.errors = [];
+            this.bgcolor = null; // 恢复默认背景色
+            console.log("错误历史已清除");
+          }
+        });
+      }
+      
+      options.push({
+        content: "🔄 重置统计数据",
+        callback: () => {
+          if (this.customData) {
+            this.customData.processCount = 0;
+            this.customData.errors = [];
+            this.customData.performance = { totalTime: 0, averageTime: 0 };
+            this.title = this.type; // 恢复原始标题
+            this.bgcolor = null; // 恢复默认背景色
+          }
+          console.log("统计数据已重置");
+        }
+      });
+      
+      return options;
+    };
+    
+    // 添加统计显示方法
+    node.showNodeStatistics = function() {
+      let stats = `节点类型: ${this.type}\n`;
+      stats += `创建时间: ${new Date(this.createdAt).toLocaleString()}\n`;
+      
+      if (this.customData) {
+        stats += `处理次数: ${this.customData.processCount}\n`;
+        stats += `最后处理时间: ${this.customData.lastProcessTime ? 
+          new Date(this.customData.lastProcessTime).toLocaleString() : '未处理'}\n`;
+        stats += `错误次数: ${this.customData.errors.length}\n`;
+        
+        if (this.customData.performance.averageTime > 0) {
+          stats += `平均执行时间: ${this.customData.performance.averageTime.toFixed(2)}ms\n`;
+          stats += `总执行时间: ${this.customData.performance.totalTime}ms\n`;
+        }
+        
+        if (this.customData.errors.length > 0) {
+          stats += `\n最近错误:\n`;
+          this.customData.errors.slice(-3).forEach((error, index) => {
+            stats += `${index + 1}. ${new Date(error.timestamp).toLocaleString()}: ${error.error}\n`;
+          });
+        }
+      }
+      
+      // 创建统计信息对话框
+      const dialog = document.createElement("div");
+      dialog.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #2a2a2a;
+        color: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        z-index: 10000;
+        max-width: 500px;
+        font-family: monospace;
+        white-space: pre-line;
+      `;
+      
+      dialog.innerHTML = `
+        <h3 style="margin-top: 0;">节点统计信息</h3>
+        <div style="margin: 10px 0;">${stats}</div>
+        <button onclick="this.parentElement.remove()" style="
+          background: #4a9eff;
+          color: white;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 4px;
+          cursor: pointer;
+        ">关闭</button>
+      `;
+      
+      document.body.appendChild(dialog);
+    };
+  }
+});
+```
+
+## 前端本地化集成
+
+### 获取和使用本地化数据
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+app.registerExtension({
+  name: "Comfy.LocalizationExample",
+  
+  async setup() {
+    // 获取所有自定义节点的本地化数据
+    try {
+      const i18nData = await api.getCustomNodesI18n();
+      this.translations = i18nData;
+      console.log("本地化数据已加载:", this.translations);
+    } catch (error) {
+      console.error("加载本地化数据失败:", error);
+      this.translations = {};
+    }
+  },
+  
+  beforeRegisterNodeDef(nodeType, nodeData, app) {
+    // 应用本地化到节点定义
+    const nodePackage = this.getNodePackage(nodeData.name);
+    const nodeTranslations = this.translations[nodePackage]?.[nodeData.name];
+    
+    if (nodeTranslations) {
+      // 更新节点标题
+      if (nodeTranslations.title) {
+        nodeType.title = nodeTranslations.title;
+      }
+      
+      // 更新节点描述
+      if (nodeTranslations.description) {
+        nodeType.prototype.description = nodeTranslations.description;
+      }
+      
+      // 应用输入本地化
+      this.localizeInputs(nodeType, nodeData, nodeTranslations);
+      
+      // 应用小部件本地化
+      this.localizeWidgets(nodeType, nodeTranslations);
+    }
+  },
+  
+  nodeCreated(node, app) {
+    // 为节点添加本地化的右键菜单
+    this.addLocalizedContextMenu(node);
+    
+    // 添加本地化的工具提示
+    this.addLocalizedTooltips(node);
+  },
+  
+  // 辅助方法：获取节点包名
+  getNodePackage(nodeName) {
+    // 从节点名称推断包名，或使用其他逻辑
+    // 这里假设节点名称格式为 "PackageName.NodeName"
+    const parts = nodeName.split('.');
+    return parts.length > 1 ? parts[0] : 'default';
+  },
+  
+  // 本地化输入
+  localizeInputs(nodeType, nodeData, translations) {
+    if (!translations.inputs) return;
+    
+    const originalOnConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function(side, slot, connect, link_info, output) {
+      const result = originalOnConnectionsChange?.apply(this, arguments);
+      
+      // 更新输入标签
+      if (this.inputs) {
+        this.inputs.forEach((input, index) => {
+          const localizedName = translations.inputs[input.name];
+          if (localizedName) {
+            input.label = localizedName;
+          }
+        });
+      }
+      
+      return result;
+    };
+  },
+  
+  // 本地化小部件
+  localizeWidgets(nodeType, translations) {
+    if (!translations.widgets) return;
+    
+    const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function() {
+      const result = originalOnNodeCreated?.apply(this, arguments);
+      
+      // 更新小部件标签
+      if (this.widgets) {
+        this.widgets.forEach(widget => {
+          const localizedName = translations.widgets[widget.name];
+          if (localizedName) {
+            widget.label = localizedName;
+          }
+        });
+      }
+      
+      return result;
+    };
+  },
+  
+  // 添加本地化的右键菜单
+  addLocalizedContextMenu(node) {
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      // 获取命令翻译
+      const nodePackage = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .getNodePackage(this.type);
+      const commands = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .translations[nodePackage]?.commands || {};
+      
+      // 添加本地化菜单项
+      options.push(null); // 分隔线
+      options.push({
+        content: commands.view_node_info || "查看节点信息",
+        callback: () => {
+          this.showLocalizedInfo();
+        }
+      });
+      
+      options.push({
+        content: commands.reset_node || "重置节点",
+        callback: () => {
+          this.resetToDefaults();
+        }
+      });
+      
+      return options;
+    };
+    
+    // 添加本地化信息显示方法
+    node.showLocalizedInfo = function() {
+      const nodePackage = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .getNodePackage(this.type);
+      const nodeTranslations = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .translations[nodePackage]?.[this.type] || {};
+      
+      const info = `
+节点类型: ${nodeTranslations.title || this.type}
+描述: ${nodeTranslations.description || '无描述'}
+输入数量: ${this.inputs ? this.inputs.length : 0}
+输出数量: ${this.outputs ? this.outputs.length : 0}
+小部件数量: ${this.widgets ? this.widgets.length : 0}
+      `.trim();
+      
+      alert(info);
+    };
+    
+    // 添加重置方法
+    node.resetToDefaults = function() {
+      if (this.widgets) {
+        this.widgets.forEach(widget => {
+          if (widget.options && 'default' in widget.options) {
+            widget.value = widget.options.default;
+          }
+        });
+      }
+      console.log("节点已重置为默认值");
+    };
+  },
+  
+  // 添加本地化工具提示
+  addLocalizedTooltips(node) {
+    const nodePackage = this.getNodePackage(node.type);
+    const tooltips = this.translations[nodePackage]?.tooltips || {};
+    
+    // 为输入添加工具提示
+    if (node.inputs && tooltips) {
+      node.inputs.forEach(input => {
+        const tooltip = tooltips[input.name];
+        if (tooltip) {
+          input.tooltip = tooltip;
+        }
+      });
+    }
+    
+    // 为小部件添加工具提示
+    if (node.widgets && tooltips) {
+      node.widgets.forEach(widget => {
+        const tooltip = tooltips[widget.name];
+        if (tooltip) {
+          widget.tooltip = tooltip;
+        }
+      });
+    }
+  }
+});
+```
+
+### 本地化工具类
+
+```javascript
+// 本地化工具类
+class ComfyI18n {
+  constructor() {
+    this.currentLanguage = 'en';
+    this.translations = {};
+    this.fallbackLanguage = 'en';
+  }
+  
+  async init() {
+    // 从本地存储获取语言设置
+    this.currentLanguage = localStorage.getItem('comfy_language') || 'en';
+    
+    // 加载翻译数据
+    await this.loadTranslations();
+  }
+  
+  async loadTranslations() {
+    try {
+      const i18nData = await api.getCustomNodesI18n();
+      this.translations = i18nData;
+    } catch (error) {
+      console.error("加载翻译失败:", error);
+    }
+  }
+  
+  // 获取翻译文本
+  t(key, options = {}) {
+    const {
+      package: packageName = 'default',
+      category = 'main',
+      defaultValue = key,
+      interpolation = {}
+    } = options;
+    
+    let text = this.getTranslation(key, packageName, category);
+    
+    // 如果没有找到翻译，使用默认值
+    if (!text) {
+      text = defaultValue;
+    }
+    
+    // 处理插值
+    if (Object.keys(interpolation).length > 0) {
+      text = this.interpolate(text, interpolation);
+    }
+    
+    return text;
+  }
+  
+  getTranslation(key, packageName, category) {
+    try {
+      // 尝试当前语言
+      let translation = this.translations[this.currentLanguage]?.[packageName]?.[category]?.[key];
+      
+      // 如果没有找到，尝试回退语言
+      if (!translation && this.currentLanguage !== this.fallbackLanguage) {
+        translation = this.translations[this.fallbackLanguage]?.[packageName]?.[category]?.[key];
+      }
+      
+      return translation;
+    } catch (error) {
+      return null;
+    }
+  }
+  
+  // 字符串插值
+  interpolate(text, values) {
+    return text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+      return values[key] !== undefined ? values[key] : match;
+    });
+  }
+  
+  // 设置语言
+  setLanguage(languageCode) {
+    this.currentLanguage = languageCode;
+    localStorage.setItem('comfy_language', languageCode);
+  }
+  
+  // 获取当前语言
+  getLanguage() {
+    return this.currentLanguage;
+  }
+  
+  // 格式化数字
+  formatNumber(number, options = {}) {
+    try {
+      return new Intl.NumberFormat(this.currentLanguage, options).format(number);
+    } catch (error) {
+      return number.toString();
+    }
+  }
+  
+  // 格式化日期
+  formatDate(date, options = {}) {
+    try {
+      return new Intl.DateTimeFormat(this.currentLanguage, options).format(date);
+    } catch (error) {
+      return date.toString();
+    }
+  }
+  
+  // 格式化相对时间
+  formatRelativeTime(value, unit) {
+    try {
+      const rtf = new Intl.RelativeTimeFormat(this.currentLanguage, { numeric: 'auto' });
+      return rtf.format(value, unit);
+    } catch (error) {
+      return `${value} ${unit}`;
+    }
+  }
+}
+
+// 创建全局实例
+window.comfyI18n = new ComfyI18n();
+
+// 在应用启动时初始化
+app.registerExtension({
+  name: "Comfy.I18nInit",
+  async setup() {
+    await window.comfyI18n.init();
+    console.log("本地化系统已初始化");
+  }
+});
+
+// 使用示例
+app.registerExtension({
+  name: "Comfy.I18nExample",
+  nodeCreated(node, app) {
+    // 使用本地化工具
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      options.push({
+        content: window.comfyI18n.t('copy_node', {
+          package: 'core',
+          category: 'commands',
+          defaultValue: 'Copy Node'
+        }),
+        callback: () => {
+          // 复制节点逻辑
+        }
+      });
+      
+      options.push({
+        content: window.comfyI18n.t('processing_time', {
+          package: 'core',
+          category: 'main',
+          defaultValue: 'Processing time: {{time}}ms',
+          interpolation: { time: this.lastProcessingTime || 0 }
+        }),
+        callback: () => {
+          // 显示处理时间
+        }
+      });
+      
+      return options;
+    };
+  }
+});
+```
