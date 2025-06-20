@@ -117,6 +117,752 @@ import { api } from "../../scripts/api.js";
     }
 ```
 
+## Custom Widgets
+
+### Slider Widget
+
+Create a custom slider widget with real-time updates:
+
+```javascript
+function createSliderWidget(node, inputName, inputData, app) {
+    const widget = {
+        type: "slider",
+        name: inputName,
+        value: inputData[1]?.default || 0,
+        options: inputData[1] || {},
+        
+        draw: function(ctx, node, widget_width, y, widget_height) {
+            const margin = 10;
+            const slider_width = widget_width - margin * 2;
+            const slider_height = 20;
+            
+            const min = this.options.min || 0;
+            const max = this.options.max || 100;
+            const range = max - min;
+            const normalized = (this.value - min) / range;
+            
+            ctx.fillStyle = "#333";
+            ctx.fillRect(margin, y, slider_width, slider_height);
+            
+            ctx.fillStyle = "#007acc";
+            ctx.fillRect(margin, y, slider_width * normalized, slider_height);
+            
+            ctx.fillStyle = "#fff";
+            ctx.font = "12px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(this.value.toFixed(2), widget_width / 2, y + 15);
+        },
+        
+        mouse: function(event, pos, node) {
+            if (event.type === "mousedown" || event.type === "mousemove") {
+                const margin = 10;
+                const slider_width = node.size[0] - margin * 2;
+                const relative_x = pos[0] - margin;
+                const normalized = Math.max(0, Math.min(1, relative_x / slider_width));
+                
+                const min = this.options.min || 0;
+                const max = this.options.max || 100;
+                const step = this.options.step || 0.01;
+                
+                this.value = min + normalized * (max - min);
+                this.value = Math.round(this.value / step) * step;
+                
+                if (this.callback) {
+                    this.callback(this.value, app.canvas, node, pos, event);
+                }
+                
+                node.setDirtyCanvas(true);
+                return true;
+            }
+            return false;
+        }
+    };
+    
+    return widget;
+}
+
+app.registerExtension({
+    name: "CustomSliderWidget",
+    getCustomWidgets() {
+        return {
+            CUSTOM_SLIDER(node, inputName, inputData, app) {
+                return {
+                    widget: createSliderWidget(node, inputName, inputData, app),
+                    minWidth: 200,
+                    minHeight: 40
+                };
+            }
+        };
+    }
+});
+```
+
+### File Upload Widget
+
+Create a file upload widget with drag-and-drop support:
+
+```javascript
+function createFileUploadWidget(node, inputName, inputData, app) {
+    const widget = {
+        type: "file_upload",
+        name: inputName,
+        value: "",
+        options: inputData[1] || {},
+        
+        draw: function(ctx, node, widget_width, y, widget_height) {
+            const margin = 10;
+            const upload_width = widget_width - margin * 2;
+            const upload_height = widget_height - 10;
+            
+            ctx.strokeStyle = this.dragOver ? "#007acc" : "#666";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(margin, y, upload_width, upload_height);
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = "#fff";
+            ctx.font = "12px Arial";
+            ctx.textAlign = "center";
+            
+            const text = this.value || "Drop file here or click to upload";
+            ctx.fillText(text, widget_width / 2, y + upload_height / 2);
+        },
+        
+        mouse: function(event, pos, node) {
+            if (event.type === "mousedown") {
+                this.openFileDialog();
+                return true;
+            }
+            return false;
+        },
+        
+        openFileDialog: function() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = this.options.accept || '*/*';
+            
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    this.handleFile(file);
+                }
+            };
+            
+            input.click();
+        },
+        
+        handleFile: function(file) {
+            this.value = file.name;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                if (this.callback) {
+                    this.callback({
+                        name: file.name,
+                        data: e.target.result,
+                        type: file.type,
+                        size: file.size
+                    });
+                }
+            };
+            
+            if (file.type.startsWith('image/')) {
+                reader.readAsDataURL(file);
+            } else {
+                reader.readAsText(file);
+            }
+            
+            node.setDirtyCanvas(true);
+        }
+    };
+    
+    const originalOnDragOver = node.onDragOver;
+    node.onDragOver = function(e) {
+        widget.dragOver = true;
+        node.setDirtyCanvas(true);
+        return originalOnDragOver?.apply(this, arguments) || true;
+    };
+    
+    const originalOnDragLeave = node.onDragLeave;
+    node.onDragLeave = function(e) {
+        widget.dragOver = false;
+        node.setDirtyCanvas(true);
+        return originalOnDragLeave?.apply(this, arguments);
+    };
+    
+    const originalOnDrop = node.onDrop;
+    node.onDrop = function(e) {
+        widget.dragOver = false;
+        
+        if (e.dataTransfer.files.length > 0) {
+            widget.handleFile(e.dataTransfer.files[0]);
+            return true;
+        }
+        
+        return originalOnDrop?.apply(this, arguments);
+    };
+    
+    return widget;
+}
+
+app.registerExtension({
+    name: "FileUploadWidget",
+    getCustomWidgets() {
+        return {
+            FILE_UPLOAD(node, inputName, inputData, app) {
+                return {
+                    widget: createFileUploadWidget(node, inputName, inputData, app),
+                    minWidth: 250,
+                    minHeight: 80
+                };
+            }
+        };
+    }
+});
+```
+
+## Server-Client Communication
+
+### Send Messages to Server
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+class ServerCommunicator {
+    constructor() {
+        this.setupEventListeners();
+    }
+    
+    setupEventListeners() {
+        api.addEventListener("custom_message", (event) => {
+            this.handleServerMessage(event.detail);
+        });
+    }
+    
+    async sendToServer(messageType, data) {
+        try {
+            const response = await api.fetchApi("/custom_endpoint", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    type: messageType,
+                    data: data,
+                    timestamp: Date.now()
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Server responded with status: ${response.status}`);
+            }
+            
+            const result = await response.json();
+            return result;
+        } catch (error) {
+            console.error("Failed to send message to server:", error);
+            throw error;
+        }
+    }
+    
+    handleServerMessage(message) {
+        console.log("Received from server:", message);
+        
+        switch (message.type) {
+            case "progress_update":
+                this.updateProgress(message.data);
+                break;
+            case "error":
+                this.handleError(message.data);
+                break;
+            case "result":
+                this.handleResult(message.data);
+                break;
+            default:
+                console.warn("Unknown message type:", message.type);
+        }
+    }
+    
+    updateProgress(progressData) {
+        const progressBar = document.getElementById("custom-progress");
+        if (progressBar) {
+            progressBar.style.width = `${progressData.percentage}%`;
+            progressBar.textContent = progressData.message;
+        }
+    }
+    
+    handleError(errorData) {
+        console.error("Server error:", errorData);
+        alert(`Error: ${errorData.message}`);
+    }
+    
+    handleResult(resultData) {
+        console.log("Processing complete:", resultData);
+    }
+}
+
+const communicator = new ServerCommunicator();
+
+app.registerExtension({
+    name: "ServerCommunication",
+    setup() {
+        window.serverCommunicator = communicator;
+    },
+    
+    nodeCreated(node) {
+        if (node.comfyClass === "CustomServerNode") {
+            node.addWidget("button", "Send to Server", null, () => {
+                communicator.sendToServer("process_request", {
+                    nodeId: node.id,
+                    parameters: node.widgets.map(w => ({ name: w.name, value: w.value }))
+                });
+            });
+        }
+    }
+});
+```
+
+### Receive Real-time Updates
+
+```javascript
+class RealtimeUpdater {
+    constructor() {
+        this.websocket = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.reconnectDelay = 1000;
+        
+        this.connect();
+    }
+    
+    connect() {
+        try {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/custom`;
+            
+            this.websocket = new WebSocket(wsUrl);
+            
+            this.websocket.onopen = () => {
+                console.log("WebSocket connected");
+                this.reconnectAttempts = 0;
+                this.onConnected();
+            };
+            
+            this.websocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleMessage(data);
+                } catch (error) {
+                    console.error("Failed to parse WebSocket message:", error);
+                }
+            };
+            
+            this.websocket.onclose = () => {
+                console.log("WebSocket disconnected");
+                this.attemptReconnect();
+            };
+            
+            this.websocket.onerror = (error) => {
+                console.error("WebSocket error:", error);
+            };
+            
+        } catch (error) {
+            console.error("Failed to create WebSocket connection:", error);
+            this.attemptReconnect();
+        }
+    }
+    
+    attemptReconnect() {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+            
+            setTimeout(() => {
+                this.connect();
+            }, this.reconnectDelay * this.reconnectAttempts);
+        } else {
+            console.error("Max reconnection attempts reached");
+        }
+    }
+    
+    onConnected() {
+        this.send({
+            type: "subscribe",
+            channels: ["progress", "errors", "results"]
+        });
+    }
+    
+    send(data) {
+        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+            this.websocket.send(JSON.stringify(data));
+        } else {
+            console.warn("WebSocket not connected, message not sent:", data);
+        }
+    }
+    
+    handleMessage(data) {
+        switch (data.type) {
+            case "node_progress":
+                this.updateNodeProgress(data.nodeId, data.progress);
+                break;
+            case "node_complete":
+                this.markNodeComplete(data.nodeId, data.result);
+                break;
+            case "workflow_error":
+                this.handleWorkflowError(data.error);
+                break;
+            default:
+                console.log("Received message:", data);
+        }
+    }
+    
+    updateNodeProgress(nodeId, progress) {
+        const node = app.graph.getNodeById(nodeId);
+        if (node) {
+            node.progress = progress;
+            node.setDirtyCanvas(true);
+        }
+    }
+    
+    markNodeComplete(nodeId, result) {
+        const node = app.graph.getNodeById(nodeId);
+        if (node) {
+            node.progress = 100;
+            node.lastResult = result;
+            node.setDirtyCanvas(true);
+        }
+    }
+    
+    handleWorkflowError(error) {
+        console.error("Workflow error:", error);
+        app.ui.dialog.show(`Workflow Error: ${error.message}`);
+    }
+}
+
+const realtimeUpdater = new RealtimeUpdater();
+
+app.registerExtension({
+    name: "RealtimeUpdates",
+    setup() {
+        window.realtimeUpdater = realtimeUpdater;
+    }
+});
+```
+
+## Advanced UI Customization
+
+### Custom Node Appearance
+
+```javascript
+app.registerExtension({
+    name: "CustomNodeAppearance",
+    
+    beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "CustomStyledNode") {
+            const originalDrawForeground = nodeType.prototype.onDrawForeground;
+            
+            nodeType.prototype.onDrawForeground = function(ctx) {
+                originalDrawForeground?.apply(this, arguments);
+                
+                const margin = 10;
+                const radius = 5;
+                
+                ctx.save();
+                
+                ctx.fillStyle = this.progress ? 
+                    `hsl(${120 * (this.progress / 100)}, 70%, 50%)` : 
+                    "#333";
+                
+                this.roundRect(ctx, margin, -LiteGraph.NODE_TITLE_HEIGHT + margin, 
+                             this.size[0] - margin * 2, LiteGraph.NODE_TITLE_HEIGHT - margin * 2, radius);
+                ctx.fill();
+                
+                if (this.progress !== undefined) {
+                    ctx.fillStyle = "#fff";
+                    ctx.font = "12px Arial";
+                    ctx.textAlign = "center";
+                    ctx.fillText(`${this.progress}%`, this.size[0] / 2, -LiteGraph.NODE_TITLE_HEIGHT / 2 + 4);
+                }
+                
+                ctx.restore();
+            };
+            
+            nodeType.prototype.roundRect = function(ctx, x, y, width, height, radius) {
+                ctx.beginPath();
+                ctx.moveTo(x + radius, y);
+                ctx.lineTo(x + width - radius, y);
+                ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+                ctx.lineTo(x + width, y + height - radius);
+                ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+                ctx.lineTo(x + radius, y + height);
+                ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+                ctx.lineTo(x, y + radius);
+                ctx.quadraticCurveTo(x, y, x + radius, y);
+                ctx.closePath();
+            };
+        }
+    }
+});
+```
+
+### Dynamic Node Input Updates
+
+```javascript
+app.registerExtension({
+    name: "DynamicInputUpdates",
+    
+    beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "DynamicNode") {
+            nodeType.prototype.onConnectionsChange = function(type, index, connected, link_info) {
+                if (type === LiteGraph.INPUT && connected) {
+                    this.updateInputsBasedOnConnection(index, link_info);
+                }
+            };
+            
+            nodeType.prototype.updateInputsBasedOnConnection = function(inputIndex, linkInfo) {
+                const sourceNode = this.graph.getNodeById(linkInfo.origin_id);
+                const sourceOutput = sourceNode.outputs[linkInfo.origin_slot];
+                
+                if (sourceOutput.type === "IMAGE") {
+                    this.addImageProcessingInputs();
+                } else if (sourceOutput.type === "STRING") {
+                    this.addTextProcessingInputs();
+                }
+                
+                this.setSize(this.computeSize());
+            };
+            
+            nodeType.prototype.addImageProcessingInputs = function() {
+                if (!this.inputs.find(input => input.name === "brightness")) {
+                    this.addInput("brightness", "FLOAT");
+                    this.addInput("contrast", "FLOAT");
+                }
+            };
+            
+            nodeType.prototype.addTextProcessingInputs = function() {
+                if (!this.inputs.find(input => input.name === "case_mode")) {
+                    this.addInput("case_mode", "STRING");
+                    this.addInput("trim_whitespace", "BOOLEAN");
+                }
+            };
+        }
+    }
+});
+```
+
+## Workflow Operations
+
+### Auto-save Workflow
+
+```javascript
+class WorkflowAutoSaver {
+    constructor(interval = 30000) {
+        this.interval = interval;
+        this.lastSave = Date.now();
+        this.hasChanges = false;
+        
+        this.setupAutoSave();
+        this.setupChangeDetection();
+    }
+    
+    setupAutoSave() {
+        setInterval(() => {
+            if (this.hasChanges && Date.now() - this.lastSave > this.interval) {
+                this.saveWorkflow();
+            }
+        }, 5000);
+    }
+    
+    setupChangeDetection() {
+        const originalOnChange = app.graph.onAfterChange;
+        app.graph.onAfterChange = () => {
+            originalOnChange?.apply(app.graph, arguments);
+            this.hasChanges = true;
+        };
+    }
+    
+    async saveWorkflow() {
+        try {
+            const workflow = app.graph.serialize();
+            const timestamp = new Date().toISOString();
+            const filename = `autosave_${timestamp.replace(/[:.]/g, '-')}.json`;
+            
+            localStorage.setItem('comfyui_autosave', JSON.stringify({
+                workflow: workflow,
+                timestamp: timestamp,
+                filename: filename
+            }));
+            
+            this.lastSave = Date.now();
+            this.hasChanges = false;
+            
+            console.log(`Workflow auto-saved: ${filename}`);
+            
+        } catch (error) {
+            console.error("Failed to auto-save workflow:", error);
+        }
+    }
+    
+    loadLastAutosave() {
+        try {
+            const autosave = localStorage.getItem('comfyui_autosave');
+            if (autosave) {
+                const data = JSON.parse(autosave);
+                app.loadGraphData(data.workflow);
+                console.log(`Loaded autosave from: ${data.timestamp}`);
+                return true;
+            }
+        } catch (error) {
+            console.error("Failed to load autosave:", error);
+        }
+        return false;
+    }
+}
+
+const autoSaver = new WorkflowAutoSaver();
+
+app.registerExtension({
+    name: "WorkflowAutoSave",
+    setup() {
+        window.workflowAutoSaver = autoSaver;
+        
+        const loadAutosaveButton = document.createElement('button');
+        loadAutosaveButton.textContent = 'Load Autosave';
+        loadAutosaveButton.onclick = () => autoSaver.loadLastAutosave();
+        
+        const menu = document.querySelector('.comfy-menu');
+        if (menu) {
+            menu.appendChild(loadAutosaveButton);
+        }
+    }
+});
+```
+
+### Batch Node Operations
+
+```javascript
+class BatchNodeOperations {
+    static selectNodesByType(nodeType) {
+        const nodes = app.graph.nodes.filter(node => node.type === nodeType);
+        app.canvas.selectNodes(nodes);
+        return nodes;
+    }
+    
+    static updateSelectedNodesProperty(property, value) {
+        const selectedNodes = app.canvas.selected_nodes;
+        if (!selectedNodes || Object.keys(selectedNodes).length === 0) {
+            console.warn("No nodes selected");
+            return;
+        }
+        
+        Object.values(selectedNodes).forEach(node => {
+            if (node.properties) {
+                node.properties[property] = value;
+            }
+            
+            const widget = node.widgets?.find(w => w.name === property);
+            if (widget) {
+                widget.value = value;
+                if (widget.callback) {
+                    widget.callback(value);
+                }
+            }
+        });
+        
+        app.graph.setDirtyCanvas(true);
+    }
+    
+    static alignSelectedNodes(direction = "horizontal") {
+        const selectedNodes = Object.values(app.canvas.selected_nodes || {});
+        if (selectedNodes.length < 2) {
+            console.warn("Need at least 2 nodes selected for alignment");
+            return;
+        }
+        
+        if (direction === "horizontal") {
+            const avgY = selectedNodes.reduce((sum, node) => sum + node.pos[1], 0) / selectedNodes.length;
+            selectedNodes.forEach(node => {
+                node.pos[1] = avgY;
+            });
+        } else if (direction === "vertical") {
+            const avgX = selectedNodes.reduce((sum, node) => sum + node.pos[0], 0) / selectedNodes.length;
+            selectedNodes.forEach(node => {
+                node.pos[0] = avgX;
+            });
+        }
+        
+        app.graph.setDirtyCanvas(true);
+    }
+    
+    static distributeSelectedNodes(direction = "horizontal", spacing = 200) {
+        const selectedNodes = Object.values(app.canvas.selected_nodes || {});
+        if (selectedNodes.length < 3) {
+            console.warn("Need at least 3 nodes selected for distribution");
+            return;
+        }
+        
+        selectedNodes.sort((a, b) => {
+            return direction === "horizontal" ? a.pos[0] - b.pos[0] : a.pos[1] - b.pos[1];
+        });
+        
+        const startPos = direction === "horizontal" ? selectedNodes[0].pos[0] : selectedNodes[0].pos[1];
+        
+        selectedNodes.forEach((node, index) => {
+            if (direction === "horizontal") {
+                node.pos[0] = startPos + index * spacing;
+            } else {
+                node.pos[1] = startPos + index * spacing;
+            }
+        });
+        
+        app.graph.setDirtyCanvas(true);
+    }
+}
+
+app.registerExtension({
+    name: "BatchNodeOperations",
+    setup() {
+        window.BatchNodeOps = BatchNodeOperations;
+        
+        const originalGetCanvasMenuOptions = LGraphCanvas.prototype.getCanvasMenuOptions;
+        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+            const options = originalGetCanvasMenuOptions.apply(this, arguments);
+            
+            options.push(null);
+            options.push({
+                content: "Batch Operations",
+                has_submenu: true,
+                callback: (value, options, e, menu, node) => {
+                    const submenu = new LiteGraph.ContextMenu([
+                        {
+                            content: "Align Horizontal",
+                            callback: () => BatchNodeOperations.alignSelectedNodes("horizontal")
+                        },
+                        {
+                            content: "Align Vertical", 
+                            callback: () => BatchNodeOperations.alignSelectedNodes("vertical")
+                        },
+                        {
+                            content: "Distribute Horizontal",
+                            callback: () => BatchNodeOperations.distributeSelectedNodes("horizontal")
+                        },
+                        {
+                            content: "Distribute Vertical",
+                            callback: () => BatchNodeOperations.distributeSelectedNodes("vertical")
+                        }
+                    ], {
+                        event: e,
+                        parentMenu: menu
+                    });
+                }
+            });
+            
+            return options;
+        };
+    }
+});
+```
+
 ## Catch clicks on your node
 
 `node` has a mouseDown method you can hijack. 
