@@ -1127,3 +1127,364 @@ app.registerExtension({
   }
 });
 ```
+
+## 前端本地化集成
+
+### 获取和使用本地化数据
+
+```javascript
+import { api } from "../../scripts/api.js";
+
+app.registerExtension({
+  name: "Comfy.LocalizationExample",
+  
+  async setup() {
+    // 获取所有自定义节点的本地化数据
+    try {
+      const i18nData = await api.getCustomNodesI18n();
+      this.translations = i18nData;
+      console.log("本地化数据已加载:", this.translations);
+    } catch (error) {
+      console.error("加载本地化数据失败:", error);
+      this.translations = {};
+    }
+  },
+  
+  beforeRegisterNodeDef(nodeType, nodeData, app) {
+    // 应用本地化到节点定义
+    const nodePackage = this.getNodePackage(nodeData.name);
+    const nodeTranslations = this.translations[nodePackage]?.[nodeData.name];
+    
+    if (nodeTranslations) {
+      // 更新节点标题
+      if (nodeTranslations.title) {
+        nodeType.title = nodeTranslations.title;
+      }
+      
+      // 更新节点描述
+      if (nodeTranslations.description) {
+        nodeType.prototype.description = nodeTranslations.description;
+      }
+      
+      // 应用输入本地化
+      this.localizeInputs(nodeType, nodeData, nodeTranslations);
+      
+      // 应用小部件本地化
+      this.localizeWidgets(nodeType, nodeTranslations);
+    }
+  },
+  
+  nodeCreated(node, app) {
+    // 为节点添加本地化的右键菜单
+    this.addLocalizedContextMenu(node);
+    
+    // 添加本地化的工具提示
+    this.addLocalizedTooltips(node);
+  },
+  
+  // 辅助方法：获取节点包名
+  getNodePackage(nodeName) {
+    // 从节点名称推断包名，或使用其他逻辑
+    // 这里假设节点名称格式为 "PackageName.NodeName"
+    const parts = nodeName.split('.');
+    return parts.length > 1 ? parts[0] : 'default';
+  },
+  
+  // 本地化输入
+  localizeInputs(nodeType, nodeData, translations) {
+    if (!translations.inputs) return;
+    
+    const originalOnConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function(side, slot, connect, link_info, output) {
+      const result = originalOnConnectionsChange?.apply(this, arguments);
+      
+      // 更新输入标签
+      if (this.inputs) {
+        this.inputs.forEach((input, index) => {
+          const localizedName = translations.inputs[input.name];
+          if (localizedName) {
+            input.label = localizedName;
+          }
+        });
+      }
+      
+      return result;
+    };
+  },
+  
+  // 本地化小部件
+  localizeWidgets(nodeType, translations) {
+    if (!translations.widgets) return;
+    
+    const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function() {
+      const result = originalOnNodeCreated?.apply(this, arguments);
+      
+      // 更新小部件标签
+      if (this.widgets) {
+        this.widgets.forEach(widget => {
+          const localizedName = translations.widgets[widget.name];
+          if (localizedName) {
+            widget.label = localizedName;
+          }
+        });
+      }
+      
+      return result;
+    };
+  },
+  
+  // 添加本地化的右键菜单
+  addLocalizedContextMenu(node) {
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      // 获取命令翻译
+      const nodePackage = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .getNodePackage(this.type);
+      const commands = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .translations[nodePackage]?.commands || {};
+      
+      // 添加本地化菜单项
+      options.push(null); // 分隔线
+      options.push({
+        content: commands.view_node_info || "查看节点信息",
+        callback: () => {
+          this.showLocalizedInfo();
+        }
+      });
+      
+      options.push({
+        content: commands.reset_node || "重置节点",
+        callback: () => {
+          this.resetToDefaults();
+        }
+      });
+      
+      return options;
+    };
+    
+    // 添加本地化信息显示方法
+    node.showLocalizedInfo = function() {
+      const nodePackage = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .getNodePackage(this.type);
+      const nodeTranslations = app.extensions.find(ext => ext.name === "Comfy.LocalizationExample")
+        .translations[nodePackage]?.[this.type] || {};
+      
+      const info = `
+节点类型: ${nodeTranslations.title || this.type}
+描述: ${nodeTranslations.description || '无描述'}
+输入数量: ${this.inputs ? this.inputs.length : 0}
+输出数量: ${this.outputs ? this.outputs.length : 0}
+小部件数量: ${this.widgets ? this.widgets.length : 0}
+      `.trim();
+      
+      alert(info);
+    };
+    
+    // 添加重置方法
+    node.resetToDefaults = function() {
+      if (this.widgets) {
+        this.widgets.forEach(widget => {
+          if (widget.options && 'default' in widget.options) {
+            widget.value = widget.options.default;
+          }
+        });
+      }
+      console.log("节点已重置为默认值");
+    };
+  },
+  
+  // 添加本地化工具提示
+  addLocalizedTooltips(node) {
+    const nodePackage = this.getNodePackage(node.type);
+    const tooltips = this.translations[nodePackage]?.tooltips || {};
+    
+    // 为输入添加工具提示
+    if (node.inputs && tooltips) {
+      node.inputs.forEach(input => {
+        const tooltip = tooltips[input.name];
+        if (tooltip) {
+          input.tooltip = tooltip;
+        }
+      });
+    }
+    
+    // 为小部件添加工具提示
+    if (node.widgets && tooltips) {
+      node.widgets.forEach(widget => {
+        const tooltip = tooltips[widget.name];
+        if (tooltip) {
+          widget.tooltip = tooltip;
+        }
+      });
+    }
+  }
+});
+```
+
+### 本地化工具类
+
+```javascript
+// 本地化工具类
+class ComfyI18n {
+  constructor() {
+    this.currentLanguage = 'en';
+    this.translations = {};
+    this.fallbackLanguage = 'en';
+  }
+  
+  async init() {
+    // 从本地存储获取语言设置
+    this.currentLanguage = localStorage.getItem('comfy_language') || 'en';
+    
+    // 加载翻译数据
+    await this.loadTranslations();
+  }
+  
+  async loadTranslations() {
+    try {
+      const i18nData = await api.getCustomNodesI18n();
+      this.translations = i18nData;
+    } catch (error) {
+      console.error("加载翻译失败:", error);
+    }
+  }
+  
+  // 获取翻译文本
+  t(key, options = {}) {
+    const {
+      package: packageName = 'default',
+      category = 'main',
+      defaultValue = key,
+      interpolation = {}
+    } = options;
+    
+    let text = this.getTranslation(key, packageName, category);
+    
+    // 如果没有找到翻译，使用默认值
+    if (!text) {
+      text = defaultValue;
+    }
+    
+    // 处理插值
+    if (Object.keys(interpolation).length > 0) {
+      text = this.interpolate(text, interpolation);
+    }
+    
+    return text;
+  }
+  
+  getTranslation(key, packageName, category) {
+    try {
+      // 尝试当前语言
+      let translation = this.translations[this.currentLanguage]?.[packageName]?.[category]?.[key];
+      
+      // 如果没有找到，尝试回退语言
+      if (!translation && this.currentLanguage !== this.fallbackLanguage) {
+        translation = this.translations[this.fallbackLanguage]?.[packageName]?.[category]?.[key];
+      }
+      
+      return translation;
+    } catch (error) {
+      return null;
+    }
+  }
+  
+  // 字符串插值
+  interpolate(text, values) {
+    return text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+      return values[key] !== undefined ? values[key] : match;
+    });
+  }
+  
+  // 设置语言
+  setLanguage(languageCode) {
+    this.currentLanguage = languageCode;
+    localStorage.setItem('comfy_language', languageCode);
+  }
+  
+  // 获取当前语言
+  getLanguage() {
+    return this.currentLanguage;
+  }
+  
+  // 格式化数字
+  formatNumber(number, options = {}) {
+    try {
+      return new Intl.NumberFormat(this.currentLanguage, options).format(number);
+    } catch (error) {
+      return number.toString();
+    }
+  }
+  
+  // 格式化日期
+  formatDate(date, options = {}) {
+    try {
+      return new Intl.DateTimeFormat(this.currentLanguage, options).format(date);
+    } catch (error) {
+      return date.toString();
+    }
+  }
+  
+  // 格式化相对时间
+  formatRelativeTime(value, unit) {
+    try {
+      const rtf = new Intl.RelativeTimeFormat(this.currentLanguage, { numeric: 'auto' });
+      return rtf.format(value, unit);
+    } catch (error) {
+      return `${value} ${unit}`;
+    }
+  }
+}
+
+// 创建全局实例
+window.comfyI18n = new ComfyI18n();
+
+// 在应用启动时初始化
+app.registerExtension({
+  name: "Comfy.I18nInit",
+  async setup() {
+    await window.comfyI18n.init();
+    console.log("本地化系统已初始化");
+  }
+});
+
+// 使用示例
+app.registerExtension({
+  name: "Comfy.I18nExample",
+  nodeCreated(node, app) {
+    // 使用本地化工具
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      options.push({
+        content: window.comfyI18n.t('copy_node', {
+          package: 'core',
+          category: 'commands',
+          defaultValue: 'Copy Node'
+        }),
+        callback: () => {
+          // 复制节点逻辑
+        }
+      });
+      
+      options.push({
+        content: window.comfyI18n.t('processing_time', {
+          package: 'core',
+          category: 'main',
+          defaultValue: 'Processing time: {{time}}ms',
+          interpolation: { time: this.lastProcessingTime || 0 }
+        }),
+        callback: () => {
+          // 显示处理时间
+        }
+      });
+      
+      return options;
+    };
+  }
+});
+```
