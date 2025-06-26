@@ -1,0 +1,152 @@
+---
+title: "如何排查和解决 ComfyUI 中模型相关的问题"
+description: "故障排除模型相关问题，包括架构不匹配、缺少模型和加载错误"
+icon: "cube"
+sidebarTitle: "模型问题"
+---
+
+## 模型架构不匹配
+
+**症状：** 生成过程中出现张量维度错误，特别是在 VAE 解码阶段
+
+**常见错误消息：**
+- `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [4, 4, 1, 1], expected input[1, 16, 144, 112] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [320, 4, 3, 3], expected input[2, 16, 192, 128] to have 4 channels, but got 16 channels instead`
+- `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
+- `Tensors must have same number of dimensions: got 2 and 3`
+- `mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)`
+
+**根本原因：** 将来自不同架构系列的模型混合使用
+
+### 解决方案
+
+1. **验证模型系列兼容性：**
+   - **Flux 模型**使用 16 通道潜在空间，配合双文本编码器调节（CLIP-L + T5-XXL）
+   - **SD1.5 模型**使用 4 通道潜在空间，配合单个 CLIP ViT-L/14 文本编码器
+   - **SDXL 模型**使用 4 通道潜在空间，配合双文本编码器（CLIP ViT-L/14 + OpenCLIP ViT-bigG/14）
+   - **SD3 模型**使用 16 通道潜在空间，配合三重文本编码器调节（CLIP-L + OpenCLIP bigG + T5-XXL）
+   - **ControlNet 模型**必须与基础检查点的架构匹配（SD1.5 ControlNet 仅适用于 SD1.5 检查点，SDXL ControlNet 仅适用于 SDXL 检查点，等等）
+
+2. **常见不匹配场景和修复：**
+
+   **Flux + 错误的 VAE：**
+   ```
+   问题：将 taesd 或 sdxl_vae.safetensors 与 Flux 检查点一起使用
+   修复：使用来自 Hugging Face Flux 发布的 ae.safetensors（Flux VAE）
+   ```
+
+   **Flux + 不正确的 CLIP 配置：**
+   ```
+   问题：在 DualClipLoader 的两个 CLIP 插槽中都使用 t5xxl_fp8_e4m3fn.safetensors
+   修复：在一个插槽中使用 t5xxl_fp8_e4m3fn.safetensors，在另一个插槽中使用 clip_l.safetensors
+   ```
+
+   **ControlNet 架构不匹配：**
+   ```
+   问题：SD1.5 ControlNet 与 SDXL 检查点（或反之）
+   错误："mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)"
+   修复：使用为您的检查点架构设计的 ControlNet 模型
+        - SD1.5 检查点需要 SD1.5 ControlNet
+        - SDXL 检查点需要 SDXL ControlNet
+   ```
+
+3. **快速诊断：**
+   ```bash
+   # 检查错误是否发生在 VAE 解码阶段
+   # 寻找 "expected input[X, Y, Z] to have N channels, but got M channels"
+   # Y 值表示通道数：4 = SD 模型，16 = Flux 模型
+   ```
+
+4. **预防策略：**
+   - 将所有工作流模型保持在同一架构系列内
+   - 从同一来源/发布下载完整的模型包
+   - 使用 ComfyUI 管理器的模型兼容性指示器
+   - 在自定义之前使用默认示例测试工作流
+
+## 缺少模型错误
+
+**错误消息：** 
+```
+Prompt execution failed
+Prompt outputs failed validation:
+CheckpointLoaderSimple:
+- Value not in list: ckpt_name: 'model-name.safetensors' not in []
+```
+
+### 解决方案
+
+1. **下载所需模型：**
+   - 使用 ComfyUI 管理器自动下载模型
+   - 验证模型在正确的子文件夹中
+
+2. **检查模型路径：**
+   - **检查点**：`models/checkpoints/`
+   - **VAE**：`models/vae/`
+   - **LoRA**：`models/loras/`
+   - **ControlNet**：`models/controlnet/`
+   - **嵌入**：`models/embeddings/`
+
+3. **在 UI 之间共享模型或使用自定义路径：**
+   - 参见 [ComfyUI 模型共享或自定义模型文件夹存储位置配置](/zh-CN/installation/comfyui_portable_windows#2-comfyui-模型共享或自定义模型文件夹存储位置配置) 获取详细说明
+   - 编辑 `extra_model_paths.yaml` 文件添加自定义模型目录
+
+### 模型搜索路径配置
+
+如果您的模型在自定义位置，请参见详细的 [ComfyUI 模型共享或自定义模型文件夹存储位置配置](/zh-CN/installation/comfyui_portable_windows#2-comfyui-模型共享或自定义模型文件夹存储位置配置) 指南来配置 ComfyUI 找到它们。
+
+## 模型加载错误
+
+**错误消息：** "Error while deserializing header"
+
+### 解决方案
+
+1. **重新下载模型** - 下载过程中文件可能已损坏
+2. **检查可用磁盘空间** - 确保有足够的空间用于模型加载（模型可能 2-15GB+）
+3. **检查文件权限** - 确保 ComfyUI 可以读取模型文件
+4. **使用不同模型测试** - 验证问题是模型特定的还是系统范围的
+
+## 模型性能问题
+
+### 模型加载缓慢
+
+**症状：** 切换模型或开始生成时长时间延迟
+
+**解决方案：**
+1. **将模型保持在显存中：**
+   ```bash
+   python main.py --highvram
+   ```
+
+2. **使用更快的存储：**
+   - 如果使用 HDD，将模型移至 SSD
+   - 使用 NVMe SSD 获得最佳性能
+
+3. **调整缓存设置：**
+   ```bash
+   python main.py --cache-classic       # 使用旧式（积极）缓存
+   ```
+
+### 大型模型的内存问题
+
+**"RuntimeError: CUDA out of memory"：**
+
+```bash
+# 渐进式内存减少
+python main.py --lowvram          # 首先尝试
+python main.py --novram           # 如果 lowvram 不够
+python main.py --cpu              # 最后手段
+```
+
+**模型特定的内存优化：**
+```bash
+# 强制更低精度
+python main.py --force-fp16
+
+# 减少注意力内存使用
+python main.py --use-pytorch-cross-attention
+```
+
+<Note>
+有关其他模型配置和设置信息，请参见[模型文档](/zh-CN/development/core-concepts/models)。
+</Note>

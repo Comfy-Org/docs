@@ -7,6 +7,7 @@ on:
     paths:
       - '**/*.mdx'
       - '!zh-CN/**/*.mdx'
+      - '!snippets/zh/**/*.mdx'
 
 jobs:
   check-zh-cn-translations:
@@ -30,23 +31,23 @@ jobs:
         id: check-translations
         run: |
           # Get list of changed MDX files
-          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/")
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" || true)
           
           # Get list of deleted MDX files (potentially moved)
-          DELETED_FILES=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/")
+          DELETED_FILES=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" || true)
           
           # Get list of added MDX files (potentially destinations of moves)
-          ADDED_FILES=$(git diff --name-only --diff-filter=A ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/")
+          ADDED_FILES=$(git diff --name-only --diff-filter=A ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" || true)
           
           # Exit if no MDX files were changed, deleted or added
           if [ -z "$CHANGED_FILES" ] && [ -z "$DELETED_FILES" ] && [ -z "$ADDED_FILES" ]; then
-            echo "No MDX files changed outside of zh-CN directory. Skipping check."
+            echo "No MDX files changed outside of zh-CN and snippets/zh directories. Skipping check."
             exit 0
           fi
           
           # Check for moved files - these would be deleted and added in the same PR
-          MOVED_FILES=()
-          MOVE_DESTINATIONS=()
+          MOVED_FILES=""
+          MOVE_DESTINATIONS=""
           
           if [ ! -z "$DELETED_FILES" ] && [ ! -z "$ADDED_FILES" ]; then
             echo "Potential file moves detected:"
@@ -81,12 +82,12 @@ jobs:
                   echo "✅ Found redirect for moved file: ${deleted_file}"
                 else
                   echo "❌ Missing redirect in docs.json for: ${deleted_file}"
-                  MOVED_FILES+=("${deleted_file}")
+                  MOVED_FILES="$MOVED_FILES ${deleted_file}"
                 fi
               done
             else
               # If docs.json wasn't changed, all deleted files are suspect
-              MOVED_FILES=($DELETED_FILES)
+              MOVED_FILES="$DELETED_FILES"
             fi
           fi
           
@@ -95,10 +96,16 @@ jobs:
           echo "------------------------"
           
           # Check each file for corresponding zh-CN updates
-          MISSING_TRANSLATIONS=()
+          MISSING_TRANSLATIONS=""
           for file in $CHANGED_FILES; do
-            # The expected zh-CN path
-            zh_file="zh-CN/${file}"
+            # Determine the corresponding zh-CN path based on whether it's a snippet or not
+            if [[ $file == snippets/* ]]; then
+              # For snippets, the Chinese version should be in snippets/zh/
+              zh_file="${file/snippets\//snippets\/zh\/}"
+            else
+              # For regular docs, the Chinese version should be in zh-CN/
+              zh_file="zh-CN/${file}"
+            fi
             
             # Check if the corresponding zh-CN file was also modified
             if git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "^${zh_file}$"; then
@@ -107,25 +114,31 @@ jobs:
               # Check if the zh-CN file exists at all
               if [ -f "${zh_file}" ]; then
                 echo "❌ Missing update to existing file: ${zh_file}"
-                MISSING_TRANSLATIONS+=("${zh_file}")
+                MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${zh_file}"
               else
                 echo "❌ Missing equivalent file: ${zh_file}"
-                MISSING_TRANSLATIONS+=("${zh_file}")
+                MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${zh_file}"
               fi
             fi
           done
           
-          # For added files, we should check if corresponding zh-CN files were also added
+          # For added files, check corresponding zh-CN files
           for file in $ADDED_FILES; do
-            # The expected zh-CN path
-            zh_file="zh-CN/${file}"
+            # Determine the corresponding zh-CN path based on whether it's a snippet or not
+            if [[ $file == snippets/* ]]; then
+              # For snippets, the Chinese version should be in snippets/zh/
+              zh_file="${file/snippets\//snippets\/zh\/}"
+            else
+              # For regular docs, the Chinese version should be in zh-CN/
+              zh_file="zh-CN/${file}"
+            fi
             
             # Check if the corresponding zh-CN file was also added
             if git diff --name-only --diff-filter=A ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "^${zh_file}$"; then
               echo "✅ Found corresponding added file: ${zh_file}"
             else
               echo "❌ Missing equivalent for added file: ${zh_file}"
-              MISSING_TRANSLATIONS+=("${zh_file}")
+              MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${zh_file}"
             fi
           done
           
@@ -133,21 +146,21 @@ jobs:
           SHOULD_FAIL="false"
           
           # Check for missing translations
-          if [ ${#MISSING_TRANSLATIONS[@]} -gt 0 ]; then
+          if [ "$MISSING_TRANSLATIONS" != "" ]; then
             SHOULD_FAIL="true"
             echo "------------------------"
             echo "❌ The following translations need to be updated:"
-            for missing in "${MISSING_TRANSLATIONS[@]}"; do
+            for missing in $MISSING_TRANSLATIONS; do
               echo "- $missing"
             done
           fi
           
           # Check for moved files without redirects
-          if [ ${#MOVED_FILES[@]} -gt 0 ]; then
+          if [ "$MOVED_FILES" != "" ]; then
             SHOULD_FAIL="true"
             echo "------------------------"
             echo "❌ The following files were moved but missing redirects in docs.json:"
-            for moved in "${MOVED_FILES[@]}"; do
+            for moved in $MOVED_FILES; do
               echo "- $moved"
             done
             echo "------------------------"
