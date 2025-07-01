@@ -73,7 +73,7 @@ rgba_image = torch.cat((rgb_image, mask), dim=-1)
 
 ```python
 class Noise_MixedNoise:
-    def __init__(self, nosie1, noise2, weight2):
+    def __init__(self, noise1, noise2, weight2):
         self.noise1  = noise1
         self.noise2  = noise2
         self.weight2 = weight2
@@ -85,4 +85,1365 @@ class Noise_MixedNoise:
         noise1 = self.noise1.generate_noise(input_latent)
         noise2 = self.noise2.generate_noise(input_latent)
         return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+```
+
+## 模型操作
+
+### 克隆和修改模型
+
+```python
+def modify_model(self, model, modification_strength):
+    # 始终克隆模型以避免修改原始模型
+    cloned_model = model.clone()
+    
+    # 应用修改
+    def patch_function(model_function):
+        def patched_function(x, timestep, context, **kwargs):
+            # 在这里应用你的修改逻辑
+            result = model_function(x, timestep, context, **kwargs)
+            return result * modification_strength
+        return patched_function
+    
+    # 应用补丁
+    cloned_model.set_model_unet_function_wrapper(patch_function)
+    return (cloned_model,)
+```
+
+### 合并模型
+
+```python
+def merge_models(self, model1, model2, ratio):
+    # 克隆第一个模型作为基础
+    merged_model = model1.clone()
+    
+    # 获取模型状态字典
+    state_dict1 = model1.model.state_dict()
+    state_dict2 = model2.model.state_dict()
+    
+    # 合并权重
+    merged_state_dict = {}
+    for key in state_dict1.keys():
+        if key in state_dict2:
+            merged_state_dict[key] = (
+                state_dict1[key] * (1.0 - ratio) + 
+                state_dict2[key] * ratio
+            )
+        else:
+            merged_state_dict[key] = state_dict1[key]
+    
+    # 加载合并后的权重
+    merged_model.model.load_state_dict(merged_state_dict)
+    return (merged_model,)
+```
+
+## 条件处理
+
+### 修改条件信息
+
+```python
+def modify_conditioning(self, conditioning, strength_multiplier):
+    # 条件是一个列表，每个元素包含 [tensor, dict]
+    modified_conditioning = []
+    
+    for cond_tensor, cond_dict in conditioning:
+        # 修改条件张量
+        modified_tensor = cond_tensor * strength_multiplier
+        
+        # 复制条件字典（可选择性修改）
+        modified_dict = cond_dict.copy()
+        modified_dict['strength'] = strength_multiplier
+        
+        modified_conditioning.append([modified_tensor, modified_dict])
+    
+    return (modified_conditioning,)
+```
+
+### 合并条件
+
+```python
+def combine_conditioning(self, cond1, cond2, ratio):
+    if len(cond1) != len(cond2):
+        raise ValueError("Conditioning lists must have the same length")
+    
+    combined_conditioning = []
+    for (tensor1, dict1), (tensor2, dict2) in zip(cond1, cond2):
+        # 确保张量形状匹配
+        if tensor1.shape != tensor2.shape:
+            raise ValueError("Conditioning tensors must have the same shape")
+        
+        # 线性插值合并
+        combined_tensor = tensor1 * (1.0 - ratio) + tensor2 * ratio
+        
+        # 合并字典信息
+        combined_dict = dict1.copy()
+        combined_dict.update(dict2)
+        combined_dict['blend_ratio'] = ratio
+        
+        combined_conditioning.append([combined_tensor, combined_dict])
+    
+    return (combined_conditioning,)
+```
+
+## 批处理操作
+
+### 分割批次
+
+```python
+def split_batch(self, images, batch_size):
+    # 输入: [B, H, W, C]
+    total_images = images.shape[0]
+    output_batches = []
+    
+    for i in range(0, total_images, batch_size):
+        end_idx = min(i + batch_size, total_images)
+        batch = images[i:end_idx]
+        output_batches.append(batch)
+    
+    return (output_batches,)
+```
+
+### 合并批次
+
+```python
+def merge_batches(self, image_batches):
+    # 检查所有批次的形状是否兼容
+    if not image_batches:
+        raise ValueError("No batches provided")
+    
+    # 获取参考形状（除了批次维度）
+    ref_shape = image_batches[0].shape[1:]
+    for batch in image_batches:
+        if batch.shape[1:] != ref_shape:
+            raise ValueError("All batches must have the same H, W, C dimensions")
+    
+    # 沿批次维度连接
+    merged = torch.cat(image_batches, dim=0)
+    return (merged,)
+```
+
+## 设备和内存管理
+
+### 设备转换
+
+```python
+def ensure_same_device(self, tensor1, tensor2):
+    # 确保两个张量在同一设备上
+    if tensor1.device != tensor2.device:
+        tensor2 = tensor2.to(tensor1.device)
+    return tensor1, tensor2
+
+def move_to_device(self, tensor, device_name="cuda"):
+    # 安全地移动张量到指定设备
+    try:
+        if device_name == "cuda" and torch.cuda.is_available():
+            return tensor.cuda()
+        elif device_name == "cpu":
+            return tensor.cpu()
+        else:
+            return tensor
+    except RuntimeError as e:
+        print(f"Failed to move tensor to {device_name}: {e}")
+        return tensor
+```
+
+### 内存优化
+
+```python
+def memory_efficient_processing(self, large_tensor):
+    # 处理大张量时的内存优化
+    original_device = large_tensor.device
+    
+    # 如果在 GPU 上且内存不足，移到 CPU
+    if original_device.type == 'cuda':
+        try:
+            # 尝试在 GPU 上处理
+            result = expensive_operation(large_tensor)
+        except torch.cuda.OutOfMemoryError:
+            print("GPU memory insufficient, processing on CPU")
+            # 移到 CPU 处理
+            cpu_tensor = large_tensor.cpu()
+            result = expensive_operation(cpu_tensor)
+            # 移回原设备
+            result = result.to(original_device)
+            # 清理 CPU 张量
+            del cpu_tensor
+    else:
+        result = expensive_operation(large_tensor)
+    
+    # 清理 GPU 缓存
+    if original_device.type == 'cuda':
+        torch.cuda.empty_cache()
+    
+    return (result,)
+```
+
+## 现代节点类型定义
+
+### 使用 ComfyNodeABC 基类
+
+```python
+from comfy.comfy_types.node_typing import ComfyNodeABC, InputTypeDict, IO
+import sys
+
+class ModernStringNode(ComfyNodeABC):
+    """现代化的字符串节点，使用类型注解和基类"""
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "value": (IO.STRING, {"multiline": True, "default": ""}),
+                "prefix": (IO.STRING, {"default": ""}),
+            },
+            "optional": {
+                "suffix": (IO.STRING, {"default": ""}),
+            }
+        }
+    
+    RETURN_TYPES = (IO.STRING,)
+    RETURN_NAMES = ("formatted_string",)
+    FUNCTION = "execute"
+    CATEGORY = "utils/text"
+    DESCRIPTION = "处理字符串的现代化节点实现"
+    
+    def execute(self, value: str, prefix: str = "", suffix: str = "") -> tuple[str]:
+        result = f"{prefix}{value}{suffix}"
+        return (result,)
+
+class ModernNumberNode(ComfyNodeABC):
+    """现代化的数字节点，展示完整的类型注解"""
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "value": (IO.FLOAT, {
+                    "min": -sys.maxsize, 
+                    "max": sys.maxsize,
+                    "step": 0.01,
+                    "control_after_generate": True
+                }),
+                "operation": (["add", "multiply", "power"], {"default": "add"}),
+                "operand": (IO.FLOAT, {"default": 1.0, "min": -1000.0, "max": 1000.0}),
+            }
+        }
+    
+    RETURN_TYPES = (IO.FLOAT,)
+    RETURN_NAMES = ("result",)
+    FUNCTION = "calculate"
+    CATEGORY = "utils/math"
+    
+    def calculate(self, value: float, operation: str, operand: float) -> tuple[float]:
+        if operation == "add":
+            result = value + operand
+        elif operation == "multiply":
+            result = value * operand
+        elif operation == "power":
+            result = value ** operand
+        else:
+            result = value
+        
+        return (result,)
+```
+
+### 高级输入验证
+
+```python
+class ValidatedImageProcessor(ComfyNodeABC):
+    """带有输入验证的图像处理节点"""
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "mode": (["enhance", "blur", "sharpen"], {"default": "enhance"}),
+            },
+            "optional": {
+                "mask": ("MASK",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "process"
+    CATEGORY = "image/processing"
+    
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        """高级输入验证"""
+        image = kwargs.get("image")
+        strength = kwargs.get("strength")
+        mode = kwargs.get("mode")
+        
+        # 验证图像
+        if image is not None:
+            if not isinstance(image, torch.Tensor):
+                return "图像必须是张量类型"
+            if len(image.shape) != 4:
+                return "图像必须是 4 维张量 [B, H, W, C]"
+            if image.shape[-1] not in [1, 3, 4]:
+                return "图像通道数必须是 1、3 或 4"
+        
+        # 验证强度参数
+        if strength is not None:
+            if not isinstance(strength, (int, float)):
+                return "强度参数必须是数字"
+            if strength < 0 or strength > 2:
+                return "强度参数必须在 0-2 之间"
+        
+        # 验证模式
+        if mode is not None:
+            if mode not in ["enhance", "blur", "sharpen"]:
+                return "模式必须是 enhance、blur 或 sharpen 之一"
+        
+        return True
+    
+    def process(self, image, strength, mode, mask=None):
+        # 实际的图像处理逻辑
+        processed_image = image.clone()
+        
+        if mode == "enhance":
+            processed_image = processed_image * (1.0 + strength * 0.2)
+        elif mode == "blur":
+            # 模糊处理逻辑
+            pass
+        elif mode == "sharpen":
+            # 锐化处理逻辑
+            pass
+        
+        # 应用蒙版（如果提供）
+        if mask is not None:
+            mask = mask.unsqueeze(-1).expand_as(processed_image)
+            processed_image = image * (1 - mask) + processed_image * mask
+        
+        return (processed_image,)
+```
+
+### 动态输入类型
+
+```python
+class DynamicInputNode:
+    """根据条件动态生成输入的节点"""
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        # 基础输入
+        inputs = {
+            "required": {
+                "mode": (["single", "batch", "advanced"], {"default": "single"}),
+                "base_value": ("FLOAT", {"default": 1.0}),
+            },
+            "optional": {}
+        }
+        
+        # 根据不同模式添加不同的输入
+        # 注意：这只是示例，实际中动态输入通常通过其他机制实现
+        return inputs
+    
+    RETURN_TYPES = ("FLOAT",)
+    FUNCTION = "process"
+    CATEGORY = "utils/dynamic"
+    
+    def process(self, mode, base_value, **kwargs):
+        if mode == "single":
+            return (base_value,)
+        elif mode == "batch":
+            # 批处理逻辑
+            return (base_value * 2,)
+        elif mode == "advanced":
+            # 高级处理逻辑
+            return (base_value * 3,)
+        
+        return (base_value,)
+```
+
+## 复杂节点模式
+
+### 多输出节点
+
+```python
+class MultiOutputAnalyzer:
+    """多输出分析节点，展示复杂的返回类型"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "analysis_type": (["basic", "detailed", "full"], {"default": "basic"}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK", "STRING", "FLOAT", "INT")
+    RETURN_NAMES = ("processed_image", "analysis_mask", "report", "confidence", "pixel_count")
+    FUNCTION = "analyze"
+    CATEGORY = "analysis"
+    
+    def analyze(self, image, analysis_type):
+        # 处理图像
+        processed_image = image.clone()
+        
+        # 生成分析蒙版
+        analysis_mask = torch.ones(image.shape[:-1], dtype=torch.float32)
+        
+        # 生成报告
+        if analysis_type == "basic":
+            report = f"基础分析完成，图像尺寸: {image.shape}"
+        elif analysis_type == "detailed":
+            report = f"详细分析完成，像素范围: {image.min():.3f} - {image.max():.3f}"
+        else:
+            report = f"完整分析完成，统计信息: 均值={image.mean():.3f}, 标准差={image.std():.3f}"
+        
+        # 计算置信度
+        confidence = float(torch.mean(image).item())
+        
+        # 计算像素数量
+        pixel_count = int(image.numel())
+        
+        return (processed_image, analysis_mask, report, confidence, pixel_count)
+```
+
+### 状态管理节点
+
+```python
+class StatefulProcessor:
+    """带有内部状态管理的节点"""
+    
+    def __init__(self):
+        self.processing_history = []
+        self.state_counter = 0
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_data": ("*",),  # 接受任意类型
+                "reset_state": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "state_info": ("STRING", {"default": ""}),
+            }
+        }
+    
+    RETURN_TYPES = ("*", "STRING", "INT")
+    RETURN_NAMES = ("output_data", "state_report", "process_count")
+    FUNCTION = "process_with_state"
+    CATEGORY = "utils/stateful"
+    
+    def process_with_state(self, input_data, reset_state, state_info=""):
+        if reset_state:
+            self.processing_history.clear()
+            self.state_counter = 0
+        
+        # 记录处理历史
+        self.processing_history.append({
+            "counter": self.state_counter,
+            "input_type": type(input_data).__name__,
+            "info": state_info,
+            "timestamp": time.time()
+        })
+        
+        self.state_counter += 1
+        
+        # 生成状态报告
+        state_report = f"处理次数: {self.state_counter}, 历史记录: {len(self.processing_history)} 条"
+        
+        # 处理数据（这里只是简单返回）
+        output_data = input_data
+        
+        return (output_data, state_report, self.state_counter)
+
+## 复杂图像处理模式
+
+### 基于 ComfyUI 源码的蒙版合成节点
+
+```python
+import torch
+import comfy.utils
+
+def composite_latent_masked(destination, source, x, y, mask=None, multiplier=8, resize_source=False):
+    """基于 ComfyUI nodes_mask.py 的潜空间合成函数"""
+    source = source.to(destination.device)
+    
+    if resize_source:
+        source = torch.nn.functional.interpolate(
+            source, 
+            size=(destination.shape[2], destination.shape[3]), 
+            mode="bilinear"
+        )
+    
+    source = comfy.utils.repeat_to_batch_size(source, destination.shape[0])
+    
+    # 限制坐标范围
+    x = max(-source.shape[3] * multiplier, min(x, destination.shape[3] * multiplier))
+    y = max(-source.shape[2] * multiplier, min(y, destination.shape[2] * multiplier))
+    
+    left, top = (x // multiplier, y // multiplier)
+    right, bottom = (left + source.shape[3], top + source.shape[2])
+    
+    if mask is None:
+        mask = torch.ones_like(source)
+    else:
+        mask = mask.to(destination.device, copy=True)
+        mask = torch.nn.functional.interpolate(
+            mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), 
+            size=(source.shape[2], source.shape[3]), 
+            mode="bilinear"
+        )
+        mask = comfy.utils.repeat_to_batch_size(mask, source.shape[0])
+    
+    # 计算可见区域边界
+    visible_width = destination.shape[3] - left + min(0, x)
+    visible_height = destination.shape[2] - top + min(0, y)
+    
+    mask = mask[:, :, :visible_height, :visible_width]
+    inverse_mask = torch.ones_like(mask) - mask
+    
+    source_portion = mask * source[:, :, :visible_height, :visible_width]
+    destination_portion = inverse_mask * destination[:, :, top:bottom, left:right]
+    
+    destination[:, :, top:bottom, left:right] = source_portion + destination_portion
+    return destination
+
+class LatentCompositeMaskedNode:
+    """基于 ComfyUI 源码的潜空间蒙版合成节点"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "destination": ("LATENT",),
+                "source": ("LATENT",),
+                "x": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
+                "y": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 8}),
+                "resize_source": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "mask": ("MASK",),
+            }
+        }
+    
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "composite"
+    CATEGORY = "latent"
+    
+    def composite(self, destination, source, x, y, resize_source, mask=None):
+        output = destination.copy()
+        destination_samples = destination["samples"].clone()
+        source_samples = source["samples"]
+        
+        output["samples"] = composite_latent_masked(
+            destination_samples, source_samples, x, y, mask, 8, resize_source
+        )
+        return (output,)
+```
+
+### 蒙版处理工具节点
+
+```python
+import scipy.ndimage
+import numpy as np
+
+class FeatherMaskNode:
+    """基于 ComfyUI 源码的蒙版羽化节点"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "left": ("INT", {"default": 0, "min": 0, "max": 1024, "step": 1}),
+                "top": ("INT", {"default": 0, "min": 0, "max": 1024, "step": 1}),
+                "right": ("INT", {"default": 0, "min": 0, "max": 1024, "step": 1}),
+                "bottom": ("INT", {"default": 0, "min": 0, "max": 1024, "step": 1}),
+            }
+        }
+    
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "feather"
+    CATEGORY = "mask"
+    
+    def feather(self, mask, left, top, right, bottom):
+        output = mask.clone()
+        
+        for i in range(output.shape[0]):
+            mask_np = output[i].numpy()
+            
+            # 创建羽化核
+            if left > 0:
+                feather_x = np.linspace(0, 1, left)
+                mask_np[:, :left] *= feather_x[np.newaxis, :]
+            
+            if top > 0:
+                feather_y = np.linspace(0, 1, top)
+                mask_np[:top, :] *= feather_y[:, np.newaxis]
+            
+            if right > 0:
+                feather_x = np.linspace(1, 0, right)
+                mask_np[:, -right:] *= feather_x[np.newaxis, :]
+            
+            if bottom > 0:
+                feather_y = np.linspace(1, 0, bottom)
+                mask_np[-bottom:, :] *= feather_y[:, np.newaxis]
+            
+            output[i] = torch.from_numpy(mask_np)
+        
+        return (output,)
+
+class GrowMaskNode:
+    """基于 ComfyUI 源码的蒙版扩展节点"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "expand": ("INT", {"default": 0, "min": -1024, "max": 1024, "step": 1}),
+                "tapered_corners": ("BOOLEAN", {"default": True}),
+            }
+        }
+    
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "expand_mask"
+    CATEGORY = "mask"
+    
+    def expand_mask(self, mask, expand, tapered_corners):
+        if expand == 0:
+            return (mask,)
+        
+        output = mask.clone()
+        
+        for i in range(output.shape[0]):
+            mask_np = output[i].numpy()
+            
+            if expand > 0:
+                # 膨胀操作
+                if tapered_corners:
+                    # 使用椭圆形结构元素
+                    kernel = np.ones((expand * 2 + 1, expand * 2 + 1))
+                    center = expand
+                    y, x = np.ogrid[:expand * 2 + 1, :expand * 2 + 1]
+                    mask_kernel = ((x - center) ** 2 + (y - center) ** 2) <= expand ** 2
+                    kernel = kernel * mask_kernel
+                else:
+                    # 使用方形结构元素
+                    kernel = np.ones((expand * 2 + 1, expand * 2 + 1))
+                
+                mask_np = scipy.ndimage.binary_dilation(mask_np, kernel)
+            else:
+                # 腐蚀操作
+                expand = abs(expand)
+                if tapered_corners:
+                    kernel = np.ones((expand * 2 + 1, expand * 2 + 1))
+                    center = expand
+                    y, x = np.ogrid[:expand * 2 + 1, :expand * 2 + 1]
+                    mask_kernel = ((x - center) ** 2 + (y - center) ** 2) <= expand ** 2
+                    kernel = kernel * mask_kernel
+                else:
+                    kernel = np.ones((expand * 2 + 1, expand * 2 + 1))
+                
+                mask_np = scipy.ndimage.binary_erosion(mask_np, kernel)
+            
+            output[i] = torch.from_numpy(mask_np.astype(np.float32))
+        
+        return (output,)
+```
+
+### 高级批处理节点
+
+```python
+class BatchProcessorNode:
+    """高级批处理节点，支持动态批次大小和内存优化"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "batch_size": ("INT", {"default": 4, "min": 1, "max": 32, "step": 1}),
+                "processing_mode": (["sequential", "parallel", "memory_optimized"], {"default": "sequential"}),
+                "operation": (["resize", "normalize", "enhance"], {"default": "normalize"}),
+            },
+            "optional": {
+                "target_size": ("INT", {"default": 512, "min": 64, "max": 2048, "step": 64}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.1}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("processed_images", "processing_report")
+    FUNCTION = "process_batch"
+    CATEGORY = "batch"
+    
+    def process_batch(self, images, batch_size, processing_mode, operation, target_size=512, strength=1.0):
+        total_images = images.shape[0]
+        processed_batches = []
+        processing_times = []
+        
+        # 根据处理模式选择策略
+        if processing_mode == "memory_optimized":
+            # 内存优化模式：逐个处理
+            batch_size = 1
+        
+        for i in range(0, total_images, batch_size):
+            start_time = time.time()
+            
+            # 获取当前批次
+            end_idx = min(i + batch_size, total_images)
+            current_batch = images[i:end_idx]
+            
+            # 处理当前批次
+            if operation == "resize":
+                processed_batch = self.resize_batch(current_batch, target_size)
+            elif operation == "normalize":
+                processed_batch = self.normalize_batch(current_batch, strength)
+            elif operation == "enhance":
+                processed_batch = self.enhance_batch(current_batch, strength)
+            else:
+                processed_batch = current_batch
+            
+            processed_batches.append(processed_batch)
+            
+            # 记录处理时间
+            processing_time = time.time() - start_time
+            processing_times.append(processing_time)
+            
+            # 内存清理
+            if processing_mode == "memory_optimized":
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        # 合并所有批次
+        final_images = torch.cat(processed_batches, dim=0)
+        
+        # 生成处理报告
+        total_time = sum(processing_times)
+        avg_time_per_batch = total_time / len(processing_times)
+        avg_time_per_image = total_time / total_images
+        
+        report = f"""批处理完成报告:
+- 总图像数: {total_images}
+- 批次大小: {batch_size}
+- 处理模式: {processing_mode}
+- 操作类型: {operation}
+- 总处理时间: {total_time:.2f}秒
+- 平均每批次时间: {avg_time_per_batch:.2f}秒
+- 平均每图像时间: {avg_time_per_image:.3f}秒
+- 处理速度: {total_images/total_time:.1f} 图像/秒"""
+        
+        return (final_images, report)
+    
+    def resize_batch(self, batch, target_size):
+        """批量调整图像大小"""
+        return torch.nn.functional.interpolate(
+            batch.permute(0, 3, 1, 2),
+            size=(target_size, target_size),
+            mode='bilinear',
+            align_corners=False
+        ).permute(0, 2, 3, 1)
+    
+    def normalize_batch(self, batch, strength):
+        """批量标准化图像"""
+        # 计算批次统计信息
+        batch_mean = batch.mean(dim=(1, 2, 3), keepdim=True)
+        batch_std = batch.std(dim=(1, 2, 3), keepdim=True)
+        
+        # 应用标准化
+        normalized = (batch - batch_mean) / (batch_std + 1e-8)
+        
+        # 混合原始图像和标准化图像
+        return batch * (1 - strength) + normalized * strength
+    
+    def enhance_batch(self, batch, strength):
+        """批量增强图像"""
+        # 简单的对比度和亮度增强
+        enhanced = torch.clamp(batch * (1 + strength * 0.2) + strength * 0.1, 0, 1)
+        return enhanced
+```
+
+### 异步处理节点
+
+```python
+import asyncio
+import concurrent.futures
+from typing import Any, Callable
+
+class AsyncProcessorNode:
+    """异步处理节点，支持长时间运行的任务"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_data": ("*",),
+                "processing_type": (["cpu_intensive", "io_bound", "mixed"], {"default": "cpu_intensive"}),
+                "max_workers": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1}),
+                "timeout": ("INT", {"default": 300, "min": 10, "max": 3600, "step": 10}),
+            },
+            "optional": {
+                "callback_url": ("STRING", {"default": ""}),
+            }
+        }
+    
+    RETURN_TYPES = ("*", "STRING", "FLOAT")
+    RETURN_NAMES = ("processed_data", "status_report", "processing_time")
+    FUNCTION = "process_async"
+    CATEGORY = "async"
+    
+    def process_async(self, input_data, processing_type, max_workers, timeout, callback_url=""):
+        start_time = time.time()
+        
+        try:
+            if processing_type == "cpu_intensive":
+                result = self.process_cpu_intensive(input_data, max_workers, timeout)
+            elif processing_type == "io_bound":
+                result = self.process_io_bound(input_data, max_workers, timeout)
+            else:  # mixed
+                result = self.process_mixed(input_data, max_workers, timeout)
+            
+            processing_time = time.time() - start_time
+            status = f"处理成功完成，耗时 {processing_time:.2f} 秒"
+            
+            # 如果提供了回调URL，发送通知
+            if callback_url:
+                self.send_callback_notification(callback_url, "success", processing_time)
+            
+            return (result, status, processing_time)
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            status = f"处理失败: {str(e)}，耗时 {processing_time:.2f} 秒"
+            
+            if callback_url:
+                self.send_callback_notification(callback_url, "error", processing_time, str(e))
+            
+            return (input_data, status, processing_time)
+    
+    def process_cpu_intensive(self, data, max_workers, timeout):
+        """CPU 密集型处理"""
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future = executor.submit(self.cpu_intensive_task, data)
+            try:
+                result = future.result(timeout=timeout)
+                return result
+            except concurrent.futures.TimeoutError:
+                raise Exception(f"处理超时 ({timeout} 秒)")
+    
+    def process_io_bound(self, data, max_workers, timeout):
+        """IO 密集型处理"""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future = executor.submit(self.io_bound_task, data)
+            try:
+                result = future.result(timeout=timeout)
+                return result
+            except concurrent.futures.TimeoutError:
+                raise Exception(f"处理超时 ({timeout} 秒)")
+    
+    def process_mixed(self, data, max_workers, timeout):
+        """混合处理"""
+        # 先进行 IO 操作，然后进行 CPU 操作
+        io_result = self.process_io_bound(data, max_workers // 2, timeout // 2)
+        cpu_result = self.process_cpu_intensive(io_result, max_workers // 2, timeout // 2)
+        return cpu_result
+    
+    def cpu_intensive_task(self, data):
+        """模拟 CPU 密集型任务"""
+        if isinstance(data, torch.Tensor):
+            # 执行一些计算密集型操作
+            result = data.clone()
+            for _ in range(100):
+                result = torch.matmul(result, result.transpose(-2, -1))
+                result = torch.nn.functional.softmax(result, dim=-1)
+            return result
+        else:
+            # 对于其他类型的数据，返回原数据
+            return data
+    
+    def io_bound_task(self, data):
+        """模拟 IO 密集型任务"""
+        import time
+        # 模拟网络请求或文件操作
+        time.sleep(1)  # 模拟 IO 延迟
+        return data
+    
+    def send_callback_notification(self, url, status, processing_time, error_msg=None):
+        """发送回调通知"""
+        try:
+            import requests
+            payload = {
+                "status": status,
+                "processing_time": processing_time,
+                "timestamp": time.time()
+            }
+            if error_msg:
+                payload["error"] = error_msg
+            
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"回调通知发送失败: {e}")
+```
+
+## 节点本地化（国际化）
+
+### 本地化文件结构
+
+```
+custom_nodes/
+└── your_custom_node/
+    ├── __init__.py
+    ├── nodes.py
+    └── locales/
+        ├── en/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        ├── zh/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        ├── ja/
+        │   ├── main.json
+        │   ├── commands.json
+        │   └── settings.json
+        └── fr/
+            ├── main.json
+            ├── commands.json
+            └── settings.json
+```
+
+### 主要翻译文件 (main.json)
+
+```json
+{
+  "MyCustomNode": {
+    "title": "我的自定义节点",
+    "description": "这是一个自定义节点的描述",
+    "inputs": {
+      "image": "图像",
+      "strength": "强度",
+      "mode": "模式",
+      "optional_mask": "可选蒙版"
+    },
+    "outputs": {
+      "result": "结果",
+      "mask": "蒙版",
+      "info": "信息"
+    },
+    "widgets": {
+      "strength": "强度",
+      "mode": "模式",
+      "enable_feature": "启用功能"
+    }
+  },
+  "ImageProcessor": {
+    "title": "图像处理器",
+    "description": "高级图像处理节点",
+    "inputs": {
+      "source_image": "源图像",
+      "target_size": "目标尺寸",
+      "quality": "质量"
+    },
+    "outputs": {
+      "processed_image": "处理后图像",
+      "processing_time": "处理时间"
+    }
+  }
+}
+```
+
+### 命令翻译文件 (commands.json)
+
+```json
+{
+  "menu": {
+    "process_image": "处理图像",
+    "batch_process": "批量处理",
+    "reset_settings": "重置设置",
+    "export_result": "导出结果",
+    "view_statistics": "查看统计",
+    "clear_cache": "清除缓存"
+  },
+  "context_menu": {
+    "copy_node": "复制节点",
+    "paste_node": "粘贴节点",
+    "delete_node": "删除节点",
+    "duplicate_node": "复制节点",
+    "mute_node": "静音节点",
+    "bypass_node": "绕过节点"
+  },
+  "dialogs": {
+    "confirm_delete": "确认删除",
+    "save_changes": "保存更改",
+    "discard_changes": "放弃更改",
+    "processing": "处理中...",
+    "completed": "完成",
+    "error_occurred": "发生错误"
+  }
+}
+```
+
+### 设置翻译文件 (settings.json)
+
+```json
+{
+  "categories": {
+    "general": "常规",
+    "performance": "性能",
+    "advanced": "高级",
+    "debugging": "调试"
+  },
+  "settings": {
+    "enable_gpu_acceleration": "启用 GPU 加速",
+    "max_batch_size": "最大批次大小",
+    "memory_limit": "内存限制",
+    "cache_size": "缓存大小",
+    "log_level": "日志级别",
+    "auto_save": "自动保存",
+    "backup_interval": "备份间隔"
+  },
+  "descriptions": {
+    "enable_gpu_acceleration": "使用 GPU 加速计算以提高性能",
+    "max_batch_size": "单次处理的最大图像数量",
+    "memory_limit": "节点可使用的最大内存量（MB）",
+    "cache_size": "缓存的最大大小（MB）",
+    "log_level": "设置日志记录的详细程度",
+    "auto_save": "自动保存工作流和设置",
+    "backup_interval": "自动备份的时间间隔（分钟）"
+  }
+}
+```
+
+### 在节点中使用本地化
+
+```python
+class LocalizedImageProcessor:
+    """支持本地化的图像处理节点"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "strength": ("FLOAT", {
+                    "default": 1.0, 
+                    "min": 0.0, 
+                    "max": 2.0, 
+                    "step": 0.01,
+                    "display": "slider"
+                }),
+                "mode": (["enhance", "blur", "sharpen"], {"default": "enhance"}),
+            },
+            "optional": {
+                "mask": ("MASK",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("processed_image", "processing_info")
+    FUNCTION = "process"
+    CATEGORY = "image/processing"
+    
+    # 节点显示名称（将被本地化系统替换）
+    DISPLAY_NAME = "Image Processor"
+    DESCRIPTION = "Advanced image processing with localization support"
+    
+    def process(self, image, strength, mode, mask=None):
+        # 处理逻辑
+        processed_image = image.clone()
+        
+        # 生成本地化的处理信息
+        info = self.get_localized_info(mode, strength)
+        
+        return (processed_image, info)
+    
+    def get_localized_info(self, mode, strength):
+        """获取本地化的处理信息"""
+        # 这里可以根据当前语言设置返回相应的文本
+        # 实际实现中，ComfyUI 会自动处理本地化
+        mode_names = {
+            "enhance": "增强",
+            "blur": "模糊", 
+            "sharpen": "锐化"
+        }
+        
+        return f"使用 {mode_names.get(mode, mode)} 模式，强度: {strength:.2f}"
+
+# 节点映射（支持本地化的显示名称）
+NODE_CLASS_MAPPINGS = {
+    "LocalizedImageProcessor": LocalizedImageProcessor,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "LocalizedImageProcessor": "图像处理器",  # 中文显示名称
+}
+```
+
+### 动态本地化支持
+
+```python
+import os
+import json
+from pathlib import Path
+
+class LocalizationManager:
+    """本地化管理器"""
+    
+    def __init__(self, node_path):
+        self.node_path = Path(node_path)
+        self.locales_path = self.node_path / "locales"
+        self.current_locale = "en"  # 默认语言
+        self.translations = {}
+        self.load_translations()
+    
+    def load_translations(self):
+        """加载所有语言的翻译文件"""
+        if not self.locales_path.exists():
+            return
+        
+        for locale_dir in self.locales_path.iterdir():
+            if locale_dir.is_dir():
+                locale = locale_dir.name
+                self.translations[locale] = {}
+                
+                # 加载各种翻译文件
+                for file_name in ["main.json", "commands.json", "settings.json"]:
+                    file_path = locale_dir / file_name
+                    if file_path.exists():
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                                self.translations[locale][file_name.replace('.json', '')] = data
+                        except Exception as e:
+                            print(f"Failed to load {file_path}: {e}")
+    
+    def set_locale(self, locale):
+        """设置当前语言"""
+        if locale in self.translations:
+            self.current_locale = locale
+    
+    def get_text(self, key, category="main", default=None):
+        """获取本地化文本"""
+        try:
+            return self.translations[self.current_locale][category][key]
+        except KeyError:
+            # 回退到英语
+            try:
+                return self.translations["en"][category][key]
+            except KeyError:
+                return default or key
+    
+    def get_node_info(self, node_class_name):
+        """获取节点的本地化信息"""
+        try:
+            return self.translations[self.current_locale]["main"][node_class_name]
+        except KeyError:
+            try:
+                return self.translations["en"]["main"][node_class_name]
+            except KeyError:
+                return {}
+
+# 使用示例
+class AdvancedLocalizedNode:
+    """高级本地化节点示例"""
+    
+    def __init__(self):
+        # 初始化本地化管理器
+        current_dir = os.path.dirname(__file__)
+        self.i18n = LocalizationManager(current_dir)
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_image": ("IMAGE",),
+                "processing_mode": (["fast", "quality", "balanced"], {"default": "balanced"}),
+                "intensity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
+            },
+            "optional": {
+                "advanced_settings": ("STRING", {"default": "{}"}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "STRING")
+    FUNCTION = "process_with_localization"
+    CATEGORY = "advanced/localized"
+    
+    def process_with_localization(self, input_image, processing_mode, intensity, advanced_settings="{}"):
+        # 获取本地化文本
+        mode_text = self.i18n.get_text(f"mode_{processing_mode}", "main", processing_mode)
+        
+        # 处理图像
+        result_image = input_image.clone()
+        
+        # 生成本地化的状态报告
+        status = self.i18n.get_text("processing_complete", "main", "Processing complete")
+        report = f"{status}: {mode_text}, {self.i18n.get_text('intensity', 'main', 'Intensity')}: {intensity:.2f}"
+        
+        return (result_image, report)
+```
+
+### 本地化最佳实践
+
+#### 1. 文件组织
+
+```python
+# 推荐的目录结构
+"""
+custom_nodes/my_node_pack/
+├── __init__.py
+├── nodes/
+│   ├── __init__.py
+│   ├── image_nodes.py
+│   └── utility_nodes.py
+├── locales/
+│   ├── en/
+│   │   ├── main.json
+│   │   ├── commands.json
+│   │   └── settings.json
+│   ├── zh/
+│   │   ├── main.json
+│   │   ├── commands.json
+│   │   └── settings.json
+│   └── ja/
+│       ├── main.json
+│       ├── commands.json
+│       └── settings.json
+├── web/
+│   └── js/
+│       └── extensions.js
+└── README.md
+"""
+```
+
+#### 2. 翻译键命名规范
+
+```json
+{
+  "节点类名": {
+    "title": "节点显示标题",
+    "description": "节点描述",
+    "inputs": {
+      "输入名称": "本地化输入标签"
+    },
+    "outputs": {
+      "输出名称": "本地化输出标签"
+    },
+    "widgets": {
+      "小部件名称": "本地化小部件标签"
+    },
+    "errors": {
+      "error_code": "错误消息"
+    },
+    "tooltips": {
+      "input_name": "输入提示文本"
+    }
+  }
+}
+```
+
+#### 3. 前端本地化集成
+
+```javascript
+// 在前端扩展中使用本地化
+app.registerExtension({
+  name: "my.localized.extension",
+  
+  async setup() {
+    // 获取本地化数据
+    const i18nData = await api.getCustomNodesI18n();
+    this.translations = i18nData["my_node_pack"] || {};
+  },
+  
+  beforeRegisterNodeDef(nodeType, nodeData, app) {
+    // 应用本地化到节点定义
+    const nodeTranslations = this.translations[nodeData.name];
+    if (nodeTranslations) {
+      // 更新节点标题
+      if (nodeTranslations.title) {
+        nodeType.title = nodeTranslations.title;
+      }
+      
+      // 更新输入标签
+      if (nodeTranslations.inputs && nodeData.input) {
+        for (const [inputName, inputConfig] of Object.entries(nodeData.input.required || {})) {
+          if (nodeTranslations.inputs[inputName]) {
+            // 更新输入显示名称
+            inputConfig.display_name = nodeTranslations.inputs[inputName];
+          }
+        }
+      }
+    }
+  },
+  
+  nodeCreated(node, app) {
+    // 为节点添加本地化的右键菜单
+    const originalGetMenuOptions = node.getMenuOptions;
+    node.getMenuOptions = function() {
+      const options = originalGetMenuOptions ? originalGetMenuOptions.call(this) : [];
+      
+      // 添加本地化的菜单项
+      const translations = app.extensions.find(ext => ext.name === "my.localized.extension").translations;
+      const commands = translations.commands || {};
+      
+      options.push({
+        content: commands.view_info || "View Info",
+        callback: () => {
+          alert(commands.node_info || "Node Information");
+        }
+      });
+      
+      return options;
+    };
+  }
+});
+```
+
+#### 4. 自动翻译生成工具
+
+```python
+import json
+import os
+from pathlib import Path
+
+def generate_translation_template(node_classes, output_path):
+    """为节点类生成翻译模板"""
+    template = {}
+    
+    for node_class in node_classes:
+        class_name = node_class.__name__
+        template[class_name] = {
+            "title": class_name,  # 待翻译
+            "description": getattr(node_class, 'DESCRIPTION', ''),  # 待翻译
+            "inputs": {},
+            "outputs": {},
+            "widgets": {}
+        }
+        
+        # 提取输入类型
+        if hasattr(node_class, 'INPUT_TYPES'):
+            input_types = node_class.INPUT_TYPES()
+            for category in ['required', 'optional']:
+                if category in input_types:
+                    for input_name in input_types[category]:
+                        template[class_name]["inputs"][input_name] = input_name  # 待翻译
+        
+        # 提取返回类型名称
+        if hasattr(node_class, 'RETURN_NAMES'):
+            for i, return_name in enumerate(node_class.RETURN_NAMES):
+                template[class_name]["outputs"][return_name] = return_name  # 待翻译
+    
+    # 保存模板
+    os.makedirs(output_path, exist_ok=True)
+    with open(os.path.join(output_path, 'main.json'), 'w', encoding='utf-8') as f:
+        json.dump(template, f, indent=2, ensure_ascii=False)
+    
+    print(f"Translation template generated at {output_path}/main.json")
+
+# 使用示例
+if __name__ == "__main__":
+    from .nodes import MyCustomNode, ImageProcessor, AdvancedFilter
+    
+    node_classes = [MyCustomNode, ImageProcessor, AdvancedFilter]
+    generate_translation_template(node_classes, "./locales/en")
+```
 ```
