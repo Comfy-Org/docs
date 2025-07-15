@@ -14,7 +14,7 @@ import re
 import sys
 import glob
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 # Configuration rules
 RULES = {
@@ -26,6 +26,8 @@ RULES = {
 
 # Error collector
 errors = []
+# Fixed files collector
+fixed_files = []
 
 def is_chinese_doc(file_path: str) -> bool:
     """Check if file is a Chinese document."""
@@ -125,6 +127,21 @@ def extract_images(content: str, file_path: str) -> List[Dict[str, Any]]:
     
     return images
 
+def fix_mdx_extensions(file_path: str, content: str) -> Tuple[str, bool]:
+    """Fix .mdx extensions in links and return modified content and whether changes were made."""
+    original_content = content
+    
+    # Fix markdown links [text](link.mdx) -> [text](link)
+    content = re.sub(r'\[([^\]]+)\]\(([^)]+)\.mdx\)', r'[\1](\2)', content)
+    
+    # Fix HTML links <a href="link.mdx"> -> <a href="link">
+    content = re.sub(r'href\s*=\s*["\']([^"\']+)\.mdx["\']', r'href="\1"', content)
+    
+    # Fix component href attributes href="link.mdx" -> href="link"
+    content = re.sub(r'href\s*=\s*["\']([^"\']+)\.mdx["\']', r'href="\1"', content)
+    
+    return content, content != original_content
+
 def validate_file_links(file_path: str, content: str) -> None:
     """Validate links in a file."""
     links = extract_links(content, file_path)
@@ -200,7 +217,26 @@ def main():
         
         print(f"Found {len(files)} documentation files")
         
-        # Validate each file
+        # First pass: Fix .mdx extensions
+        for file_path in files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Fix .mdx extensions
+                fixed_content, was_fixed = fix_mdx_extensions(file_path, content)
+                
+                if was_fixed:
+                    # Write the fixed content back to the file
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(fixed_content)
+                    fixed_files.append(file_path)
+                    print(f"Fixed .mdx extensions in: {file_path}")
+                    
+            except Exception as e:
+                print(f"Error processing file {file_path}: {e}")
+        
+        # Second pass: Validate links after fixes
         for file_path in files:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -210,8 +246,13 @@ def main():
                 print(f"Error reading file {file_path}: {e}")
         
         # Output results
+        if fixed_files:
+            print(f"\n✅ Fixed .mdx extensions in {len(fixed_files)} files:")
+            for file in fixed_files:
+                print(f"  - {file}")
+        
         if errors:
-            print(f"\nFound {len(errors)} link errors:\n")
+            print(f"\nFound {len(errors)} remaining link errors:\n")
             
             error_report = []
             for error in errors:
