@@ -138,6 +138,17 @@ def validate_file_links(file_path: str, content: str) -> None:
         # Skip if this link is actually an image source
         if link['url'] in image_sources:
             continue
+        
+        # Check for .mdx extension in links (should not be present)
+        if link['url'].endswith('.mdx'):
+            errors.append({
+                'file': file_path,
+                'type': 'link',
+                'error': 'Link contains .mdx extension',
+                'details': f'Link "{link["url"]}" should not end with .mdx extension',
+                'match': link['match']
+            })
+            continue
             
         if is_chinese_doc(file_path):
             # Chinese documents should not use English links
