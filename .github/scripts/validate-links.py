@@ -49,7 +49,9 @@ def is_english_link(link: str) -> bool:
     return (not is_chinese_link(link) and 
             not link.startswith('http') and 
             not link.startswith('mailto:') and
-            not link.startswith('#'))
+            not link.startswith('#') and
+            not link.startswith('./') and
+            not link.startswith('../'))
 
 def is_chinese_image(image_path: str) -> bool:
     """Check if image is in Chinese image directory."""
@@ -78,7 +80,7 @@ def extract_links(content: str, file_path: str) -> List[Dict[str, Any]]:
             'match': f'href="{url}"'
         })
     
-    # Match component href attributes
+    # Match component href attributes (but not src attributes)
     component_hrefs = re.findall(r'href\s*=\s*["\']([^"\']+)["\']', content)
     for url in component_hrefs:
         links.append({
@@ -112,7 +114,7 @@ def extract_images(content: str, file_path: str) -> List[Dict[str, Any]]:
             'match': f'src="{src}"'
         })
     
-    # Match component src attributes
+    # Match component src attributes (only for images, not links)
     component_srcs = re.findall(r'src\s*=\s*["\']([^"\']+)["\']', content)
     for src in component_srcs:
         images.append({
@@ -128,8 +130,15 @@ def validate_file_links(file_path: str, content: str) -> None:
     links = extract_links(content, file_path)
     images = extract_images(content, file_path)
     
-    # Check link errors
+    # Create a set of image sources to exclude from link checking
+    image_sources = {image['src'] for image in images}
+    
+    # Check link errors (excluding image sources)
     for link in links:
+        # Skip if this link is actually an image source
+        if link['url'] in image_sources:
+            continue
+            
         if is_chinese_doc(file_path):
             # Chinese documents should not use English links
             if is_english_link(link['url']):
@@ -163,7 +172,7 @@ def validate_file_links(file_path: str, content: str) -> None:
                     'details': f'Image "{image["src"]}" in English document should not point to Chinese image directory',
                     'match': image['match']
                 })
-        # Chinese documents can use English images, so no check needed
+        # Chinese documents can use English images - no validation needed for Chinese docs using English images
 
 def main():
     """Main function to validate all documentation files."""
@@ -196,9 +205,12 @@ def main():
             error_report = []
             for error in errors:
                 error_report.append(f"""❌ **{error['file']}**
-   - Error type: {error['error']}
-   - Details: {error['details']}
-   - Problematic code: `{error['match']}`
+   - **Error**: {error['error']}
+   - **Problem**: {error['details']}
+   - **Found in code**: 
+     ```
+     {error['match']}
+     ```
 """)
             
             report = '\n'.join(error_report)
