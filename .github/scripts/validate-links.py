@@ -142,6 +142,49 @@ def fix_mdx_extensions(file_path: str, content: str) -> Tuple[str, bool]:
     
     return content, content != original_content
 
+def fix_missing_leading_slash(file_path: str, content: str) -> Tuple[str, bool]:
+    """Fix links that should start with / but don't, and return modified content and whether changes were made."""
+    original_content = content
+    
+    def should_add_slash(link: str) -> bool:
+        """Check if a link should have a leading slash added."""
+        # Skip if already starts with /, ./, ../, #, http, mailto, or is empty
+        if (link.startswith('/') or link.startswith('./') or link.startswith('../') or 
+            link.startswith('#') or link.startswith('http') or link.startswith('mailto:') or 
+            not link.strip()):
+            return False
+        
+        # Check if it looks like a documentation path (contains common doc patterns)
+        doc_patterns = [
+            'zh-CN/', 'tutorials/', 'built-in-nodes/', 'interface/', 'installation/', 
+            'development/', 'custom-nodes/', 'troubleshooting/', 'registry/', 'specs/',
+            'get_started/', 'changelog/', 'comfy-cli/', 'snippets/', 'community/'
+        ]
+        
+        return any(link.startswith(pattern) for pattern in doc_patterns)
+    
+    # Fix markdown links [text](link) -> [text](/link) for internal links
+    def fix_markdown_link(match):
+        text = match.group(1)
+        link = match.group(2)
+        if should_add_slash(link):
+            return f'[{text}](/{link})'
+        return match.group(0)
+    
+    content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', fix_markdown_link, content)
+    
+    # Fix HTML links <a href="link"> -> <a href="/link">
+    def fix_html_link(match):
+        quote = match.group(1)  # " or '
+        link = match.group(2)
+        if should_add_slash(link):
+            return f'href={quote}/{link}{quote}'
+        return match.group(0)
+    
+    content = re.sub(r'href\s*=\s*(["\'])([^"\']+)\1', fix_html_link, content)
+    
+    return content, content != original_content
+
 def validate_file_links(file_path: str, content: str) -> None:
     """Validate links in a file."""
     links = extract_links(content, file_path)
@@ -217,21 +260,31 @@ def main():
         
         print(f"Found {len(files)} documentation files")
         
-        # First pass: Fix .mdx extensions
+        # First pass: Fix .mdx extensions and missing leading slashes
         for file_path in files:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
                 # Fix .mdx extensions
-                fixed_content, was_fixed = fix_mdx_extensions(file_path, content)
+                fixed_content, mdx_fixed = fix_mdx_extensions(file_path, content)
                 
-                if was_fixed:
+                # Fix missing leading slashes
+                fixed_content, slash_fixed = fix_missing_leading_slash(file_path, fixed_content)
+                
+                if mdx_fixed or slash_fixed:
                     # Write the fixed content back to the file
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(fixed_content)
                     fixed_files.append(file_path)
-                    print(f"Fixed .mdx extensions in: {file_path}")
+                    
+                    fixes = []
+                    if mdx_fixed:
+                        fixes.append(".mdx extensions")
+                    if slash_fixed:
+                        fixes.append("missing leading slashes")
+                    
+                    print(f"Fixed {' and '.join(fixes)} in: {file_path}")
                     
             except Exception as e:
                 print(f"Error processing file {file_path}: {e}")
@@ -247,7 +300,7 @@ def main():
         
         # Output results
         if fixed_files:
-            print(f"\n✅ Fixed .mdx extensions in {len(fixed_files)} files:")
+            print(f"\n✅ Fixed link issues in {len(fixed_files)} files:")
             for file in fixed_files:
                 print(f"  - {file}")
         
