@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""
+Link validation script for bilingual documentation.
+
+This script validates links in a bilingual documentation project to ensure:
+1. Chinese documents don't use English links
+2. English documents don't use Chinese links  
+3. English documents don't use Chinese images
+4. Chinese documents can use English images (allowed)
+"""
+
+import os
+import re
+import sys
+import glob
+from pathlib import Path
+from typing import List, Dict, Any
+
+# Configuration rules
+RULES = {
+    'ZH_CN_DIR': 'zh-CN',
+    'ZH_SNIPPETS_DIR': 'snippets/zh',
+    'ZH_IMAGES_DIR': 'images/zh',
+    'COMMON_IMAGES_DIR': 'images'
+}
+
+# Error collector
+errors = []
+
+def is_chinese_doc(file_path: str) -> bool:
+    """Check if file is a Chinese document."""
+    return (f"/{RULES['ZH_CN_DIR']}/" in file_path or 
+            f"{RULES['ZH_SNIPPETS_DIR']}/" in file_path or
+            file_path.startswith(RULES['ZH_CN_DIR']) or
+            file_path.startswith(RULES['ZH_SNIPPETS_DIR']))
+
+def is_english_doc(file_path: str) -> bool:
+    """Check if file is an English document."""
+    return not is_chinese_doc(file_path)
+
+def is_chinese_link(link: str) -> bool:
+    """Check if link points to Chinese content."""
+    return (f"/{RULES['ZH_CN_DIR']}/" in link or 
+            f"/{RULES['ZH_SNIPPETS_DIR']}/" in link or 
+            f"/{RULES['ZH_IMAGES_DIR']}/" in link)
+
+def is_english_link(link: str) -> bool:
+    """Check if link points to English content."""
+    return (not is_chinese_link(link) and 
+            not link.startswith('http') and 
+            not link.startswith('mailto:') and
+            not link.startswith('#'))
+
+def is_chinese_image(image_path: str) -> bool:
+    """Check if image is in Chinese image directory."""
+    return f"/{RULES['ZH_IMAGES_DIR']}/" in image_path
+
+def extract_links(content: str, file_path: str) -> List[Dict[str, Any]]:
+    """Extract links from file content."""
+    links = []
+    
+    # Match markdown links [text](link)
+    markdown_links = re.findall(r'\[([^\]]+)\]\(([^)]+)\)', content)
+    for text, url in markdown_links:
+        links.append({
+            'type': 'markdown',
+            'text': text,
+            'url': url,
+            'match': f'[{text}]({url})'
+        })
+    
+    # Match HTML links <a href="...">
+    html_links = re.findall(r'<a[^>]+href\s*=\s*["\']([^"\']+)["\'][^>]*>', content)
+    for url in html_links:
+        links.append({
+            'type': 'html',
+            'url': url,
+            'match': f'href="{url}"'
+        })
+    
+    # Match component href attributes
+    component_hrefs = re.findall(r'href\s*=\s*["\']([^"\']+)["\']', content)
+    for url in component_hrefs:
+        links.append({
+            'type': 'component',
+            'url': url,
+            'match': f'href="{url}"'
+        })
+    
+    return links
+
+def extract_images(content: str, file_path: str) -> List[Dict[str, Any]]:
+    """Extract images from file content."""
+    images = []
+    
+    # Match markdown images ![alt](src)
+    markdown_images = re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', content)
+    for alt, src in markdown_images:
+        images.append({
+            'type': 'markdown',
+            'alt': alt,
+            'src': src,
+            'match': f'![{alt}]({src})'
+        })
+    
+    # Match HTML images <img src="...">
+    html_images = re.findall(r'<img[^>]+src\s*=\s*["\']([^"\']+)["\'][^>]*>', content)
+    for src in html_images:
+        images.append({
+            'type': 'html',
+            'src': src,
+            'match': f'src="{src}"'
+        })
+    
+    # Match component src attributes
+    component_srcs = re.findall(r'src\s*=\s*["\']([^"\']+)["\']', content)
+    for src in component_srcs:
+        images.append({
+            'type': 'component',
+            'src': src,
+            'match': f'src="{src}"'
+        })
+    
+    return images
+
+def validate_file_links(file_path: str, content: str) -> None:
+    """Validate links in a file."""
+    links = extract_links(content, file_path)
+    images = extract_images(content, file_path)
+    
+    # Check link errors
+    for link in links:
+        if is_chinese_doc(file_path):
+            # Chinese documents should not use English links
+            if is_english_link(link['url']):
+                errors.append({
+                    'file': file_path,
+                    'type': 'link',
+                    'error': 'Chinese document uses English link',
+                    'details': f'Link "{link["url"]}" in Chinese document should not point to English content',
+                    'match': link['match']
+                })
+        elif is_english_doc(file_path):
+            # English documents should not use Chinese links
+            if is_chinese_link(link['url']):
+                errors.append({
+                    'file': file_path,
+                    'type': 'link',
+                    'error': 'English document uses Chinese link',
+                    'details': f'Link "{link["url"]}" in English document should not point to Chinese content',
+                    'match': link['match']
+                })
+    
+    # Check image errors
+    for image in images:
+        if is_english_doc(file_path):
+            # English documents should not use Chinese images
+            if is_chinese_image(image['src']):
+                errors.append({
+                    'file': file_path,
+                    'type': 'image',
+                    'error': 'English document uses Chinese image',
+                    'details': f'Image "{image["src"]}" in English document should not point to Chinese image directory',
+                    'match': image['match']
+                })
+        # Chinese documents can use English images, so no check needed
+
+def main():
+    """Main function to validate all documentation files."""
+    try:
+        # Find all .mdx and .md files
+        files = []
+        for pattern in ['**/*.mdx', '**/*.md']:
+            files.extend(glob.glob(pattern, recursive=True))
+        
+        # Filter out unwanted directories
+        files = [f for f in files if not any(exclude in f for exclude in [
+            'node_modules/', '.git/', '.github/'
+        ])]
+        
+        print(f"Found {len(files)} documentation files")
+        
+        # Validate each file
+        for file_path in files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                validate_file_links(file_path, content)
+            except Exception as e:
+                print(f"Error reading file {file_path}: {e}")
+        
+        # Output results
+        if errors:
+            print(f"\nFound {len(errors)} link errors:\n")
+            
+            error_report = []
+            for error in errors:
+                error_report.append(f"""❌ **{error['file']}**
+   - Error type: {error['error']}
+   - Details: {error['details']}
+   - Problematic code: `{error['match']}`
+""")
+            
+            report = '\n'.join(error_report)
+            print(report)
+            
+            # Write errors to file for GitHub Action
+            with open('/tmp/link-errors.txt', 'w', encoding='utf-8') as f:
+                f.write(report)
+            
+            sys.exit(1)
+        else:
+            print('✅ All link validations passed!')
+            
+    except Exception as e:
+        print(f'Error during validation: {e}')
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()
