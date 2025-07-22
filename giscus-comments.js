@@ -167,7 +167,7 @@
     const script = document.createElement('script');
     script.src = 'https://giscus.app/client.js';
     script.setAttribute('data-repo', 'Comfy-Org/docs');
-    script.setAttribute('data-repo-id', 'R_kgDOLiw1Tg'); // Replace with real ID
+    script.setAttribute('data-repo-id', 'R_kgDOLlassQ'); // Replace with real ID
     script.setAttribute('data-category', 'General');
     script.setAttribute('data-category-id', 'DIC_kwDOLiw1Ts4CdnQU'); // Replace with real ID
     script.setAttribute('data-mapping', 'pathname');
