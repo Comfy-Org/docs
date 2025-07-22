@@ -142,18 +142,16 @@
   async function loadGiscus() {
     const newPath = window.location.pathname;
     
-    // Skip if already loaded for this path
-    if (currentPath === newPath && document.querySelector('.giscus-container')) {
+    // Exclude paths that should not have comments
+    const excludedPaths = ['/', '/zh-CN', '/zh-CN/'];
+
+    // Skip if current path is in excluded list or contains API/search paths
+    if (excludedPaths.includes(newPath) || newPath.includes('/api/') || newPath.includes('/search')) {
       return;
     }
     
     currentPath = newPath;
     cleanupGiscus();
-    
-    // Skip homepage and other non-doc pages
-    if (newPath === '/' || newPath.includes('/api/') || newPath.includes('/search')) {
-      return;
-    }
     
     const contentContainer = await findContentContainer();
     if (!contentContainer) {
