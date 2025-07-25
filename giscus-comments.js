@@ -138,6 +138,89 @@
     });
   }
   
+  // Get current theme from Mintlify
+  function getCurrentTheme() {
+    // Check for Mintlify's theme class on html or body
+    const html = document.documentElement;
+    const body = document.body;
+    
+    // Mintlify typically uses data attributes or classes
+    if (html.classList.contains('dark') || body.classList.contains('dark')) {
+      return 'dark';
+    } else if (html.classList.contains('light') || body.classList.contains('light')) {
+      return 'light';
+    } else if (html.dataset.theme === 'dark' || body.dataset.theme === 'dark') {
+      return 'dark';
+    } else if (html.dataset.theme === 'light' || body.dataset.theme === 'light') {
+      return 'light';
+    }
+    
+    // Fallback to system preference
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  // Update giscus theme
+  function updateGiscusTheme(theme) {
+    const giscusFrame = document.querySelector('iframe.giscus-frame');
+    if (giscusFrame) {
+      const message = {
+        giscus: {
+          setConfig: {
+            theme: theme === 'dark' ? 'dark' : 'light'
+          }
+        }
+      };
+      giscusFrame.contentWindow.postMessage(message, 'https://giscus.app');
+    }
+  }
+
+  // Set up theme change observer
+  function setupThemeObserver() {
+    // Watch for changes to the document element's attributes and classes
+    const observer = new MutationObserver((mutations) => {
+      let themeChanged = false;
+      
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'attributes' && 
+            (mutation.attributeName === 'class' || 
+             mutation.attributeName === 'data-theme' ||
+             mutation.attributeName === 'data-color-scheme')) {
+          themeChanged = true;
+        }
+      });
+      
+      if (themeChanged) {
+        const newTheme = getCurrentTheme();
+        updateGiscusTheme(newTheme);
+      }
+    });
+
+    // Observe both html and body elements for theme changes
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'data-theme', 'data-color-scheme']
+    });
+    
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class', 'data-theme', 'data-color-scheme']
+    });
+
+    // Also listen for system theme changes
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    mediaQuery.addEventListener('change', () => {
+      // Only update if no explicit theme is set
+      const html = document.documentElement;
+      const body = document.body;
+      if (!html.classList.contains('dark') && !html.classList.contains('light') &&
+          !body.classList.contains('dark') && !body.classList.contains('light') &&
+          !html.dataset.theme && !body.dataset.theme) {
+        const newTheme = getCurrentTheme();
+        updateGiscusTheme(newTheme);
+      }
+    });
+  }
+
   // Create and insert giscus
   async function loadGiscus() {
     const newPath = window.location.pathname;
@@ -163,6 +246,9 @@
     const giscusContainer = document.createElement('div');
     giscusContainer.className = 'giscus-container loading';
     
+    // Get current theme for initial load
+    const currentTheme = getCurrentTheme();
+    
     // Create giscus script
     const script = document.createElement('script');
     script.src = 'https://giscus.app/client.js';
@@ -175,7 +261,7 @@
     script.setAttribute('data-reactions-enabled', '1');
     script.setAttribute('data-emit-metadata', '0');
     script.setAttribute('data-input-position', 'bottom');
-    script.setAttribute('data-theme', 'preferred_color_scheme');
+    script.setAttribute('data-theme', currentTheme === 'dark' ? 'dark' : 'light');
     
     // Set language based on path
     const isChinesePage = newPath.includes('/zh-CN/') || newPath.includes('/cn/');
@@ -188,6 +274,9 @@
       setTimeout(() => {
         giscusContainer.classList.remove('loading');
         giscusContainer.classList.add('loaded');
+        
+        // Set up theme observer after giscus loads
+        setupThemeObserver();
       }, 1000);
     };
     
