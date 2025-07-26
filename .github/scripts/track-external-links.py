@@ -169,6 +169,22 @@ class ExternalLinkTracker:
         
         return False, f"Path not found: {path}"
     
+    def normalize_fragment(self, text):
+        """Convert text to URL fragment format following GitHub's anchor generation rules"""
+        # Convert to lowercase
+        fragment = text.lower()
+        
+        # Remove special characters except spaces, hyphens, and underscores
+        fragment = re.sub(r'[^\w\s\-_]', '', fragment)
+        
+        # Replace spaces and underscores with hyphens
+        fragment = re.sub(r'[\s_]+', '-', fragment)
+        
+        # Remove leading/trailing hyphens
+        fragment = fragment.strip('-')
+        
+        return fragment
+    
     def validate_fragment(self, file_path, fragment):
         """Validate if a fragment (anchor) exists in a markdown file"""
         try:
@@ -179,22 +195,36 @@ class ExternalLinkTracker:
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # Look for headers that would generate this fragment
+            # Normalize the target fragment
+            target_fragment = fragment.lower()
             
             # Check for markdown headers
             header_pattern = r'^#+\s+(.+)$'
             for match in re.finditer(header_pattern, content, re.MULTILINE):
-                header_text = match.group(1).lower()
-                # Convert header text to URL fragment format
-                header_fragment = re.sub(r'[^\w\s-]', '', header_text)
-                header_fragment = re.sub(r'[-\s]+', '-', header_fragment).strip('-').lower()
+                header_text = match.group(1).strip()
                 
-                if header_fragment == fragment.lower():
-                    return True, f"Fragment found in {file_path}"
+                # Generate the fragment using the same rules as GitHub/markdown processors
+                generated_fragment = self.normalize_fragment(header_text)
+                
+                if generated_fragment == target_fragment:
+                    return True, f"Fragment found in {file_path} (header: '{header_text}')"
             
-            # Check for explicit anchor tags
-            if f'id="{fragment}"' in content or f"id='{fragment}'" in content:
-                return True, f"Anchor found in {file_path}"
+            # Check for explicit anchor tags with id attribute
+            anchor_patterns = [
+                f'id="{fragment}"',
+                f"id='{fragment}'",
+                f'id="{fragment.lower()}"',
+                f"id='{fragment.lower()}'"
+            ]
+            
+            for pattern in anchor_patterns:
+                if pattern in content:
+                    return True, f"Anchor found in {file_path}"
+            
+            # Check for HTML anchor tags
+            html_anchor_pattern = rf'<[^>]*id\s*=\s*["\']({re.escape(fragment)}|{re.escape(fragment.lower())})["\'][^>]*>'
+            if re.search(html_anchor_pattern, content, re.IGNORECASE):
+                return True, f"HTML anchor found in {file_path}"
             
             return False, f"Fragment '{fragment}' not found in {file_path}"
             
