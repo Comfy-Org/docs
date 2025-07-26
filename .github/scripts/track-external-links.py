@@ -30,14 +30,50 @@ class ExternalLinkTracker:
         self.broken_links = []
         self.changed_links = []
         
+        # Debug info
+        print(f"GitHub token available: {'Yes' if self.github_token else 'No'}")
+        if self.github_token:
+            print(f"Token length: {len(self.github_token)}")
+            print(f"Token starts with: {self.github_token[:10]}...")
+        
+        # Check rate limits
+        self.check_rate_limits()
+    
+    def check_rate_limits(self):
+        """Check GitHub API rate limits"""
+        try:
+            headers = {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'ComfyUI-Docs-Link-Tracker',
+                'X-GitHub-Api-Version': '2022-11-28'
+            }
+            if self.github_token:
+                headers['Authorization'] = f'Bearer {self.github_token}'
+            
+            response = requests.get('https://api.github.com/rate_limit', headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                core_limit = data['resources']['core']
+                print(f"API Rate Limit - Remaining: {core_limit['remaining']}/{core_limit['limit']}")
+                if core_limit['remaining'] < 10:
+                    print("⚠️  WARNING: Very low rate limit remaining!")
+            else:
+                print(f"Failed to check rate limits: {response.status_code}")
+                print(f"Response: {response.text[:500]}")
+        except Exception as e:
+            print(f"Error checking rate limits: {str(e)}")
+        
     def get_github_api_headers(self):
         """Get headers for GitHub API requests"""
         headers = {
             'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'ComfyUI-Docs-Link-Tracker'
+            'User-Agent': 'ComfyUI-Docs-Link-Tracker',
+            'X-GitHub-Api-Version': '2022-11-28'
         }
         if self.github_token:
-            headers['Authorization'] = f'token {self.github_token}'
+            headers['Authorization'] = f'Bearer {self.github_token}'
+        else:
+            print("Warning: No GitHub token provided, using unauthenticated requests")
         return headers
     
     def fetch_repo_content(self, repo):
@@ -48,8 +84,13 @@ class ExternalLinkTracker:
         repo_url = f"https://api.github.com/repos/{repo}"
         response = requests.get(repo_url, headers=self.get_github_api_headers())
         if response.status_code != 200:
-            print(f"Failed to get repo info for {repo}: {response.status_code}")
-            return []
+            print(f"❌ Failed to get repo info for {repo}: {response.status_code}")
+            if response.status_code == 403:
+                print(f"  - This might be due to API rate limits or repository access permissions")
+                print(f"  - Response: {response.text[:200]}")
+            elif response.status_code == 404:
+                print(f"  - Repository {repo} not found or not accessible")
+            return None  # Return None to indicate failure
         
         default_branch = response.json().get('default_branch', 'main')
         
@@ -58,8 +99,10 @@ class ExternalLinkTracker:
         response = requests.get(tree_url, headers=self.get_github_api_headers())
         
         if response.status_code != 200:
-            print(f"Failed to fetch tree for {repo}: {response.status_code}")
-            return []
+            print(f"❌ Failed to fetch tree for {repo}: {response.status_code}")
+            if response.status_code == 403:
+                print(f"  - API rate limit or permission issue")
+            return None  # Return None to indicate failure
         
         files_content = []
         tree_data = response.json()
@@ -239,10 +282,16 @@ class ExternalLinkTracker:
         print(f"Found {len(docs_paths)} documentation files")
         
         all_found_links = {}
+        failed_repos = []
         
         for repo in self.target_repos:
             print(f"\nProcessing repository: {repo}")
             files_content = self.fetch_repo_content(repo)
+            
+            # Check if fetch failed
+            if files_content is None:
+                failed_repos.append(repo)
+                continue
             
             repo_links = {}
             for file_info in files_content:
@@ -252,6 +301,26 @@ class ExternalLinkTracker:
             
             print(f"Found {sum(len(links) for links in repo_links.values())} docs.comfy.org links in {len(repo_links)} files")
             all_found_links[repo] = repo_links
+        
+        # Check if any repositories failed to fetch
+        if failed_repos:
+            error_msg = f"Failed to fetch content from repositories: {', '.join(failed_repos)}"
+            print(f"\n❌ ERROR: {error_msg}")
+            
+            # Write error report
+            with open('/tmp/external-link-report.txt', 'w') as f:
+                f.write(f"## ❌ Repository Access Failed\n\n")
+                f.write(f"Unable to fetch content from the following repositories:\n\n")
+                for repo in failed_repos:
+                    f.write(f"- `{repo}`\n")
+                f.write(f"\n**Possible causes:**\n")
+                f.write(f"- GitHub API rate limits exceeded\n")
+                f.write(f"- Insufficient token permissions\n")
+                f.write(f"- Repository access restrictions\n")
+                f.write(f"- Network connectivity issues\n\n")
+                f.write(f"**Action required:** Please check the GitHub Action logs and resolve the access issues.\n")
+            
+            sys.exit(1)
         
         # Validate all found links
         self.validate_all_links(all_found_links, docs_paths)
