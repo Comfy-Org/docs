@@ -20,7 +20,11 @@ class ExternalLinkTracker:
         self.docs_domain = 'docs.comfy.org'
         self.target_repos = [
             'Comfy-Org/ComfyUI_frontend',
-            'comfyanonymous/ComfyUI'
+            'comfyanonymous/ComfyUI',
+            'Comfy-Org/embedded-docs',
+            'Comfy-Org/workflow_templates',
+            'Comfy-Org/desktop',
+            'Comfy-Org/comfy-cli'
         ]
         self.docs_root = Path('.')
         self.broken_links = []
