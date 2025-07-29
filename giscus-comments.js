@@ -263,9 +263,15 @@
     script.setAttribute('data-input-position', 'bottom');
     script.setAttribute('data-theme', currentTheme === 'dark' ? 'dark' : 'light');
     
-    // Set language based on path
+    // Set language based on path - only Chinese pages should be marked as Chinese
     const isChinesePage = newPath.includes('/zh-CN/') || newPath.includes('/cn/');
-    script.setAttribute('data-lang', isChinesePage ? 'zh-CN' : 'en');
+    const giscusLang = isChinesePage ? 'zh-CN' : 'en';
+    script.setAttribute('data-lang', giscusLang);
+    
+    // Debug logging
+    console.log('Giscus: Current path:', newPath);
+    console.log('Giscus: Is Chinese page:', isChinesePage);
+    console.log('Giscus: Language set to:', giscusLang);
     script.setAttribute('crossorigin', 'anonymous');
     script.async = true;
     
