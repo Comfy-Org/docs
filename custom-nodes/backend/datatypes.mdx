@@ -98,9 +98,33 @@ The height and width are 1/8 of the corresponding image size (which is the value
 
 Other entries in the dictionary contain things like latent masks.
 
-{/* TODO need to dig into this */}
+The LATENT dictionary may contain additional keys:
 
-{/* TODO new SD models might have different C values? */}
+- `samples`: The main latent tensor (required)
+- `batch_index`: List of indices for batch processing
+- `noise_mask`: Optional mask for inpainting operations
+- `crop_coords`: Tuple of (top, left, bottom, right) for cropped regions
+- `original_size`: Tuple of (height, width) for the original image dimensions
+- `target_size`: Tuple of (height, width) for the target output dimensions
+
+**Channel counts for different models:**
+- **SD 1.x/2.x**: 4 channels
+- **SDXL**: 4 channels  
+- **SD3**: 16 channels
+- **Flux**: 16 channels
+- **Cascade**: 4 channels (stage A), 16 channels (stage B)
+
+Example LATENT structure:
+```python
+latent = {
+    "samples": torch.randn(1, 4, 64, 64),  # [B, C, H, W]
+    "batch_index": [0],
+    "noise_mask": None,
+    "crop_coords": (0, 0, 512, 512),
+    "original_size": (512, 512),
+    "target_size": (512, 512)
+}
+```
 
 ### MASK
 
@@ -165,7 +189,84 @@ The `__call__` method takes (in `args[0]`) a batch of noisy latents (tensor `[B,
 ## Model datatypes
 
 There are a number of more technical datatypes for stable diffusion models. The most significant ones are `MODEL`, `CLIP`, `VAE` and `CONDITIONING`.
-Working with these is (for the time being) beyond the scope of this guide! {/* TODO but maybe not forever */}
+
+### MODEL
+The MODEL data type represents the main diffusion model (UNet). It contains:
+- **model**: The actual PyTorch model instance
+- **model_config**: Configuration parameters for the model
+- **model_options**: Runtime options and settings
+- **device**: Target device (CPU/GPU) for model execution
+
+```python
+# Accessing model information
+def get_model_info(model):
+    config = model.model_config
+    return {
+        "model_type": config.unet_config.get("model_type", "unknown"),
+        "in_channels": config.unet_config.get("in_channels", 4),
+        "out_channels": config.unet_config.get("out_channels", 4),
+        "attention_resolutions": config.unet_config.get("attention_resolutions", [])
+    }
+```
+
+### CLIP
+The CLIP data type represents text encoder models:
+- **cond_stage_model**: The text encoder model
+- **tokenizer**: Text tokenization functionality  
+- **layer_idx**: Which layer to extract embeddings from
+- **device**: Target device for text encoding
+
+```python
+# Working with CLIP models
+def encode_text_with_clip(clip, text):
+    tokens = clip.tokenize(text)
+    cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
+    return [[cond, {"pooled_output": pooled}]]
+```
+
+### VAE
+The VAE data type handles encoding/decoding between pixel and latent space:
+- **first_stage_model**: The VAE model instance
+- **device**: Target device for VAE operations
+- **dtype**: Data type for VAE computations
+- **memory_used_encode**: Memory usage tracking for encoding
+- **memory_used_decode**: Memory usage tracking for decoding
+
+```python
+# VAE operations
+def encode_with_vae(vae, image):
+    # Image should be in [B, H, W, C] format, values 0-1
+    latent = vae.encode(image)
+    return {"samples": latent}
+
+def decode_with_vae(vae, latent):
+    # Latent should be in [B, C, H, W] format
+    image = vae.decode(latent["samples"])
+    return image
+```
+
+### CONDITIONING
+Processed text embeddings and associated metadata:
+- **cond**: The conditioning tensor from text encoding
+- **pooled_output**: Pooled text embeddings (for SDXL and newer models)
+- **control**: Additional control information for ControlNet
+- **gligen**: GLIGEN positioning data
+- **area**: Conditioning area specifications
+- **strength**: Conditioning strength multiplier
+- **set_area_to_bounds**: Automatic area boundary setting
+- **mask**: Conditioning masks for regional prompting
+
+```python
+# Working with conditioning
+def modify_conditioning(conditioning, strength=1.0):
+    modified = []
+    for cond in conditioning:
+        new_cond = cond.copy()
+        new_cond[1] = cond[1].copy()
+        new_cond[1]["strength"] = strength
+        modified.append(new_cond)
+    return modified
+```
 
 ## Additional Parameters
 
@@ -173,7 +274,35 @@ Below is a list of officially supported keys that can be used in the 'extra opti
 
 <Warning>You can use additional keys for your own custom widgets, but should *not* reuse any of the keys below for other purposes.</Warning>
 
-{/* TODO -- did I actually get everything? */}
+**Display and UI Parameters:**
+- `tooltip`: Hover text description for the input
+- `serialize`: Whether to serialize this input in saved workflows
+- `round`: Number of decimal places for float display (FLOAT inputs only)
+- `display`: Display format ("number", "slider", etc.)
+- `control_after_generate`: Whether to show control after generation
+
+**Validation Parameters:**
+- `min`: Minimum allowed value (INT, FLOAT)
+- `max`: Maximum allowed value (INT, FLOAT)  
+- `step`: Step size for sliders (INT, FLOAT)
+- `multiline`: Enable multiline text input (STRING)
+- `dynamicPrompts`: Enable dynamic prompt processing (STRING)
+
+**Behavior Parameters:**
+- `forceInput`: Force this parameter to be an input socket
+- `defaultInput`: Mark as the default input for this node type
+- `lazy`: Enable lazy evaluation for this input
+- `hidden`: Hide this input from the UI (for internal parameters)
+
+**File and Path Parameters:**
+- `image_upload`: Enable image upload widget
+- `directory`: Restrict to directory selection
+- `extensions`: Allowed file extensions list
+
+**Advanced Parameters:**
+- `control_after_generate`: Show control widget after generation
+- `affect_alpha`: Whether changes affect alpha channel
+- `key`: Custom key for parameter storage
 
 | Key              | Description                                                                                                                                                                                                |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
