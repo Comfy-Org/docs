@@ -2,7 +2,391 @@
 title: "Annotated Examples"
 ---
 
-A growing collection of fragments of example code...
+A growing collection of fragments of example code for common custom node operations...
+
+## Modern Node Implementation
+
+### Basic Node with Type Annotations
+
+Using the modern `ComfyNodeABC` base class with proper type annotations:
+
+```python
+from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
+
+class ModernExampleNode(ComfyNodeABC):
+    """A modern example node with proper type annotations."""
+    
+    DESCRIPTION = "Processes text input and returns modified text"
+    CATEGORY = "examples"
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "text": (IO.STRING, {"default": "Hello World", "multiline": True}),
+                "multiplier": (IO.FLOAT, {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
+                "count": (IO.INT, {"default": 1, "min": 1, "max": 100}),
+                "enabled": (IO.BOOLEAN, {"default": True}),
+            },
+            "optional": {
+                "prefix": (IO.STRING, {"default": ""}),
+            }
+        }
+    
+    RETURN_TYPES = (IO.STRING,)
+    RETURN_NAMES = ("processed_text",)
+    FUNCTION = "execute"
+    
+    def execute(self, text: str, multiplier: float, count: int, enabled: bool, prefix: str = "") -> tuple[str]:
+        if not enabled:
+            return (text,)
+        
+        processed = f"{prefix}{text}" if prefix else text
+        result = processed * int(count * multiplier)
+        return (result,)
+```
+
+### Advanced Node with Validation
+
+```python
+from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
+import torch
+
+class AdvancedImageProcessor(ComfyNodeABC):
+    """Advanced image processing node with input validation."""
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "image": (IO.IMAGE, {"tooltip": "Input image to process"}),
+                "strength": (IO.FLOAT, {
+                    "default": 1.0, 
+                    "min": 0.0, 
+                    "max": 2.0, 
+                    "step": 0.01,
+                    "tooltip": "Processing strength"
+                }),
+                "mode": (["enhance", "denoise", "sharpen"], {"default": "enhance"}),
+            }
+        }
+    
+    RETURN_TYPES = (IO.IMAGE,)
+    FUNCTION = "process_image"
+    CATEGORY = "image/processing"
+    
+    def validate_inputs(self, image: torch.Tensor, strength: float, mode: str) -> None:
+        """Validate input parameters."""
+        if image is None:
+            raise ValueError("Image input cannot be None")
+        
+        if len(image.shape) != 4:
+            raise ValueError(f"Expected 4D image tensor [B,H,W,C], got shape {image.shape}")
+        
+        if image.shape[-1] not in [1, 3, 4]:
+            raise ValueError(f"Expected 1, 3, or 4 channels, got {image.shape[-1]}")
+        
+        if not 0.0 <= strength <= 2.0:
+            raise ValueError(f"Strength must be between 0.0 and 2.0, got {strength}")
+    
+    def process_image(self, image: torch.Tensor, strength: float, mode: str) -> tuple[torch.Tensor]:
+        self.validate_inputs(image, strength, mode)
+        
+        result = image.clone()
+        
+        if mode == "enhance":
+            result = self.enhance_image(result, strength)
+        elif mode == "denoise":
+            result = self.denoise_image(result, strength)
+        elif mode == "sharpen":
+            result = self.sharpen_image(result, strength)
+        
+        return (result,)
+    
+    def enhance_image(self, image: torch.Tensor, strength: float) -> torch.Tensor:
+        mean = image.mean(dim=[1, 2], keepdim=True)
+        enhanced = mean + (image - mean) * (1.0 + strength)
+        return torch.clamp(enhanced, 0.0, 1.0)
+    
+    def denoise_image(self, image: torch.Tensor, strength: float) -> torch.Tensor:
+        return image
+    
+    def sharpen_image(self, image: torch.Tensor, strength: float) -> torch.Tensor:
+        blurred = self.denoise_image(image, 0.5)
+        sharpened = image + strength * (image - blurred)
+        return torch.clamp(sharpened, 0.0, 1.0)
+```
+
+## Model Operations
+
+### Clone and Modify Models
+
+```python
+import copy
+
+def clone_model(model):
+    """Create a deep copy of a model for modification."""
+    cloned = copy.deepcopy(model)
+    return cloned
+
+def modify_model_config(model, new_config):
+    """Modify model configuration safely."""
+    modified_model = clone_model(model)
+    modified_model.model_config.update(new_config)
+    return modified_model
+
+class ModelModifier(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "scale_factor": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 2.0}),
+            }
+        }
+    
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "modify_model"
+    
+    def modify_model(self, model, scale_factor):
+        modified = clone_model(model)
+        
+        if hasattr(modified.model, 'diffusion_model'):
+            for param in modified.model.diffusion_model.parameters():
+                param.data *= scale_factor
+        
+        return (modified,)
+```
+
+### Model Merging
+
+```python
+def merge_models(model1, model2, ratio=0.5):
+    """Merge two models with specified ratio."""
+    merged_model = clone_model(model1)
+    
+    state_dict1 = model1.model.state_dict()
+    state_dict2 = model2.model.state_dict()
+    
+    merged_state_dict = {}
+    for key in state_dict1.keys():
+        if key in state_dict2:
+            merged_state_dict[key] = (
+                state_dict1[key] * (1.0 - ratio) + 
+                state_dict2[key] * ratio
+            )
+        else:
+            merged_state_dict[key] = state_dict1[key]
+    
+    merged_model.model.load_state_dict(merged_state_dict)
+    return merged_model
+
+class ModelMerger(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model1": ("MODEL",),
+                "model2": ("MODEL",),
+                "ratio": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+            }
+        }
+    
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "merge"
+    
+    def merge(self, model1, model2, ratio):
+        merged = merge_models(model1, model2, ratio)
+        return (merged,)
+```
+
+## Conditioning Operations
+
+### Modify Conditioning
+
+```python
+def modify_conditioning_strength(conditioning, strength_multiplier):
+    """Modify the strength of conditioning."""
+    modified = []
+    
+    for cond in conditioning:
+        new_cond = [cond[0], cond[1].copy()]
+        
+        if "strength" in new_cond[1]:
+            new_cond[1]["strength"] *= strength_multiplier
+        else:
+            new_cond[1]["strength"] = strength_multiplier
+        
+        modified.append(new_cond)
+    
+    return modified
+
+def combine_conditioning(cond1, cond2, method="concat"):
+    """Combine two conditioning inputs."""
+    if method == "concat":
+        return cond1 + cond2
+    elif method == "average":
+        combined = []
+        min_len = min(len(cond1), len(cond2))
+        
+        for i in range(min_len):
+            avg_cond = (cond1[i][0] + cond2[i][0]) / 2.0
+            combined_dict = {**cond1[i][1], **cond2[i][1]}
+            combined.append([avg_cond, combined_dict])
+        
+        return combined
+    
+    return cond1
+
+class ConditioningProcessor(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning": ("CONDITIONING",),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0}),
+                "operation": (["multiply", "add_noise", "normalize"], {"default": "multiply"}),
+            }
+        }
+    
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "process"
+    
+    def process(self, conditioning, strength, operation):
+        if operation == "multiply":
+            return (modify_conditioning_strength(conditioning, strength),)
+        elif operation == "add_noise":
+            return (self.add_noise_to_conditioning(conditioning, strength),)
+        elif operation == "normalize":
+            return (self.normalize_conditioning(conditioning),)
+    
+    def add_noise_to_conditioning(self, conditioning, noise_strength):
+        modified = []
+        for cond in conditioning:
+            noise = torch.randn_like(cond[0]) * noise_strength
+            noisy_cond = [cond[0] + noise, cond[1].copy()]
+            modified.append(noisy_cond)
+        return modified
+    
+    def normalize_conditioning(self, conditioning):
+        modified = []
+        for cond in conditioning:
+            norm = torch.norm(cond[0], dim=-1, keepdim=True)
+            normalized_cond = [cond[0] / (norm + 1e-8), cond[1].copy()]
+            modified.append(normalized_cond)
+        return modified
+```
+
+## Batch Processing
+
+### Split and Merge Batches
+
+```python
+def split_batch(tensor, chunk_size):
+    """Split a batch tensor into smaller chunks."""
+    batch_size = tensor.shape[0]
+    chunks = []
+    
+    for i in range(0, batch_size, chunk_size):
+        chunk = tensor[i:i+chunk_size]
+        chunks.append(chunk)
+    
+    return chunks
+
+def merge_batches(chunks):
+    """Merge batch chunks back into a single tensor."""
+    return torch.cat(chunks, dim=0)
+
+class BatchProcessor(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "chunk_size": ("INT", {"default": 4, "min": 1, "max": 32}),
+                "operation": (["process_chunks", "split_only", "info"], {"default": "process_chunks"}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("processed_images", "num_chunks")
+    FUNCTION = "process_batch"
+    
+    def process_batch(self, images, chunk_size, operation):
+        if operation == "info":
+            num_chunks = (images.shape[0] + chunk_size - 1) // chunk_size
+            return (images, num_chunks)
+        
+        chunks = split_batch(images, chunk_size)
+        
+        if operation == "split_only":
+            return (merge_batches(chunks), len(chunks))
+        
+        processed_chunks = []
+        for chunk in chunks:
+            processed_chunk = self.process_chunk(chunk)
+            processed_chunks.append(processed_chunk)
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        result = merge_batches(processed_chunks)
+        return (result, len(chunks))
+    
+    def process_chunk(self, chunk):
+        return chunk * 1.1
+```
+
+## Device and Memory Management
+
+### Device Transfer Utilities
+
+```python
+import comfy.model_management as mm
+
+def transfer_to_device(tensor, device=None):
+    """Transfer tensor to specified device or optimal device."""
+    if device is None:
+        device = mm.get_torch_device()
+    
+    return tensor.to(device)
+
+def optimize_memory_usage():
+    """Optimize memory usage by clearing caches."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+class DeviceManager(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tensor_input": ("*",),
+                "target_device": (["auto", "cpu", "cuda"], {"default": "auto"}),
+                "optimize_memory": ("BOOLEAN", {"default": True}),
+            }
+        }
+    
+    RETURN_TYPES = ("*",)
+    FUNCTION = "manage_device"
+    
+    def manage_device(self, tensor_input, target_device, optimize_memory):
+        if optimize_memory:
+            optimize_memory_usage()
+        
+        if target_device == "auto":
+            device = mm.get_torch_device()
+        else:
+            device = torch.device(target_device)
+        
+        if hasattr(tensor_input, 'to'):
+            result = tensor_input.to(device)
+        else:
+            result = tensor_input
+        
+        return (result,)
+```
 
 ## Images and Masks
 
@@ -10,59 +394,96 @@ A growing collection of fragments of example code...
 
 Load an image into a batch of size 1 (based on `LoadImage` source code in `nodes.py`)
 ```python
-i = Image.open(image_path)
-i = ImageOps.exif_transpose(i)
-if i.mode == 'I':
-    i = i.point(lambda i: i * (1 / 255))
-image = i.convert("RGB")
-image = np.array(image).astype(np.float32) / 255.0
-image = torch.from_numpy(image)[None,]
+from PIL import Image, ImageOps
+import numpy as np
+import torch
+
+def load_image(image_path: str) -> torch.Tensor:
+    """Load and preprocess an image for ComfyUI."""
+    i = Image.open(image_path)
+    i = ImageOps.exif_transpose(i)
+    
+    if i.mode == 'I':
+        i = i.point(lambda i: i * (1 / 255))
+    
+    image = i.convert("RGB")
+    image = np.array(image).astype(np.float32) / 255.0
+    image = torch.from_numpy(image)[None,]
+    
+    return image
 ```
 
 ### Save an image batch
 
 Save a batch of images (based on `SaveImage` source code in `nodes.py`)
-```python     
-for (batch_number, image) in enumerate(images):
-    i = 255. * image.cpu().numpy()
-    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-    filepath = # some path that takes the batch number into account
-    img.save(filepath)
+```python
+import os
+from PIL import Image
+import numpy as np
+
+def save_image_batch(images: torch.Tensor, output_dir: str, prefix: str = "output") -> list[str]:
+    """Save a batch of images to disk."""
+    saved_paths = []
+    
+    for batch_number, image in enumerate(images):
+        i = 255. * image.cpu().numpy()
+        img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+        
+        filename = f"{prefix}_{batch_number:04d}.png"
+        filepath = os.path.join(output_dir, filename)
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        img.save(filepath)
+        saved_paths.append(filepath)
+    
+    return saved_paths
 ```
 
-### Invert a mask
-
-Inverting a mask is a straightforward process. Since masks are normalised to the range [0,1]:
+### Advanced Mask Operations
 
 ```python
-mask = 1.0 - mask
-```
+def invert_mask(mask: torch.Tensor) -> torch.Tensor:
+    """Invert a mask (0 becomes 1, 1 becomes 0)."""
+    return 1.0 - mask
 
-### Convert a mask to Image shape
+def normalize_mask_shape(mask: torch.Tensor) -> torch.Tensor:
+    """Convert mask to [B,H,W,C] format with C=1."""
+    if len(mask.shape) == 2:
+        mask = mask[None, :, :, None]
+    elif len(mask.shape) == 3:
+        if mask.shape[2] == 1:
+            mask = mask[None, :, :, :]
+        else:
+            mask = mask[:, :, :, None]
+    elif len(mask.shape) == 4:
+        pass
+    else:
+        raise ValueError(f"Unsupported mask shape: {mask.shape}")
+    
+    return mask
 
-```Python
-# We want [B,H,W,C] with C = 1
-if len(mask.shape)==2: # we have [H,W], so insert B and C as dimension 1
-    mask = mask[None,:,:,None]
-elif len(mask.shape)==3 and mask.shape[2]==1: # we have [H,W,C]
-    mask = mask[None,:,:,:]
-elif len(mask.shape)==3:                      # we have [B,H,W]
-    mask = mask[:,:,:,None]
-```
+def create_rgba_from_rgb_and_mask(rgb_image: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Combine RGB image with mask to create RGBA image."""
+    mask = normalize_mask_shape(mask)
+    alpha_channel = 1.0 - mask
+    rgba_image = torch.cat((rgb_image, alpha_channel), dim=-1)
+    return rgba_image
 
-### Using Masks as Transparency Layers
-
-When used for tasks like inpainting or segmentation, the MASK's values will eventually be rounded to the nearest integer so that they are binary — 0 indicating regions to be ignored and 1 indicating regions to be targeted. However, this doesn't happen until the MASK is passed to those nodes. This flexibility allows you to use MASKs as you would in digital photography contexts as a transparency layer:
-
-```python
-# Invert mask back to original transparency layer
-mask = 1.0 - mask
-
-# Unsqueeze the `C` (channels) dimension
-mask = mask.unsqueeze(-1)
-
-# Concatenate ("cat") along the `C` dimension
-rgba_image = torch.cat((rgb_image, mask), dim=-1)
+def apply_mask_to_image(image: torch.Tensor, mask: torch.Tensor, background_color: float = 0.0) -> torch.Tensor:
+    """Apply mask to image, replacing masked areas with background color."""
+    mask = normalize_mask_shape(mask)
+    
+    if mask.shape[:3] != image.shape[:3]:
+        mask = torch.nn.functional.interpolate(
+            mask.permute(0, 3, 1, 2), 
+            size=image.shape[1:3], 
+            mode='bilinear', 
+            align_corners=False
+        ).permute(0, 2, 3, 1)
+    
+    masked_image = image * mask + background_color * (1.0 - mask)
+    return masked_image
 ```
 
 ## Noise
@@ -73,16 +494,119 @@ Here's an example of creating a noise object which mixes the noise from two sour
 
 ```python
 class Noise_MixedNoise:
-    def __init__(self, nosie1, noise2, weight2):
-        self.noise1  = noise1
-        self.noise2  = noise2
+    def __init__(self, noise1, noise2, weight2):
+        self.noise1 = noise1
+        self.noise2 = noise2
         self.weight2 = weight2
 
     @property
-    def seed(self): return self.noise1.seed
+    def seed(self):
+        return self.noise1.seed
 
-    def generate_noise(self, input_latent:torch.Tensor) -> torch.Tensor:
+    def generate_noise(self, input_latent: torch.Tensor) -> torch.Tensor:
         noise1 = self.noise1.generate_noise(input_latent)
         noise2 = self.noise2.generate_noise(input_latent)
-        return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+        return noise1 * (1.0 - self.weight2) + noise2 * self.weight2
+```
+
+### Advanced Noise Generation
+
+```python
+class CustomNoiseGenerator:
+    def __init__(self, seed=None, noise_type="gaussian"):
+        self.seed = seed if seed is not None else torch.randint(0, 2**32, (1,)).item()
+        self.noise_type = noise_type
+        self.generator = torch.Generator()
+        self.generator.manual_seed(self.seed)
+    
+    def generate_noise(self, shape, device="cpu"):
+        """Generate noise with specified shape and device."""
+        if self.noise_type == "gaussian":
+            return torch.randn(shape, generator=self.generator, device=device)
+        elif self.noise_type == "uniform":
+            return torch.rand(shape, generator=self.generator, device=device) * 2.0 - 1.0
+        elif self.noise_type == "perlin":
+            return self.generate_perlin_noise(shape, device)
+        else:
+            raise ValueError(f"Unknown noise type: {self.noise_type}")
+    
+    def generate_perlin_noise(self, shape, device):
+        base_noise = torch.randn(shape, generator=self.generator, device=device)
+        return torch.nn.functional.interpolate(
+            base_noise.unsqueeze(0), 
+            size=shape[-2:], 
+            mode='bilinear', 
+            align_corners=False
+        ).squeeze(0)
+
+class NoiseNode(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "width": ("INT", {"default": 512, "min": 64, "max": 2048, "step": 8}),
+                "height": ("INT", {"default": 512, "min": 64, "max": 2048, "step": 8}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 64}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "noise_type": (["gaussian", "uniform", "perlin"], {"default": "gaussian"}),
+            }
+        }
+    
+    RETURN_TYPES = ("NOISE",)
+    FUNCTION = "generate"
+    
+    def generate(self, width, height, batch_size, seed, noise_type):
+        generator = CustomNoiseGenerator(seed, noise_type)
+        
+        class NoiseWrapper:
+            def __init__(self, gen, w, h, b):
+                self.generator = gen
+                self.width = w
+                self.height = h
+                self.batch_size = b
+            
+            def generate_noise(self, input_latent):
+                device = input_latent.device
+                latent_h, latent_w = input_latent.shape[-2:]
+                shape = (self.batch_size, 4, latent_h, latent_w)
+                return self.generator.generate_noise(shape, device)
+        
+        noise_wrapper = NoiseWrapper(generator, width, height, batch_size)
+        return (noise_wrapper,)
+```
+
+## Dynamic Input Types
+
+### Context-Aware Inputs
+
+```python
+import folder_paths
+
+class DynamicInputNode(ComfyNodeABC):
+    @classmethod
+    def INPUT_TYPES(cls):
+        available_models = folder_paths.get_filename_list("checkpoints")
+        available_vaes = folder_paths.get_filename_list("vae")
+        
+        inputs = {
+            "required": {
+                "model_name": (available_models, {"default": available_models[0] if available_models else ""}),
+                "processing_mode": (["simple", "advanced", "expert"], {"default": "simple"}),
+            }
+        }
+        
+        inputs["optional"] = {
+            "vae_name": (available_vaes, {"default": "auto"}),
+        }
+        
+        return inputs
+    
+    RETURN_TYPES = ("STRING",)
+    FUNCTION = "process"
+    
+    def process(self, model_name, processing_mode, vae_name="auto"):
+        result = f"Processing with {model_name} in {processing_mode} mode"
+        if vae_name != "auto":
+            result += f" using VAE: {vae_name}"
+        return (result,)
 ```
