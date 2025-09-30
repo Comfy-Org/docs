@@ -1,0 +1,407 @@
+---
+title: "V3 Migration"
+description: "How to migrate your existing V1 nodes to the new V3 schema."
+---
+
+## Overview
+
+The ComfyUI V3 schema introduces a more organized way of defining nodes, and future extensions to node features will only be added to V3 schema. You can use this guide to help you migrate your existing V1 nodes to the new V3 schema.
+
+## Core Concepts
+
+The V3 schema is kept on the new versioned Comfy API, meaning future revisions to the schema will be backwards compatible. ```comfy_api.latest``` will point to the latest numbered API that is still under development; the version before latest is what can be considered 'stable'. Version ```v0_0_2``` is the current (and first) API version so more changes will be made to it without warning. Once it is considered stable, a new version ```v0_0_3``` will be created for ```latest``` to point at.
+
+```python
+# use latest ComfyUI API
+from comfy_api.latest import ComfyExtension, io, ui
+
+# use a specific version of ComfyUI API
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### V1 vs V3 Architecture
+
+The biggest changes in V3 schema are:
+- Inputs and Outputs defined by objects instead of a dictionary.
+- The execution method is fixed to the name 'execute' and is a class method.
+- ```def comfy_entrypoint()``` function that returns a ComfyExtension object defines exposed nodes instead of NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS 
+- Node objects do not expose 'state' - ```def __init__(self)``` will have no effect on what is exposed in the node's functions, as all of them are class methods. The node class is sanitized before execution as well.
+
+#### V1 (Legacy)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (Modern)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## Migration Steps
+
+Going from V1 to V3 should be simple in most cases and is simply a syntax change.
+
+### Step 1: Change Base Class
+
+All V3 Schema nodes should inherit from ```ComfyNode```. Multiple layers of inheritance are okay as long as at the top of the chain there is a ```ComfyNode``` parent.
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # No __init__ needed
+```
+
+### Step 2: Convert INPUT_TYPES to define_schema
+
+Node properites like node id, display name, category, etc. that were assigned in different places in code such as dictionaries and class properties are now kept together via the ```Schema``` class.
+
+The ```define_schema(cls)``` function is expected to return a ```Schema``` object in much the same way INPUT_TYPES(s) worked in V1.
+
+Supported core Input/Output types are stored and documented in ```comfy_api/{version}``` in ```_io.py```, which is namespaced as ```io``` by default. Since Inputs/Outputs are defined by classes now instead of dictionaries or strings, custom types are supported by either definining your own class or using the helper function ```Custom``` in ```io```.
+
+Custom types are elaborated on in a section further below.
+
+A type class has the following properties:
+- ```class Input``` for Inputs (i.e. ```Model.Input(...)```)
+- ```class Output``` for Outputs (i.e. ```Model.Output(...)```). Note that all types may not support being an output.
+- ```Type``` for getting a typehint of the type (i.e. ```Model.Type```). Note that some typehints are just ```any```, which may be updated in the future. These typehints are not enforced and just act as useful documentation.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # V1 handling of arbitrary types
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # V3 handling of arbitrary types
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### Step 3: Update Execute Method
+
+All execution functions in v3 are named ```execute``` and are class methods.
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # Process
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # Process
+    image = 1.0 - image
+
+    # Return with optional UI preview
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### Step 4: Convert Node Properties
+
+Here are some examples of property names; see the source code in ```comfy_api.latest._io``` for more details.
+
+| V1 Property | V3 Schema Field | Notes |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | `outputs` in Schema | List of Output objects |
+| `RETURN_NAMES` | `display_name` in Output | Per-output display names |
+| `FUNCTION` | Always `execute` | Method name is standardized |
+| `CATEGORY` | `category` in Schema | String value |
+| `OUTPUT_NODE` | `is_output_node` in Schema | Boolean flag |
+| `DEPRECATED` | `is_deprecated` in Schema | Boolean flag |
+| `EXPERIMENTAL` | `is_experimental` in Schema | Boolean flag |
+
+### Step 5: Handle Special Methods
+
+The same special methods are supported as in v1, but either lowercased or renamed entirely to be more clear. Their usage remains the same.
+
+#### Validation (V1 → V3)
+
+The input validation function was renamed to ```validate_inputs```.
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # Validation logic
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # Return True if valid, error string if not
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### Lazy Evaluation (V1 → V3)
+
+The ```check_lazy_status``` function is class method, remains the same otherwise.
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### Cache Control (V1 → V3)
+
+The functionality of cache control remains the same as in V1, but the original name was very misleading as to how it operated.
+
+V1's ```IS_CHANGED``` function signals execution not to trigger rerunning the node if the return value is the SAME as the last time the node was ran.
+
+Thus, the function ```IS_CHANGED``` was renamed to ```fingerprint_inputs```. One of the most common mistakes by developers was thinking if you return ```True```, the node would always re-run. Because ```True``` would always be returned, it would have the opposite effect of only making the node run once and reuse cached values. 
+
+An example of using this function is the LoadImage node. It returns the hash of the selected file, so that if the file changes, the node will be forced to rerun.
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### Step 6: Create Extension and Entry Point
+
+Instead of defining dictionaries to link node id to node class/display name, there is now a ```ComfyExtension``` class and an expected ```comfy_entrypoint``` function to be defined.
+
+In the future, more functions may be added to ComfyExtension to register more than just nodes via ```get_node_list```.
+
+```comfy_entrypoint``` can be either async or not, but ```get_node_list``` must be defined as async.
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # must be declared as async
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # Add more nodes here
+        ]
+
+# can be declared async or not, both will work
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Input Type Reference
+
+Already explained in step 2, but here are some type reference comparisons in V1 vs V3. See ```comfy_api.latest._io``` for the full type declarations.
+
+### Basic Types
+
+| V1 Type | V3 Type | Example |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+### ComfyUI Types
+
+| V1 Type | V3 Type | Example |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="Input image")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### Combo (Dropdowns/Selection Lists)
+
+Combo types in V3 require explicit class definition.
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## Advanced Features
+
+### UI Integration
+
+V3 provides built-in UI helpers to avoid common boilerplate of saving files.
+
+```python
+from comfy_api.latest import ui
+
+@classmethod
+def execute(cls, images) -> io.NodeOutput:
+    # Show preview in node
+    return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+```
+
+### Output Nodes
+
+For nodes that produce side effects (like saving files). Same as in V1, marking a node as output will display a `run` play button in the node's context window, allowing for partial execution of the graph.
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # Does not need to be empty.
+        is_output_node=True  # Mark as output node
+    )
+```
+
+### Custom Types
+
+Create custom input/output types either via class definition of ```Custom``` helper function.
+
+```python
+from comfy_api.latest import io
+
+# Method 1: Using decorator with class
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Python type hint
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# Method 2: Using Custom helper
+# The helper can be used directly without saving to a variable first for convenience as well
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```

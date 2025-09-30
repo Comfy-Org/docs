@@ -1,0 +1,407 @@
+---
+title: "V3 迁移指南"
+description: "如何将现有的 V1 节点迁移到新的 V3 架构。"
+---
+
+## 概述
+
+ComfyUI V3 架构引入了一种更有序的节点定义方式，今后的节点功能扩展只会在 V3 架构中进行。本指南将帮助你将现有的 V1 节点迁移到新的 V3 架构。
+
+## 核心概念
+
+V3 架构基于新的版本化 Comfy API，这意味着未来的架构更新都将向后兼容。```comfy_api.latest``` 指向正在开发中的最新版本 API，而 latest 之前的版本可以认为是“稳定版”。目前版本 ```v0_0_2``` 是第一个 API 版本，之后可能还会有不兼容的更改。当它稳定后，会创建新的 ```v0_0_3``` 版本供 ```latest``` 指向。
+
+```python
+# 使用最新的 ComfyUI API
+from comfy_api.latest import ComfyExtension, io, ui
+
+# 使用特定版本的 ComfyUI API
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### V1 与 V3 架构
+
+V3 架构的主要变化包括：
+- 输入和输出使用对象定义，而不是字典。
+- 执行方法统一命名为 'execute'，并且是类方法。
+- 使用 ```def comfy_entrypoint()``` 函数返回 ComfyExtension 对象来定义节点，取代 NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS
+- 节点对象不保存状态 - ```def __init__(self)``` 不会影响节点函数的暴露内容，因为所有方法都是类方法。节点类在执行前也会被清理。
+
+#### V1 (旧版)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (现代版)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## 迁移步骤
+
+从 V1 迁移到 V3 在大多数情况下都很简单，主要是语法的调整。
+
+### 步骤 1: 更改基类
+
+所有 V3 节点都必须继承自 ```ComfyNode```。支持多层继承，只要继承链的顶层有 ```ComfyNode``` 父类即可。
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # 不需要 __init__
+```
+
+### 步骤 2: 将 INPUT_TYPES 转换为 define_schema
+
+原来分散在代码不同位置（如字典和类属性）的节点属性（节点 ID、显示名称、类别等）现在都通过 ```Schema``` 类统一管理。
+
+```define_schema(cls)``` 函数需要返回一个 ```Schema``` 对象，工作方式与 V1 中的 INPUT_TYPES(s) 类似。
+
+支持的核心输入/输出类型存储在 ```comfy_api/{version}``` 的 ```_io.py``` 文件中，默认以 ```io``` 作为命名空间。由于输入/输出现在由类定义而不是字典或字符串，自定义类型可以通过编写自己的类或使用 ```io``` 中的 ```Custom``` 辅助函数来实现。
+
+自定义类型在下面的章节中有详细说明。
+
+类型类包含以下属性：
+- ```class Input``` 用于定义输入（如 ```Model.Input(...)```）
+- ```class Output``` 用于定义输出（如 ```Model.Output(...)```）。注意，不是所有类型都支持作为输出。
+- ```Type``` 用于获取类型提示（如 ```Model.Type```）。有些类型提示可能只是 ```any```，未来会进一步完善。这些类型提示不会被强制执行，仅作为文档参考。
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # V1 处理任意类型
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # V3 处理任意类型
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### 步骤 3: 更新执行方法
+
+V3 中所有的执行函数都命名为 ```execute``` 并且必须是类方法。
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # Process
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # Process
+    image = 1.0 - image
+
+    # Return with optional UI preview
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### 步骤 4: 转换节点属性
+
+以下是一些属性名称的对照表，更多详细信息请查看 ```comfy_api.latest._io``` 中的源代码。
+
+| V1 属性 | V3 规范字段 | 备注 |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | Schema 中的 `outputs` | 输出对象列表 |
+| `RETURN_NAMES` | 输出中的 `display_name` | 每个输出的显示名称 |
+| `FUNCTION` | 始终为 `execute` | 方法名称标准化 |
+| `CATEGORY` | Schema 中的 `category` | 字符串值 |
+| `OUTPUT_NODE` | Schema 中的 `is_output_node` | 布尔标志 |
+| `DEPRECATED` | Schema 中的 `is_deprecated` | 布尔标志 |
+| `EXPERIMENTAL` | Schema 中的 `is_experimental` | 布尔标志 |
+
+### 步骤 5: 处理特殊方法
+
+V3 支持与 V1 相同的特殊方法，但方法名改为小写或重新命名以更加清晰。使用方式保持不变。
+
+#### 验证 (V1 → V3)
+
+输入验证函数重命名为 ```validate_inputs```。
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # Validation logic
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # Return True if valid, error string if not
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### 惰性求值 (V1 → V3)
+
+```check_lazy_status``` 函数改为类方法，其他部分保持不变。
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### 缓存控制 (V1 → V3)
+
+缓存控制的功能与 V1 相同，但原来的函数名容易误导。
+
+V1 的 ```IS_CHANGED``` 函数的逗辑是：如果返回值与上次执行时相同，则不重新执行节点。
+
+因此函数 ```IS_CHANGED``` 被重命名为 ```fingerprint_inputs```。开发者常见的错误是认为返回 ```True``` 就会让节点总是重新执行。但由于总是返回 ```True```，反而会导致节点只执行一次然后重用缓存。
+
+一个常见的使用场景是 LoadImage 节点。它返回所选文件的哈希值，这样文件变化时节点就会重新执行。
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### 步骤 6: 创建扩展和入口点
+
+不再使用字典来映射节点 ID 到节点类/显示名称，现在需要定义 ```ComfyExtension``` 类和 ```comfy_entrypoint``` 函数。
+
+将来可能会在 ComfyExtension 中添加更多函数，通过 ```get_node_list``` 注册节点以外的其他内容。
+
+```comfy_entrypoint``` 可以是同步或异步函数，但 ```get_node_list``` 必须声明为异步。
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # 必须声明为异步
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # 在这里添加更多节点
+        ]
+
+# 可以声明为异步或不是，两者都可以工作
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## 输入类型参考
+
+虽然在步骤 2 中已经介绍过，但这里再提供一些 V1 与 V3 类型的对照表。完整的类型声明请查看 ```comfy_api.latest._io```。
+
+### 基本类型
+
+| V1 类型 | V3 类型 | 示例 |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+### ComfyUI 类型
+
+| V1 类型 | V3 类型 | 示例 |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="Input image")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### 组合类型（下拉框/选择列表）
+
+V3 中的组合类型需要显式定义。
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## 高级功能
+
+### UI 集成
+
+V3 提供内置的 UI 辅助函数，可以避免保存文件时的常见样板代码。
+
+```python
+from comfy_api.latest import ui
+
+@classmethod
+def execute(cls, images) -> io.NodeOutput:
+    # 在节点中显示预览
+    return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+```
+
+### 输出节点
+
+适用于产生副作用的节点（如保存文件）。与 V1 一样，将节点标记为输出节点后，会在节点的上下文菜单中显示 `run` 播放按钮，允许部分执行流程图。
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # 不需要为空。
+        is_output_node=True  # 标记为输出节点
+    )
+```
+
+### 自定义类型
+
+可以通过编写类或使用 ```Custom``` 辅助函数来创建自定义的输入/输出类型。
+
+```python
+from comfy_api.latest import io
+
+# 方法 1: 使用装饰器定义类
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Python 类型注释
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# 方法 2: 使用 Custom 辅助函数
+# 为了方便起见，也可以直接使用辅助函数而不先保存到变量
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```
