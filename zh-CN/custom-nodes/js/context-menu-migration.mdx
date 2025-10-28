@@ -1,0 +1,319 @@
+---
+title: "上下文菜单迁移指南"
+---
+
+本指南帮助您从已弃用的猴子补丁(monkey-patching)方法迁移到新的上下文菜单扩展 API。
+
+旧的猴子补丁方法修改 `LGraphCanvas.prototype.getCanvasMenuOptions` 和 `nodeType.prototype.getExtraMenuOptions` 已被弃用:
+
+<Tip>如果您在浏览器控制台中看到弃用警告,说明您的扩展正在使用旧 API,应该进行迁移。</Tip>
+
+## 迁移画布菜单
+
+### 旧方法(已弃用)
+
+旧方法在扩展设置期间修改原型:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    // ❌ 旧方法: 猴子补丁原型
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+
+      options.push(null) // 分隔符
+      options.push({
+        content: "我的自定义操作",
+        callback: () => {
+          console.log("操作已触发")
+        }
+      })
+
+      return options
+    }
+  }
+})
+```
+
+### 新方法(推荐)
+
+新方法使用专用的扩展钩子:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ 新方法: 使用 getCanvasMenuItems 钩子
+  getCanvasMenuItems(canvas) {
+    return [
+      null, // 分隔符
+      {
+        content: "我的自定义操作",
+        callback: () => {
+          console.log("操作已触发")
+        }
+      }
+    ]
+  }
+})
+```
+
+### 主要区别
+
+| 旧方法 | 新方法 |
+|--------|--------|
+| 在 `setup()` 中修改 | 使用 `getCanvasMenuItems()` 钩子 |
+| 包装现有函数 | 直接返回菜单项 |
+| 修改 `options` 数组 | 返回新数组 |
+| 通过 `this` 访问画布 | 画布作为参数传递 |
+
+## 迁移节点菜单
+
+### 旧方法(已弃用)
+
+旧方法修改节点类型原型:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeType.comfyClass === "KSampler") {
+      // ❌ 旧方法: 猴子补丁节点原型
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
+        original?.apply(this, arguments)
+
+        options.push({
+          content: "随机化种子",
+          callback: () => {
+            const seedWidget = this.widgets.find(w => w.name === "seed")
+            if (seedWidget) {
+              seedWidget.value = Math.floor(Math.random() * 1000000)
+            }
+          }
+        })
+      }
+    }
+  }
+})
+```
+
+### 新方法(推荐)
+
+新方法使用专用的扩展钩子:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ 新方法: 使用 getNodeMenuItems 钩子
+  getNodeMenuItems(node) {
+    const items = []
+
+    // 仅为特定节点类型添加项目
+    if (node.comfyClass === "KSampler") {
+      items.push({
+        content: "随机化种子",
+        callback: () => {
+          const seedWidget = node.widgets.find(w => w.name === "seed")
+          if (seedWidget) {
+            seedWidget.value = Math.floor(Math.random() * 1000000)
+          }
+        }
+      })
+    }
+
+    return items
+  }
+})
+```
+
+### 主要区别
+
+| 旧方法 | 新方法 |
+|--------|--------|
+| 在 `beforeRegisterNodeDef()` 中修改 | 使用 `getNodeMenuItems()` 钩子 |
+| 通过 `if` 检查指定类型 | 在钩子中通过 `if` 检查指定类型 |
+| 修改 `options` 数组 | 返回新数组 |
+| 通过 `this` 访问节点 | 节点作为参数传递 |
+
+## 常见模式
+
+### 条件菜单项
+
+两种方法都支持条件项,但新 API 更简洁:
+
+```javascript
+// ✅ 新方法: 简洁的条件逻辑
+getCanvasMenuItems(canvas) {
+  const items = []
+
+  if (canvas.selectedItems.size > 0) {
+    items.push({
+      content: `处理 ${canvas.selectedItems.size} 个选中的节点`,
+      callback: () => {
+        // 处理节点
+      }
+    })
+  }
+
+  return items
+}
+```
+
+### 添加分隔符
+
+两种方法中添加分隔符的方式相同:
+
+```javascript
+getCanvasMenuItems(canvas) {
+  return [
+    null, // 分隔符(水平线)
+    {
+      content: "我的操作",
+      callback: () => {}
+    }
+  ]
+}
+```
+
+### 创建子菜单
+
+创建子菜单的推荐方式是使用声明式的 `submenu` 属性:
+
+```javascript
+getNodeMenuItems(node) {
+  return [
+    {
+      content: "高级选项",
+      submenu: {
+        options: [
+          { content: "选项 1", callback: () => {} },
+          { content: "选项 2", callback: () => {} }
+        ]
+      }
+    }
+  ]
+}
+```
+
+这种声明式方法更简洁,并且与 ComfyUI 代码库中使用的模式一致。
+
+<Tip>虽然也支持使用 `has_submenu: true` 和 `new LiteGraph.ContextMenu()` 的基于回调的方法,但为了更好的可维护性,推荐使用声明式的 `submenu` 属性。</Tip>
+
+### 访问状态
+
+```javascript
+// ✅ 新方法: 状态访问更清晰
+getCanvasMenuItems(canvas) {
+  // 访问画布属性
+  const selectedCount = canvas.selectedItems.size
+  const graphMousePos = canvas.graph_mouse
+
+  return [/* 菜单项 */]
+}
+
+getNodeMenuItems(node) {
+  // 访问节点属性
+  const nodeType = node.comfyClass
+  const isDisabled = node.mode === 2
+  const widgets = node.widgets
+
+  return [/* 菜单项 */]
+}
+```
+
+## 故障排除
+
+### 如何识别旧 API 的使用
+
+在您的代码中查找这些模式:
+
+```javascript
+// ❌ 旧 API 的标志:
+LGraphCanvas.prototype.getCanvasMenuOptions = function() { /* ... */ }
+nodeType.prototype.getExtraMenuOptions = function() { /* ... */ }
+```
+
+### 理解弃用警告
+
+如果您在控制台中看到此警告:
+
+```
+[DEPRECATED] Monkey-patching getCanvasMenuOptions is deprecated. (Extension: "MyExtension")
+Please use the new context menu API instead.
+See: https://docs.comfy.org/custom-nodes/js/context-menu-migration
+```
+
+说明您的扩展正在使用旧方法,应该进行迁移。
+
+### 验证迁移成功
+
+迁移后:
+
+1. 从 `setup()` 和 `beforeRegisterNodeDef()` 中删除所有原型修改
+2. 添加 `getCanvasMenuItems()` 和/或 `getNodeMenuItems()` 钩子
+3. 测试您的菜单项是否仍然正确显示
+4. 验证控制台中没有出现弃用警告
+
+### 完整迁移示例
+
+**迁移前:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+      options.push({ content: "操作", callback: () => {} })
+      return options
+    }
+  },
+  async beforeRegisterNodeDef(nodeType) {
+    if (nodeType.comfyClass === "KSampler") {
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(_, options) {
+        original?.apply(this, arguments)
+        options.push({ content: "节点操作", callback: () => {} })
+      }
+    }
+  }
+})
+```
+
+**迁移后:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  getCanvasMenuItems(canvas) {
+    return [
+      { content: "操作", callback: () => {} }
+    ]
+  },
+  getNodeMenuItems(node) {
+    if (node.comfyClass === "KSampler") {
+      return [
+        { content: "节点操作", callback: () => {} }
+      ]
+    }
+    return []
+  }
+})
+```
+
+## 其他资源
+
+- [注释示例](./javascript_examples) - 更多使用新 API 的示例
+- [扩展钩子](./javascript_hooks) - 可用扩展钩子的完整列表
+- [命令和快捷键](./javascript_commands_keybindings) - 为您的菜单操作添加键盘快捷键
