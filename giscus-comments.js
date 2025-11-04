@@ -257,7 +257,7 @@
     script.setAttribute('data-category', 'Announcements');
     script.setAttribute('data-category-id', 'DIC_kwDOLlassc4CtQoz'); // Replace with real ID
     script.setAttribute('data-mapping', 'pathname');
-    script.setAttribute('data-strict', '0');
+    script.setAttribute('data-strict', '1');
     script.setAttribute('data-reactions-enabled', '1');
     script.setAttribute('data-emit-metadata', '0');
     script.setAttribute('data-input-position', 'bottom');
