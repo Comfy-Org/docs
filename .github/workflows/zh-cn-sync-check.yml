@@ -69,85 +69,54 @@ jobs:
             # Check docs.json content for redirects if it was changed
             if [ "$DOCS_JSON_CHANGED" = "true" ]; then
               echo "Checking docs.json for redirects..."
-              
-              # Create a Node.js script to check redirects with wildcard support
-              cat > check_redirects_zh.js << 'EOF'
-              const fs = require('fs');
-              
-              const docsJson = JSON.parse(fs.readFileSync('docs.json', 'utf8'));
-              const deletedFiles = process.argv.slice(2);
-              const redirects = docsJson.redirects || [];
-              
-              function matchesPattern(filePath, pattern) {
-                // Remove leading slash from pattern if present
-                pattern = pattern.replace(/^\//, '');
-                filePath = filePath.replace(/^\//, '');
-                
-                // Convert wildcard pattern to regex
-                // :slug* matches any path segment(s)
-                // :slug matches a single path segment
-                const regexPattern = pattern
-                  .replace(/\//g, '\\/')
-                  .replace(/:slug\*/g, '.*')
-                  .replace(/:slug/g, '[^/]+')
-                  .replace(/\*/g, '.*');
-                
-                const regex = new RegExp(`^${regexPattern}$`);
-                return regex.test(filePath);
-              }
-              
-              const missing = [];
-              
-              for (const file of deletedFiles) {
-                // Remove .mdx extension
-                const sourcePath = file.replace(/\.mdx$/, '');
-                
-                // Check for exact match or wildcard match
-                const hasRedirect = redirects.some(redirect => {
-                  const redirectSource = redirect.source.replace(/^\//, '');
-                  const filePathNormalized = sourcePath.replace(/^\//, '');
-                  
-                  // Check exact match
-                  if (redirectSource === filePathNormalized) {
-                    return true;
-                  }
-                  
-                  // Check wildcard match
-                  if (matchesPattern(filePathNormalized, redirectSource)) {
-                    return true;
-                  }
-                  
-                  return false;
-                });
-                
-                if (hasRedirect) {
-                  console.log(`✅ Found redirect for moved file: ${file}`);
-                } else {
-                  console.log(`❌ Missing redirect in docs.json for: ${file}`);
-                  missing.push(file);
+
+              # Use Node.js to check redirects with wildcard support
+              MISSING_REDIRECTS=$(node -e "
+                const fs = require('fs');
+                const docsJson = JSON.parse(fs.readFileSync('docs.json', 'utf8'));
+                const deletedFiles = process.argv.slice(1);
+                const redirects = docsJson.redirects || [];
+
+                function matchesPattern(filePath, pattern) {
+                  pattern = pattern.replace(/^\//, '');
+                  filePath = filePath.replace(/^\//, '');
+                  const regexPattern = pattern
+                    .replace(/\//g, '\\\\/')
+                    .replace(/:slug\*/g, '.*')
+                    .replace(/:slug/g, '[^/]+')
+                    .replace(/\*/g, '.*');
+                  const regex = new RegExp(\`^\${regexPattern}$\`);
+                  return regex.test(filePath);
                 }
-              }
-              
-              // Output missing files in a format that bash can capture
-              if (missing.length > 0) {
-                // Write to a temp file that bash can read
-                fs.writeFileSync('missing_redirects.txt', missing.join('\n'));
-              }
-              EOF
-              
-              # Run the Node.js script with deleted files as arguments
-              node check_redirects_zh.js $DELETED_FILES
-              
-              # Read the missing files if the temp file exists
-              if [ -f "missing_redirects.txt" ]; then
-                MOVED_FILES=$(cat missing_redirects.txt | tr '\n' ' ')
-                rm missing_redirects.txt
+
+                const missing = [];
+                for (const file of deletedFiles) {
+                  const sourcePath = file.replace(/\.mdx$/, '');
+                  const hasRedirect = redirects.some(redirect => {
+                    const redirectSource = redirect.source.replace(/^\//, '');
+                    const filePathNormalized = sourcePath.replace(/^\//, '');
+                    return redirectSource === filePathNormalized || matchesPattern(filePathNormalized, redirectSource);
+                  });
+
+                  if (hasRedirect) {
+                    console.log(\`✅ Found redirect for moved file: \${file}\`);
+                  } else {
+                    console.log(\`❌ Missing redirect in docs.json for: \${file}\`);
+                    missing.push(file);
+                  }
+                }
+
+                if (missing.length > 0) {
+                  process.exit(1);
+                }
+              " $DELETED_FILES 2>&1 | tee /tmp/redirect_check.log || true)
+
+              # Check if there were missing redirects
+              if echo "$MISSING_REDIRECTS" | grep -q "❌ Missing redirect"; then
+                MOVED_FILES=$(echo "$MISSING_REDIRECTS" | grep "❌ Missing redirect" | sed 's/.*for: //')
               else
                 MOVED_FILES=""
               fi
-              
-              # Clean up
-              rm check_redirects_zh.js
             else
               # If docs.json wasn't changed, all deleted files are suspect
               MOVED_FILES="$DELETED_FILES"
