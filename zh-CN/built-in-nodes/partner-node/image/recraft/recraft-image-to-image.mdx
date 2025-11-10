@@ -1,0 +1,171 @@
+---
+title: "Recraft Image to Image - ComfyUI 原生节点文档"
+description: "通过文本描述和参考图像生成新图像的 Recraft 合作伙伴节点"
+sidebarTitle: "Recraft Image to Image"
+icon: "circle"
+---
+
+![ComfyUI 原生Recraft Image to Image节点](/images/built-in-nodes/api_nodes/recraft/recraft-image-to-image.jpg)
+
+Recraft Image to Image 节点通过 Recraft 的 API 将参考图像和文本提示词生成新的图像。
+
+## 参数说明
+
+### 基本参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|-----|-----|-------|------|
+| image | 图像 | - | 作为参考的输入图像 |
+| prompt | 字符串 | "" | 生成图像的文本描述 |
+| n | 整数 | 1 | 生成图像数量(1-6) |
+| seed | 整数 | 0 | 随机种子值 |
+
+### 可选参数
+
+| 参数 | 类型 | 说明 |
+|-----|-----|------|
+| recraft_style | Recraft Style | 设置生成图像的风格 |
+| negative_prompt | 字符串 | 指定不希望出现的元素 |
+| recraft_controls | Recraft Controls | 附加控制参数(颜色等) |
+
+### 输出
+
+| 输出 | 类型 | 说明 |
+|-----|-----|------|
+| IMAGE | 图像 | 生成的图像结果 |
+
+
+## 源码参考
+
+[节点源码 (更新于2025-05-03)] 
+```python
+
+class RecraftImageToImageNode:
+    """
+    Modify image based on prompt and strength.
+    """
+
+    RETURN_TYPES = (IO.IMAGE,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/image/Recraft"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": (IO.IMAGE, ),
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the image generation.",
+                    },
+                ),
+                "n": (
+                    IO.INT,
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 6,
+                        "tooltip": "The number of images to generate.",
+                    },
+                ),
+                "strength": (
+                    IO.FLOAT,
+                    {
+                        "default": 0.5,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Defines the difference with the original image, should lie in [0, 1], where 0 means almost identical, and 1 means miserable similarity."
+                    }
+                ),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "Seed to determine if node should re-run; actual results are nondeterministic regardless of seed.",
+                    },
+                ),
+            },
+            "optional": {
+                "recraft_style": (RecraftIO.STYLEV3,),
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "An optional text description of undesired elements on an image.",
+                    },
+                ),
+                "recraft_controls": (
+                    RecraftIO.CONTROLS,
+                    {
+                        "tooltip": "Optional additional controls over the generation via the Recraft Controls node."
+                    },
+                ),
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        image: torch.Tensor,
+        prompt: str,
+        n: int,
+        strength: float,
+        seed,
+        auth_token=None,
+        recraft_style: RecraftStyle = None,
+        negative_prompt: str = None,
+        recraft_controls: RecraftControls = None,
+        **kwargs,
+    ):
+        default_style = RecraftStyle(RecraftStyleV3.realistic_image)
+        if recraft_style is None:
+            recraft_style = default_style
+
+        controls_api = None
+        if recraft_controls:
+            controls_api = recraft_controls.create_api_model()
+
+        if not negative_prompt:
+            negative_prompt = None
+
+        request = RecraftImageGenerationRequest(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            model=RecraftModel.recraftv3,
+            n=n,
+            strength=round(strength, 2),
+            style=recraft_style.style,
+            substyle=recraft_style.substyle,
+            style_id=recraft_style.style_id,
+            controls=controls_api,
+            random_seed=seed,
+        )
+
+        images = []
+        total = image.shape[0]
+        pbar = ProgressBar(total)
+        for i in range(total):
+            sub_bytes = handle_recraft_file_request(
+                image=image[i],
+                path="/proxy/recraft/images/imageToImage",
+                request=request,
+                auth_token=auth_token,
+            )
+            images.append(torch.cat([bytesio_to_image_tensor(x) for x in sub_bytes], dim=0))
+            pbar.update(1)
+
+        images_tensor = torch.cat(images, dim=0)
+        return (images_tensor, )
+```
