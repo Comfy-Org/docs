@@ -75,6 +75,62 @@
   }
 
   /**
+   * Normalize href into a URL object scoped to current origin
+   */
+  function parseHref(href) {
+    if (!href) {
+      return null;
+    }
+
+    try {
+      const url = new URL(href, window.location.origin);
+      return {
+        url,
+        isSameOrigin: url.origin === window.location.origin,
+        relativePath: url.pathname + url.search + url.hash
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Attach handler to language element
+   */
+  function attachLanguageHandler(element, targetLang) {
+    if (!element || targetLang === getCurrentLanguage()) {
+      return false;
+    }
+
+    if (element.getAttribute('data-language-fixed') === 'true') {
+      return false;
+    }
+
+    const handler = event => {
+      if (event) {
+        if (typeof event.preventDefault === 'function') {
+          event.preventDefault();
+        }
+        if (typeof event.stopPropagation === 'function') {
+          event.stopPropagation();
+        }
+        if (typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
+      }
+
+      const newPath = convertPathToLanguage(targetLang);
+      console.log('[Language Switcher] Navigating from', window.location.pathname, 'to', newPath);
+      window.location.href = newPath;
+    };
+
+    element.addEventListener('click', handler, true);
+    element.setAttribute('data-language-fixed', 'true');
+    element.setAttribute('data-target-lang', targetLang);
+    return true;
+  }
+
+  /**
    * Fix language switcher links
    */
   function fixLanguageSwitcher() {
@@ -155,8 +211,12 @@
           }
 
           const href = link.getAttribute('href');
-          if (!href) return;
+          const parsedHref = parseHref(href);
+          if (!parsedHref || !parsedHref.isSameOrigin) {
+            return;
+          }
 
+          const { url } = parsedHref;
           const linkText = link.textContent.trim().toLowerCase();
 
           // Determine which language this link is for
@@ -166,13 +226,13 @@
             targetLang = 'cn';
           } else if (linkText.includes('english') || linkText === 'en') {
             targetLang = 'en';
-          } else if (href === '/' && !link.closest('[class*="footer"]')) {
+          } else if (url.pathname === '/' && !link.closest('[class*="footer"]')) {
             // Links to "/" might be English homepage (but not in footer)
             const parent = link.closest('[role="menu"], [role="listbox"], [id*="localization"]');
             if (parent) {
               targetLang = 'en';
             }
-          } else if (href.startsWith('/zh-CN') || href === '/zh-CN/') {
+          } else if (url.pathname.startsWith('/zh-CN')) {
             targetLang = 'cn';
           }
 
@@ -181,26 +241,41 @@
 
             // Only fix if switching to a different language
             if (targetLang !== currentLang) {
-              // Calculate the new path
+              // Calculate the new path and update the href for visual feedback
               const newPath = convertPathToLanguage(targetLang);
-
-              // Update the href attribute
               link.setAttribute('href', newPath);
-              link.setAttribute('data-language-fixed', 'true');
-              link.setAttribute('data-target-lang', targetLang);
 
-              // Override the click handler
-              link.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-
-                const newPath = convertPathToLanguage(targetLang);
-                console.log('[Language Switcher] Navigating from', window.location.pathname, 'to', newPath);
-                window.location.href = newPath;
-              }, true);
-
-              fixedCount++;
+              if (attachLanguageHandler(link, targetLang)) {
+                fixedCount++;
+              }
             }
+          }
+        });
+
+        // Handle dropdown menu items rendered as div/button elements
+        const dropdownItems = document.querySelectorAll('[id^="localization-select-item-"]');
+
+        dropdownItems.forEach(item => {
+          let targetLang = null;
+          const itemId = item.id || '';
+
+          if (itemId.endsWith('-en')) {
+            targetLang = 'en';
+          } else if (itemId.endsWith('-cn')) {
+            targetLang = 'cn';
+          }
+
+          if (!targetLang) {
+            const text = item.textContent.trim().toLowerCase();
+            if (text.includes('english') || text === 'en') {
+              targetLang = 'en';
+            } else if (text.includes('中文') || text.includes('chinese') || text === 'cn') {
+              targetLang = 'cn';
+            }
+          }
+
+          if (targetLang && attachLanguageHandler(item, targetLang)) {
+            fixedCount++;
           }
         });
 
