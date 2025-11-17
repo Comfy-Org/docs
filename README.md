@@ -27,13 +27,14 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 This will only generate the MDX files for each endpoint. You need to add a link to these files in `docs.json`, and the up-to-date API spec will be shown on that doc page.
 
 
-## Special Note on renaming files
+## Special Note on Renaming Files
 
-• Renaming files can cause some external links to become inaccessible, as they are already used in numerous articles and templates.
-• Since we can manage the sidebar navigation can be reorganized via the docs.json file, we generally do not change the original document's file location unless absolutely necessary.
-• If you renamed any files and caused the file path to be changed, please update the `redirects` list in the `docs.json`
+- Renaming files can cause some external links to become inaccessible, as they are already used in numerous articles and templates.
+- Since we can manage the sidebar navigation can be reorganized via the docs.json file, we generally do not change the original document's file location unless absolutely necessary.
+- If you renamed any files and caused the file path to be changed, please update the `redirects` list in the `docs.json`
 
-> **Important**: When you move or rename an MDX file, you MUST add a redirect in the `docs.json` file. A GitHub Action will check for redirects and fail the PR if they are missing. Redirects should follow this format:
+A GitHub Action will check for redirects and fail the PR if they are missing. Redirects should follow this format:
+
 > ```json
 > "redirects": [
 >   {
@@ -43,6 +44,8 @@ This will only generate the MDX files for each endpoint. You need to add a link 
 > ]
 > ```
 > Don't forget to include the corresponding Chinese translation file in the `zh-CN` directory as well!
+
+You can also refer to the [Mintlify doc](https://www.mintlify.com/docs/create/redirects) to learn how to add and match a wildcard path.
 
 ## About built-in node document
 
