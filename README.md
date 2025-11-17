@@ -27,12 +27,11 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 This will only generate the MDX files for each endpoint. You need to add a link to these files in `docs.json`, and the up-to-date API spec will be shown on that doc page.
 
 
-## Special Note on File Save Locations
+## Special Note on renaming files
 
-Due to the necessity of adjusting article paths during documentation, changing these paths might render original links inaccessible, as they are already used in numerous articles and templates.
-- Since the organization of the document directory can be reorganized through the `docs.json` file, we generally do not change the original document's file location unless absolutely necessary.
-- If adjustments are needed, please modify `docs.json` to reorganize the files.
-- If changes are essential, please add redirection rules in the `docs.json` file.
+• Renaming files can cause some external links to become inaccessible, as they are already used in numerous articles and templates.
+• Since we can manage the sidebar navigation can be reorganized via the docs.json file, we generally do not change the original document's file location unless absolutely necessary.
+• If you renamed any files and caused the file path to be changed, please update the `redirects` list in the `docs.json`
 
 > **Important**: When you move or rename an MDX file, you MUST add a redirect in the `docs.json` file. A GitHub Action will check for redirects and fail the PR if they are missing. Redirects should follow this format:
 > ```json
