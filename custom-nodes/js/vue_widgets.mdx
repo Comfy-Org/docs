@@ -1,0 +1,373 @@
+---
+title: "Nodes 2.0 Widgets"
+description: "Create custom node widgets using Vue Single File Components"
+---
+
+Nodes 2.0 widgets allow you to create rich, interactive node widgets using Vue 3 Single File Components (SFCs). This is the recommended approach for building custom widgets that need complex UI interactions, state management, or styling.
+
+## Overview
+
+You can create Vue-based widgets using the `getCustomVueWidgets()` hook. ComfyUI exposes Vue globally as `window.Vue`, so your extension uses the same Vue instance as the main app (smaller bundle size).
+
+## Project Structure
+
+```
+test_vue_widget_node/
+├── __init__.py              # Python node definitions
+└── web/
+    ├── src/
+    │   ├── extension.js     # Entry point - registers extension
+    │   ├── styles.css       # Tailwind directives
+    │   └── WidgetStarRating.vue
+    ├── dist/
+    │   └── extension.js     # Built output (loaded by ComfyUI)
+    ├── package.json
+    ├── vite.config.ts
+    ├── tailwind.config.js
+    └── postcss.config.js
+```
+
+## Complete Example
+
+### package.json
+
+```json
+{
+  "name": "test-vue-widget-node",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "rollup-plugin-external-globals": "^0.13.0",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.0.0",
+    "vite-plugin-css-injected-by-js": "^3.5.2",
+    "vue": "^3.5.0"
+  }
+}
+```
+
+### vite.config.ts
+
+```typescript
+import vue from '@vitejs/plugin-vue'
+import externalGlobals from 'rollup-plugin-external-globals'
+import { defineConfig } from 'vite'
+import cssInjectedByJsPlugin from 'vite-plugin-css-injected-by-js'
+
+export default defineConfig({
+  plugins: [vue(), cssInjectedByJsPlugin()],
+  build: {
+    lib: {
+      entry: 'src/extension.js',
+      name: 'TestVueWidgets',
+      fileName: () => 'extension.js',
+      formats: ['es']
+    },
+    outDir: 'dist',
+    emptyOutDir: true,
+    cssCodeSplit: false,
+    rollupOptions: {
+      external: ['vue', /^\.\.\/.*\.js$/],
+      plugins: [externalGlobals({ vue: 'Vue' })]
+    }
+  }
+})
+```
+
+Key configuration points:
+
+| Option | Purpose |
+|--------|---------|
+| `cssInjectedByJsPlugin()` | Inlines CSS into the JS bundle |
+| `external: ['vue', ...]` | Don't bundle Vue, use global |
+| `externalGlobals({ vue: 'Vue' })` | Map Vue imports to `window.Vue` |
+
+### extension.js
+
+```javascript
+/**
+ * Test Vue Widget Extension
+ *
+ * Demonstrates how to register custom Vue widgets for ComfyUI nodes.
+ * Widgets are built from .vue SFC files using Vite.
+ */
+
+import './styles.css'
+import { app } from '../../scripts/app.js'
+
+// Import Vue components
+import WidgetStarRating from './WidgetStarRating.vue'
+
+// Register the extension
+app.registerExtension({
+  name: 'TestVueWidgets',
+
+  getCustomVueWidgets() {
+    return {
+      star_rating: {
+        component: WidgetStarRating,
+        aliases: ['STAR_RATING']
+      }
+    }
+  }
+})
+```
+
+### WidgetStarRating.vue
+
+```vue
+<template>
+  <div class="flex items-center gap-1 py-1">
+    <span
+      v-if="widget.label || widget.name"
+      class="text-xs text-gray-400 min-w-[60px] truncate"
+    >
+      {{ widget.label ?? widget.name }}
+    </span>
+    <div class="flex gap-0.5">
+      <button
+        v-for="star in maxStars"
+        :key="star"
+        type="button"
+        class="border-none bg-transparent p-0 text-lg transition-transform duration-100 hover:scale-110 disabled:cursor-not-allowed disabled:opacity-50"
+        :class="star <= modelValue ? 'text-yellow-400' : 'text-gray-500'"
+        :disabled="widget.options?.disabled"
+        :aria-label="`Rate ${star} out of ${maxStars}`"
+        @click="setRating(star)"
+      >
+        ★
+      </button>
+    </div>
+    <span class="text-xs text-gray-400 ml-1">
+      {{ modelValue }}/{{ maxStars }}
+    </span>
+  </div>
+</template>
+
+<script setup>
+const { computed } = window.Vue
+
+const props = defineProps({
+  widget: {
+    type: Object,
+    required: true
+  }
+})
+
+const modelValue = defineModel({ default: 0 })
+
+const maxStars = computed(() => props.widget.options?.maxStars ?? 5)
+
+function setRating(value) {
+  if (props.widget.options?.disabled) return
+  modelValue.value = modelValue.value === value ? 0 : value
+}
+</script>
+```
+
+### __init__.py
+
+```python
+"""
+Test Vue Widget Node
+
+A test custom node that demonstrates the Vue widget registration feature.
+This node uses a custom STAR_RATING widget type that is rendered by a Vue component.
+"""
+
+
+class TestVueWidgetNode:
+    """A test node with a custom Vue-rendered star rating widget."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "rating": ("INT", {
+                    "default": 3,
+                    "min": 0,
+                    "max": 5,
+                    "display": "star_rating",  # Custom widget type hint
+                }),
+                "text_input": ("STRING", {
+                    "default": "Hello Vue Widgets!",
+                    "multiline": False,
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "STRING")
+    RETURN_NAMES = ("rating_value", "text_value")
+    FUNCTION = "process"
+    CATEGORY = "Testing/Vue Widgets"
+    DESCRIPTION = "Test node for Vue widget registration feature"
+
+    def process(self, rating: int, text_input: str):
+        print(f"[TestVueWidgetNode] Rating: {rating}, Text: {text_input}")
+        return (rating, text_input)
+
+
+NODE_CLASS_MAPPINGS = {
+    "TestVueWidgetNode": TestVueWidgetNode,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "TestVueWidgetNode": "Test Vue Widget (Star Rating)",
+}
+
+WEB_DIRECTORY = "./web/dist"
+__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+```
+
+## Using Tailwind CSS
+
+### tailwind.config.js
+
+```javascript
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./src/**/*.{vue,js,ts}'],
+  corePlugins: {
+    preflight: false // Disable base reset to avoid affecting other parts of the app
+  },
+  theme: {
+    extend: {}
+  },
+  plugins: []
+}
+```
+
+<Warning>Always set `preflight: false` to prevent Tailwind's CSS reset from affecting ComfyUI's styles.</Warning>
+
+### postcss.config.js
+
+```javascript
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {}
+  }
+}
+```
+
+### styles.css
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+### Handling Positioning
+
+Without Tailwind's preflight, some utility classes like `absolute`, `translate-x-1/2` may not work as expected. Use inline styles for critical positioning:
+
+```vue
+<div
+  :style="{
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)'
+  }"
+>
+  Centered content
+</div>
+```
+
+## Widget Component API
+
+Your Vue component receives these props:
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `widget` | `Object` | Widget configuration object |
+| `widget.name` | `string` | Widget name from Python input |
+| `widget.label` | `string` | Display label |
+| `widget.options` | `Object` | Options from Python (`min`, `max`, `step`, etc.) |
+| `widget.options.disabled` | `boolean` | Whether the widget is disabled |
+
+Use `defineModel()` for two-way value binding:
+
+```vue
+<script setup>
+const modelValue = defineModel({ default: 0 })
+</script>
+```
+
+## Build and Test
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+Restart ComfyUI to load your extension.
+
+## Development Workflow
+
+Run the watcher during development:
+
+```bash
+npm run dev
+```
+
+This rebuilds `dist/extension.js` on every file change. Refresh ComfyUI to see updates.
+
+## Common Pitfalls
+
+### Failed to resolve module specifier "vue"
+
+The browser can't resolve bare `"vue"` imports.
+
+**Solution:** Use `rollup-plugin-external-globals` to map Vue imports to `window.Vue`:
+
+```typescript
+import externalGlobals from 'rollup-plugin-external-globals'
+
+rollupOptions: {
+  external: ['vue', /^\.\.\/.*\.js$/],
+  plugins: [externalGlobals({ vue: 'Vue' })]
+}
+```
+
+### CSS Not Loading
+
+ComfyUI only loads JS files. CSS must be inlined into the bundle.
+
+**Solution:** Use `vite-plugin-css-injected-by-js`.
+
+### Styles Affecting Other UI
+
+Tailwind's preflight resets global styles, breaking ComfyUI.
+
+**Solution:** Set `preflight: false` in `tailwind.config.js`.
+
+### Accessing ComfyUI's App
+
+Import from the relative path to `scripts/app.js`:
+
+```javascript
+import { app } from '../../scripts/app.js'
+```
+
+Configure Vite to preserve this import:
+
+```typescript
+rollupOptions: {
+  external: [/^\.\.\/.*\.js$/]
+}
+```
+
+## Examples
+
+- [ComfyUI_frontend_vue_basic](https://github.com/jtydhr88/ComfyUI_frontend_vue_basic) - Full Vue extension with PrimeVue, i18n, drawing board widget
