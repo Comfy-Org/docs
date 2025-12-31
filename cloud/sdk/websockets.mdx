@@ -1,0 +1,206 @@
+---
+title: "WebSockets"
+description: "Real-time event streaming for job progress and completion"
+---
+
+WebSockets provide real-time updates without polling. Get instant notifications when jobs complete, inputs are ready, or errors occur.
+
+## Connection
+
+Connect to the WebSocket endpoint with your API key:
+
+```
+wss://cloud.comfy.org/developer/api/v1/ws?api_key=comfyui-...
+```
+
+## Python SDK
+
+```python
+from comfy_cloud.helpers.websocket import ComfyWebSocket
+
+async with ComfyWebSocket(api_key="comfyui-...") as ws:
+    # Subscribe to events
+    await ws.subscribe(["job.completed", "job.failed"])
+    
+    # Process events
+    async for event in ws.events():
+        print(f"{event.event}: {event.payload['id']}")
+        
+        if event.event == "job.completed":
+            for output in event.payload.get("outputs", []):
+                print(f"  {output['download_url']}")
+```
+
+## Event Types
+
+Subscribe to specific events or use wildcards:
+
+| Pattern | Description |
+|---------|-------------|
+| `job.completed` | Job finished successfully |
+| `job.failed` | Job failed with error |
+| `job.cancelled` | Job was cancelled |
+| `job.progress` | Execution progress update |
+| `job.*` | All job events |
+| `input.ready` | Input file is ready |
+| `input.failed` | Input upload failed |
+| `input.*` | All input events |
+| `model.ready` | Model upload complete |
+| `model.*` | All model events |
+| `*` | All events |
+
+## Wait for Job
+
+Convenience function to wait for a specific job:
+
+```python
+from comfy_cloud.helpers.websocket import wait_for_job
+
+# Create job via REST API
+job = client.jobs.create(workflow={...})
+
+# Wait via WebSocket (more efficient than polling)
+result = await wait_for_job(
+    api_key="comfyui-...",
+    job_id=job.id,
+    timeout=600,
+)
+
+if result.event == "job.completed":
+    outputs = result.payload["outputs"]
+    for output in outputs:
+        print(output["download_url"])
+else:
+    print(f"Job failed: {result.payload.get('error')}")
+```
+
+### With Progress Callbacks
+
+```python
+def on_progress(event):
+    progress = event.payload.get("progress", 0)
+    print(f"Progress: {progress}%")
+
+result = await wait_for_job(
+    api_key="comfyui-...",
+    job_id=job.id,
+    include_progress=True,
+    on_progress=on_progress,
+)
+```
+
+## Protocol Reference
+
+### Connection Flow
+
+1. Connect with API key in query string
+2. Receive `connected` message with session ID
+3. Send `subscribe` to register for events
+4. Receive `subscribed` confirmation
+5. Receive `event` messages as they occur
+6. Send `ping` periodically to keep connection alive
+
+### Message Formats
+
+**Subscribe:**
+```json
+{
+  "type": "subscribe",
+  "data": {
+    "events": ["job.completed", "job.failed"]
+  }
+}
+```
+
+**Event:**
+```json
+{
+  "type": "event",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "data": {
+    "event": "job.completed",
+    "payload": {
+      "id": "job_abc123",
+      "status": "completed",
+      "outputs": [
+        {
+          "id": "out_xyz",
+          "type": "image",
+          "download_url": "https://..."
+        }
+      ]
+    }
+  }
+}
+```
+
+**Ping/Pong:**
+```json
+{"type": "ping"}
+{"type": "pong"}
+```
+
+## Auto-Reconnect
+
+The Python SDK handles reconnection automatically:
+
+```python
+ws = ComfyWebSocket(
+    api_key="comfyui-...",
+    auto_reconnect=True,           # Default: True
+    max_reconnect_attempts=5,      # Default: 5
+    reconnect_delay=1.0,           # Initial delay (seconds)
+    max_reconnect_delay=30.0,      # Max delay with backoff
+)
+```
+
+Subscriptions are automatically restored after reconnection.
+
+## Error Handling
+
+```python
+from comfy_cloud.helpers.websocket import (
+    ComfyWebSocket,
+    WebSocketAuthError,
+    WebSocketConnectionError,
+)
+
+try:
+    async with ComfyWebSocket(api_key="invalid") as ws:
+        await ws.subscribe(["job.*"])
+except WebSocketAuthError:
+    print("Invalid API key")
+except WebSocketConnectionError as e:
+    print(f"Connection failed: {e}")
+```
+
+## Raw WebSocket (No SDK)
+
+Using any WebSocket client:
+
+```javascript
+const ws = new WebSocket(
+  "wss://cloud.comfy.org/developer/api/v1/ws?api_key=comfyui-..."
+);
+
+ws.onopen = () => {
+  // Subscribe to events
+  ws.send(JSON.stringify({
+    type: "subscribe",
+    data: { events: ["job.*"] }
+  }));
+};
+
+ws.onmessage = (msg) => {
+  const data = JSON.parse(msg.data);
+  
+  if (data.type === "event") {
+    console.log(data.data.event, data.data.payload);
+  }
+};
+
+// Keep alive
+setInterval(() => {
+  ws.send(JSON.stringify({ type: "ping" }));
+}, 30000);
+```

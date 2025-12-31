@@ -1,0 +1,275 @@
+---
+title: "Python SDK"
+description: "Official Python SDK for ComfyUI Cloud"
+---
+
+## Installation
+
+```bash
+pip install comfy-cloud
+```
+
+For WebSocket support:
+
+```bash
+pip install comfy-cloud[websocket]
+```
+
+## Quick Start
+
+```python
+from comfy_cloud import ComfyCloudClient
+
+client = ComfyCloudClient(api_key="comfyui-...")
+
+with client:
+    # Upload an input image
+    input = client.inputs.from_url("https://example.com/photo.png")
+    
+    # Create a job
+    job = client.jobs.create(
+        workflow={
+            "3": {"class_type": "LoadImage", "inputs": {"image": input.name}},
+            # ... rest of workflow
+        },
+        tags=["my-project"],
+    )
+    
+    # Get outputs
+    outputs = client.outputs.list(job_id=job.id)
+    for output in outputs.outputs:
+        print(output.download_url)
+```
+
+## Async Support
+
+All methods have async variants with `_async` suffix:
+
+```python
+async with client:
+    input = await client.inputs.from_url_async("https://example.com/image.png")
+    job = await client.jobs.create_async(workflow={...})
+    job = await client.jobs.get_async(job.id)
+```
+
+## API Resources
+
+### Inputs
+
+Upload and manage input files for workflows.
+
+```python
+# Upload from URL (async - returns immediately)
+input = client.inputs.from_url(
+    "https://example.com/image.png",
+    tags=["batch-1"],
+)
+
+# Poll for ready status
+input = client.inputs.get(input.id)
+
+# List inputs
+inputs = client.inputs.list(limit=20, tags=["batch-1"])
+
+# Presigned upload for large files
+upload = client.inputs.get_upload_url(
+    name="large-image.png",
+    size=50_000_000,
+    mime_type="image/png",
+)
+# PUT file to upload.upload_url, then:
+input = client.inputs.complete_upload(upload.id)
+
+# Delete
+client.inputs.delete(input.id)
+```
+
+### Models (BYOM)
+
+Bring your own models - upload custom checkpoints, LoRAs, etc.
+
+```python
+# Upload from URL
+model = client.models.from_url(
+    url="https://civitai.com/api/download/models/123456",
+    type="lora",
+    tags=["style", "anime"],
+)
+
+# List models
+models = client.models.list(type="lora")
+
+# Get/delete
+model = client.models.get(model.id)
+client.models.delete(model.id)
+```
+
+### Jobs
+
+Execute workflows.
+
+```python
+# Create job
+job = client.jobs.create(
+    workflow={...},
+    tags=["batch-1"],
+    webhook_url="https://example.com/webhook",  # Optional
+)
+
+# List jobs
+jobs = client.jobs.list(status="completed", limit=50)
+
+# Get job
+job = client.jobs.get(job.id)
+
+# Cancel job
+job = client.jobs.cancel(job.id)
+```
+
+### Outputs
+
+Access generated files.
+
+```python
+# List outputs for a job
+outputs = client.outputs.list(job_id=job.id)
+
+for output in outputs.outputs:
+    print(f"Type: {output.type}")
+    print(f"URL: {output.download_url}")
+
+# Get specific output
+output = client.outputs.get(output_id)
+
+# Delete
+client.outputs.delete(output_id)
+```
+
+### Archives
+
+Bulk download multiple job outputs as ZIP.
+
+```python
+# Create archive
+archive = client.archives.create(
+    job_ids=["job_1", "job_2", "job_3"]
+)
+
+# Poll for completion
+archive = client.archives.get(archive.id)
+if archive.status == "ready":
+    print(archive.download_url)
+
+# Delete
+client.archives.delete(archive.id)
+```
+
+### Webhooks
+
+Manage webhook endpoints.
+
+```python
+# Create webhook
+webhook = client.webhooks.create(
+    url="https://example.com/webhook",
+    events=["job.completed", "job.failed"],
+)
+
+# List webhooks
+webhooks = client.webhooks.list()
+
+# Rotate secret
+webhook = client.webhooks.rotate_secret(webhook.id)
+
+# Delete
+client.webhooks.delete(webhook.id)
+```
+
+### Account
+
+```python
+# Get account info
+account = client.account.get()
+print(f"Balance: ${account.balance / 1_000_000:.2f}")
+
+# Get usage stats
+usage = client.account.get_usage(period="month")
+print(f"Jobs completed: {usage.jobs_completed}")
+print(f"GPU seconds: {usage.gpu_seconds}")
+```
+
+## Helper Utilities
+
+### Polling
+
+Wait for async resources to be ready:
+
+```python
+from comfy_cloud.helpers import wait_for_ready
+
+# Wait for input upload
+input = wait_for_ready(
+    get_resource=lambda: client.inputs.get(input.id),
+    is_ready=lambda i: i.status == "ready",
+    is_failed=lambda i: i.status == "failed",
+    timeout=120,
+)
+
+# Wait for job completion
+job = wait_for_ready(
+    get_resource=lambda: client.jobs.get(job.id),
+    is_ready=lambda j: j.status in ("completed", "failed"),
+    timeout=600,
+)
+```
+
+### Presigned Uploads
+
+Upload large files directly to storage:
+
+```python
+from comfy_cloud.helpers.uploads import upload_to_presigned_url
+
+# Get upload URL
+upload = client.inputs.get_upload_url(
+    name="large-video.mp4",
+    size=500_000_000,
+    mime_type="video/mp4",
+)
+
+# Upload directly
+upload_to_presigned_url(
+    upload_url=upload.upload_url,
+    file=open("large-video.mp4", "rb"),
+    content_type="video/mp4",
+)
+
+# Confirm
+input = client.inputs.complete_upload(upload.id)
+```
+
+## Type Hints
+
+Response types are available for static analysis:
+
+```python
+from comfy_cloud import models
+
+def process_job(job: models.Job) -> None:
+    if job.status == "completed":
+        print(f"Done: {job.id}")
+```
+
+## Error Handling
+
+```python
+from comfy_cloud import ComfyCloudClient, models
+
+with client:
+    result = client.jobs.get("invalid-id")
+    
+    if isinstance(result, models.Error):
+        print(f"Error: {result.message}")
+    else:
+        print(f"Job status: {result.status}")
+```
