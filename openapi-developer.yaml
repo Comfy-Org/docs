@@ -1,0 +1,2034 @@
+openapi: 3.1.0
+info:
+  title: ComfyUI Cloud Developer API
+  description: |
+    A developer-first, SDK-friendly API for programmatic access to ComfyUI Cloud.
+    
+    Designed for ergonomics and codegen, not constrained by ComfyUI frontend compatibility.
+    
+    ## Design Principles
+    
+    - Clean REST semantics
+    - Consistent async patterns (create → poll → result)
+    - SDK-friendly (clear resource hierarchy, good codegen)
+    - Arbitrary user tags for organization
+    - Auto-inheritance of tags where sensible
+    
+    ## Authentication
+    
+    Two authentication methods are supported:
+    
+    - **API Key**: For SDK/programmatic access. Use `Authorization: Bearer comfyui-...`
+    - **Firebase**: For browser-based access from Comfy-owned sites
+    
+    ## Async Patterns
+    
+    Many operations are asynchronous:
+    
+    1. **Create** returns `202 Accepted` with resource in pending state
+    2. **Poll** `GET /v1/{resource}/{id}` until status is `ready` or `failed`
+    3. **Use** the resource once ready
+    
+    ## WebSocket Streaming
+    
+    Real-time event streaming is available at:
+    
+    ```
+    wss://cloud.comfy.org/developer/api/v1/ws
+    ```
+    
+    Connect with your API key in the `Authorization` header or as a query parameter.
+    Subscribe to event types (`job.*`, `input.ready`, etc.) and receive typed event payloads.
+    
+    See the Developer API V1 specification for full WebSocket protocol documentation.
+    Event payload schemas are defined under `components/schemas/*EventPayload`.
+    
+    ## Webhook Signatures
+    
+    Webhook requests include signature headers for verification:
+    
+    - `X-Comfy-Signature-256`: HMAC-SHA256 signature
+    - `X-Comfy-Timestamp`: UNIX timestamp (seconds)
+    
+    Verify by computing `HMAC-SHA256(secret, timestamp + "." + body)` and comparing.
+    Reject requests older than 5 minutes to prevent replay attacks.
+    
+    ## Pagination
+    
+    List endpoints use offset/limit pagination:
+    
+    - `offset`: Number of items to skip (0-based, default: 0)
+    - `limit`: Maximum items per page (default: 20, max: 100)
+    
+    Responses include:
+    - `total`: Total count matching filters
+    - `has_more`: Whether more items exist beyond this page
+    
+  version: 1.0.0
+  contact:
+    name: Comfy Org
+    url: https://comfy.org
+  license:
+    name: Proprietary
+    url: https://comfy.org/terms
+
+servers:
+  - url: https://cloud.comfy.org/developer/api/v1
+    description: Production
+  - url: https://stagingcloud.comfy.org/developer/api/v1
+    description: Staging
+  - url: https://testcloud.comfy.org/developer/api/v1
+    description: Test
+  - url: "{baseUrl}/api/v1"
+    description: Custom/Ephemeral environment
+    variables:
+      baseUrl:
+        default: https://cloud.comfy.org/developer
+        description: Base URL (e.g., https://cloud.comfy.org/developer or custom host)
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+
+tags:
+  - name: inputs
+    description: User-uploaded files for use in workflows (images, masks, etc.)
+  - name: models
+    description: User-uploaded models for use in workflows (BYOM)
+  - name: jobs
+    description: Workflow execution
+  - name: outputs
+    description: Generated content from job executions
+  - name: archives
+    description: Bulk download of outputs as ZIP files
+  - name: webhooks
+    description: Event notifications to external URLs
+  - name: account
+    description: Account information and settings
+
+paths:
+  # ============================================================================
+  # INPUTS
+  # ============================================================================
+  /v1/inputs:
+    post:
+      tags: [inputs]
+      summary: Upload input file (multipart)
+      operationId: createInput
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateInputMultipart'
+      responses:
+        '201':
+          description: Input created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Input'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [inputs]
+      summary: List inputs
+      operationId: listInputs
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/TagsFilter'
+      responses:
+        '200':
+          description: List of inputs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InputList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/inputs/from-url:
+    post:
+      tags: [inputs]
+      summary: Upload input from remote URL (async)
+      description: |
+        Initiates an async download from a remote URL. Returns immediately with
+        `status: "downloading"`. Poll `GET /v1/inputs/{id}` for completion.
+      operationId: createInputFromUrl
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInputFromUrl'
+      responses:
+        '202':
+          description: Download initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Input'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/inputs/get-upload-url:
+    post:
+      tags: [inputs]
+      summary: Get presigned upload URL
+      description: |
+        Returns a presigned URL for direct upload to cloud storage.
+        
+        Flow:
+        1. Call this endpoint to get `upload_url`
+        2. PUT file directly to `upload_url`
+        3. Call `POST /v1/inputs/{id}/complete` to finalize
+        
+        Notes:
+        - `size` is required to generate the presigned URL with correct content-length restriction
+        - Upload URL expires in 1 hour
+        - If upload not completed within expiry, resource transitions to `failed` status
+      operationId: getInputUploadUrl
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetInputUploadUrl'
+      responses:
+        '201':
+          description: Upload URL created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InputUploadUrl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/inputs/{id}:
+    get:
+      tags: [inputs]
+      summary: Get input details
+      operationId: getInput
+      parameters:
+        - $ref: '#/components/parameters/InputId'
+      responses:
+        '200':
+          description: Input details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Input'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [inputs]
+      summary: Delete input
+      operationId: deleteInput
+      parameters:
+        - $ref: '#/components/parameters/InputId'
+      responses:
+        '204':
+          description: Input deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/inputs/{id}/complete:
+    post:
+      tags: [inputs]
+      summary: Confirm presigned upload complete
+      description: |
+        Called after uploading directly to the presigned URL.
+        Validates the file exists and computes hash.
+      operationId: completeInputUpload
+      parameters:
+        - $ref: '#/components/parameters/InputId'
+      responses:
+        '200':
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Input'
+        '400':
+          description: Upload not found in storage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # MODELS
+  # ============================================================================
+  /v1/models:
+    post:
+      tags: [models]
+      summary: Upload model file (multipart)
+      operationId: createModel
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateModelMultipart'
+      responses:
+        '201':
+          description: Model created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [models]
+      summary: List models
+      operationId: listModels
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/TagsFilter'
+        - name: type
+          in: query
+          description: Filter by model type
+          schema:
+            $ref: '#/components/schemas/ModelType'
+      responses:
+        '200':
+          description: List of models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/models/from-url:
+    post:
+      tags: [models]
+      summary: Upload model from remote URL (async)
+      description: |
+        Initiates an async download from a remote URL (Civitai, HuggingFace, etc.).
+        
+        For Civitai/HuggingFace URLs, metadata is auto-extracted:
+        - Civitai: `base_model`, `trained_words`, `source_arn`, `preview_url`
+        - HuggingFace: `repo_id`, `revision`, `source_arn`
+        
+        You can override auto-extracted metadata by providing explicit values.
+        
+        When downloading from Civitai/HuggingFace, `source` is automatically populated 
+        with verified provenance. You cannot set `source` manually.
+      operationId: createModelFromUrl
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateModelFromUrl'
+      responses:
+        '202':
+          description: Download initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/models/get-upload-url:
+    post:
+      tags: [models]
+      summary: Get presigned upload URL for model
+      description: |
+        Returns a presigned URL for direct upload to cloud storage.
+        
+        Notes:
+        - `size` is required to generate the presigned URL with correct content-length restriction
+        - Upload URL expires in 1 hour
+        - If upload not completed within expiry, resource transitions to `failed` status
+      operationId: getModelUploadUrl
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetModelUploadUrl'
+      responses:
+        '201':
+          description: Upload URL created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelUploadUrl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/models/types:
+    get:
+      tags: [models]
+      summary: List valid model types
+      operationId: listModelTypes
+      responses:
+        '200':
+          description: List of valid model types
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  types:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelType'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/models/{id}:
+    get:
+      tags: [models]
+      summary: Get model details
+      operationId: getModel
+      parameters:
+        - $ref: '#/components/parameters/ModelId'
+      responses:
+        '200':
+          description: Model details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [models]
+      summary: Delete model
+      operationId: deleteModel
+      parameters:
+        - $ref: '#/components/parameters/ModelId'
+      responses:
+        '204':
+          description: Model deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/models/{id}/complete:
+    post:
+      tags: [models]
+      summary: Confirm presigned upload complete
+      operationId: completeModelUpload
+      parameters:
+        - $ref: '#/components/parameters/ModelId'
+      responses:
+        '200':
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          description: Upload not found in storage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # JOBS
+  # ============================================================================
+  /v1/jobs:
+    post:
+      tags: [jobs]
+      summary: Create a job
+      description: |
+        Submit a workflow for execution. The job is queued and executed asynchronously.
+        
+        Poll `GET /v1/jobs/{id}` for status updates, or use WebSocket/webhooks for real-time updates.
+      operationId: createJob
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJob'
+      responses:
+        '202':
+          description: Job queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [jobs]
+      summary: List jobs
+      operationId: listJobs
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/TagsFilter'
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - name: batch_id
+          in: query
+          description: Filter by batch ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/jobs/batch:
+    post:
+      tags: [jobs]
+      summary: Create multiple jobs in a batch
+      description: |
+        Submit multiple jobs at once (max 50). All jobs share a `batch_id` for tracking.
+        
+        Each job in the batch can have its own workflow and tags.
+      operationId: createJobBatch
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobBatch'
+      responses:
+        '202':
+          description: Batch queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: Get job details
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/jobs/{id}/cancel:
+    post:
+      tags: [jobs]
+      summary: Cancel a job
+      description: |
+        Attempts to cancel a pending or running job.
+        
+        - `pending` jobs are cancelled immediately
+        - `running` jobs are cancelled at the next checkpoint (may still complete)
+        - `completed`, `failed`, `cancelled` jobs cannot be cancelled
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job cancelled (or cancellation initiated)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          description: Job cannot be cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/jobs/{id}/outputs:
+    get:
+      tags: [jobs]
+      summary: List outputs for a job
+      operationId: listJobOutputs
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: List of outputs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutputList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # OUTPUTS
+  # ============================================================================
+  /v1/outputs:
+    get:
+      tags: [outputs]
+      summary: List outputs
+      operationId: listOutputs
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/TagsFilter'
+        - name: job_id
+          in: query
+          description: Filter by job ID
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Filter by output type
+          schema:
+            $ref: '#/components/schemas/OutputType'
+      responses:
+        '200':
+          description: List of outputs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutputList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/outputs/{id}:
+    get:
+      tags: [outputs]
+      summary: Get output details
+      operationId: getOutput
+      parameters:
+        - $ref: '#/components/parameters/OutputId'
+      responses:
+        '200':
+          description: Output details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Output'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [outputs]
+      summary: Delete output
+      operationId: deleteOutput
+      parameters:
+        - $ref: '#/components/parameters/OutputId'
+      responses:
+        '204':
+          description: Output deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # ARCHIVES
+  # ============================================================================
+  /v1/archives:
+    post:
+      tags: [archives]
+      summary: Create archive from job outputs
+      description: |
+        Creates a ZIP archive containing outputs from specified jobs.
+        
+        Archive creation is async. Poll `GET /v1/archives/{id}` for completion.
+        Archives expire after 24 hours.
+      operationId: createArchive
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateArchive'
+      responses:
+        '202':
+          description: Archive creation initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Archive'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [archives]
+      summary: List archives
+      operationId: listArchives
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: List of archives
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/archives/{id}:
+    get:
+      tags: [archives]
+      summary: Get archive details
+      operationId: getArchive
+      parameters:
+        - $ref: '#/components/parameters/ArchiveId'
+      responses:
+        '200':
+          description: Archive details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Archive'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [archives]
+      summary: Delete archive
+      operationId: deleteArchive
+      parameters:
+        - $ref: '#/components/parameters/ArchiveId'
+      responses:
+        '204':
+          description: Archive deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # WEBHOOKS
+  # ============================================================================
+  /v1/webhooks:
+    post:
+      tags: [webhooks]
+      summary: Create webhook
+      operationId: createWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhook'
+      responses:
+        '201':
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [webhooks]
+      summary: List webhooks
+      operationId: listWebhooks
+      parameters:
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: List of webhooks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/webhooks/{id}:
+    get:
+      tags: [webhooks]
+      summary: Get webhook details
+      operationId: getWebhook
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      responses:
+        '200':
+          description: Webhook details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [webhooks]
+      summary: Update webhook
+      operationId: updateWebhook
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhook'
+      responses:
+        '200':
+          description: Webhook updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    delete:
+      tags: [webhooks]
+      summary: Delete webhook
+      operationId: deleteWebhook
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      responses:
+        '204':
+          description: Webhook deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/webhooks/{id}/rotate-secret:
+    post:
+      tags: [webhooks]
+      summary: Rotate webhook signing secret
+      operationId: rotateWebhookSecret
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+      responses:
+        '200':
+          description: Secret rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Webhook'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/webhooks/{id}/deliveries:
+    get:
+      tags: [webhooks]
+      summary: List webhook deliveries
+      description: Returns recent delivery attempts for debugging
+      operationId: listWebhookDeliveries
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+        - $ref: '#/components/parameters/PageOffset'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: List of deliveries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/webhooks/{id}/deliveries/{deliveryId}/resend:
+    post:
+      tags: [webhooks]
+      summary: Resend a webhook delivery
+      operationId: resendWebhookDelivery
+      parameters:
+        - $ref: '#/components/parameters/WebhookId'
+        - name: deliveryId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Resend initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDelivery'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # WORKFLOWS
+  # ============================================================================
+  /v1/workflows/validate:
+    post:
+      tags: [jobs]
+      summary: Validate a workflow
+      description: |
+        Validates a workflow without executing it. Returns validation errors if any.
+        
+        Use this to check workflows before submitting jobs.
+      operationId: validateWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateWorkflow'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowValidation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # ACCOUNT
+  # ============================================================================
+  /v1/account:
+    get:
+      tags: [account]
+      summary: Get account information
+      operationId: getAccount
+      responses:
+        '200':
+          description: Account information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/account/usage:
+    get:
+      tags: [account]
+      summary: Get account usage summary
+      operationId: getAccountUsage
+      parameters:
+        - name: period
+          in: query
+          description: Usage period
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: month
+      responses:
+        '200':
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountUsage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/account/low-balance:
+    get:
+      tags: [account]
+      summary: Get low balance alert settings
+      operationId: getLowBalanceSettings
+      responses:
+        '200':
+          description: Low balance settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LowBalanceSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [account]
+      summary: Update low balance alert settings
+      operationId: updateLowBalanceSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LowBalanceSettings'
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LowBalanceSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key authentication. Keys are prefixed with `comfyui-`.
+        
+        Example: `Authorization: Bearer comfyui-abc123...`
+
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Firebase ID token for browser-based access from Comfy-owned sites.
+
+  parameters:
+    PageOffset:
+      name: offset
+      in: query
+      description: Number of items to skip (0-based)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    PageLimit:
+      name: limit
+      in: query
+      description: Maximum number of items to return (default 20, max 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    TagsFilter:
+      name: tags
+      in: query
+      description: Filter by tags (comma-separated, AND logic)
+      schema:
+        type: string
+      example: "project-x,batch-123"
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Unique key for idempotent requests
+      schema:
+        type: string
+        format: uuid
+
+    InputId:
+      name: id
+      in: path
+      required: true
+      description: Input ID (prefixed with `inp_`)
+      schema:
+        type: string
+      example: inp_abc123
+
+    ModelId:
+      name: id
+      in: path
+      required: true
+      description: Model ID (prefixed with `mod_`)
+      schema:
+        type: string
+      example: mod_xyz789
+
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job ID (prefixed with `job_`)
+      schema:
+        type: string
+      example: job_abc123
+
+    OutputId:
+      name: id
+      in: path
+      required: true
+      description: Output ID (prefixed with `out_`)
+      schema:
+        type: string
+      example: out_def456
+
+    ArchiveId:
+      name: id
+      in: path
+      required: true
+      description: Archive ID (prefixed with `arc_`)
+      schema:
+        type: string
+      example: arc_ghi789
+
+    WebhookId:
+      name: id
+      in: path
+      required: true
+      description: Webhook ID (prefixed with `whk_`)
+      schema:
+        type: string
+      example: whk_abc123
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+
+  schemas:
+    # ==========================================================================
+    # COMMON
+    # ==========================================================================
+    ErrorCode:
+      type: string
+      description: Machine-readable error codes
+      enum:
+        - upload_not_found
+        - download_failed
+        - invalid_request
+        - validation_error
+        - not_found
+        - unauthorized
+        - forbidden
+        - rate_limited
+        - internal_error
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable error message
+
+    ValidationErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              example: validation_error
+            message:
+              type: string
+              example: Request validation failed
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+
+    PaginationMeta:
+      type: object
+      required: [total, has_more]
+      properties:
+        total:
+          type: integer
+          description: Total number of items matching the filters
+        has_more:
+          type: boolean
+          description: Whether more items are available beyond this page
+
+    Tags:
+      type: array
+      items:
+        type: string
+      description: Arbitrary user tags for organization
+      example: ["project-x", "batch-123"]
+
+    # ==========================================================================
+    # INPUT SCHEMAS
+    # ==========================================================================
+    InputStatus:
+      type: string
+      enum: [pending_upload, uploading, downloading, ready, failed]
+      description: |
+        - `pending_upload` - presigned URL issued, awaiting direct upload
+        - `uploading` - multipart upload in progress
+        - `downloading` - URL download in progress
+        - `ready` - available for use
+        - `failed` - upload/download failed
+
+    Input:
+      type: object
+      required: [id, name, status, created_at]
+      properties:
+        id:
+          type: string
+          example: inp_abc123
+        name:
+          type: string
+          example: reference.png
+        status:
+          $ref: '#/components/schemas/InputStatus'
+        size:
+          type: integer
+          format: int64
+          description: File size in bytes
+        mime_type:
+          type: string
+          example: image/png
+        tags:
+          $ref: '#/components/schemas/Tags'
+        download_url:
+          type: string
+          format: uri
+          description: Signed URL for downloading (only when status is ready)
+        error:
+          $ref: '#/components/schemas/ResourceError'
+        created_at:
+          type: string
+          format: date-time
+
+    InputList:
+      type: object
+      required: [inputs, total, has_more]
+      properties:
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Input'
+        total:
+          type: integer
+          description: Total number of inputs matching the filters
+        has_more:
+          type: boolean
+          description: Whether more inputs are available beyond this page
+
+    CreateInputMultipart:
+      type: object
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+        name:
+          type: string
+          description: Override filename
+        tags:
+          type: string
+          description: Comma-separated tags
+
+    CreateInputFromUrl:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: URL to download from
+        name:
+          type: string
+          description: Override filename
+        tags:
+          $ref: '#/components/schemas/Tags'
+
+    GetInputUploadUrl:
+      type: object
+      required: [name, mime_type, size]
+      properties:
+        name:
+          type: string
+          example: large-image.png
+        mime_type:
+          type: string
+          example: image/png
+        size:
+          type: integer
+          format: int64
+          description: File size in bytes (required for presigned URL)
+        tags:
+          $ref: '#/components/schemas/Tags'
+
+    InputUploadUrl:
+      type: object
+      required: [id, status, upload_url, upload_expires_at]
+      properties:
+        id:
+          type: string
+          example: inp_abc123
+        status:
+          type: string
+          enum: [pending_upload]
+        upload_url:
+          type: string
+          format: uri
+          description: Presigned URL for direct upload
+        upload_expires_at:
+          type: string
+          format: date-time
+          description: When the upload URL expires
+
+    ResourceError:
+      type: object
+      properties:
+        code:
+          type: string
+          example: download_failed
+        message:
+          type: string
+          example: HTTP 404 while downloading from URL
+
+    # ==========================================================================
+    # MODEL SCHEMAS
+    # ==========================================================================
+    ModelType:
+      type: string
+      enum: [checkpoint, lora, vae, controlnet, embedding, upscaler, clip, unet, diffusion_model]
+      description: Type of model
+
+    ModelStatus:
+      type: string
+      enum: [pending_upload, uploading, downloading, ready, failed]
+
+    ModelMetadata:
+      type: object
+      properties:
+        display_name:
+          type: string
+          description: Human-readable model name
+        base_model:
+          type: string
+          description: Base model compatibility (e.g., "SD 1.5", "SDXL 1.0", "Flux.1")
+        trained_words:
+          type: array
+          items:
+            type: string
+          description: Trigger words/tokens for LoRAs and embeddings
+        description:
+          type: string
+        preview_url:
+          type: string
+          format: uri
+          description: URL to preview image. Mutually exclusive with preview_image.
+        preview_image:
+          type: string
+          description: |
+            Base64-encoded preview image (data URL format, e.g., "data:image/jpeg;base64,...").
+            Mutually exclusive with preview_url. If both provided, preview_image takes precedence.
+
+    ModelSource:
+      type: object
+      description: |
+        Verified provenance information for the model. 
+        Read-only: automatically populated for from-url uploads, null for manual uploads.
+      readOnly: true
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Original download URL
+        arn:
+          type: string
+          description: Source identifier (e.g., "civitai:model:123456:version:789012:file:999")
+      required: [url, arn]
+
+    Model:
+      type: object
+      required: [id, name, type, status, created_at]
+      properties:
+        id:
+          type: string
+          example: mod_xyz789
+        name:
+          type: string
+          example: my-lora.safetensors
+        type:
+          $ref: '#/components/schemas/ModelType'
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+        size:
+          type: integer
+          format: int64
+        mime_type:
+          type: string
+        tags:
+          $ref: '#/components/schemas/Tags'
+        metadata:
+          $ref: '#/components/schemas/ModelMetadata'
+        source:
+          $ref: '#/components/schemas/ModelSource'
+        download_url:
+          type: string
+          format: uri
+        error:
+          $ref: '#/components/schemas/ResourceError'
+        created_at:
+          type: string
+          format: date-time
+
+    ModelList:
+      type: object
+      required: [models, total, has_more]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+        total:
+          type: integer
+          description: Total number of models matching the filters
+        has_more:
+          type: boolean
+          description: Whether more models are available beyond this page
+
+    CreateModelMultipart:
+      type: object
+      required: [file, type]
+      properties:
+        file:
+          type: string
+          format: binary
+        type:
+          $ref: '#/components/schemas/ModelType'
+        name:
+          type: string
+        tags:
+          type: string
+          description: Comma-separated tags
+        metadata:
+          type: string
+          description: JSON-encoded metadata
+
+    CreateModelFromUrl:
+      type: object
+      required: [url, type]
+      properties:
+        url:
+          type: string
+          format: uri
+        type:
+          $ref: '#/components/schemas/ModelType'
+        name:
+          type: string
+        tags:
+          $ref: '#/components/schemas/Tags'
+        metadata:
+          $ref: '#/components/schemas/ModelMetadata'
+
+    GetModelUploadUrl:
+      type: object
+      required: [name, type, mime_type, size]
+      properties:
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/ModelType'
+        mime_type:
+          type: string
+        size:
+          type: integer
+          format: int64
+        tags:
+          $ref: '#/components/schemas/Tags'
+        metadata:
+          $ref: '#/components/schemas/ModelMetadata'
+
+    ModelUploadUrl:
+      type: object
+      required: [id, status, upload_url, upload_expires_at]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending_upload]
+        upload_url:
+          type: string
+          format: uri
+        upload_expires_at:
+          type: string
+          format: date-time
+
+    # ==========================================================================
+    # JOB SCHEMAS
+    # ==========================================================================
+    JobStatus:
+      type: string
+      enum: [pending, running, completed, failed, cancelled]
+
+    Job:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          example: job_abc123
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        workflow:
+          type: object
+          description: The submitted workflow (API format)
+        tags:
+          $ref: '#/components/schemas/Tags'
+        batch_id:
+          type: string
+          description: Batch ID if part of a batch
+        outputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Output'
+          description: Outputs (only when completed)
+        usage:
+          $ref: '#/components/schemas/JobUsage'
+        error:
+          $ref: '#/components/schemas/ResourceError'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    JobList:
+      type: object
+      required: [jobs, total, has_more]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Job'
+        total:
+          type: integer
+          description: Total number of jobs matching the filters
+        has_more:
+          type: boolean
+          description: Whether more jobs are available beyond this page
+
+    CreateJob:
+      type: object
+      required: [workflow]
+      properties:
+        workflow:
+          type: object
+          description: ComfyUI workflow in API format
+        tags:
+          $ref: '#/components/schemas/Tags'
+
+    CreateJobBatch:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateJob'
+          minItems: 1
+          maxItems: 50
+          description: Array of jobs (max 50)
+
+    JobBatch:
+      type: object
+      required: [batch_id, jobs]
+      properties:
+        batch_id:
+          type: string
+          example: bat_xyz789
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Job'
+
+    JobUsage:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              event_type:
+                type: string
+                example: gpu_compute
+              properties:
+                type: object
+                additionalProperties: true
+
+    # ==========================================================================
+    # OUTPUT SCHEMAS
+    # ==========================================================================
+    OutputType:
+      type: string
+      enum: [image, video, audio, text, file]
+
+    Output:
+      type: object
+      required: [id, name, type, job_id, created_at]
+      properties:
+        id:
+          type: string
+          example: out_def456
+        name:
+          type: string
+          example: ComfyUI_00001_.png
+        type:
+          $ref: '#/components/schemas/OutputType'
+        job_id:
+          type: string
+        size:
+          type: integer
+          format: int64
+        mime_type:
+          type: string
+        tags:
+          $ref: '#/components/schemas/Tags'
+        download_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+
+    OutputList:
+      type: object
+      required: [outputs, total, has_more]
+      properties:
+        outputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Output'
+        total:
+          type: integer
+          description: Total number of outputs matching the filters
+        has_more:
+          type: boolean
+          description: Whether more outputs are available beyond this page
+
+    # ==========================================================================
+    # ARCHIVE SCHEMAS
+    # ==========================================================================
+    ArchiveStatus:
+      type: string
+      enum: [pending, ready, failed, expired]
+
+    Archive:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          example: arc_ghi789
+        status:
+          $ref: '#/components/schemas/ArchiveStatus'
+        job_ids:
+          type: array
+          items:
+            type: string
+        size:
+          type: integer
+          format: int64
+        download_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+        error:
+          $ref: '#/components/schemas/ResourceError'
+        created_at:
+          type: string
+          format: date-time
+
+    ArchiveList:
+      type: object
+      required: [archives, total, has_more]
+      properties:
+        archives:
+          type: array
+          items:
+            $ref: '#/components/schemas/Archive'
+        total:
+          type: integer
+          description: Total number of archives matching the filters
+        has_more:
+          type: boolean
+          description: Whether more archives are available beyond this page
+
+    CreateArchive:
+      type: object
+      required: [job_ids]
+      properties:
+        job_ids:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 100
+          description: Job IDs to include in archive
+
+    # ==========================================================================
+    # WEBHOOK SCHEMAS
+    # ==========================================================================
+    WebhookEvent:
+      type: string
+      enum:
+        - job.completed
+        - job.failed
+        - job.cancelled
+        - job.*
+        - input.ready
+        - input.failed
+        - input.*
+        - model.ready
+        - model.failed
+        - model.*
+        - archive.ready
+        - archive.failed
+        - archive.*
+        - account.low_balance
+        - account.*
+        - "*"
+
+    Webhook:
+      type: object
+      required: [id, url, events, enabled, created_at]
+      properties:
+        id:
+          type: string
+          example: whk_abc123
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEvent'
+        secret:
+          type: string
+          description: Signing secret (only returned on create/rotate)
+        enabled:
+          type: boolean
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookList:
+      type: object
+      required: [webhooks, total, has_more]
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Webhook'
+        total:
+          type: integer
+          description: Total number of webhooks
+        has_more:
+          type: boolean
+          description: Whether more webhooks are available beyond this page
+
+    CreateWebhook:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEvent'
+          minItems: 1
+        description:
+          type: string
+
+    UpdateWebhook:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEvent'
+        enabled:
+          type: boolean
+        description:
+          type: string
+
+    WebhookDeliveryStatus:
+      type: string
+      enum: [pending, success, failed]
+
+    WebhookDelivery:
+      type: object
+      required: [id, event, status, created_at]
+      properties:
+        id:
+          type: string
+        event:
+          type: string
+        payload:
+          type: object
+        status:
+          $ref: '#/components/schemas/WebhookDeliveryStatus'
+        response_status:
+          type: integer
+          description: HTTP status code from target
+        response_body:
+          type: string
+          description: Response body (truncated)
+        attempts:
+          type: integer
+        next_retry_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookDeliveryList:
+      type: object
+      required: [deliveries, total, has_more]
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+        total:
+          type: integer
+          description: Total number of deliveries
+        has_more:
+          type: boolean
+          description: Whether more deliveries are available beyond this page
+
+    # ==========================================================================
+    # WORKFLOW VALIDATION
+    # ==========================================================================
+    ValidateWorkflow:
+      type: object
+      required: [workflow]
+      properties:
+        workflow:
+          type: object
+          description: ComfyUI workflow to validate
+
+    WorkflowValidation:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              node_id:
+                type: string
+              field:
+                type: string
+              message:
+                type: string
+
+    # ==========================================================================
+    # ACCOUNT SCHEMAS
+    # ==========================================================================
+    Account:
+      type: object
+      required: [id, email, balance]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        balance:
+          type: integer
+          format: int64
+          description: Account balance in micros (1/1,000,000 of a dollar)
+        created_at:
+          type: string
+          format: date-time
+
+    AccountUsage:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [day, week, month]
+        jobs_completed:
+          type: integer
+        jobs_failed:
+          type: integer
+        gpu_seconds:
+          type: number
+          format: double
+        credits_used:
+          type: integer
+          format: int64
+          description: Credits used in micros
+
+    LowBalanceSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether low balance alerts are enabled
+        threshold:
+          type: integer
+          format: int64
+          description: Alert when balance drops below this (micros)
+        email_enabled:
+          type: boolean
+          description: Send email notifications

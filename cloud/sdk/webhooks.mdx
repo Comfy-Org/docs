@@ -1,0 +1,245 @@
+---
+title: "Webhooks"
+description: "Receive push notifications when events occur"
+---
+
+Webhooks push event notifications to your server when jobs complete, inputs are ready, or other events occur. Unlike WebSockets, webhooks don't require a persistent connection.
+
+## Creating a Webhook
+
+```python
+from comfy_cloud import ComfyCloudClient
+
+client = ComfyCloudClient(api_key="comfyui-...")
+
+with client:
+    webhook = client.webhooks.create(
+        url="https://your-server.com/comfy-webhook",
+        events=["job.completed", "job.failed"],
+    )
+    
+    # Save the secret for signature verification
+    print(f"Webhook ID: {webhook.id}")
+    print(f"Secret: {webhook.secret}")  # Only shown on create!
+```
+
+<Warning>
+The webhook `secret` is only returned when creating the webhook or rotating the secret. Store it securely - you'll need it to verify signatures.
+</Warning>
+
+## Event Types
+
+| Event | Description |
+|-------|-------------|
+| `job.completed` | Job finished successfully |
+| `job.failed` | Job failed with error |
+| `job.cancelled` | Job was cancelled |
+| `job.*` | All job events |
+| `input.ready` | Input file processed |
+| `input.failed` | Input upload failed |
+| `input.*` | All input events |
+| `model.ready` | Model upload complete |
+| `model.failed` | Model upload failed |
+| `model.*` | All model events |
+| `archive.ready` | Archive ZIP ready |
+| `archive.failed` | Archive creation failed |
+| `archive.*` | All archive events |
+| `account.low_balance` | Account balance is low |
+| `*` | All events |
+
+## Webhook Payload
+
+```json
+{
+  "event": "job.completed",
+  "delivery_id": "dlv_abc123",
+  "data": {
+    "id": "job_xyz789",
+    "status": "completed",
+    "outputs": [
+      {
+        "id": "out_123",
+        "type": "image",
+        "download_url": "https://storage.comfy.org/..."
+      }
+    ],
+    "tags": ["my-app", "batch-1"],
+    "created_at": "2024-01-15T10:00:00Z",
+    "completed_at": "2024-01-15T10:00:45Z"
+  }
+}
+```
+
+## Signature Verification
+
+All webhooks are signed with HMAC-SHA256. **Always verify signatures** to ensure requests are from ComfyUI Cloud.
+
+### Headers
+
+| Header | Description |
+|--------|-------------|
+| `X-Comfy-Signature-256` | HMAC-SHA256 signature |
+| `X-Comfy-Timestamp` | UNIX timestamp (seconds) |
+
+### Python Verification
+
+```python
+from comfy_cloud.helpers import verify_webhook_signature, WebhookVerificationError
+
+@app.post("/comfy-webhook")
+async def handle_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("X-Comfy-Signature-256")
+    timestamp = request.headers.get("X-Comfy-Timestamp")
+    
+    try:
+        verify_webhook_signature(
+            payload=payload,
+            signature=signature,
+            timestamp=timestamp,
+            secret=WEBHOOK_SECRET,
+        )
+    except WebhookVerificationError as e:
+        raise HTTPException(400, str(e))
+    
+    # Process the webhook
+    data = await request.json()
+    if data["event"] == "job.completed":
+        job_id = data["data"]["id"]
+        outputs = data["data"]["outputs"]
+        # Handle completed job...
+    
+    return {"status": "ok"}
+```
+
+### Parse and Verify Together
+
+```python
+from comfy_cloud.helpers import parse_webhook
+
+@app.post("/comfy-webhook")
+async def handle_webhook(request: Request):
+    payload = await request.body()
+    
+    webhook = parse_webhook(
+        payload=payload,
+        signature=request.headers.get("X-Comfy-Signature-256"),
+        timestamp=request.headers.get("X-Comfy-Timestamp"),
+        secret=WEBHOOK_SECRET,
+    )
+    
+    print(f"Event: {webhook.event}")
+    print(f"Data: {webhook.data}")
+    print(f"Timestamp: {webhook.timestamp}")
+    
+    return {"status": "ok"}
+```
+
+### Manual Verification
+
+The signature is computed as:
+
+```
+HMAC-SHA256(secret, timestamp + "." + body)
+```
+
+Example in Python without the SDK:
+
+```python
+import hmac
+import hashlib
+import time
+
+def verify_signature(payload: bytes, signature: str, timestamp: str, secret: str):
+    # Check timestamp is recent (prevent replay attacks)
+    ts = int(timestamp)
+    if abs(time.time() - ts) > 300:  # 5 minute tolerance
+        raise ValueError("Timestamp too old")
+    
+    # Compute expected signature
+    signed_payload = f"{timestamp}.".encode() + payload
+    expected = hmac.new(
+        secret.encode(),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+    
+    # Constant-time comparison
+    if not hmac.compare_digest(signature, expected):
+        raise ValueError("Invalid signature")
+```
+
+## Managing Webhooks
+
+### List Webhooks
+
+```python
+webhooks = client.webhooks.list()
+for wh in webhooks.webhooks:
+    print(f"{wh.id}: {wh.url} -> {wh.events}")
+```
+
+### Rotate Secret
+
+If your secret is compromised:
+
+```python
+webhook = client.webhooks.rotate_secret(webhook_id)
+new_secret = webhook.secret  # Update your server with this
+```
+
+### Delete Webhook
+
+```python
+client.webhooks.delete(webhook_id)
+```
+
+## Retry Policy
+
+Failed deliveries are retried with exponential backoff:
+
+| Attempt | Delay |
+|---------|-------|
+| 1 | Immediate |
+| 2 | 1 minute |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
+
+Webhooks are considered failed if:
+- Your server returns a non-2xx status code
+- Connection timeout (30 seconds)
+- DNS resolution fails
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always verify signatures">
+    Never trust webhook payloads without verifying the signature. This prevents attackers from spoofing events.
+  </Accordion>
+  
+  <Accordion title="Respond quickly">
+    Return a 2xx response within 30 seconds. Do heavy processing asynchronously after acknowledging receipt.
+  </Accordion>
+  
+  <Accordion title="Handle duplicates">
+    Use `delivery_id` to deduplicate. Retries may cause the same event to be delivered multiple times.
+  </Accordion>
+  
+  <Accordion title="Use HTTPS">
+    Always use HTTPS endpoints. HTTP webhooks are rejected in production.
+  </Accordion>
+</AccordionGroup>
+
+## Per-Job Webhooks
+
+You can also specify a webhook URL when creating a job:
+
+```python
+job = client.jobs.create(
+    workflow={...},
+    webhook_url="https://your-server.com/job-webhook",
+)
+```
+
+This webhook receives events only for that specific job, using your account's default webhook secret.
