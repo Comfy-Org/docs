@@ -1,0 +1,3699 @@
+openapi: 3.0.3
+info:
+  title: ComfyUI Cloud API
+  description: |
+    <Warning>
+    **Experimental API:** This API is experimental and subject to change. 
+    Endpoints, request/response formats, and behavior may be modified without notice.
+    </Warning>
+
+    API for ComfyUI Cloud - Run ComfyUI workflows on cloud infrastructure.
+
+    This API allows you to interact with ComfyUI Cloud programmatically, including:
+    - Submitting and managing workflows
+    - Uploading and downloading files
+    - Monitoring job status and progress
+
+    ## Cloud vs OSS ComfyUI Compatibility
+
+    ComfyUI Cloud implements the same API interfaces as OSS ComfyUI for maximum compatibility,
+    but some fields are accepted for compatibility while being handled differently or ignored:
+
+    | Field | Endpoints | Cloud Behavior |
+    |-------|-----------|----------------|
+    | `subfolder` | `/api/view`, `/api/upload/*` | **Ignored** - Cloud uses content-addressed storage (hash-based). Returned in responses for client-side organization. |
+    | `type` (input/output/temp) | `/api/view`, `/api/upload/*` | Partially used - All files stored with tag-based organization rather than directory structure. |
+    | `overwrite` | `/api/upload/*` | **Ignored** - Content-addressed storage means identical content always has the same hash. |
+    | `number`, `front` | `/api/prompt` | **Ignored** - Cloud uses its own fair queue scheduling per user. |
+    | `split`, `full_info` | `/api/userdata` | **Ignored** - Cloud always returns full file metadata. |
+
+    These fields are retained in the API schema for drop-in compatibility with existing ComfyUI clients and workflows.
+  version: 1.0.0
+  license:
+    name: GNU General Public License v3.0
+    url: https://github.com/comfyanonymous/ComfyUI/blob/master/LICENSE
+
+servers:
+  - url: https://cloud.comfy.org
+    description: ComfyUI Cloud API
+
+# All endpoints require API key authentication unless marked with security: []
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: workflow
+    description: |
+      Submit workflows for execution and manage the execution queue.
+      This is the primary way to run ComfyUI workflows on the cloud.
+  - name: job
+    description: |
+      Monitor job status, view execution history, and manage running jobs.
+      Jobs are created when you submit a workflow via POST /api/prompt.
+  - name: asset
+    description: |
+      Upload, download, and manage persistent assets (images, models, outputs).
+      Assets provide durable storage with tagging and metadata support.
+  - name: file
+    description: |
+      Legacy file upload and download endpoints compatible with local ComfyUI.
+      For new integrations, consider using the Assets API instead.
+  - name: model
+    description: |
+      Browse available AI models. Models are pre-loaded on cloud infrastructure.
+  - name: node
+    description: |
+      Get information about available ComfyUI nodes and their inputs/outputs.
+      Useful for building dynamic workflow interfaces.
+  - name: user
+    description: |
+      User account information and personal data storage.
+  - name: system
+    description: |
+      Server status, health checks, and system information.
+
+x-tagGroups:
+  - name: Core
+    tags:
+      - workflow
+      - job
+  - name: Storage
+    tags:
+      - asset
+      - file
+  - name: Reference
+    tags:
+      - model
+      - node
+  - name: Account
+    tags:
+      - user
+      - system
+
+paths:
+  /api/prompt:
+    post:
+      tags:
+        - workflow
+      summary: Submit a workflow for execution
+      description: |
+        Submit a workflow to be executed by the backend.
+        The workflow is a JSON object describing the nodes and their connections.
+      operationId: executePrompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptRequest'
+      responses:
+        '200':
+          description: Success - Prompt accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptResponse'
+        '400':
+          description: Invalid prompt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptErrorResponse'
+        '402':
+          description: Payment required - Insufficient credits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptErrorResponse'
+        '429':
+          description: Payment required - User has not paid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptErrorResponse'
+        '503':
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptErrorResponse'
+    get:
+      tags:
+        - workflow
+      summary: Get information about current prompt execution
+      description: Returns information about the current prompt in the execution queue
+      operationId: getPromptInfo
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptInfo'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/object_info:
+    get:
+      tags:
+        - node
+      summary: Get all node information
+      description: Returns information about all available nodes
+      operationId: getNodeInfo
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/NodeInfo'
+
+  /api/features:
+    get:
+      tags:
+        - node
+      summary: Get server feature flags
+      description: Returns the server's feature capabilities
+      operationId: getFeatures
+      security:
+        - ApiKeyAuth: []
+        - {}  # Also allows unauthenticated access (optional auth)
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  supports_preview_metadata:
+                    type: boolean
+                    description: Whether the server supports preview metadata
+                  max_upload_size:
+                    type: integer
+                    description: Maximum upload size in bytes
+                additionalProperties: true
+
+  /api/workflow_templates:
+    get:
+      tags:
+        - workflow
+      summary: Get available workflow templates
+      description: Returns available workflow templates
+      operationId: getWorkflowTemplates
+      security: []  # Public endpoint
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Empty object for workflow templates
+
+  /api/global_subgraphs:
+    get:
+      tags:
+        - workflow
+      summary: Get available subgraph blueprints
+      description: |
+        Returns a list of globally available subgraph blueprints.
+        These are pre-built workflow components that can be used as nodes.
+        The data field contains a promise that resolves to the full subgraph JSON.
+      operationId: getGlobalSubgraphs
+      security: []  # Public endpoint
+      responses:
+        '200':
+          description: Success - Map of subgraph IDs to their metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/GlobalSubgraphInfo'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/global_subgraphs/{id}:
+    get:
+      tags:
+        - workflow
+      summary: Get a specific subgraph blueprint
+      description: Returns the full data for a specific subgraph blueprint by ID
+      operationId: getGlobalSubgraph
+      security: []  # Public endpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The unique identifier of the subgraph blueprint
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success - Full subgraph data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalSubgraphData'
+        '404':
+          description: Subgraph not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/experiment/models:
+    get:
+      tags:
+        - model
+      summary: Get available model folders
+      description: |
+        Returns a list of model folders available in the system.
+        This is an experimental endpoint that replaces the legacy /models endpoint.
+      operationId: getModelFolders
+      security: []  # Public endpoint
+      responses:
+        '200':
+          description: Success - List of model folders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelFolder'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/experiment/models/{folder}:
+    get:
+      tags:
+        - model
+      summary: Get models in a specific folder
+      description: |
+        Returns a list of models available in the specified folder.
+        This is an experimental endpoint that provides enhanced model information.
+      operationId: getModelsInFolder
+      security: []  # Public endpoint
+      parameters:
+        - name: folder
+          in: path
+          required: true
+          description: The folder name to list models from
+          schema:
+            type: string
+            example: "checkpoints"
+      responses:
+        '200':
+          description: Success - List of models in the folder
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelFile'
+        '404':
+          description: Folder not found or no models in folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/experiment/models/preview/{folder}/{path_index}/{filename}:
+    get:
+      tags:
+        - model
+      summary: Get model preview image
+      description: |
+        Returns a preview image for the specified model.
+        The image is returned in WebP format for optimal performance.
+      operationId: getModelPreview
+      security: []  # Public endpoint
+      parameters:
+        - name: folder
+          in: path
+          required: true
+          description: The folder name containing the model
+          schema:
+            type: string
+            example: "checkpoints"
+        - name: path_index
+          in: path
+          required: true
+          description: The path index (usually 0 for cloud service)
+          schema:
+            type: integer
+            example: 0
+        - name: filename
+          in: path
+          required: true
+          description: The model filename (with or without .webp extension)
+          schema:
+            type: string
+            example: "model.safetensors"
+      responses:
+        '200':
+          description: Success - Model preview image
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Model not found or preview not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/history:
+    post:
+      tags:
+        - job
+      summary: Manage execution history
+      description: |
+        Clear all history for the authenticated user or delete specific job IDs.
+        Supports clearing all history or deleting specific job IDs.
+      operationId: manageHistory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HistoryManageRequest'
+      responses:
+        '200':
+          description: Success - History management operation completed
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/history_v2:
+    get:
+      tags:
+        - job
+      summary: Get execution history (v2)
+      description: |
+        Retrieve execution history for the authenticated user with pagination support.
+        Returns a lightweight history format with filtered prompt data (workflow removed from extra_pnginfo).
+      operationId: getHistory
+      parameters:
+        - name: max_items
+          in: query
+          required: false
+          description: Maximum number of items to return
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          description: Starting position (default 0)
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Success - Execution history retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/history_v2/{prompt_id}:
+    get:
+      tags:
+        - job
+      summary: Get history for specific prompt
+      description: |
+        Retrieve detailed execution history for a specific prompt ID.
+        Returns full history data including complete prompt information.
+      operationId: getHistoryForPrompt
+      parameters:
+        - name: prompt_id
+          in: path
+          required: true
+          description: The prompt ID to retrieve history for
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success - History for prompt retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryDetailResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Prompt not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/jobs:
+    get:
+      tags:
+        - job
+      summary: List jobs with pagination and filtering
+      description: |
+        Retrieve a paginated list of jobs for the authenticated user.
+        Returns lightweight job data optimized for list views.
+        Workflow and full outputs are excluded to reduce payload size.
+      operationId: listJobs
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by one or more statuses (comma-separated). If not provided, returns all jobs.
+          schema:
+            type: string
+          example: pending,in_progress
+        - name: workflow_id
+          in: query
+          required: false
+          description: Filter by workflow ID (exact match)
+          schema:
+            type: string
+          example: 550e8400-e29b-41d4-a716-446655440000
+        - name: output_type
+          in: query
+          required: false
+          description: Filter by output media type (only applies to completed jobs with outputs)
+          schema:
+            type: string
+            enum: [image, video, audio]
+          example: image
+        - name: sort_by
+          in: query
+          required: false
+          description: Field to sort by (create_time = when job was submitted, execution_time = how long workflow took to run)
+          schema:
+            type: string
+            enum: [create_time, execution_time]
+            default: create_time
+          example: execution_time
+        - name: sort_order
+          in: query
+          required: false
+          description: Sort direction (asc = ascending, desc = descending)
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: offset
+          in: query
+          required: false
+          description: Pagination offset (0-based)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum items per page (1-1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        '200':
+          description: Success - Jobs retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobsListResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/jobs/{job_id}:
+    get:
+      tags:
+        - job
+      summary: Get full job details
+      description: |
+        Retrieve complete details for a specific job including workflow and outputs.
+        Used for detail views, workflow re-execution, and debugging.
+      operationId: getJobDetail
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: Job identifier (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success - Job details retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetailResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - Job does not belong to user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/view:
+    get:
+      tags:
+        - file
+      summary: View a file
+      description: |
+        Retrieve and view a file from the ComfyUI file system.
+        This endpoint is typically used to view generated images or other output files.
+      operationId: viewFile
+      parameters:
+        - name: filename
+          in: query
+          required: true
+          description: Name of the file to view
+          schema:
+            type: string
+            example: "ComfyUI_00004_.png"
+        - name: subfolder
+          in: query
+          required: false
+          description: |
+            Subfolder path where the file is located.
+            **Note:** Accepted for ComfyUI API compatibility but **ignored** in cloud.
+            Cloud uses content-addressed storage where assets are stored by hash only.
+            The subfolder is client-side UI metadata and not used for storage lookup.
+          schema:
+            type: string
+            example: "tests/foo/bar"
+        - name: type
+          in: query
+          required: false
+          description: |
+            Type of file (e.g., output, input, temp).
+            **Note:** In cloud, both `output` and `temp` files are stored in the same bucket.
+            The type parameter is used for compatibility but storage location is determined by hash.
+          schema:
+            type: string
+            example: "output"
+        - name: fullpath
+          in: query
+          required: false
+          description: Full path to the file (used for temp files)
+          schema:
+            type: string
+        - name: format
+          in: query
+          required: false
+          description: Format of the file
+          schema:
+            type: string
+        - name: frame_rate
+          in: query
+          required: false
+          description: Frame rate for video files
+          schema:
+            type: integer
+        - name: workflow
+          in: query
+          required: false
+          description: Workflow identifier
+          schema:
+            type: string
+        - name: timestamp
+          in: query
+          required: false
+          description: Timestamp parameter
+          schema:
+            type: integer
+            example: "1234567890"
+        - name: channel
+          in: query
+          required: false
+          description: |
+            Image channel to extract from PNG images.
+            - 'rgb': Return only RGB channels (alpha set to fully opaque)
+            - 'a' or 'alpha': Return alpha channel as grayscale image
+            - If not specified, return original image unchanged via redirect
+          schema:
+            type: string
+            example: "rgb"
+      responses:
+        '302':
+          description: Redirect to GCS signed URL
+          headers:
+            Location:
+              description: Signed URL to access the file in GCS
+              schema:
+                type: string
+        '200':
+          description: Success - File content returned (used when channel parameter is present)
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+                description: Processed PNG image with extracted channel
+        '404':
+          description: File not found or unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/files/mask-layers:
+    get:
+      tags:
+        - file
+      summary: Get related mask layer files
+      description: |
+        Given a mask file (any of the 4 layers), returns all related mask layer files.
+        This is used by the mask editor to load the paint, mask, and painted layers
+        when reopening a previously edited mask.
+      operationId: getMaskLayers
+      parameters:
+        - name: filename
+          in: query
+          required: true
+          description: Hash filename of any mask layer file
+          schema:
+            type: string
+            example: "abc123def456.png"
+      responses:
+        '200':
+          description: Success - Related mask layers returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mask:
+                    type: string
+                    description: Filename of the mask layer
+                    nullable: true
+                  paint:
+                    type: string
+                    description: Filename of the paint strokes layer
+                    nullable: true
+                  painted:
+                    type: string
+                    description: Filename of the painted image layer
+                    nullable: true
+                  painted_masked:
+                    type: string
+                    description: Filename of the final composite layer
+                    nullable: true
+        '404':
+          description: File not found or not a mask file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets:
+    get:
+      tags:
+        - asset
+      summary: List user assets
+      description: |
+        Retrieves a paginated list of assets belonging to the authenticated user.
+        Supports filtering by tags, name, metadata, and sorting options.
+      operationId: listAssets
+      parameters:
+        - name: include_tags
+          in: query
+          description: Filter assets that have ALL of these tags
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+        - name: exclude_tags
+          in: query
+          description: Exclude assets that have ANY of these tags
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+        - name: name_contains
+          in: query
+          description: Filter assets where name contains this substring (case-insensitive)
+          schema:
+            type: string
+        - name: metadata_filter
+          in: query
+          description: JSON object for filtering by metadata fields
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of assets to return (1-500)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 20
+        - name: offset
+          in: query
+          description: Number of assets to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: sort
+          in: query
+          description: Field to sort by
+          schema:
+            type: string
+            enum: [name, created_at, updated_at, size, last_access_time]
+            default: created_at
+        - name: order
+          in: query
+          description: Sort order
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: include_public
+          in: query
+          description: Whether to include public/shared assets in results
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Success - Assets returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAssetsResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - asset
+      summary: Upload a new asset
+      description: |
+        Uploads a new asset to the system with associated metadata.
+        Supports two upload methods:
+        1. Direct file upload (multipart/form-data)
+        2. URL-based upload (application/json with source: "url")
+
+        If an asset with the same hash already exists, returns the existing asset.
+      operationId: uploadAsset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The asset file to upload
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Freeform tags for the asset. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
+                id:
+                  type: string
+                  format: uuid
+                  description: Optional asset ID for idempotent creation. If provided and asset exists, returns existing asset.
+                preview_id:
+                  type: string
+                  format: uuid
+                  description: Optional preview asset ID. If not provided, images will use their own ID as preview.
+                name:
+                  type: string
+                  description: Display name for the asset
+                mime_type:
+                  type: string
+                  description: MIME type of the asset (e.g., "image/png", "video/mp4")
+                user_metadata:
+                  type: string
+                  description: Custom JSON metadata as a string
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - name
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: HTTP/HTTPS URL to download the asset from
+                name:
+                  type: string
+                  description: Display name for the asset (used to determine file extension)
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Freeform tags for the asset. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
+                user_metadata:
+                  type: object
+                  additionalProperties: true
+                  description: Custom metadata to store with the asset
+                preview_id:
+                  type: string
+                  format: uuid
+                  description: Optional preview asset ID
+      responses:
+        '201':
+          description: Asset created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCreated'
+        '200':
+          description: Asset already exists (returned existing asset)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCreated'
+        '400':
+          description: Invalid request (bad file, invalid URL, invalid content type, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Source URL requires authentication or access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Source URL not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Unsupported media type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Download failed due to network error or timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/from-hash:
+    post:
+      tags:
+        - asset
+      summary: Create asset reference from existing hash
+      description: |
+        Creates a new asset reference using an existing hash from cloud storage.
+        This avoids re-uploading file content when the underlying data already exists,
+        which is useful for large files or when referencing well-known assets.
+        The user provides their own metadata and tags for the new reference.
+      operationId: createAssetFromHash
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - hash
+                - tags
+              properties:
+                hash:
+                  type: string
+                  description: Hash of the existing asset. Supports Blake3 (blake3:) or SHA256 (sha256:) formats
+                  pattern: '^(blake3|sha256):[a-f0-9]{64}$'
+                name:
+                  type: string
+                  description: Display name for the asset reference (optional)
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: Freeform tags for the asset. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
+                mime_type:
+                  type: string
+                  description: MIME type of the asset (e.g., "image/png", "video/mp4")
+                user_metadata:
+                  type: object
+                  description: Custom metadata for this asset reference
+                  additionalProperties: true
+      responses:
+        '201':
+          description: Asset reference created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCreated'
+        '200':
+          description: Asset reference already exists (returned existing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCreated'
+        '400':
+          description: Invalid request (bad hash format, invalid tags, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Source asset with given hash not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/remote-metadata:
+    get:
+      tags:
+        - asset
+      summary: Get asset metadata from remote URL
+      description: |
+        Retrieves metadata for an asset from a remote download URL without downloading the entire file.
+        Supports various sources including CivitAI and other model repositories.
+        Uses HEAD requests or API calls to fetch metadata efficiently.
+        This endpoint is for previewing metadata before downloading, not for getting metadata of existing assets.
+      operationId: getRemoteAssetMetadata
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: Download URL to retrieve metadata from
+          schema:
+            type: string
+            format: uri
+            example: 'https://civitai.com/api/download/models/123456'
+      responses:
+        '200':
+          description: Metadata retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMetadataResponse'
+        '400':
+          description: Invalid URL or missing required parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Failed to retrieve metadata from source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/download:
+    post:
+      tags:
+        - asset
+      summary: Initiate background download for large files
+      description: |
+        Initiates a background download job for large files from Huggingface or Civitai.
+
+        If the file already exists in storage, the asset record is created immediately and returned (200 OK).
+        If the file doesn't exist, a background task is created and the task ID is returned (202 Accepted).
+        The frontend can track progress using GET /api/tasks/{task_id}.
+      operationId: createAssetDownload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - source_url
+              properties:
+                source_url:
+                  type: string
+                  format: uri
+                  description: URL of the file to download (must be from huggingface.co or civitai.com)
+                  example: "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors"
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional tags for the asset (e.g., ["model", "checkpoint"])
+                user_metadata:
+                  type: object
+                  additionalProperties: true
+                  description: Optional user-defined metadata to attach to the asset
+                preview_id:
+                  type: string
+                  format: uuid
+                  description: Optional preview asset ID to associate with the downloaded asset
+                  example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: File already exists in storage - asset created/returned immediately
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetCreated'
+        '202':
+          description: Accepted - Download task created and processing in background
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetDownloadResponse'
+        '400':
+          description: Invalid URL or unsupported source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/{id}:
+    get:
+      tags:
+        - asset
+      summary: Get asset details
+      description: Retrieves detailed information about a specific asset
+      operationId: getAssetById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Asset ID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Asset details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags:
+        - asset
+      summary: Update asset metadata
+      description: |
+        Updates an asset's metadata. At least one field must be provided.
+        Only name, tags, and user_metadata can be updated.
+      operationId: updateAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Asset ID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: New display name for the asset
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Updated tags for the asset
+                mime_type:
+                  type: string
+                  description: Updated MIME type of the asset
+                preview_id:
+                  type: string
+                  format: uuid
+                  description: Updated preview asset ID
+                user_metadata:
+                  type: object
+                  description: Updated custom metadata
+                  additionalProperties: true
+              minProperties: 1
+      responses:
+        '200':
+          description: Asset updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetUpdated'
+        '400':
+          description: Invalid request (no fields provided)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - asset
+      summary: Delete asset
+      description: |
+        Deletes an asset and its content from storage.
+        Both the database record and storage content are deleted.
+      operationId: deleteAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Asset ID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Asset deleted successfully
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/{id}/tags:
+    post:
+      tags:
+        - asset
+      summary: Add tags to asset
+      description: Adds one or more tags to an existing asset
+      operationId: addAssetTags
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Asset ID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tags
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: Tags to add to the asset
+      responses:
+        '200':
+          description: Tags added successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagsModificationResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - asset
+      summary: Remove tags from asset
+      description: Removes one or more tags from an existing asset
+      operationId: removeAssetTags
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Asset ID
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tags
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  description: Tags to remove from the asset
+      responses:
+        '200':
+          description: Tags removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagsModificationResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/tags:
+    get:
+      tags:
+        - asset
+      summary: List all tags
+      description: |
+        Retrieves a list of all tags used across assets.
+        Includes usage counts and filtering options.
+      operationId: listTags
+      parameters:
+        - name: prefix
+          in: query
+          description: Filter tags by prefix
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of tags to return (1-1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          description: Number of tags to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: order
+          in: query
+          description: Sort order for tags
+          schema:
+            type: string
+            enum: [count_desc, name_asc]
+            default: count_desc
+        - name: include_zero
+          in: query
+          description: Include tags with zero usage count
+          schema:
+            type: boolean
+            default: false
+        - name: include_public
+          in: query
+          description: Whether to include public/shared assets when counting tags
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Tags retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTagsResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/tags/refine:
+    get:
+      tags:
+        - asset
+      summary: Get tag histogram for filtered assets
+      description: |
+        Returns a histogram of tags appearing on assets matching the given filters.
+        Useful for refining asset searches by showing available tags and their counts.
+        Only returns tags with non-zero counts (tags that exist on matching assets).
+      operationId: getAssetTagHistogram
+      parameters:
+        - name: include_tags
+          in: query
+          description: Filter assets that have ALL of these tags
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+        - name: exclude_tags
+          in: query
+          description: Exclude assets that have ANY of these tags
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+        - name: name_contains
+          in: query
+          description: Filter assets where name contains this substring (case-insensitive)
+          schema:
+            type: string
+        - name: metadata_filter
+          in: query
+          description: JSON object for filtering by metadata fields
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of tags to return (1-1000, default 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: include_public
+          in: query
+          description: Whether to include public/shared assets in results
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Success - Tag histogram returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetTagHistogramResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/assets/hash/{hash}:
+    head:
+      tags:
+        - asset
+      summary: Check if asset exists by hash
+      description: |
+        Checks if content with the given hash exists in cloud storage.
+        Returns 200 if the content exists, 404 if it doesn't.
+        Useful for checking availability before using `/api/assets/from-hash`.
+      operationId: checkAssetByHash
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: Blake3 hash of the asset in format 'blake3:hex_digest'
+          schema:
+            type: string
+            pattern: '^blake3:[a-f0-9]{64}$'
+            example: 'blake3:a1b2c3d4e5f6789012345678901234567890123456789012345678901234'
+      responses:
+        '200':
+          description: Asset exists
+        '400':
+          description: Invalid hash format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Asset not found
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/queue:
+    get:
+      tags:
+        - job
+      summary: Get queue information
+      description: Returns information about running and pending items in the queue
+      operationId: getQueueInfo
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueInfo'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - job
+      summary: Manage queue operations
+      description: |
+        Cancel specific PENDING jobs by ID or clear all pending jobs in the queue.
+        Note: This endpoint only affects pending jobs. To cancel running jobs, use /api/interrupt.
+      operationId: manageQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueueManageRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueManageResponse'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/interrupt:
+    post:
+      tags:
+        - job
+      summary: Interrupt currently running jobs
+      description: |
+        Cancel all currently RUNNING jobs for the authenticated user.
+        This will interrupt any job that is currently in 'in_progress' status.
+        Note: This endpoint only affects running jobs. To cancel pending jobs, use /api/queue.
+      operationId: interruptJob
+      responses:
+        '200':
+          description: Success - Job interrupted or no running job found
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/userdata:
+    get:
+      tags:
+        - user
+      operationId: getUserdata
+      summary: List user data files
+      description: Returns a list of user data files in the specified directory, optionally recursively and with full metadata.
+      parameters:
+        - name: dir
+          in: query
+          required: true
+          description: |
+            The directory path to list files from. Must include trailing slash.
+            Example: "workflows/" or "settings/"
+          schema:
+            type: string
+          example: "workflows/"
+        - name: recurse
+          in: query
+          required: false
+          description: If true, include files in subdirectories. Otherwise only lists files directly in the specified directory.
+          schema:
+            type: boolean
+            default: false
+        - name: split
+          in: query
+          required: false
+          description: |
+            Whether to split file information by type.
+            **Note:** Accepted for ComfyUI API compatibility but currently ignored.
+          schema:
+            type: boolean
+            default: false
+        - name: full_info
+          in: query
+          required: false
+          description: |
+            Whether to return full file metadata.
+            **Note:** Accepted for ComfyUI API compatibility but currently ignored (always returns full info).
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: A list of user data files.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetUserDataResponseFull'
+        '400':
+          description: Bad request (e.g., invalid filename).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: File not found or invalid path.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: General error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/userdata/{file}:
+    get:
+      tags:
+        - user
+      operationId: getUserdataFile
+      summary: Get user data file
+      description: Returns the requested user data file if it exists.
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: The filename of the user data to retrieve.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successfully retrieved the file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Bad request (e.g., invalid filename).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: File not found or invalid path.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: General error
+          content:
+            text/plain:
+              schema:
+                type: string
+    post:
+      tags:
+        - user
+      operationId: postUserdataFile
+      summary: Upload or update a user data file
+      description: |
+        Upload a file to a user's data directory. Optional query parameters allow
+        control over overwrite behavior and response detail.
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: The target file path (URL encoded if necessary).
+          schema:
+            type: string
+        - name: overwrite
+          in: query
+          required: false
+          description: If "false", prevents overwriting existing files. Defaults to "true".
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "true"
+        - name: full_info
+          in: query
+          required: false
+          description: If "true", returns detailed file info; if "false", returns only the relative path.
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: File uploaded successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDataResponseFull'
+        '400':
+          description: Missing or invalid 'file' parameter.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: The requested path is not allowed.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '409':
+          description: File already exists and overwrite is set to false.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: General error
+          content:
+            text/plain:
+              schema:
+                type: string
+    delete:
+      tags:
+        - user
+      operationId: deleteUserdataFile
+      summary: Delete a user data file
+      description: |
+        Delete a user data file from the database. The file parameter should be
+        the relative path within the user's data directory.
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: The file path to delete (URL encoded if necessary).
+          schema:
+            type: string
+      responses:
+        '204':
+          description: File deleted successfully (No Content).
+        '401':
+          description: Unauthorized.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: File not found.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Internal server error.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/upload/image:
+    post:
+      tags:
+        - file
+      summary: Upload an image file
+      description: Upload an image file to cloud storage
+      operationId: uploadImage
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: The image file to upload
+                overwrite:
+                  type: string
+                  description: |
+                    Whether to overwrite existing file (true/false).
+                    **Note:** Accepted for ComfyUI API compatibility but effectively ignored in cloud.
+                    Cloud uses content-addressed storage (hash-based deduplication), so identical
+                    content always maps to the same hash. Re-uploading the same content is a no-op.
+                subfolder:
+                  type: string
+                  description: |
+                    Optional subfolder path.
+                    **Note:** Accepted for ComfyUI API compatibility but **ignored** for storage.
+                    Cloud stores assets by hash only. The subfolder is returned in the response
+                    for client-side organization but is not used for server-side storage paths.
+                type:
+                  type: string
+                  description: |
+                    Upload type (defaults to "output").
+                    **Note:** Accepted for ComfyUI API compatibility. Cloud stores all uploads
+                    as assets with tags rather than directory-based organization.
+      responses:
+        '200':
+          description: Image uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: Filename of the uploaded image
+                  subfolder:
+                    type: string
+                    description: Subfolder path where image was saved
+                  type:
+                    type: string
+                    description: Type of upload (e.g., "output")
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/upload/mask:
+    post:
+      tags:
+        - file
+      summary: Upload a mask image
+      description: Upload a mask image to be applied to an existing image
+      operationId: uploadMask
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+                - original_ref
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: The mask image file to upload
+                original_ref:
+                  type: string
+                  description: JSON string containing reference to the original image
+      responses:
+        '200':
+          description: Mask uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: Filename of the uploaded mask
+                  subfolder:
+                    type: string
+                    description: Subfolder path where mask was saved
+                  type:
+                    type: string
+                    description: Type of upload (e.g., "output")
+                  metadata:
+                    type: object
+                    description: Additional metadata for mask detection and re-editing
+                    properties:
+                      is_mask:
+                        type: boolean
+                        description: Whether this file is a mask
+                      original_hash:
+                        type: string
+                        description: Hash of the original unmasked image
+                      mask_type:
+                        type: string
+                        description: Type of mask (e.g., "painted_masked")
+                      related_files:
+                        type: object
+                        description: Related mask layer files (if available)
+                        properties:
+                          mask:
+                            type: string
+                            description: Hash of the mask layer
+                          paint:
+                            type: string
+                            description: Hash of the paint layer
+                          painted:
+                            type: string
+                            description: Hash of the painted image
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/system_stats:
+    get:
+      tags:
+        - system
+      summary: Get system statistics
+      description: Returns system statistics including ComfyUI version, device info, and system resources
+      operationId: getSystemStats
+      security: []  # Public endpoint
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemStatsResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/user:
+    get:
+      tags:
+        - user
+      summary: Get current user information
+      description: Returns information about the currently authenticated user
+      operationId: getUser
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/job/{job_id}/status:
+    get:
+      tags:
+        - job
+      summary: Get job status
+      description: Returns the current status of a specific job by ID
+      operationId: getJobStatus
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          description: The unique ID of the job
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success - Job status returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatusResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden - job belongs to another user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key authentication. Generate an API key from your account settings
+        at https://comfy.org/account. Pass the key in the X-API-Key header.
+  schemas:
+    PromptRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: object
+          description: The workflow graph to execute
+          additionalProperties: true
+        number:
+          type: number
+          description: |
+            Priority number for the queue (lower numbers have higher priority).
+            **Note:** Accepted for ComfyUI API compatibility but **ignored** in cloud.
+            Cloud uses its own queue management with per-user ordering and fair scheduling.
+        front:
+          type: boolean
+          description: |
+            If true, adds the prompt to the front of the queue.
+            **Note:** Accepted for ComfyUI API compatibility but **ignored** in cloud.
+            Cloud manages queue ordering internally based on job submission time and fair scheduling.
+        extra_data:
+          type: object
+          description: Extra data to be associated with the prompt
+          additionalProperties: true
+        partial_execution_targets:
+          type: array
+          items:
+            type: string
+          description: List of node names to execute
+
+    PromptResponse:
+      type: object
+      properties:
+        prompt_id:
+          type: string
+          format: uuid
+          description: Unique identifier for the prompt execution
+        number:
+          type: number
+          description: Priority number in the queue
+        node_errors:
+          type: object
+          description: Any errors in the nodes of the prompt
+          additionalProperties: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    PromptInfo:
+      type: object
+      properties:
+        exec_info:
+          type: object
+          properties:
+            queue_remaining:
+              type: integer
+              description: Number of items remaining in the queue
+
+    NodeInfo:
+      type: object
+      properties:
+        input:
+          type: object
+          description: Input specifications for the node
+          additionalProperties: true
+        input_order:
+          type: object
+          description: Order of inputs for display
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        output:
+          type: array
+          items:
+            type: string
+          description: Output types of the node
+        output_is_list:
+          type: array
+          items:
+            type: boolean
+          description: Whether each output is a list
+        output_name:
+          type: array
+          items:
+            type: string
+          description: Names of the outputs
+        name:
+          type: string
+          description: Internal name of the node
+        display_name:
+          type: string
+          description: Display name of the node
+        description:
+          type: string
+          description: Description of the node
+        python_module:
+          type: string
+          description: Python module implementing the node
+        category:
+          type: string
+          description: Category of the node
+        output_node:
+          type: boolean
+          description: Whether this is an output node
+        output_tooltips:
+          type: array
+          items:
+            type: string
+          description: Tooltips for outputs
+        deprecated:
+          type: boolean
+          description: Whether the node is deprecated
+        experimental:
+          type: boolean
+          description: Whether the node is experimental
+        api_node:
+          type: boolean
+          description: Whether this is an API node
+
+    GlobalSubgraphInfo:
+      type: object
+      description: Metadata for a global subgraph blueprint (without full data)
+      required:
+        - source
+        - name
+        - info
+      properties:
+        source:
+          type: string
+          description: Source type of the subgraph - "templates" for workflow templates or "custom_node" for custom node subgraphs
+        name:
+          type: string
+          description: Display name of the subgraph blueprint
+        info:
+          type: object
+          description: Additional information about the subgraph
+          required:
+            - node_pack
+          properties:
+            node_pack:
+              type: string
+              description: The node pack/module that provides this subgraph
+        data:
+          type: string
+          description: The full subgraph JSON data (may be empty in list view)
+
+    GlobalSubgraphData:
+      type: object
+      description: Full data for a global subgraph blueprint
+      required:
+        - source
+        - name
+        - info
+        - data
+      properties:
+        source:
+          type: string
+          description: Source type of the subgraph - "templates" for workflow templates or "custom_node" for custom node subgraphs
+        name:
+          type: string
+          description: Display name of the subgraph blueprint
+        info:
+          type: object
+          description: Additional information about the subgraph
+          required:
+            - node_pack
+          properties:
+            node_pack:
+              type: string
+              description: The node pack/module that provides this subgraph
+        data:
+          type: string
+          description: The full subgraph JSON data as a string
+
+    HistoryResponse:
+      type: object
+      description: |
+        Execution history response with history array.
+        Returns an object with a "history" key containing an array of history entries.
+        Each entry includes prompt_id as a property along with execution data.
+      required:
+        - history
+      properties:
+        history:
+          type: array
+          description: Array of history entries ordered by creation time (newest first)
+          items:
+            $ref: '#/components/schemas/HistoryEntry'
+
+    HistoryEntry:
+      type: object
+      description: History entry with prompt_id and execution data
+      required:
+        - prompt_id
+      properties:
+        prompt_id:
+          type: string
+          description: Unique identifier for this prompt execution
+        create_time:
+          type: integer
+          format: int64
+          description: Job creation timestamp (Unix timestamp in milliseconds)
+        workflow_id:
+          type: string
+          description: UUID identifying the workflow graph definition
+        prompt:
+          type: object
+          description: Filtered prompt execution data (lightweight format)
+          properties:
+            priority:
+              type: number
+              format: double
+              description: Execution priority
+            prompt_id:
+              type: string
+              description: The prompt ID
+            extra_data:
+              type: object
+              description: Additional execution data (workflow removed from extra_pnginfo)
+              additionalProperties: true
+        outputs:
+          type: object
+          description: Output data from execution (generated images, files, etc.)
+          additionalProperties: true
+        status:
+          type: object
+          description: Execution status and timeline information
+          additionalProperties: true
+        meta:
+          type: object
+          description: Metadata about the execution and nodes
+          additionalProperties: true
+
+    HistoryDetailEntry:
+      type: object
+      description: History entry with full prompt data
+      properties:
+        prompt:
+          type: object
+          description: Full prompt execution data
+          properties:
+            priority:
+              type: number
+              format: double
+              description: Execution priority
+            prompt_id:
+              type: string
+              description: The prompt ID
+            prompt:
+              type: object
+              description: The workflow nodes
+              additionalProperties: true
+            extra_data:
+              type: object
+              description: Additional execution data
+              additionalProperties: true
+            outputs_to_execute:
+              type: array
+              items:
+                type: string
+              description: Output nodes to execute
+        outputs:
+          type: object
+          description: Output data from execution (generated images, files, etc.)
+          additionalProperties: true
+        status:
+          type: object
+          description: Execution status and timeline information
+          additionalProperties: true
+        meta:
+          type: object
+          description: Metadata about the execution and nodes
+          additionalProperties: true
+
+    HistoryDetailResponse:
+      type: object
+      description: |
+        Detailed execution history response for a specific prompt.
+        Returns a dictionary with prompt_id as key and full history data as value.
+      additionalProperties:
+        $ref: '#/components/schemas/HistoryDetailEntry'
+
+    QueueInfo:
+      type: object
+      description: Queue information with pending and running jobs
+      properties:
+        queue_running:
+          type: array
+          description: Array of currently running job items
+          items:
+            type: array
+            description: |
+              Queue item tuple format: [job_number, prompt_id, workflow_json, output_node_ids, metadata]
+              - [0] job_number (integer): Position in queue (1-based)
+              - [1] prompt_id (string): Job UUID
+              - [2] workflow_json (object): Full ComfyUI workflow
+              - [3] output_node_ids (array): Node IDs to return results from
+              - [4] metadata (object): Contains {create_time: <milliseconds>}
+        queue_pending:
+          type: array
+          description: Array of pending job items (ordered by creation time, oldest first)
+          items:
+            type: array
+            description: |
+              Queue item tuple format: [job_number, prompt_id, workflow_json, output_node_ids, metadata]
+              - [0] job_number (integer): Position in queue (1-based)
+              - [1] prompt_id (string): Job UUID
+              - [2] workflow_json (object): Full ComfyUI workflow
+              - [3] output_node_ids (array): Node IDs to return results from
+              - [4] metadata (object): Contains {create_time: <milliseconds>}
+
+    QueueManageRequest:
+      type: object
+      description: Request to manage queue operations
+      properties:
+        delete:
+          type: array
+          items:
+            type: string
+          description: Array of PENDING job IDs to cancel
+        clear:
+          type: boolean
+          description: If true, clear all pending jobs from the queue
+      additionalProperties: false
+
+    QueueManageResponse:
+      type: object
+      properties:
+        deleted:
+          type: array
+          items:
+            type: string
+          description: Array of job IDs that were successfully cancelled
+        cleared:
+          type: boolean
+          description: Whether the queue was cleared
+
+    JobStatusResponse:
+      type: object
+      description: Job status information
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The job ID
+        status:
+          type: string
+          enum: [waiting_to_dispatch, pending, in_progress, completed, error, cancelled]
+          description: Current job status
+        created_at:
+          type: string
+          format: date-time
+          description: When the job was created
+        updated_at:
+          type: string
+          format: date-time
+          description: When the job was last updated
+        last_state_update:
+          type: string
+          format: date-time
+          description: When the job status was last changed
+        assigned_inference:
+          type: string
+          nullable: true
+          description: The inference instance assigned to this job (if any)
+        error_message:
+          type: string
+          nullable: true
+          description: Error message if the job failed
+      required:
+        - id
+        - status
+        - created_at
+        - updated_at
+
+    HistoryManageRequest:
+      type: object
+      description: Request to manage history operations
+      properties:
+        delete:
+          type: array
+          items:
+            type: string
+          description: Array of job IDs to delete from history
+        clear:
+          type: boolean
+          description: If true, clear all history for the authenticated user
+      additionalProperties: false
+    UserDataResponse:
+      oneOf:
+        - $ref: '#/components/schemas/UserDataResponseFull'
+        - $ref: '#/components/schemas/UserDataResponseShort'
+    UserDataResponseFull:
+      type: object
+      properties:
+        path:
+          type: string
+        size:
+          type: integer
+        modified:
+          type: string
+          format: date-time
+    UserDataResponseShort:
+      type: string
+    GetUserDataResponseFull:
+      type: array
+      items:
+        $ref: '#/components/schemas/GetUserDataResponseFullFile'
+
+    GetUserDataResponseFullFile:
+      type: object
+      properties:
+        path:
+          type: string
+          description: File name or path relative to the user directory.
+        size:
+          type: integer
+          description: File size in bytes.
+        modified:
+          type: number
+          format: float
+          description: UNIX timestamp of the last modification.
+    PromptErrorResponse:
+      type: object
+      description: Error response for ComfyUI prompt execution.
+      additionalProperties: true
+
+    ModelFolder:
+      type: object
+      description: Represents a folder containing models
+      required:
+        - name
+        - folders
+      properties:
+        name:
+          type: string
+          description: The name of the model folder
+          example: "checkpoints"
+        folders:
+          type: array
+          items:
+            type: string
+          description: List of paths where models of this type are stored
+          example: ["checkpoints"]
+
+    ModelFile:
+      type: object
+      description: Represents a model file with metadata
+      required:
+        - name
+        - pathIndex
+      properties:
+        name:
+          type: string
+          description: The filename of the model
+          example: "model.safetensors"
+        pathIndex:
+          type: integer
+          description: Index of the path where this model is located
+          example: 0
+
+    SystemStatsResponse:
+      type: object
+      description: System statistics response
+      required:
+        - system
+        - devices
+      properties:
+        system:
+          type: object
+          required:
+            - os
+            - python_version
+            - embedded_python
+            - comfyui_version
+            - pytorch_version
+            - argv
+            - ram_total
+            - ram_free
+          properties:
+            os:
+              type: string
+              description: Operating system
+            python_version:
+              type: string
+              description: Python version
+            embedded_python:
+              type: boolean
+              description: Whether using embedded Python
+            comfyui_version:
+              type: string
+              description: ComfyUI version
+            comfyui_frontend_version:
+              type: string
+              description: ComfyUI frontend version (commit hash or tag)
+            workflow_templates_version:
+              type: string
+              description: Workflow templates version
+            cloud_version:
+              type: string
+              description: Cloud ingest service version (commit hash)
+            pytorch_version:
+              type: string
+              description: PyTorch version
+            argv:
+              type: array
+              items:
+                type: string
+              description: Command line arguments
+            ram_total:
+              type: number
+              description: Total RAM in bytes
+            ram_free:
+              type: number
+              description: Free RAM in bytes
+        devices:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - type
+            properties:
+              name:
+                type: string
+                description: Device name
+              type:
+                type: string
+                description: Device type
+              vram_total:
+                type: number
+                description: Total VRAM in bytes
+              vram_free:
+                type: number
+                description: Free VRAM in bytes
+
+    UserResponse:
+      type: object
+      description: User information response
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: User status (active or waitlisted)
+
+    Asset:
+      type: object
+      required:
+        - id
+        - name
+        - size
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the asset
+        name:
+          type: string
+          description: Name of the asset file
+        asset_hash:
+          type: string
+          description: Blake3 hash of the asset content
+          pattern: '^blake3:[a-f0-9]{64}$'
+        size:
+          type: integer
+          format: int64
+          description: Size of the asset in bytes
+        mime_type:
+          type: string
+          description: MIME type of the asset
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags associated with the asset
+        user_metadata:
+          type: object
+          description: Custom user metadata for the asset
+          additionalProperties: true
+        preview_url:
+          type: string
+          format: uri
+          description: URL for asset preview/thumbnail
+        preview_id:
+          type: string
+          format: uuid
+          description: ID of the preview asset if available
+          nullable: true
+        prompt_id:
+          type: string
+          format: uuid
+          description: ID of the job/prompt that created this asset, if available
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the asset was created
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp when the asset was last updated
+        last_access_time:
+          type: string
+          format: date-time
+          description: Timestamp when the asset was last accessed
+        is_immutable:
+          type: boolean
+          description: Whether this asset is immutable (cannot be modified or deleted)
+
+    AssetCreated:
+      allOf:
+        - $ref: '#/components/schemas/Asset'
+        - type: object
+          required:
+            - created_new
+          properties:
+            created_new:
+              type: boolean
+              description: Whether this was a new asset creation (true) or returned existing (false)
+
+    AssetUpdated:
+      type: object
+      required:
+        - id
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Asset ID
+        name:
+          type: string
+          description: Updated name of the asset
+        asset_hash:
+          type: string
+          description: Blake3 hash of the asset content
+          pattern: '^blake3:[a-f0-9]{64}$'
+        tags:
+          type: array
+          items:
+            type: string
+          description: Updated tags for the asset
+        mime_type:
+          type: string
+          description: Updated MIME type of the asset
+        user_metadata:
+          type: object
+          description: Updated custom metadata
+          additionalProperties: true
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp of the update
+
+    ListAssetsResponse:
+      type: object
+      required:
+        - assets
+        - total
+        - has_more
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+          description: List of assets matching the query
+        total:
+          type: integer
+          description: Total number of assets matching the filters
+        has_more:
+          type: boolean
+          description: Whether more assets are available beyond this page
+
+    TagInfo:
+      type: object
+      required:
+        - name
+        - count
+      properties:
+        name:
+          type: string
+          description: Tag name
+        count:
+          type: integer
+          description: Number of assets using this tag
+
+    ListTagsResponse:
+      type: object
+      required:
+        - tags
+        - total
+        - has_more
+      properties:
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagInfo'
+          description: List of tags
+        total:
+          type: integer
+          description: Total number of tags
+        has_more:
+          type: boolean
+          description: Whether more tags are available
+
+    AssetTagHistogramResponse:
+      type: object
+      required:
+        - tag_counts
+      properties:
+        tag_counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Map of tag names to their occurrence counts on matching assets
+          example:
+            checkpoint: 32
+            lora: 193
+            vae: 6
+
+    AssetMetadataResponse:
+      type: object
+      required:
+        - content_length
+      properties:
+        content_length:
+          type: integer
+          format: int64
+          description: Size of the asset in bytes (-1 if unknown)
+          example: 4294967296
+        content_type:
+          type: string
+          description: MIME type of the asset
+          example: "application/octet-stream"
+        filename:
+          type: string
+          description: Suggested filename for the asset from source
+          example: "realistic-vision-v5.safetensors"
+        name:
+          type: string
+          description: Display name or title for the asset from source
+          example: "Realistic Vision v5.0"
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for categorization from source
+          example: ["models", "checkpoint"]
+        preview_image:
+          type: string
+          description: Preview image as base64-encoded data URL
+          example: "data:image/jpeg;base64,/9j/4AAQSkZJRg..."
+        validation:
+          $ref: '#/components/schemas/ValidationResult'
+          description: Validation results for the file
+
+    AssetDownloadResponse:
+      type: object
+      required:
+        - task_id
+        - status
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          description: Task ID for tracking download progress via GET /api/tasks/{task_id}
+        status:
+          type: string
+          enum: [created, running, completed, failed]
+          description: Current task status
+        message:
+          type: string
+          description: Human-readable message
+          example: "Download task created. Use task_id to track progress."
+
+    ValidationResult:
+      type: object
+      required:
+        - is_valid
+      properties:
+        is_valid:
+          type: boolean
+          description: Overall validation status (true if all checks passed)
+          example: true
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          description: Blocking validation errors that prevent download
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          description: Non-blocking validation warnings (informational only)
+
+    ValidationError:
+      type: object
+      required:
+        - code
+        - message
+        - field
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: FORMAT_NOT_ALLOWED
+        message:
+          type: string
+          description: Human-readable error message
+          example: "File format \"PickleTensor\" is not allowed. Allowed formats: [SafeTensor]"
+        field:
+          type: string
+          description: Field that failed validation
+          example: format
+
+    TagsModificationResponse:
+      type: object
+      required:
+        - total_tags
+      properties:
+        added:
+          type: array
+          items:
+            type: string
+          description: Tags that were successfully added (for add operation)
+        removed:
+          type: array
+          items:
+            type: string
+          description: Tags that were successfully removed (for remove operation)
+        already_present:
+          type: array
+          items:
+            type: string
+          description: Tags that were already present (for add operation)
+        not_present:
+          type: array
+          items:
+            type: string
+          description: Tags that were not present (for remove operation)
+        total_tags:
+          type: array
+          items:
+            type: string
+          description: All tags on the asset after the operation
+
+    # Jobs API Schemas
+    JobsListResponse:
+      type: object
+      required:
+        - jobs
+        - pagination
+      properties:
+        jobs:
+          type: array
+          description: Array of jobs ordered by specified sort field
+          items:
+            $ref: '#/components/schemas/JobEntry'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    JobEntry:
+      type: object
+      description: Lightweight job data for list views (workflow and full outputs excluded)
+      required:
+        - id
+        - status
+        - create_time
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique job identifier
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed, cancelled]
+          description: User-friendly job status
+        execution_error:
+          $ref: '#/components/schemas/ExecutionError'
+          description: Detailed execution error from ComfyUI (only for failed jobs with structured error data)
+        create_time:
+          type: integer
+          format: int64
+          description: Job creation timestamp (Unix timestamp in seconds)
+        preview_output:
+          type: object
+          description: Primary preview output (only present for terminal states)
+          additionalProperties: true
+        outputs_count:
+          type: integer
+          description: Total number of output files (omitted for non-terminal states)
+        workflow_id:
+          type: string
+          description: UUID identifying the workflow graph definition
+        execution_start_time:
+          type: integer
+          format: int64
+          description: Workflow execution start timestamp (Unix milliseconds, only present for terminal states)
+        execution_end_time:
+          type: integer
+          format: int64
+          description: Workflow execution completion timestamp (Unix milliseconds, only present for terminal states)
+
+    JobDetailResponse:
+      type: object
+      description: Full job details including workflow and outputs
+      required:
+        - id
+        - status
+        - create_time
+        - update_time
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique job identifier
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed, cancelled]
+          description: User-friendly job status
+        workflow:
+          type: object
+          description: Full ComfyUI workflow (10-100KB, omitted if not available)
+          additionalProperties: true
+        execution_error:
+          $ref: '#/components/schemas/ExecutionError'
+          description: Detailed execution error from ComfyUI (only for failed jobs with structured error data)
+        create_time:
+          type: integer
+          format: int64
+          description: Job creation timestamp (Unix timestamp in seconds)
+        update_time:
+          type: integer
+          format: int64
+          description: Last update timestamp (Unix timestamp in seconds)
+        outputs:
+          type: object
+          description: Full outputs object from ComfyUI (only for terminal states)
+          additionalProperties: true
+        preview_output:
+          type: object
+          description: Primary preview output (only for terminal states)
+          additionalProperties: true
+        outputs_count:
+          type: integer
+          description: Total number of output files (omitted for non-terminal states)
+        workflow_id:
+          type: string
+          description: UUID identifying the workflow graph definition
+        execution_status:
+          type: object
+          description: ComfyUI execution status and timeline (only for terminal states)
+          additionalProperties: true
+        execution_meta:
+          type: object
+          description: Node-level execution metadata (only for terminal states)
+          additionalProperties: true
+
+    ExecutionError:
+      type: object
+      description: Detailed execution error information from ComfyUI
+      required:
+        - node_id
+        - node_type
+        - exception_message
+        - exception_type
+        - traceback
+        - current_inputs
+        - current_outputs
+      properties:
+        node_id:
+          type: string
+          description: ID of the node that failed
+        node_type:
+          type: string
+          description: Type name of the node (e.g., "KSampler")
+        exception_message:
+          type: string
+          description: Human-readable error message
+        exception_type:
+          type: string
+          description: Python exception type (e.g., "RuntimeError")
+        traceback:
+          type: array
+          items:
+            type: string
+          description: Array of traceback lines (empty array if not available)
+        current_inputs:
+          type: object
+          additionalProperties: true
+          description: Input values at time of failure (empty object if not available)
+        current_outputs:
+          type: object
+          additionalProperties: true
+          description: Output values at time of failure (empty object if not available)
+
+    PaginationInfo:
+      type: object
+      required:
+        - offset
+        - limit
+        - total
+        - has_more
+      properties:
+        offset:
+          type: integer
+          minimum: 0
+          description: Current offset (0-based)
+        limit:
+          type: integer
+          minimum: 1
+          description: Items per page
+        total:
+          type: integer
+          minimum: 0
+          description: Total number of items matching filters
+        has_more:
+          type: boolean
+          description: Whether more items are available beyond this page
+
+    # =========================================================================
+    # WEBSOCKET MESSAGE SCHEMAS
+    # =========================================================================
+    # WebSocket messages are sent over the /ws endpoint for real-time updates
+    # during workflow execution. Connect with: /ws?clientId={uuid}&token={auth_token}
+    
+    WebSocketMessage:
+      type: object
+      description: |
+        Base structure for all WebSocket messages. Messages are JSON with a type
+        field indicating the message type and a data field containing type-specific payload.
+      required:
+        - type
+      properties:
+        type:
+          $ref: '#/components/schemas/WebSocketMessageType'
+        data:
+          type: object
+          description: Message payload (structure varies by type)
+          additionalProperties: true
+
+    WebSocketMessageType:
+      type: string
+      description: |
+        Type of WebSocket message. These match ComfyUI's native message types.
+      enum:
+        - status
+        - execution_start
+        - execution_cached
+        - executing
+        - progress
+        - progress_state
+        - executed
+        - execution_success
+        - execution_error
+        - execution_interrupted
+
+    WebSocketStatusMessage:
+      type: object
+      description: |
+        Queue status update. Sent when the queue state changes.
+      properties:
+        type:
+          type: string
+          enum: [status]
+        data:
+          type: object
+          properties:
+            status:
+              type: object
+              properties:
+                exec_info:
+                  type: object
+                  properties:
+                    queue_remaining:
+                      type: integer
+                      description: Number of jobs remaining in queue for this user
+            sid:
+              type: string
+              description: Session ID (only on initial connection)
+
+    WebSocketExecutionStartMessage:
+      type: object
+      description: |
+        Sent when workflow execution begins.
+      properties:
+        type:
+          type: string
+          enum: [execution_start]
+        data:
+          type: object
+          required:
+            - prompt_id
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+              description: The job/prompt ID that started executing
+
+    WebSocketExecutingMessage:
+      type: object
+      description: |
+        Sent when a specific node starts executing.
+      properties:
+        type:
+          type: string
+          enum: [executing]
+        data:
+          type: object
+          required:
+            - prompt_id
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            node:
+              type: string
+              description: The node ID currently executing (null when execution completes)
+            display_node:
+              type: string
+              description: The display node ID (may differ from node for grouped nodes)
+
+    WebSocketProgressMessage:
+      type: object
+      description: |
+        Step-by-step progress within a node (e.g., diffusion sampling steps).
+      properties:
+        type:
+          type: string
+          enum: [progress]
+        data:
+          type: object
+          required:
+            - prompt_id
+            - node
+            - value
+            - max
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            node:
+              type: string
+              description: Node ID showing progress
+            value:
+              type: integer
+              description: Current step number
+            max:
+              type: integer
+              description: Total number of steps
+
+    WebSocketProgressStateMessage:
+      type: object
+      description: |
+        Extended progress state with detailed node metadata.
+        Provides richer context than the simpler `progress` message.
+      properties:
+        type:
+          type: string
+          enum: [progress_state]
+        data:
+          type: object
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            nodes:
+              type: object
+              description: Map of node IDs to their progress state
+              additionalProperties:
+                type: object
+                properties:
+                  node_id:
+                    type: string
+                  display_node_id:
+                    type: string
+                  real_node_id:
+                    type: string
+                  prompt_id:
+                    type: string
+                  class_type:
+                    type: string
+                    description: The node's class type (e.g., "KSampler")
+
+    WebSocketExecutedMessage:
+      type: object
+      description: |
+        Sent when a node completes execution with outputs.
+      properties:
+        type:
+          type: string
+          enum: [executed]
+        data:
+          type: object
+          required:
+            - prompt_id
+            - node
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            node:
+              type: string
+              description: Node ID that completed
+            display_node:
+              type: string
+              description: Display node ID
+            output:
+              type: object
+              description: |
+                Node outputs. Structure varies by node type.
+                For image outputs: { "images": [{"filename": "...", "subfolder": "", "type": "output"}] }
+                For video outputs: { "video": [{"filename": "...", "subfolder": "", "type": "output"}] }
+              additionalProperties: true
+
+    WebSocketExecutionSuccessMessage:
+      type: object
+      description: |
+        Sent when the entire workflow completes successfully.
+      properties:
+        type:
+          type: string
+          enum: [execution_success]
+        data:
+          type: object
+          required:
+            - prompt_id
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+
+    WebSocketExecutionErrorMessage:
+      type: object
+      description: |
+        Sent when workflow execution fails with an error.
+      properties:
+        type:
+          type: string
+          enum: [execution_error]
+        data:
+          type: object
+          required:
+            - prompt_id
+            - exception_message
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            node_id:
+              type: string
+              description: Node ID where error occurred (if applicable)
+            node_type:
+              type: string
+              description: Type of node where error occurred
+            exception_type:
+              type: string
+              description: |
+                Error classification. Common types:
+                - ValidationError: Invalid workflow or inputs
+                - ModelDownloadError: Failed to download required model
+                - OOMError: Out of GPU memory
+                - InsufficientFundsError: Account balance too low
+                - InactiveSubscriptionError: Subscription not active
+              enum:
+                - ValidationError
+                - ModelDownloadError
+                - ImageDownloadError
+                - OOMError
+                - PanicError
+                - ServiceError
+                - WebSocketError
+                - DispatcherError
+                - InsufficientFundsError
+                - InactiveSubscriptionError
+            exception_message:
+              type: string
+              description: Human-readable error message
+            traceback:
+              type: array
+              items:
+                type: string
+              description: Stack trace lines (for debugging)
+            executed:
+              type: array
+              items:
+                type: string
+              description: Node IDs that completed before the error
+            current_inputs:
+              type: object
+              description: Input values at time of failure
+              additionalProperties: true
+            current_outputs:
+              type: object
+              description: Output values at time of failure
+              additionalProperties: true
+
+    WebSocketExecutionCachedMessage:
+      type: object
+      description: |
+        Sent when nodes are skipped because their outputs are cached.
+      properties:
+        type:
+          type: string
+          enum: [execution_cached]
+        data:
+          type: object
+          required:
+            - prompt_id
+            - nodes
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+            nodes:
+              type: array
+              items:
+                type: string
+              description: List of node IDs that were served from cache
+
+    WebSocketExecutionInterruptedMessage:
+      type: object
+      description: |
+        Sent when workflow execution is cancelled/interrupted.
+      properties:
+        type:
+          type: string
+          enum: [execution_interrupted]
+        data:
+          type: object
+          required:
+            - prompt_id
+          properties:
+            prompt_id:
+              type: string
+              format: uuid
+
+    # Binary WebSocket Message Types (sent as binary frames, not JSON)
+    # All multi-byte integers are big-endian.
+    #
+    # Type 1: PREVIEW_IMAGE
+    #   Format: [type:4B][image_type:4B][image_data:...]
+    #   - type: 0x00000001 (big-endian uint32)
+    #   - image_type: format code (big-endian uint32)
+    #   - image_data: raw JPEG or PNG bytes
+    #
+    # Type 3: TEXT
+    #   Format: [type:4B][node_id_len:4B][node_id:...][text:...]
+    #   - type: 0x00000003 (big-endian uint32)
+    #   - node_id_len: length of node_id string (big-endian uint32)
+    #   - node_id: UTF-8 encoded node ID
+    #   - text: UTF-8 encoded progress text
+    #
+    # Type 4: PREVIEW_IMAGE_WITH_METADATA
+    #   Format: [type:4B][metadata_len:4B][metadata_json:...][image_data:...]
+    #   - type: 0x00000004 (big-endian uint32)
+    #   - metadata_len: length of metadata JSON (big-endian uint32)
+    #   - metadata_json: UTF-8 JSON with fields:
+    #     - node_id: string
+    #     - display_node_id: string
+    #     - real_node_id: string
+    #     - prompt_id: string (uuid)
+    #     - parent_node_id: string | null
+    #   - image_data: raw JPEG or PNG bytes
