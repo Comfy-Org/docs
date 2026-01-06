@@ -180,6 +180,10 @@ print(f"Uploaded: {result['name']} to {result['subfolder']}")
 
 ### Upload Mask
 
+<Note>
+  The `subfolder` parameter is accepted for API compatibility but ignored in cloud storage. All files are stored in a flat, content-addressed namespace.
+</Note>
+
 <CodeGroup>
 ```bash curl
 curl -X POST "$BASE_URL/api/upload/mask" \
@@ -243,107 +247,6 @@ def upload_mask(file_path: str, original_ref: dict) -> dict:
         )
     response.raise_for_status()
     return response.json()
-```
-</CodeGroup>
-
-### Reference Well-Known Assets (Skip Upload)
-
-If you know a file already exists in cloud storage (e.g., a popular sample image shared by Comfy), you can create an asset reference without uploading any bytes. First check if the hash exists, then create your own reference to it.
-
-<CodeGroup>
-```bash curl
-# 1. Check if the hash exists (unauthenticated)
-# Hash format: blake3:<64 hex chars>
-curl -I "$BASE_URL/api/assets/hash/blake3:a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
-# Returns 200 if exists, 404 if not
-
-# 2. Create your own asset reference pointing to that hash
-curl -X POST "$BASE_URL/api/assets/from-hash" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "hash": "blake3:a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd",
-    "tags": ["input"],
-    "name": "sample_portrait.png"
-  }'
-```
-
-```typescript TypeScript
-async function checkHashExists(hash: string): Promise<boolean> {
-  // Note: /api/assets/hash/{hash} only accepts blake3: format
-  const response = await fetch(`${BASE_URL}/api/assets/hash/${hash}`, {
-    method: "HEAD",
-  });
-  return response.ok;
-}
-
-async function createAssetFromHash(
-  hash: string,
-  name: string,
-  tags: string[] = ["input"]
-): Promise<{ id: string; hash: string }> {
-  // Note: /api/assets/from-hash accepts both blake3: and sha256: formats
-  const response = await fetch(`${BASE_URL}/api/assets/from-hash`, {
-    method: "POST",
-    headers: getHeaders(),
-    body: JSON.stringify({ hash, name, tags }),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
-}
-
-// Use a well-known sample image without uploading
-// Hash format: blake3:<64 hex chars>
-const sampleHash = "blake3:a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd";
-
-if (await checkHashExists(sampleHash)) {
-  const asset = await createAssetFromHash(sampleHash, "sample_portrait.png");
-  console.log(`Created asset ${asset.id} pointing to ${asset.hash}`);
-  
-  // Use in workflow (assuming workflow is already loaded)
-  // workflow["1"]["inputs"]["image"] = asset.hash;
-}
-```
-
-```python Python
-def check_hash_exists(hash: str) -> bool:
-    """Check if a file hash exists in cloud storage (unauthenticated).
-    
-    Note: This endpoint only accepts blake3: format hashes.
-    """
-    response = requests.head(f"{BASE_URL}/api/assets/hash/{hash}")
-    return response.status_code == 200
-
-def create_asset_from_hash(hash: str, name: str, tags: list = None) -> dict:
-    """Create an asset reference from an existing hash.
-    
-    This skips uploading bytes entirely - useful for well-known files
-    or files you've previously uploaded to the cloud.
-    
-    Note: This endpoint accepts both blake3: and sha256: format hashes.
-    """
-    response = requests.post(
-        f"{BASE_URL}/api/assets/from-hash",
-        headers=get_headers(),
-        json={
-            "hash": hash,
-            "name": name,
-            "tags": tags or ["input"]
-        }
-    )
-    response.raise_for_status()
-    return response.json()
-
-# Use a well-known sample image without uploading
-# Hash format: blake3:<64 hex chars> or sha256:<64 hex chars>
-sample_hash = "blake3:a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
-
-if check_hash_exists(sample_hash):
-    asset = create_asset_from_hash(sample_hash, "sample_portrait.png")
-    print(f"Created asset {asset['id']} pointing to {asset['hash']}")
-    
-    # Use in workflow
-    workflow["1"]["inputs"]["image"] = asset["hash"]
 ```
 </CodeGroup>
 
@@ -1076,13 +979,19 @@ async function downloadOutputs(
           subfolder: fileInfo.subfolder ?? "",
           type: fileInfo.type ?? "output",
         });
+        // Get redirect URL (don't follow to avoid sending auth to storage)
         const response = await fetch(`${BASE_URL}/api/view?${params}`, {
-          headers: getHeaders(),
+          headers: { "X-API-Key": API_KEY },
+          redirect: "manual",
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (response.status !== 302) throw new Error(`HTTP ${response.status}`);
+        const signedUrl = response.headers.get("location")!;
+        // Fetch from signed URL without auth headers
+        const fileResponse = await fetch(signedUrl);
+        if (!fileResponse.ok) throw new Error(`HTTP ${fileResponse.status}`);
 
         const path = `${outputDir}/${fileInfo.filename}`;
-        await writeFile(path, Buffer.from(await response.arrayBuffer()));
+        await writeFile(path, Buffer.from(await fileResponse.arrayBuffer()));
         console.log(`Downloaded: ${path}`);
       }
     }
