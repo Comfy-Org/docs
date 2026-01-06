@@ -26,7 +26,7 @@ The latter would make both endpoints consistent, but would be a breaking change 
 
 ---
 
-## 2. Inconsistent Status Values Between Endpoints
+## 2. Different Status Values Between Endpoints
 
 | Endpoint | Status for successful job | Includes outputs? |
 |----------|---------------------------|-------------------|
@@ -37,9 +37,7 @@ The latter would make both endpoints consistent, but would be a breaking change 
 - `/api/jobs/{id}` uses `toFilterStatus()` which maps `StateSuccess` → `completed`
 - `/api/job/{id}/status` returns raw `jobEntity.Status` directly
 
-This is confusing for API consumers who might expect consistent status values.
-
-**Recommendation:** Document this clearly (done in API docs) and consider whether `/api/job/{id}/status` should be deprecated in favor of `/api/jobs/{id}`.
+The API docs use `/api/job/{id}/status` for polling (lighter weight) and check for `success` status.
 
 ---
 

@@ -446,30 +446,21 @@ workflow = set_workflow_input(workflow, "6", "text", "a beautiful landscape")
 
 ## Checking Job Status
 
-Poll for job completion and retrieve outputs.
-
-<Note>
-  The API provides two endpoints for checking job status:
-  - **`GET /api/jobs/{id}`** - Returns user-friendly status (`pending`, `in_progress`, `completed`, `failed`, `cancelled`) along with outputs. **Recommended for polling.**
-  - **`GET /api/job/{id}/status`** - Returns raw internal states (e.g., `success`, `executing`, `queued_limited`). Useful for debugging but not recommended for polling logic.
-</Note>
+Poll for job completion.
 
 <CodeGroup>
 ```bash curl
-# Get full job details including outputs
-curl -X GET "$BASE_URL/api/jobs/{prompt_id}" \
+curl -X GET "$BASE_URL/api/job/{prompt_id}/status" \
   -H "X-API-Key: $COMFY_CLOUD_API_KEY"
 ```
 
 ```typescript TypeScript
-interface JobResponse {
-  id: string;
+interface JobStatus {
   status: string;
-  outputs?: Record<string, any>;
 }
 
-async function getJob(promptId: string): Promise<JobResponse> {
-  const response = await fetch(`${BASE_URL}/api/jobs/${promptId}`, {
+async function getJobStatus(promptId: string): Promise<JobStatus> {
+  const response = await fetch(`${BASE_URL}/api/job/${promptId}/status`, {
     headers: getHeaders(),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -480,16 +471,16 @@ async function pollForCompletion(
   promptId: string,
   timeout: number = 300,
   pollInterval: number = 2000
-): Promise<JobResponse> {
+): Promise<void> {
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout * 1000) {
-    const job = await getJob(promptId);
+    const { status } = await getJobStatus(promptId);
 
-    if (job.status === "completed") {
-      return job;
-    } else if (["error", "failed", "cancelled"].includes(job.status)) {
-      throw new Error(`Job failed with status: ${job.status}`);
+    if (status === "success") {
+      return;
+    } else if (["error", "failed", "cancelled"].includes(status)) {
+      throw new Error(`Job failed with status: ${status}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
@@ -498,54 +489,38 @@ async function pollForCompletion(
   throw new Error(`Job ${promptId} did not complete within ${timeout}s`);
 }
 
-const result = await pollForCompletion(promptId);
-console.log(`Job completed! Outputs: ${Object.keys(result.outputs ?? {})}`);
+await pollForCompletion(promptId);
+console.log("Job completed!");
 ```
 
 ```python Python
-def get_job(prompt_id: str) -> dict:
-    """Get full job details including outputs.
-    
-    Returns:
-        Job data with fields: id, status, outputs
-    """
+def get_job_status(prompt_id: str) -> str:
+    """Get the current status of a job."""
     response = requests.get(
-        f"{BASE_URL}/api/jobs/{prompt_id}",
+        f"{BASE_URL}/api/job/{prompt_id}/status",
         headers=get_headers()
     )
     response.raise_for_status()
-    return response.json()
+    return response.json()["status"]
 
-def poll_for_completion(prompt_id: str, timeout: int = 300, poll_interval: float = 2.0) -> dict:
-    """Poll until job completes or times out.
-    
-    Args:
-        prompt_id: The job ID
-        timeout: Maximum seconds to wait
-        poll_interval: Seconds between polls
-        
-    Returns:
-        Final job data with outputs
-    """
+def poll_for_completion(prompt_id: str, timeout: int = 300, poll_interval: float = 2.0) -> None:
+    """Poll until job completes or times out."""
     start_time = time.time()
     
     while time.time() - start_time < timeout:
-        job = get_job(prompt_id)
-        status = job.get("status")
+        status = get_job_status(prompt_id)
         
-        if status == "completed":
-            return job
+        if status == "success":
+            return
         elif status in ("error", "failed", "cancelled"):
             raise RuntimeError(f"Job failed with status: {status}")
         
-        # Still pending or in_progress
         time.sleep(poll_interval)
     
     raise TimeoutError(f"Job {prompt_id} did not complete within {timeout}s")
 
-# Wait for job to complete
-result = poll_for_completion(prompt_id)
-print(f"Job completed! Outputs: {list(result.get('outputs', {}).keys())}")
+poll_for_completion(prompt_id)
+print("Job completed!")
 ```
 </CodeGroup>
 
