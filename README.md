@@ -1,5 +1,5 @@
 # ComfyUI Documentation
-| [English](./README.md) | [中文](./README.zh-CN.md) |
+| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) |
 
 ## Development
 
