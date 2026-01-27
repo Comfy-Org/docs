@@ -1,0 +1,126 @@
+<CodeGroup>
+```typescript TypeScript
+async function listenForCompletion(
+  promptId: string,
+  timeout: number = 300000
+): Promise<Record<string, any>> {
+  const wsUrl = `wss://cloud.comfy.org/ws?clientId=${crypto.randomUUID()}&token=${API_KEY}`;
+  const outputs: Record<string, any> = {};
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error(`任务在 ${timeout / 1000}s 内未完成`));
+    }, timeout);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const msgType = data.type;
+      const msgData = data.data ?? {};
+
+      // 过滤我们的任务
+      if (msgData.prompt_id !== promptId) return;
+
+      if (msgType === "executing") {
+        const node = msgData.node;
+        if (node) {
+          console.log(`正在执行节点：${node}`);
+        } else {
+          console.log("执行完成");
+        }
+      } else if (msgType === "progress") {
+        console.log(`进度：${msgData.value}/${msgData.max}`);
+      } else if (msgType === "executed" && msgData.output) {
+        outputs[msgData.node] = msgData.output;
+      } else if (msgType === "execution_success") {
+        console.log("任务成功完成！");
+        clearTimeout(timer);
+        ws.close();
+        resolve(outputs);
+      } else if (msgType === "execution_error") {
+        const errorMsg = msgData.exception_message ?? "未知错误";
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error(`执行错误：${errorMsg}`));
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+  });
+}
+
+// 等待完成并收集输出
+const outputs = await listenForCompletion(promptId);
+```
+
+```python Python
+import asyncio
+import aiohttp
+import json
+import uuid
+
+async def listen_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
+    """连接到 WebSocket 并监听任务完成。
+
+    Returns:
+        任务的最终输出
+    """
+    ws_url = BASE_URL.replace("https://", "wss://")
+    client_id = str(uuid.uuid4())
+    ws_url = f"{ws_url}/ws?clientId={client_id}&token={API_KEY}"
+
+    outputs = {}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url) as ws:
+            async def receive_messages():
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type")
+                        msg_data = data.get("data", {})
+
+                        # 过滤我们的任务
+                        if msg_data.get("prompt_id") != prompt_id:
+                            continue
+
+                        if msg_type == "executing":
+                            node = msg_data.get("node")
+                            if node:
+                                print(f"正在执行节点：{node}")
+
+                        elif msg_type == "progress":
+                            value = msg_data.get("value", 0)
+                            max_val = msg_data.get("max", 100)
+                            print(f"进度：{value}/{max_val}")
+
+                        elif msg_type == "executed":
+                            node_id = msg_data.get("node")
+                            output = msg_data.get("output", {})
+                            if output:
+                                outputs[node_id] = output
+
+                        elif msg_type == "execution_success":
+                            print("任务成功完成！")
+                            return outputs
+
+                        elif msg_type == "execution_error":
+                            error_msg = msg_data.get("exception_message", "未知错误")
+                            raise RuntimeError(f"执行错误：{error_msg}")
+
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        raise RuntimeError(f"WebSocket 错误：{ws.exception()}")
+
+            try:
+                return await asyncio.wait_for(receive_messages(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"任务在 {timeout}s 内未完成")
+
+# 等待完成并收集输出
+outputs = await listen_for_completion(prompt_id)
+```
+</CodeGroup>

@@ -1,0 +1,135 @@
+<CodeGroup>
+```typescript TypeScript
+import { readFile, writeFile } from "fs/promises";
+
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+async function main() {
+  // 1. 加载并修改工作流
+  const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+  workflow["3"].inputs.seed = 42;
+  workflow["6"].inputs.text = "a beautiful sunset";
+
+  // 2. 提交工作流
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  const { prompt_id } = await response.json();
+  console.log(`任务已提交：${prompt_id}`);
+
+  // 3. 轮询完成状态
+  while (true) {
+    const statusRes = await fetch(`${BASE_URL}/api/job/${prompt_id}/status`, {
+      headers: { "X-API-Key": API_KEY },
+    });
+    const { status } = await statusRes.json();
+
+    if (status === "completed") break;
+    if (["failed", "cancelled"].includes(status)) {
+      throw new Error(`任务 ${status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  // 4. 通过历史端点获取输出
+  const historyRes = await fetch(`${BASE_URL}/api/history/${prompt_id}`, {
+    headers: { "X-API-Key": API_KEY },
+  });
+  const history = await historyRes.json();
+  const outputs = history[prompt_id].outputs;
+
+  // 5. 下载输出文件
+  for (const nodeOutputs of Object.values(outputs)) {
+    for (const fileInfo of (nodeOutputs as any).images ?? []) {
+      const params = new URLSearchParams({
+        filename: fileInfo.filename,
+        subfolder: fileInfo.subfolder ?? "",
+        type: "output",
+      });
+      const viewRes = await fetch(`${BASE_URL}/api/view?${params}`, {
+        headers: { "X-API-Key": API_KEY },
+        redirect: "manual",
+      });
+      const signedUrl = viewRes.headers.get("location")!;
+      const fileRes = await fetch(signedUrl);
+      await writeFile(`./${fileInfo.filename}`, Buffer.from(await fileRes.arrayBuffer()));
+      console.log(`已下载：${fileInfo.filename}`);
+    }
+  }
+}
+
+main();
+```
+
+```python Python
+import os
+import requests
+import json
+import time
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def main():
+    # 1. 加载并修改工作流
+    with open("workflow_api.json") as f:
+        workflow = json.load(f)
+
+    workflow["3"]["inputs"]["seed"] = 42
+    workflow["6"]["inputs"]["text"] = "a beautiful sunset"
+
+    # 2. 提交工作流
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"prompt": workflow}
+    )
+    prompt_id = response.json()["prompt_id"]
+    print(f"任务已提交：{prompt_id}")
+
+    # 3. 轮询完成状态
+    while True:
+        status_res = requests.get(
+            f"{BASE_URL}/api/job/{prompt_id}/status",
+            headers={"X-API-Key": API_KEY}
+        )
+        status = status_res.json()["status"]
+
+        if status == "completed":
+            break
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"任务 {status}")
+        time.sleep(2)
+
+    # 4. 通过历史端点获取输出
+    history_res = requests.get(
+        f"{BASE_URL}/api/history/{prompt_id}",
+        headers={"X-API-Key": API_KEY}
+    )
+    history = history_res.json()
+    outputs = history[prompt_id]["outputs"]
+
+    # 5. 下载输出文件
+    for node_outputs in outputs.values():
+        for file_info in node_outputs.get("images", []):
+            params = {
+                "filename": file_info["filename"],
+                "subfolder": file_info.get("subfolder", ""),
+                "type": "output"
+            }
+            view_res = requests.get(
+                f"{BASE_URL}/api/view",
+                headers={"X-API-Key": API_KEY},
+                params=params
+            )
+            with open(file_info["filename"], "wb") as f:
+                f.write(view_res.content)
+            print(f"已下载：{file_info['filename']}")
+
+if __name__ == "__main__":
+    main()
+```
+</CodeGroup>
