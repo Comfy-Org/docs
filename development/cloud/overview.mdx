@@ -3,6 +3,8 @@ title: "Cloud API Overview"
 description: "Programmatic access to Comfy Cloud for running workflows, managing files, and monitoring execution"
 ---
 
+import PollJobCompletion from '/snippets/cloud/poll-job-completion.mdx'
+
 <Warning>
   **Experimental API:** This API is experimental and subject to change. Endpoints, request/response formats, and behavior may be modified without notice.
 </Warning>
@@ -171,13 +173,138 @@ You can monitor job completion using either polling or WebSocket for real-time u
 
 #### Option A: Polling (Simple)
 
-<Snippet file="cloud/poll-job-completion.mdx" />
+<PollJobCompletion />
 
 #### Option B: WebSocket (Real-time Progress)
 
 For real-time progress updates and to collect output metadata:
 
-<Snippet file="cloud/websocket-progress.mdx" />
+<CodeGroup>
+```typescript TypeScript
+async function listenForCompletion(
+  promptId: string,
+  timeout: number = 300000
+): Promise<Record<string, any>> {
+  const wsUrl = `wss://cloud.comfy.org/ws?clientId=${crypto.randomUUID()}&token=${API_KEY}`;
+  const outputs: Record<string, any> = {};
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error(`Job did not complete within ${timeout / 1000}s`));
+    }, timeout);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const msgType = data.type;
+      const msgData = data.data ?? {};
+
+      // Filter to our job
+      if (msgData.prompt_id !== promptId) return;
+
+      if (msgType === "executing") {
+        const node = msgData.node;
+        if (node) {
+          console.log(`Executing node: ${node}`);
+        } else {
+          console.log("Execution complete");
+        }
+      } else if (msgType === "progress") {
+        console.log(`Progress: ${msgData.value}/${msgData.max}`);
+      } else if (msgType === "executed" && msgData.output) {
+        outputs[msgData.node] = msgData.output;
+      } else if (msgType === "execution_success") {
+        console.log("Job completed successfully!");
+        clearTimeout(timer);
+        ws.close();
+        resolve(outputs);
+      } else if (msgType === "execution_error") {
+        const errorMsg = msgData.exception_message ?? "Unknown error";
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error(`Execution error: ${errorMsg}`));
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+  });
+}
+
+// Wait for completion and collect outputs
+const outputs = await listenForCompletion(promptId);
+```
+
+```python Python
+import asyncio
+import aiohttp
+import json
+import uuid
+
+async def listen_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
+    """Connect to WebSocket and listen for job completion.
+
+    Returns:
+        Final outputs from the job
+    """
+    ws_url = BASE_URL.replace("https://", "wss://")
+    client_id = str(uuid.uuid4())
+    ws_url = f"{ws_url}/ws?clientId={client_id}&token={API_KEY}"
+
+    outputs = {}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url) as ws:
+            async def receive_messages():
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type")
+                        msg_data = data.get("data", {})
+
+                        # Filter to our job
+                        if msg_data.get("prompt_id") != prompt_id:
+                            continue
+
+                        if msg_type == "executing":
+                            node = msg_data.get("node")
+                            if node:
+                                print(f"Executing node: {node}")
+
+                        elif msg_type == "progress":
+                            value = msg_data.get("value", 0)
+                            max_val = msg_data.get("max", 100)
+                            print(f"Progress: {value}/{max_val}")
+
+                        elif msg_type == "executed":
+                            node_id = msg_data.get("node")
+                            output = msg_data.get("output", {})
+                            if output:
+                                outputs[node_id] = output
+
+                        elif msg_type == "execution_success":
+                            print("Job completed successfully!")
+                            return outputs
+
+                        elif msg_type == "execution_error":
+                            error_msg = msg_data.get("exception_message", "Unknown error")
+                            raise RuntimeError(f"Execution error: {error_msg}")
+
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        raise RuntimeError(f"WebSocket error: {ws.exception()}")
+
+            try:
+                return await asyncio.wait_for(receive_messages(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Job did not complete within {timeout}s")
+
+# Wait for completion and collect outputs
+outputs = await listen_for_completion(prompt_id)
+```
+</CodeGroup>
 
 <Note>
   See [WebSocket Reference](/development/cloud/api-reference#websocket-for-real-time-progress) for detailed message types and handling binary preview images.
@@ -185,9 +312,132 @@ For real-time progress updates and to collect output metadata:
 
 ### Step 3: Download Outputs
 
-Once the job completes, download the generated files:
+Once the job completes, download the generated files. The `outputs` object returned from WebSocket (or available via the history endpoint) contains output data organized by node ID. Each node's output may contain `images`, `video`, or `audio` arrays with file metadata.
 
-<Snippet file="cloud/download-outputs.mdx" />
+**Example outputs structure:**
+```json
+{
+  "9": {
+    "images": [
+      {
+        "filename": "ComfyUI_00001_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ]
+  }
+}
+```
+
+The node ID (`"9"` in this example) corresponds to the SaveImage or other output nodes in your workflow. You can find these IDs by opening your workflow JSON file and looking for nodes with `class_type` like `SaveImage`, `VHS_VideoCombine`, etc.
+
+<CodeGroup>
+```bash curl
+# Download a single output file (follow 302 redirect with -L)
+curl -L "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -o output.png
+```
+
+```typescript TypeScript
+async function downloadOutput(
+  filename: string,
+  subfolder: string = "",
+  outputType: string = "output"
+): Promise<ArrayBuffer> {
+  const params = new URLSearchParams({ filename, subfolder, type: outputType });
+  // Get the redirect URL
+  const response = await fetch(`${BASE_URL}/api/view?${params}`, {
+    headers: { "X-API-Key": API_KEY },
+    redirect: "manual",
+  });
+  if (response.status !== 302) throw new Error(`HTTP ${response.status}`);
+  const signedUrl = response.headers.get("location")!;
+
+  // Fetch from signed URL
+  const fileResponse = await fetch(signedUrl);
+  if (!fileResponse.ok) throw new Error(`HTTP ${fileResponse.status}`);
+  return fileResponse.arrayBuffer();
+}
+
+async function saveOutputs(
+  outputs: Record<string, any>,
+  outputDir: string = "."
+): Promise<void> {
+  for (const nodeOutputs of Object.values(outputs)) {
+    for (const key of ["images", "video", "audio"]) {
+      for (const fileInfo of (nodeOutputs as any)[key] ?? []) {
+        const data = await downloadOutput(
+          fileInfo.filename,
+          fileInfo.subfolder ?? "",
+          fileInfo.type ?? "output"
+        );
+        const path = `${outputDir}/${fileInfo.filename}`;
+        await writeFile(path, Buffer.from(data));
+        console.log(`Saved: ${path}`);
+      }
+    }
+  }
+}
+
+// Download all outputs
+await saveOutputs(outputs, "./my_outputs");
+```
+
+```python Python
+def download_output(filename: str, subfolder: str = "", output_type: str = "output") -> bytes:
+    """Download an output file.
+
+    Args:
+        filename: Name of the file
+        subfolder: Subfolder path (usually empty)
+        output_type: "output" for final outputs, "temp" for previews
+
+    Returns:
+        File bytes
+    """
+    params = {
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": output_type
+    }
+
+    response = requests.get(
+        f"{BASE_URL}/api/view",
+        headers=get_headers(),
+        params=params
+    )
+    response.raise_for_status()
+    return response.content
+
+def save_outputs(outputs: dict, output_dir: str = "."):
+    """Save all outputs from a job to disk.
+
+    Args:
+        outputs: Outputs dict from job (node_id -> output_data)
+        output_dir: Directory to save files to
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    for node_id, node_outputs in outputs.items():
+        for key in ("images", "video", "audio"):
+            for file_info in node_outputs.get(key, []):
+                filename = file_info["filename"]
+                subfolder = file_info.get("subfolder", "")
+                output_type = file_info.get("type", "output")
+
+                data = download_output(filename, subfolder, output_type)
+
+                output_path = os.path.join(output_dir, filename)
+                with open(output_path, "wb") as f:
+                    f.write(data)
+                print(f"Saved: {output_path}")
+
+# Download all outputs
+save_outputs(outputs, "./my_outputs")
+```
+</CodeGroup>
 
 <Info>
   The `/api/view` endpoint returns a 302 redirect to a temporary signed URL. Your HTTP client must follow redirects to download the file.
