@@ -111,7 +111,362 @@ print(f"KSampler inputs: {inputs}")
 
 ---
 
-## 上传输入
+## Assets API
+
+Assets API 提供了一个统一的、基于标签的文件管理系统（图片、模型、输出），支持内容寻址存储和丰富的元数据。
+
+### 主要特性
+
+- **内容寻址存储**：使用 Blake3 哈希进行文件去重
+- **基于标签的组织**：灵活的标签系统取代文件夹层级
+- **元数据支持**：可为资产附加自定义 JSON 元数据
+- **过滤和搜索**：按标签、名称或元数据查询资产
+
+### 列出资产
+
+获取分页的资产列表，支持可选过滤。
+
+<CodeGroup>
+```bash curl
+# 列出所有资产
+curl -X GET "$BASE_URL/api/assets" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+
+# 按标签过滤
+curl -X GET "$BASE_URL/api/assets?include_tags=output,image" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+
+# 按名称搜索
+curl -X GET "$BASE_URL/api/assets?name_contains=portrait" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+interface Asset {
+  id: string;
+  name: string;
+  hash: string;
+  size_bytes: number;
+  mime_type: string;
+  tags: string[];
+  created_at: string;
+  preview_url?: string;
+}
+
+interface ListAssetsResponse {
+  assets: Asset[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+async function listAssets(options: {
+  include_tags?: string[];
+  exclude_tags?: string[];
+  name_contains?: string;
+  sort?: "name" | "created_at" | "size";
+  order?: "asc" | "desc";
+  offset?: number;
+  limit?: number;
+} = {}): Promise<ListAssetsResponse> {
+  const params = new URLSearchParams();
+  if (options.include_tags?.length) {
+    params.set("include_tags", options.include_tags.join(","));
+  }
+  if (options.exclude_tags?.length) {
+    params.set("exclude_tags", options.exclude_tags.join(","));
+  }
+  if (options.name_contains) params.set("name_contains", options.name_contains);
+  if (options.sort) params.set("sort", options.sort);
+  if (options.order) params.set("order", options.order);
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+
+  const response = await fetch(`${BASE_URL}/api/assets?${params}`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+// 列出输出图片
+const { assets } = await listAssets({ include_tags: ["output", "image"] });
+console.log(`Found ${assets.length} output images`);
+```
+
+```python Python
+def list_assets(
+    include_tags: list = None,
+    exclude_tags: list = None,
+    name_contains: str = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    offset: int = 0,
+    limit: int = 20
+) -> dict:
+    """列出资产，支持可选过滤。
+
+    Args:
+        include_tags: 仅包含具有所有这些标签的资产
+        exclude_tags: 排除具有任何这些标签的资产
+        name_contains: 按名称子字符串过滤（不区分大小写）
+        sort: 排序字段（name, created_at, size, updated_at）
+        order: 排序方向（asc 或 desc）
+        offset: 分页偏移量
+        limit: 每页最大条目数（1-500）
+
+    Returns:
+        包含 'assets' 数组和分页信息的字典
+    """
+    params = {
+        "sort": sort,
+        "order": order,
+        "offset": offset,
+        "limit": limit
+    }
+    if include_tags:
+        params["include_tags"] = ",".join(include_tags)
+    if exclude_tags:
+        params["exclude_tags"] = ",".join(exclude_tags)
+    if name_contains:
+        params["name_contains"] = name_contains
+
+    response = requests.get(
+        f"{BASE_URL}/api/assets",
+        headers=get_headers(),
+        params=params
+    )
+    response.raise_for_status()
+    return response.json()
+
+# 列出所有输出图片
+result = list_assets(include_tags=["output"])
+print(f"Found {len(result['assets'])} output assets")
+```
+</CodeGroup>
+
+### 上传资产
+
+上传带有标签和元数据的文件。
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/assets" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "file=@image.png" \
+  -F "tags=input,reference" \
+  -F "name=My Reference Image"
+```
+
+```typescript TypeScript
+async function uploadAsset(
+  file: File | Blob,
+  options: {
+    name?: string;
+    tags?: string[];
+    mime_type?: string;
+    user_metadata?: Record<string, any>;
+  } = {}
+): Promise<Asset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (options.name) formData.append("name", options.name);
+  if (options.tags?.length) formData.append("tags", options.tags.join(","));
+  if (options.mime_type) formData.append("mime_type", options.mime_type);
+  if (options.user_metadata) {
+    formData.append("user_metadata", JSON.stringify(options.user_metadata));
+  }
+
+  const response = await fetch(`${BASE_URL}/api/assets`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+// 上传带标签的文件
+const asset = await uploadAsset(imageBlob, {
+  name: "reference.png",
+  tags: ["input", "reference"],
+});
+console.log(`Uploaded: ${asset.id}`);
+```
+
+```python Python
+def upload_asset(
+    file_path: str,
+    name: str = None,
+    tags: list = None,
+    user_metadata: dict = None
+) -> dict:
+    """上传资产，支持可选元数据。
+
+    Args:
+        file_path: 要上传的文件路径
+        name: 资产的显示名称
+        tags: 要应用的标签列表
+        user_metadata: 自定义 JSON 元数据
+
+    Returns:
+        创建的资产详情
+    """
+    with open(file_path, "rb") as f:
+        files = {"file": f}
+        data = {}
+        if name:
+            data["name"] = name
+        if tags:
+            data["tags"] = ",".join(tags)
+        if user_metadata:
+            data["user_metadata"] = json.dumps(user_metadata)
+
+        response = requests.post(
+            f"{BASE_URL}/api/assets",
+            headers={"X-API-Key": API_KEY},
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+
+# 上传带标签的文件
+asset = upload_asset("image.png", name="reference", tags=["input", "reference"])
+print(f"Uploaded: {asset['id']}")
+```
+</CodeGroup>
+
+### 获取资产详情
+
+获取特定资产的完整详情。
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/assets/{asset_id}" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getAsset(assetId: string): Promise<Asset> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+```
+
+```python Python
+def get_asset(asset_id: str) -> dict:
+    """按 ID 获取资产详情。"""
+    response = requests.get(
+        f"{BASE_URL}/api/assets/{asset_id}",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### 管理标签
+
+为资产添加或移除标签。
+
+<CodeGroup>
+```bash curl
+# 添加标签
+curl -X POST "$BASE_URL/api/assets/{asset_id}/tags" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": ["favorite", "portrait"]}'
+
+# 移除标签
+curl -X DELETE "$BASE_URL/api/assets/{asset_id}/tags" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": ["temporary"]}'
+```
+
+```typescript TypeScript
+async function addAssetTags(assetId: string, tags: string[]): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}/tags`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ tags }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+async function removeAssetTags(assetId: string, tags: string[]): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}/tags`, {
+    method: "DELETE",
+    headers: getHeaders(),
+    body: JSON.stringify({ tags }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def add_asset_tags(asset_id: str, tags: list) -> dict:
+    """为资产添加标签。"""
+    response = requests.post(
+        f"{BASE_URL}/api/assets/{asset_id}/tags",
+        headers=get_headers(),
+        json={"tags": tags}
+    )
+    response.raise_for_status()
+    return response.json()
+
+def remove_asset_tags(asset_id: str, tags: list) -> dict:
+    """从资产移除标签。"""
+    response = requests.delete(
+        f"{BASE_URL}/api/assets/{asset_id}/tags",
+        headers=get_headers(),
+        json={"tags": tags}
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### 删除资产
+
+<CodeGroup>
+```bash curl
+curl -X DELETE "$BASE_URL/api/assets/{asset_id}" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function deleteAsset(assetId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}`, {
+    method: "DELETE",
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def delete_asset(asset_id: str) -> None:
+    """删除资产。"""
+    response = requests.delete(
+        f"{BASE_URL}/api/assets/{asset_id}",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+```
+</CodeGroup>
+
+---
+
+## 上传输入（旧版）
+
+<Note>
+  **旧版端点：** 这些端点（`/api/upload/*`）为兼容本地 ComfyUI 而保留。对于新集成，推荐使用 [Assets API](#assets-api)。
+</Note>
 
 上传图像、遮罩或其他文件以在工作流中使用。
 
