@@ -1,288 +1,221 @@
 ---
-title: "Subgraph Developer Guide"
-description: "Frontend TypeScript guide for working with subgraphs in ComfyUI custom nodes: node IDs, graph traversal, layers, cleanup, events, and widget promotion."
+title: "Subgraphs"
+description: "Working with subgraphs in ComfyUI extensions: node IDs, graph traversal, events, widget promotion, and cleanup."
 ---
 
-This guide covers frontend TypeScript APIs for interacting with subgraphs. For the user-facing subgraph guide, see [Subgraph](/interface/features/subgraph). For backend Python subgraph expansion, see [Node Expansion](/custom-nodes/backend/expansion).
+<Warning>
+The subgraph API is under active development. Details on this page may change.
+See [#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137) for status.
+</Warning>
 
-## Node ID Types
+## Overview
+
+Subgraphs let users group nodes into reusable, nestable components. Each subgraph is its own `LGraph` with a UUID. For the user-facing guide, see [Subgraphs](/interface/features/subgraph). For backend expansion, see [Node Expansion](/custom-nodes/backend/expansion).
+
+## Node Identifiers
 
 ComfyUI uses three distinct node identifier types. Using the wrong one causes silent failures.
 
-| Type | Format | Scope | Use Case |
-|------|--------|-------|----------|
-| `NodeId` | `42` (number) | Unique within its immediate graph | `graph.getNodeById(id)` |
-| `NodeExecutionId` | `"1:2:3"` (colon-separated) | Instance-specific path from root | Execution progress, backend messages |
-| `NodeLocatorId` | `"<uuid>:42"` or `"42"` | Same across all instances of a subgraph | UI state: badges, errors, images |
-
-### NodeId (Local)
-
-A node's `id` property. Only unique within its immediate containing graph — two nodes in different subgraphs can share the same `NodeId`.
-
-```typescript
-// Look up a node within its own graph only
-const node = graph.getNodeById(42)
-```
-
-### NodeExecutionId
-
-A colon-separated path encoding the instance-specific route through nested subgraphs. Node `3` inside subgraph node `2` inside subgraph node `1` has execution ID `"1:2:3"`.
-
-```typescript
-import { getNodeByExecutionId } from '@/utils/graphTraversalUtil'
-
-// Resolve an execution ID from a backend progress message
-const node = getNodeByExecutionId(rootGraph, '1:2:3')
-```
-
-### NodeLocatorId
-
-Uses the subgraph's UUID (not the subgraph node's ID), so it stays the same across all instances of that subgraph. Format: `"<subgraph-uuid>:<local-node-id>"` for subgraph nodes, or just `"<local-node-id>"` for root graph nodes.
-
-```typescript
-import {
-  parseNodeLocatorId,
-  createNodeLocatorId
-} from '@/types/nodeIdentification'
-
-const parsed = parseNodeLocatorId('a1b2c3d4-e5f6-7890-abcd-ef1234567890:42')
-// { subgraphUuid: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', localNodeId: 42 }
-
-const locatorId = createNodeLocatorId('a1b2c3d4-...', 42)
-// 'a1b2c3d4-...:42'
-```
+| Type | Format | Used for |
+|------|--------|----------|
+| `node.id` | `42` (number) | Local to its immediate graph level. `graph.getNodeById(id)` |
+| Execution ID | `"1:2:3"` (colon-separated string) | Backend progress messages, `UNIQUE_ID` |
+| Locator ID | `"<uuid>:<localId>"` or `"<localId>"` | UI state: badges, errors, images |
 
 <Warning>
-Nodes cannot currently discover their own subgraph's UUID at runtime ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137)). This is planned for subgraph-v2.
+Nodes cannot currently discover their own execution or locator ID from within a subgraph ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137)).
 </Warning>
 
-## Graph Traversal
+## Traversing Nodes
 
-Utilities in `graphTraversalUtil.ts` for working with the node hierarchy.
+### Current layer only
 
-### Iterate All Nodes Recursively
-
-```typescript
-import { forEachNode } from '@/utils/graphTraversalUtil'
-
-// Depth-first traversal of every node in the hierarchy
-forEachNode(rootGraph, (node) => {
+```javascript
+for (const node of app.graph.nodes) {
   console.log(node.id, node.type)
-})
+}
 ```
 
-### Collect Nodes with Filtering
+### All nodes recursively
 
-```typescript
-import { collectAllNodes } from '@/utils/graphTraversalUtil'
+Internal traversal utilities are not importable from extensions. Use a simple recursive helper instead:
 
-// Get all nodes of a specific type across all subgraph levels
-const samplers = collectAllNodes(rootGraph, (node) => node.type === 'KSampler')
-```
-
-### Navigate to a Nested Subgraph
-
-```typescript
-import { traverseSubgraphPath } from '@/utils/graphTraversalUtil'
-
-// Follow a path of subgraph node IDs to reach a nested graph
-const targetGraph = traverseSubgraphPath(rootGraph, ['5', '12'])
-```
-
-### Find Nodes by Locator ID
-
-```typescript
-import { getNodeByLocatorId } from '@/utils/graphTraversalUtil'
-
-// Resolve a NodeLocatorId to its node (searches by subgraph UUID)
-const node = getNodeByLocatorId(rootGraph, 'a1b2c3d4-...:42')
-```
-
-### Additional Utilities
-
-| Function | Description |
-|----------|-------------|
-| `mapAllNodes(graph, fn)` | Map over all nodes, returns non-undefined results |
-| `reduceAllNodes(graph, reducer, init)` | Reduce all nodes to a single value |
-| `findNodeInHierarchy(graph, id)` | Find a node by ID anywhere in hierarchy |
-| `findSubgraphByUuid(graph, uuid)` | Find a subgraph by its UUID |
-| `forEachSubgraphNode(graph, subgraphId, fn)` | Apply function to nodes matching a subgraph type |
-| `getRootGraph(graph)` | Get the root graph from any level |
-
-## Node Layers
-
-The graph hierarchy has three important levels:
-
-```
-rootGraph (LGraph)           ← The top-level graph
-  └── subgraph (Subgraph)    ← Extends LGraph, has a UUID
-       └── subgraph ...      ← Arbitrarily nested
-```
-
-### Accessing Different Layers
-
-```typescript
-// Root graph — the entire workflow
-const root = app.rootGraph
-
-// Currently displayed layer — what the user sees on canvas
-const activeLayer = canvas.graph
-
-// A specific subgraph — accessed via a SubgraphNode
-const sub = subgraphNode.subgraph
-```
-
-### Root vs. Active Layer
-
-Most operations should target the **root graph** to include all nested nodes. Use `canvas.graph` only when you specifically need the currently visible layer.
-
-```typescript
-import { forEachNode } from '@/utils/graphTraversalUtil'
-
-// All nodes in the workflow (including nested subgraphs)
-forEachNode(app.rootGraph, (node) => { /* ... */ })
-
-// Only nodes visible on the current canvas layer
-for (const node of canvas.graph.nodes) { /* ... */ }
-```
-
-## Cleanup (onRemove)
-
-`SubgraphNode` uses an `AbortController` to manage all event listener cleanup in a single call.
-
-### How It Works
-
-```typescript
-class SubgraphNode extends LGraphNode {
-  private _eventAbortController = new AbortController()
-
-  constructor(graph, subgraph, instanceData) {
-    // All listeners use the same abort signal
-    const { signal } = this._eventAbortController
-
-    subgraph.events.addEventListener('input-added', (e) => {
-      // handle input
-    }, { signal })
-
-    subgraph.events.addEventListener('removing-input', (e) => {
-      // handle removal
-    }, { signal })
-  }
-
-  onRemoved(): void {
-    // One call cleans up ALL listeners
-    this._eventAbortController.abort()
-
-    // Demote all promoted widgets
-    for (const widget of this.widgets) {
-      this.subgraph.events.dispatch('widget-demoted', {
-        widget,
-        subgraphNode: this
-      })
-    }
-
-    // Abort per-input listener controllers
-    for (const input of this.inputs) {
-      input._listenerController?.abort()
-    }
+```javascript
+function walkGraph(graph, visit) {
+  for (const node of graph.nodes) {
+    visit(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, visit)
   }
 }
 ```
 
-### Best Practice for Custom Nodes
+Full example:
 
-If your custom node subscribes to subgraph events, follow the same pattern:
+```javascript
+import { app } from "../../scripts/app.js"
 
-```typescript
-const controller = new AbortController()
+function walkGraph(graph, visit) {
+  for (const node of graph.nodes) {
+    visit(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, visit)
+  }
+}
 
-subgraph.events.addEventListener('widget-promoted', (e) => {
-  // React to widget promotion
-}, { signal: controller.signal })
-
-// In your cleanup:
-controller.abort()
-```
-
-## Events & Hooks
-
-Subgraph events are dispatched at three levels. Subscribe using `addEventListener` with an `AbortSignal` for automatic cleanup.
-
-### Canvas-Level Events
-
-Dispatched on `canvas.canvas` (the HTML canvas element):
-
-| Event | Payload | When |
-|-------|---------|------|
-| `subgraph-opened` | `{ subgraph, closingGraph, fromNode }` | User navigates into a subgraph |
-| `subgraph-converted` | `{ subgraphNode }` | Nodes are converted into a new subgraph |
-| `litegraph:set-graph` | `{ newGraph, oldGraph }` | Active graph changes (any navigation) |
-
-```typescript
-canvas.canvas.addEventListener('subgraph-opened', (e) => {
-  const { subgraph, fromNode } = e.detail
-  console.log(`Opened subgraph ${subgraph.id} from node ${fromNode.id}`)
+app.registerExtension({
+  name: "MyExtension.SubgraphWalker",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node, graph) => {
+      console.log(`[${graph.id ?? "root"}] node ${node.id}: ${node.type}`)
+    })
+  }
 })
 ```
 
-### Graph-Level Events
+## Root vs Active Graph
 
-Dispatched on `graph.events` (available on both `LGraph` and `Subgraph`):
+| You want to... | Use |
+|-----------------|-----|
+| Operate on all nodes in the workflow | `app.graph` (root) |
+| Operate on only the visible layer | `app.canvas?.graph` |
+| Access a specific subgraph | `someNode.subgraph` |
+
+```javascript
+// All nodes (including nested subgraphs)
+walkGraph(app.graph, (node) => { /* ... */ })
+
+// Only nodes the user currently sees
+for (const node of app.canvas?.graph?.nodes ?? []) { /* ... */ }
+```
+
+## Events
+
+### Subgraph-level events
+
+Dispatched on `subgraph.events`:
 
 | Event | Payload | When |
 |-------|---------|------|
-| `subgraph-created` | `{ subgraph, data }` | Subgraph is instantiated during configuration |
-| `convert-to-subgraph` | `{ subgraph, bounds, boundaryLinks, ... }` | Selection is being converted to a subgraph |
-| `configuring` | `{ data, clearGraph }` | Graph is being configured from serialized data |
-| `configured` | (none) | Graph configuration complete |
-
-### Subgraph-Level Events
-
-Dispatched on `subgraph.events` (only on `Subgraph` instances):
-
-| Event | Payload | When |
-|-------|---------|------|
-| `widget-promoted` | `{ widget, subgraphNode }` | Widget is promoted to the parent node |
-| `widget-demoted` | `{ widget, subgraphNode }` | Widget is removed from the parent node |
-| `adding-input` | `{ name, type }` | New input slot being added |
-| `input-added` | `{ input }` | Input slot was added |
+| `widget-promoted` | `{ widget, subgraphNode }` | Widget promoted to parent node |
+| `widget-demoted` | `{ widget, subgraphNode }` | Widget removed from parent node |
+| `input-added` | `{ input }` | Input slot added |
 | `removing-input` | `{ input, index }` | Input slot being removed |
-| `adding-output` | `{ name, type }` | New output slot being added |
-| `output-added` | `{ output }` | Output slot was added |
+| `output-added` | `{ output }` | Output slot added |
 | `removing-output` | `{ output, index }` | Output slot being removed |
 | `renaming-input` | `{ input, index, oldName, newName }` | Input slot renamed |
 | `renaming-output` | `{ output, index, oldName, newName }` | Output slot renamed |
 
-```typescript
-subgraph.events.addEventListener('widget-promoted', (e) => {
-  const { widget, subgraphNode } = e.detail
-  console.log(`Widget "${widget.name}" promoted to ${subgraphNode.id}`)
-}, { signal: controller.signal })
+### Canvas-level events
+
+Dispatched on `app.canvas.canvas` (the HTML canvas element):
+
+| Event | Payload | When |
+|-------|---------|------|
+| `subgraph-opened` | `{ subgraph, closingGraph, fromNode }` | User navigates into a subgraph |
+| `subgraph-converted` | `{ subgraphNode }` | Selection converted to a subgraph |
+
+### Listening pattern
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.SubgraphEvents",
+  async setup() {
+    const controller = new AbortController()
+    const { signal } = controller
+
+    app.canvas.canvas.addEventListener("subgraph-opened", (e) => {
+      const { subgraph, fromNode } = e.detail
+      console.log(`Opened subgraph from node ${fromNode.id}`)
+    }, { signal })
+
+    // To tear down later:
+    // controller.abort()
+  }
+})
 ```
 
 ## Widget Promotion
 
-Two systems coexist for exposing inner widgets on the parent `SubgraphNode`.
+When a `SubgraphInput` connects to a widget inside a subgraph, a copy of that widget appears on the parent subgraph node. This fires `widget-promoted`. Removing the connection fires `widget-demoted`.
 
-### Slot-Based Promotion (Current)
+```javascript
+import { app } from "../../scripts/app.js"
 
-When a link connects to a `SubgraphInput` that targets a widget, `SubgraphNode._setWidget` creates a promoted widget on the parent node. This fires the `widget-promoted` event.
-
-Promoted widgets are prototype-chained to the original widget, so value changes propagate automatically. Removal dispatches `widget-demoted`.
-
-### Proxy-Based Promotion (Legacy)
-
-The legacy system in `proxyWidget.ts` uses ES6 `Proxy` objects. Proxy widgets are stored in `node.properties.proxyWidgets` as an array of `[nodeId, widgetName]` tuples. The proxy name format is `"<nodeId>: <widgetName>"`.
-
-```typescript
-import { isProxyWidget } from '@/core/graph/subgraph/proxyWidget'
-
-// Check if a widget is a legacy proxy
-if (isProxyWidget(widget)) {
-  const { nodeId, widgetName } = widget._overlay
+function walkGraph(graph, visit) {
+  for (const node of graph.nodes) {
+    visit(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, visit)
+  }
 }
+
+app.registerExtension({
+  name: "MyExtension.WidgetPromotion",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node) => {
+      if (!node.subgraph) return
+      const controller = new AbortController()
+      const { signal } = controller
+
+      node.subgraph.events.addEventListener("widget-promoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" promoted`)
+      }, { signal })
+
+      node.subgraph.events.addEventListener("widget-demoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" demoted`)
+      }, { signal })
+
+      const origRemoved = node.onRemoved
+      node.onRemoved = function () {
+        controller.abort()
+        origRemoved?.apply(this, arguments)
+      }
+    })
+  }
+})
 ```
 
-### Preview Promotion
+## Cleanup
 
-Widgets named with the `$$` prefix (e.g., `$$preview`) intercept the node's `imgs` property to display images from inner nodes on the parent `SubgraphNode`.
+Use an `AbortController` to clean up all event listeners when a node is removed.
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.Cleanup",
+  async nodeCreated(node) {
+    if (!node.subgraph) return
+
+    const controller = new AbortController()
+    const { signal } = controller
+
+    node.subgraph.events.addEventListener("input-added", (e) => {
+      console.log(`Input added: ${e.detail.input.name}`)
+    }, { signal })
+
+    node.subgraph.events.addEventListener("removing-input", (e) => {
+      console.log(`Input removing: ${e.detail.input.name}`)
+    }, { signal })
+
+    const origRemoved = node.onRemoved
+    node.onRemoved = function () {
+      controller.abort()
+      origRemoved?.apply(this, arguments)
+    }
+  }
+})
+```
+
+## Known Limitations
+
+- Nodes cannot discover their own execution or locator ID from within a subgraph ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137))
+- Internal traversal utilities (`forEachNode`, `collectAllNodes`, etc.) are not importable from extensions
+- Widget promotion behavior is still evolving and may change
+- Linked (multi-instance) subgraph editing has known issues ([#6639](https://github.com/Comfy-Org/ComfyUI_frontend/issues/6639))
+
+## See Also
+
+- [Subgraphs (User Guide)](/interface/features/subgraph)
+- [Node Expansion (Backend)](/custom-nodes/backend/expansion)
+- [Extension Hooks](/custom-nodes/js/javascript_hooks)
