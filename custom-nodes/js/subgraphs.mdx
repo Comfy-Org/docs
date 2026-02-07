@@ -1,0 +1,221 @@
+---
+title: "Subgraphs"
+description: "Developer guide for working with subgraphs programmatically in ComfyUI extensions."
+---
+
+<Warning>
+The subgraph API is under active development. Some internal APIs referenced here may change.
+See [GitHub Issue #8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137) for planned improvements.
+</Warning>
+
+## Overview
+
+Subgraphs let users group nodes into reusable components. This guide covers what extension
+developers need to know when their code interacts with nodes inside subgraphs.
+
+For the user-facing subgraph guide, see [Subgraph - Simplify your workflow](/interface/features/subgraph).
+For backend node expansion (runtime subgraph creation in Python), see [Node Expansion](/custom-nodes/backend/expansion).
+
+## Node ID Types
+
+Nodes in subgraphs have three different identifiers. Using the wrong one is the most common source of bugs.
+
+| Type | Format | Example | Scope | Where you see it |
+|------|--------|---------|-------|-----------------|
+| **Local Node ID** | `number` | `123` | Unique within one graph level | `node.id`, `this.id` |
+| **Node Locator ID** | `uuid:localId` | `"a1b2…:123"` | Globally unique, stable across blueprint instances | Frontend node identification |
+| **Node Execution ID** | `path:path:id` | `"45:14:789"` | Globally unique per execution instance | `UNIQUE_ID` in Python, `send_sync` events |
+
+### Local Node ID
+
+The basic `node.id` — a number unique only within its immediate graph level. Two nodes in different
+subgraphs can share the same local ID.
+
+### Node Locator ID
+
+Combines the subgraph's UUID with the local node ID: `<subgraph-uuid>:<local-id>`.
+Root graph nodes use just their local ID as a string. Stable across all instances of the same
+subgraph blueprint.
+
+```typescript
+// Parsing a locator ID
+const parts = locatorId.split(':')
+if (parts.length === 2) {
+  const [subgraphUuid, localNodeId] = parts
+  // Node is inside a subgraph
+} else {
+  // Node is in the root graph
+}
+```
+
+### Node Execution ID
+
+A colon-separated path of local node IDs from root to target: `"45:14:789"` means node 789
+inside subgraph-node 14 inside subgraph-node 45.
+
+This is what Python nodes receive as `UNIQUE_ID` and what `send_sync` events use.
+
+<Warning>
+Custom nodes currently cannot determine their own execution ID from within the subgraph.
+This is a known limitation tracked in [#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137).
+</Warning>
+
+```python
+# In a Python node's execute method:
+def process(self, **kwargs):
+    unique_id = kwargs.get('unique_id', '')
+    # If inside subgraphs: "45:14:789"
+    # Local ID is the last segment
+    local_id = unique_id.split(':')[-1]
+```
+
+## Traversing Nodes
+
+### Current Layer Only
+
+To iterate nodes in the current graph level (non-recursive):
+
+```typescript
+for (const node of graph.nodes) {
+  // Only nodes at this level — does NOT enter subgraphs
+}
+```
+
+### All Nodes Recursively
+
+To find nodes across all subgraph levels, use recursive descent:
+
+```typescript
+function forEachNodeRecursive(graph, fn) {
+  for (const node of graph.nodes) {
+    fn(node)
+    if (node.isSubgraphNode?.() && node.subgraph) {
+      forEachNodeRecursive(node.subgraph, fn)
+    }
+  }
+}
+
+// Usage
+forEachNodeRecursive(app.graph, (node) => {
+  console.log(node.id, node.type)
+})
+```
+
+<Tip>
+The `isSubgraphNode()` method is the reliable way to detect subgraph nodes. Check for `.subgraph`
+property to access the inner graph.
+</Tip>
+
+<Warning>
+Internal utilities in `graphTraversalUtil.ts` (like `forEachNode`, `getNodeByExecutionId`) exist
+but are **not importable** from custom node extensions. The pattern above is the extension-safe equivalent.
+</Warning>
+
+## Subgraph Events
+
+The `Subgraph` class fires typed events via `CustomEventTarget`. Listen using standard
+`addEventListener` with `AbortController` for cleanup.
+
+| Event | When Fired | Cancellable |
+|-------|-----------|-------------|
+| `adding-input` | Before input slot added | No |
+| `input-added` | After input slot added | No |
+| `removing-input` | Before input slot removed | Yes |
+| `adding-output` | Before output slot added | No |
+| `output-added` | After output slot added | No |
+| `removing-output` | Before output slot removed | Yes |
+| `renaming-input` | Input slot renamed | No |
+| `renaming-output` | Output slot renamed | No |
+| `widget-promoted` | Widget promoted to subgraph surface | No |
+| `widget-demoted` | Promoted widget removed | No |
+| `input-connected` | SubgraphInput connected internally | No |
+| `input-disconnected` | SubgraphInput disconnected | No |
+
+### Listening Pattern
+
+```typescript
+const controller = new AbortController()
+
+subgraph.events.addEventListener('input-added', (e) => {
+  const { input } = e.detail
+  console.log(`New input: ${input.name} (${input.type})`)
+}, { signal: controller.signal })
+
+// Cleanup — removes all listeners attached with this controller
+controller.abort()
+```
+
+## Widget Promotion
+
+When a `SubgraphInput` connects to a node input that has an associated widget, the widget
+is "promoted" — a copy appears on the SubgraphNode's surface.
+
+<Steps>
+<Step title="Connection">
+  SubgraphInput connects to a node input with an attached widget.
+</Step>
+<Step title="Promotion">
+  `SubgraphNode._setWidget()` creates a copy via `widget.createCopyForNode()`.
+  The promoted widget's name/label become read-only, delegating to the SubgraphInput.
+</Step>
+<Step title="Events">
+  `widget-promoted` fires. On disconnect: `widget-demoted` fires and the widget is removed.
+</Step>
+</Steps>
+
+Widget type compatibility is validated by `SubgraphInput.matchesWidget()`, checking type, min, max,
+step, and precision.
+
+<Warning>
+The widget promotion API is still evolving. PR #8352 (dynamic widget promotion) was closed without merging.
+</Warning>
+
+## Cleanup Patterns
+
+Subgraph nodes use `AbortController`-based lifecycle management. Follow this pattern in extensions
+that interact with subgraph events.
+
+### The Pattern
+
+```typescript
+class MyExtensionState {
+  private _controller = new AbortController()
+
+  setup(subgraphNode) {
+    const { signal } = this._controller
+
+    subgraphNode.subgraph.events.addEventListener('input-added', (e) => {
+      // Handle event
+    }, { signal })
+
+    subgraphNode.subgraph.events.addEventListener('widget-promoted', (e) => {
+      // Handle event
+    }, { signal })
+  }
+
+  cleanup() {
+    // One call removes ALL listeners
+    this._controller.abort()
+  }
+}
+```
+
+### What SubgraphNode.onRemoved() Does
+
+1. Aborts the main `_eventAbortController` (removes all subgraph event listeners)
+2. Dispatches `widget-demoted` for all promoted widgets
+3. Aborts per-input listener controllers
+4. Fires `onRemoved` for inner nodes and `onNodeRemoved` callbacks
+
+<Tip>
+If you store state keyed by node ID, remember that local IDs are not globally unique.
+Use execution IDs or locator IDs as keys when tracking nodes across subgraph boundaries.
+</Tip>
+
+## Known Limitations
+
+- **No self-identification:** Nodes inside subgraphs cannot determine their own execution ID or locator ID ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137))
+- **Internal-only traversal utilities:** `graphTraversalUtil.ts` functions are not importable from extensions
+- **Widget promotion evolving:** Dynamic promotion not yet stable
+- **Linked subgraphs broken:** Editing one instance can affect others ([#6639](https://github.com/Comfy-Org/ComfyUI_frontend/issues/6639))
+- **Widget renaming inconsistent:** Names may differ inside vs. outside subgraphs ([#7739](https://github.com/Comfy-Org/ComfyUI_frontend/issues/7739))
