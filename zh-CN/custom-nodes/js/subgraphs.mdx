@@ -1,16 +1,11 @@
 ---
-title: "Subgraphs"
-description: "Working with subgraphs in ComfyUI extensions: node IDs, graph traversal, events, widget promotion, and cleanup."
+title: "子图"
+description: "在 ComfyUI 扩展中使用子图：节点 ID、图遍历、事件、控件提升和清理。"
 ---
-
-<Warning>
-The subgraph API is under active development. Details on this page may change.
-See [#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137) for status.
-</Warning>
 
 ## Overview
 
-Subgraphs let users group nodes into reusable, nestable components. Each subgraph is its own `LGraph` with a UUID. For the user-facing guide, see [Subgraphs](/zh-CN/interface/features/subgraph). For backend expansion, see [Node Expansion](/zh-CN/custom-nodes/backend/expansion).
+Subgraphs let users group nodes into reusable, nestable components. Each subgraph is its own `LGraph` with a UUID. For the user-facing guide, see [Subgraphs](/zh-CN/interface/features/subgraph).
 
 ## Node Identifiers
 
@@ -22,9 +17,14 @@ ComfyUI uses three distinct node identifier types. Using the wrong one causes si
 | Execution ID | `"1:2:3"` (colon-separated string) | Backend progress messages, `UNIQUE_ID` |
 | Locator ID | `"<uuid>:<localId>"` or `"<localId>"` | UI state: badges, errors, images |
 
-<Warning>
-Nodes cannot currently discover their own execution or locator ID from within a subgraph ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137)).
-</Warning>
+To construct a node's locator ID from within an extension:
+
+```javascript
+function getLocatorId(node) {
+  const graphId = node.graph?.id
+  return graphId ? `${graphId}:${node.id}` : String(node.id)
+}
+```
 
 ## Traversing Nodes
 
@@ -38,13 +38,13 @@ for (const node of app.graph.nodes) {
 
 ### All nodes recursively
 
-To walk into nested subgraphs, use a simple recursive helper:
+To walk into nested subgraphs, use a recursive helper that calls a callback on every node:
 
 ```javascript
-function walkGraph(graph, visit) {
-  for (const node of graph.nodes) {
-    visit(node, graph)
-    if (node.subgraph) walkGraph(node.subgraph, visit)
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
   }
 }
 ```
@@ -54,10 +54,10 @@ Full example:
 ```javascript
 import { app } from "../../scripts/app.js"
 
-function walkGraph(graph, visit) {
-  for (const node of graph.nodes) {
-    visit(node, graph)
-    if (node.subgraph) walkGraph(node.subgraph, visit)
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
   }
 }
 
@@ -121,16 +121,10 @@ import { app } from "../../scripts/app.js"
 app.registerExtension({
   name: "MyExtension.SubgraphEvents",
   async setup() {
-    const controller = new AbortController()
-    const { signal } = controller
-
     app.canvas.canvas.addEventListener("subgraph-opened", (e) => {
       const { subgraph, fromNode } = e.detail
       console.log(`Opened subgraph from node ${fromNode.id}`)
-    }, { signal })
-
-    // To tear down later:
-    // controller.abort()
+    })
   }
 })
 ```
@@ -139,13 +133,17 @@ app.registerExtension({
 
 When a `SubgraphInput` connects to a widget inside a subgraph, a copy of that widget appears on the parent subgraph node. This fires `widget-promoted`. Removing the connection fires `widget-demoted`.
 
+<Warning>
+Widget promotion behavior is still evolving and may change in future releases.
+</Warning>
+
 ```javascript
 import { app } from "../../scripts/app.js"
 
-function walkGraph(graph, visit) {
-  for (const node of graph.nodes) {
-    visit(node, graph)
-    if (node.subgraph) walkGraph(node.subgraph, visit)
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
   }
 }
 
@@ -154,7 +152,9 @@ app.registerExtension({
   async afterConfigureGraph() {
     walkGraph(app.graph, (node) => {
       if (!node.subgraph) return
+      if (node._promCleanup) node._promCleanup.abort()
       const controller = new AbortController()
+      node._promCleanup = controller
       const { signal } = controller
 
       node.subgraph.events.addEventListener("widget-promoted", (e) => {
@@ -207,14 +207,11 @@ app.registerExtension({
 })
 ```
 
-## Known Limitations
-
-- Nodes cannot discover their own execution or locator ID from within a subgraph ([#8137](https://github.com/Comfy-Org/ComfyUI_frontend/issues/8137))
-- Widget promotion behavior is still evolving and may change
-- Linked (multi-instance) subgraph editing has known issues ([#6639](https://github.com/Comfy-Org/ComfyUI_frontend/issues/6639))
+<Tip>
+`onRemoved` can also fire during subgraph conversion, not just deletion. Guard teardown logic if you need to preserve state across restructuring.
+</Tip>
 
 ## See Also
 
 - [Subgraphs (User Guide)](/zh-CN/interface/features/subgraph)
-- [Node Expansion (Backend)](/zh-CN/custom-nodes/backend/expansion)
 - [Extension Hooks](/zh-CN/custom-nodes/js/javascript_hooks)
