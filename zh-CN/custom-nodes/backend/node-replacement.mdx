@@ -1,0 +1,225 @@
+---
+title: "节点替换"
+description: "注册节点替换以帮助用户从已弃用的节点迁移"
+---
+
+节点替换 API 允许自定义节点开发者定义从已弃用节点到新版本节点的迁移路径。当您更新或重命名节点时，用户可以自动升级其工作流。
+
+## 使用场景
+
+- **重命名节点**：您更改了节点的类名
+- **合并节点**：多个节点合并为一个（例如，`Load3DAnimation` 合并到 `Load3D`）
+- **重构输入**：版本之间输入名称或类型发生变化
+- **修复拼写错误**：在不破坏现有工作流的情况下更正节点名称
+
+## 在哪里注册替换
+
+在扩展的 `on_load` 生命周期钩子中注册替换。在您的自定义节点包中创建一个专用文件（例如 `node_replacements.py`）：
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # 在这里注册替换
+```
+
+## 完整示例
+
+以下是一个完整示例，展示如何在自定义节点包中构建节点替换：
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """注册此包的所有节点替换。"""
+    
+    # 简单重命名 - 无需更改输入
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # 带输入映射的复杂替换
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # 带默认值的新输入
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # 这里没有定义节点，只有替换
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## 核心示例
+
+ComfyUI 核心使用节点替换进行内置节点迁移。以下是 [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/main/comfy_extras/nodes_replacements.py) 中的实际示例：
+
+### 简单节点合并
+
+当 `Load3DAnimation` 合并到 `Load3D` 时：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### 拼写错误修复
+
+更正 `SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning` 中的拼写错误：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### 带默认值的输入重命名
+
+用 `ResizeImageMaskNode` 替换 `ImageScaleBy`：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Autogrow 输入映射
+
+对于使用 Autogrow（动态输入）的节点，使用点表示法：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## NodeReplace 参数
+
+| 参数 | 类型 | 描述 |
+|-----------|------|-------------|
+| `new_node_id` | str | 替换节点的类名 |
+| `old_node_id` | str | 已弃用节点的类名 |
+| `old_widget_ids` | list[str] \| None | 将小部件 ID 绑定到其相对索引的有序列表 |
+| `input_mapping` | list \| None | 如何将输入从旧节点映射到新节点 |
+| `output_mapping` | list \| None | 如何将输出从旧节点映射到新节点 |
+
+## 输入映射
+
+每个输入映射条目定义了输入如何从旧节点传输到新节点。
+
+**从旧输入映射：**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**设置固定值：**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**映射动态/autogrow 输入（使用点表示法）：**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## 输出映射
+
+输出映射使用基于索引的引用：
+
+```python
+{"new_idx": 0, "old_idx": 0}  # 映射第一个输出
+{"new_idx": 1, "old_idx": 0}  # 旧输出 0 -> 新输出 1
+```
+
+## 小部件 ID 绑定
+
+`old_widget_ids` 字段将小部件 ID 映射到其位置索引。这是必需的，因为工作流 JSON 按位置而不是 ID 存储小部件值。
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# 索引 0 处的小部件 = "steps"
+# 索引 1 处的小部件 = "cfg"
+# 索引 2 处的小部件 = "sampler"
+```
+
+## REST API
+
+获取所有已注册的替换：
+
+```
+GET /api/node_replacements
+```
+
+**响应：**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## 前端行为
+
+当工作流包含已弃用的节点时，前端会：
+
+1. 从 `GET /api/node_replacements` 获取替换信息
+2. 检测匹配 `old_node_id` 的节点
+3. 提示用户升级
+4. 自动应用输入/输出映射
+5. 保留连接和小部件值
+
+查看前端实现：
+- [业务逻辑 PR #8364](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [附加逻辑 PR #8483](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [UI 视图 PR #8604](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)
