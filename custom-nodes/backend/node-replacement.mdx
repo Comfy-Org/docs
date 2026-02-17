@@ -5,29 +5,130 @@ description: "Register node replacements to help users migrate from deprecated n
 
 The Node Replacement API allows custom node developers to define migration paths from deprecated nodes to their newer equivalents. When you update or rename nodes, users can automatically upgrade their workflows.
 
-## Registering replacements
+## When to use
 
-Use the `comfy_api.latest` module to register node replacements:
+- **Renaming nodes**: You changed a node's class name
+- **Merging nodes**: Multiple nodes consolidated into one (e.g., `Load3DAnimation` merged into `Load3D`)
+- **Refactoring inputs**: Input names or types changed between versions
+- **Fixing typos**: Correcting node names without breaking existing workflows
+
+## Where to register replacements
+
+Register replacements during your extension's `on_load` lifecycle hook. Create a dedicated file (e.g., `node_replacements.py`) in your custom node package:
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # Register replacements here
+```
+
+## Complete example
+
+Here's a full example showing how to structure node replacements in a custom node package:
 
 ```python
-from comfy_api.latest import io, ComfyAPI
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
 
 api = ComfyAPI()
 
-await api.node_replacement.register(
-    io.NodeReplace(
-        new_node_id="NewNodeClass",
-        old_node_id="OldNodeClass",
-        old_widget_ids=["old_input_name", "old_param"],
+
+async def register_my_replacements():
+    """Register all node replacements for this package."""
+    
+    # Simple rename - no input changes needed
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # Complex replacement with input mapping
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
         input_mapping=[
-            {"new_id": "new_input_name", "old_id": "old_input_name"},
-            {"new_id": "new_param", "set_value": 512},
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # New input with default
         ],
         output_mapping=[
             {"new_idx": 0, "old_idx": 0},
         ],
-    )
-)
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # No nodes defined here, just replacements
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Core examples
+
+ComfyUI core uses node replacements for built-in node migrations. Here are real examples from [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/main/comfy_extras/nodes_replacements.py):
+
+### Simple node merge
+
+When `Load3DAnimation` was merged into `Load3D`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### Typo fix
+
+Correcting a typo in `SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### Input renaming with defaults
+
+Replacing `ImageScaleBy` with `ResizeImageMaskNode`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Autogrow input mapping
+
+For nodes using Autogrow (dynamic inputs), use dot notation:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
 ```
 
 ## NodeReplace parameters
@@ -52,6 +153,11 @@ Each input mapping entry defines how an input transfers from the old node to the
 **Set a fixed value:**
 ```python
 {"new_id": "scheduler", "set_value": "normal"}
+```
+
+**Map dynamic/autogrow inputs (use dot notation):**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
 ```
 
 ## Output mapping
@@ -103,8 +209,17 @@ GET /api/node_replacements
 }
 ```
 
-## Use cases
+## Frontend behavior
 
-- **Node migration**: Automatically upgrade user workflows when updating your custom node pack
-- **API changes**: Map renamed inputs/outputs to maintain backwards compatibility
-- **Default values**: Provide sensible defaults for new inputs that didn't exist on the old node
+When a workflow contains a deprecated node, the frontend:
+
+1. Fetches replacements from `GET /api/node_replacements`
+2. Detects nodes matching `old_node_id`
+3. Prompts the user to upgrade
+4. Applies input/output mappings automatically
+5. Preserves connections and widget values
+
+See the frontend implementation:
+- [Business logic PR #8364](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [Additional logic PR #8483](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [UI views PR #8604](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)
