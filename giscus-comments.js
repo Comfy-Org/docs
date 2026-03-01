@@ -458,48 +458,35 @@
   }
 
   // Show friendly discussion notice
-  function showGiscusNotice(container, noticeType = 'rate_limit') {
+  function showGiscusNotice(container) {
     const discussionUrl = generateDiscussionUrl();
     const newDiscussionUrl = generateNewDiscussionUrl();
     
-    const noticeMessages = {
-      rate_limit: {
-        en: {
-          title: '💬 Join the Discussion',
-          message: 'Comments are temporarily unavailable due to high traffic.',
-          suggestion: 'Please first check if there are existing discussions about this page. If you can\'t find any relevant discussions, then start a new one to connect your comments with this page.',
-          discussionLink: 'Find Related Discussions',
-          newDiscussionLink: 'Start New Discussion'
-        },
-        zh: {
-          title: '💬 参与讨论', 
-          message: '由于访问量较高，评论功能暂时不可用。',
-          suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
-          discussionLink: '查找相关讨论',
-          newDiscussionLink: '发起新讨论'
-        }
-      },
-      network: {
-        en: {
-          title: '💬 Join the Discussion',
-          message: 'Comments could not be loaded at this time.',
-          suggestion: 'Please first check if there are existing discussions about this page. If you can\'t find any relevant discussions, then start a new one to connect your comments with this page.',
-          discussionLink: 'Find Related Discussions',
-          newDiscussionLink: 'Start New Discussion'
-        },
-        zh: {
-          title: '💬 参与讨论',
-          message: '评论暂时无法加载。',
-          suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
-          discussionLink: '查找相关讨论',
-          newDiscussionLink: '发起新讨论'
-        }
-      }
+    const isChinesePage = window.location.pathname.includes('/zh-CN/') || window.location.pathname.includes('/cn/');
+    const notice = isChinesePage ? {
+      title: '💬 参与讨论',
+      message: '由于访问量较高，评论功能暂时不可用。',
+      suggestion: '登录 GitHub 可享受更高的 API 限额（每小时 5000 次请求，访客为 60 次）。您也可以查看现有讨论或发起新讨论。',
+      signInLink: '登录 GitHub',
+      discussionLink: '查找相关讨论',
+      newDiscussionLink: '发起新讨论'
+    } : {
+      title: '💬 Join the Discussion',
+      message: 'Comments are temporarily unavailable due to high traffic.',
+      suggestion: 'Sign in to GitHub to enjoy higher rate limits (5000 requests/hour vs 60 for guests). You can also check existing discussions or start a new one.',
+      signInLink: 'Sign in to GitHub',
+      discussionLink: 'Find Related Discussions',
+      newDiscussionLink: 'Start New Discussion'
     };
     
-    const isChinesePage = window.location.pathname.includes('/zh-CN/') || window.location.pathname.includes('/cn/');
-    const lang = isChinesePage ? 'zh' : 'en';
-    const notice = noticeMessages[noticeType][lang];
+    // Always show sign-in button along with discussion links
+    const buttonsHtml = `
+      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a href="https://github.com/login" target="_blank" class="giscus-notice-button">${notice.signInLink}</a>
+        <a href="${discussionUrl}" target="_blank" class="giscus-notice-button secondary">${notice.discussionLink}</a>
+        <a href="${newDiscussionUrl}" target="_blank" class="giscus-notice-button secondary">${notice.newDiscussionLink}</a>
+      </div>
+    `;
     
     const noticeDiv = document.createElement('div');
     noticeDiv.className = 'giscus-notice';
@@ -507,10 +494,7 @@
       <div class="giscus-notice-title">${notice.title}</div>
       <div>${notice.message}</div>
       <div style="margin-top: 0.5rem; opacity: 0.8;">${notice.suggestion}</div>
-      <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <a href="${discussionUrl}" target="_blank" class="giscus-notice-button">${notice.discussionLink}</a>
-        <a href="${newDiscussionUrl}" target="_blank" class="giscus-notice-button secondary">${notice.newDiscussionLink}</a>
-      </div>
+      ${buttonsHtml}
     `;
     
     container.innerHTML = '';
@@ -546,18 +530,13 @@
         if (message.giscus.error) {
           const errorType = message.giscus.error.type;
           console.warn('Giscus error detected:', errorType, message.giscus.error);
-          
-          if (errorType === 'rate_limit' || errorType === 'rate-limit' || errorType === 'RATE_LIMITED') {
-            showGiscusNotice(container, 'rate_limit');
-          } else {
-            showGiscusNotice(container, 'network');
-          }
+          showGiscusNotice(container);
         }
         
         // Check for discussion data with error indicators
         if (message.giscus.discussion === null && message.giscus.viewer === null) {
-          // This might indicate a rate limit or auth issue
-          console.warn('Giscus: No discussion data, possibly rate limited');
+          // This might indicate a rate limit or network issue
+          console.warn('Giscus: No discussion data, possibly rate limited or network issue');
           setTimeout(() => {
             if (container.querySelector('.giscus-frame')) {
               const iframe = container.querySelector('.giscus-frame');
@@ -565,7 +544,7 @@
                 const errorElements = iframe.contentDocument.querySelectorAll('[class*="error"], [class*="Error"]');
                 if (errorElements.length > 0) {
                   console.warn('Giscus: Error elements found in iframe');
-                  showGiscusNotice(container, 'rate_limit');
+                  showGiscusNotice(container);
                 }
               }
             }
@@ -576,7 +555,7 @@
       // Also check for direct error messages in the content
       if (typeof message === 'string' && message.includes('rate limit')) {
         console.warn('Giscus: Rate limit detected in string message');
-        showGiscusNotice(container, 'rate_limit');
+        showGiscusNotice(container);
       }
     });
     
@@ -592,12 +571,9 @@
             const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
             if (iframeDoc) {
               const bodyText = iframeDoc.body ? iframeDoc.body.textContent || '' : '';
-              if (bodyText.includes('rate limit') || bodyText.includes('API rate limit') || bodyText.includes('exceeded')) {
-                console.warn('Giscus: Rate limit detected in iframe content');
-                showGiscusNotice(container, 'rate_limit');
-              } else if (bodyText.includes('error occurred')) {
-                console.warn('Giscus: Generic error detected in iframe content');
-                showGiscusNotice(container, 'rate_limit'); // Assume it's rate limit for now
+              if (bodyText.includes('rate limit') || bodyText.includes('API rate limit') || bodyText.includes('exceeded') || bodyText.includes('error occurred')) {
+                console.warn('Giscus: Error detected in iframe content');
+                showGiscusNotice(container);
               }
             }
           }, 5000); // Check after 5 seconds
@@ -676,7 +652,7 @@
       }
       
       console.error('Giscus: Failed to load giscus script');
-      showGiscusNotice(container, 'network');
+      showGiscusNotice(container);
     };
     
     // Set up a timeout to detect if giscus fails to load
@@ -694,7 +670,7 @@
             
             if (bodyText.includes('error occurred') || bodyText.includes('rate limit') || bodyText.includes('exceeded')) {
               console.warn('Giscus: Error detected in iframe after timeout');
-              showGiscusNotice(container, 'rate_limit');
+              showGiscusNotice(container);
             }
           } else {
             console.warn('Giscus: Loading timeout, possibly rate limited');
@@ -789,21 +765,11 @@
   
   // Debug functions for testing notice messages
   window.giscusDebug = {
-    // Force show rate limit notice
-    showRateLimitNotice: () => {
+    // Force show notice
+    showNotice: () => {
       const container = document.querySelector('.giscus-container');
       if (container) {
-        showGiscusNotice(container, 'rate_limit');
-      } else {
-        console.warn('No giscus container found. Wait for page to load giscus placeholder first.');
-      }
-    },
-    
-    // Force show network notice
-    showNetworkNotice: () => {
-      const container = document.querySelector('.giscus-container');
-      if (container) {
-        showGiscusNotice(container, 'network');
+        showGiscusNotice(container);
       } else {
         console.warn('No giscus container found. Wait for page to load giscus placeholder first.');
       }
@@ -840,8 +806,7 @@
     
     // Add debug info
     console.log('Giscus Debug Commands Available:');
-    console.log('- giscusDebug.showRateLimitNotice() - Show rate limit notice');
-    console.log('- giscusDebug.showNetworkNotice() - Show network notice'); 
+    console.log('- giscusDebug.showNotice() - Show error notice');
     console.log('- giscusDebug.resetToPlaceholder() - Reset to placeholder');
     console.log('- giscusDebug.testUrls() - Test URL generation for current page');
     
