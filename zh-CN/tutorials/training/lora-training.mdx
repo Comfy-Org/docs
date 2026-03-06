@@ -1,0 +1,192 @@
+---
+title: "原生 LoRA 训练"
+sidebarTitle: "LoRA 训练"
+description: "使用内置训练节点直接在 ComfyUI 中训练 LoRA 模型"
+---
+
+ComfyUI 原生支持训练 LoRA（Low-Rank Adaptation）模型，无需外部工具或自定义节点。本指南介绍如何使用内置训练节点创建自己的 LoRA。
+
+<Warning>
+训练节点目前标记为**实验性功能**。功能和行为可能会在未来版本中发生变化。
+</Warning>
+
+## 概述
+
+原生 LoRA 训练系统包含四个节点：
+
+| 节点 | 类别 | 用途 |
+|------|------|------|
+| **Train LoRA** | training | 从潜空间图像和条件训练 LoRA 模型 |
+| **Load LoRA Model** | loaders | 将训练好的 LoRA 权重应用到模型 |
+| **Save LoRA Weights** | loaders | 将 LoRA 权重导出为 safetensors 文件 |
+| **Plot Loss Graph** | training | 可视化训练过程中的损失变化 |
+
+## 系统要求
+
+- 具有足够显存的 GPU（训练通常比推理需要更多内存）
+- 潜空间图像（从训练数据集编码而来）
+- 文本条件（训练图像的描述文字）
+
+## 基础训练流程
+
+<Steps>
+<Step title="准备数据集">
+使用 VAE Encode 节点将训练图像编码为潜空间表示。使用 CLIP Text Encode 为每张图像创建文本条件。
+
+<Tip>
+为获得最佳效果，请使用能代表您想要训练的风格或主题的高质量图像。
+</Tip>
+</Step>
+
+<Step title="配置 Train LoRA 节点">
+将模型、潜空间图像和条件连接到 Train LoRA 节点。设置训练参数：
+
+- **batch_size**：每个训练步骤的样本数（默认：1）
+- **steps**：总训练迭代次数（默认：16）
+- **learning_rate**：模型适应速度（默认：0.0005）
+- **rank**：LoRA 秩 - 更高的值可以捕获更多细节但使用更多内存（默认：8）
+</Step>
+
+<Step title="运行训练">
+执行工作流。节点将输出：
+- **lora**：训练好的 LoRA 权重
+- **loss_map**：训练损失历史
+- **steps**：完成的总步数
+</Step>
+
+<Step title="保存和使用 LoRA">
+将输出连接到 **Save LoRA Weights** 以导出训练好的 LoRA。使用 **Load LoRA Model** 在推理时应用它。
+</Step>
+</Steps>
+
+## Train LoRA 节点
+
+从数据集创建 LoRA 权重的主要训练节点。
+
+### 输入参数
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `model` | MODEL | - | 用于训练 LoRA 的基础模型 |
+| `latents` | LATENT | - | 编码后的训练图像 |
+| `positive` | CONDITIONING | - | 训练用的文本条件 |
+| `batch_size` | INT | 1 | 每步样本数（1-10000） |
+| `grad_accumulation_steps` | INT | 1 | 梯度累积步数（1-1024） |
+| `steps` | INT | 16 | 训练迭代次数（1-100000） |
+| `learning_rate` | FLOAT | 0.0005 | 学习率（0.0000001-1.0） |
+| `rank` | INT | 8 | LoRA 秩（1-128） |
+| `optimizer` | COMBO | AdamW | 优化器：AdamW、Adam、SGD、RMSprop |
+| `loss_function` | COMBO | MSE | 损失函数：MSE、L1、Huber、SmoothL1 |
+| `seed` | INT | 0 | 随机种子，用于可复现性 |
+| `training_dtype` | COMBO | bf16 | 训练精度：bf16、fp32 |
+| `lora_dtype` | COMBO | bf16 | LoRA 权重精度：bf16、fp32 |
+| `algorithm` | COMBO | lora | 训练算法（lora、lokr、oft 等） |
+| `gradient_checkpointing` | BOOLEAN | true | 训练时减少显存使用 |
+| `checkpoint_depth` | INT | 1 | 梯度检查点深度级别（1-5） |
+| `offloading` | BOOLEAN | false | 将模型卸载到内存（需要 bypass 模式） |
+| `existing_lora` | COMBO | [None] | 从现有 LoRA 继续训练 |
+| `bucket_mode` | BOOLEAN | false | 启用分辨率分桶以支持多分辨率数据集 |
+| `bypass_mode` | BOOLEAN | false | 通过钩子应用适配器而非修改权重 |
+
+### 输出
+
+| 输出 | 类型 | 描述 |
+|------|------|------|
+| `lora` | LORA_MODEL | 训练好的 LoRA 权重 |
+| `loss_map` | LOSS_MAP | 训练损失历史 |
+| `steps` | INT | 完成的总训练步数 |
+
+## Load LoRA Model 节点
+
+将训练好的 LoRA 权重应用到扩散模型。当使用来自 Train LoRA 节点的 LoRA 权重时，请使用此节点而非标准的 Load LoRA 节点。
+
+### 输入参数
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `model` | MODEL | - | 基础扩散模型 |
+| `lora` | LORA_MODEL | - | 训练好的 LoRA 权重 |
+| `strength_model` | FLOAT | 1.0 | LoRA 强度（-100 到 100） |
+| `bypass` | BOOLEAN | false | 不修改基础权重直接应用 LoRA |
+
+### 输出
+
+| 输出 | 类型 | 描述 |
+|------|------|------|
+| `model` | MODEL | 应用了 LoRA 的模型 |
+
+## Save LoRA Weights 节点
+
+将训练好的 LoRA 权重导出为 safetensors 文件到输出文件夹。
+
+### 输入参数
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `lora` | LORA_MODEL | - | 要保存的训练好的 LoRA 权重 |
+| `prefix` | STRING | loras/ComfyUI_trained_lora | 输出文件名前缀 |
+| `steps` | INT | （可选） | 用于文件名的训练步数 |
+
+保存的文件将命名为 `{prefix}_{steps}_steps_{counter}.safetensors` 并放置在 `ComfyUI/output/loras/` 文件夹中。
+
+## Plot Loss Graph 节点
+
+通过绘制训练步骤中的损失值来可视化训练进度。
+
+### 输入参数
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `loss` | LOSS_MAP | - | 来自 Train LoRA 的损失历史 |
+| `filename_prefix` | STRING | loss_graph | 输出文件名前缀 |
+
+## 训练技巧
+
+### 显存优化
+
+- 启用 **gradient_checkpointing** 可显著减少显存使用（默认已启用）
+- 使用量化模型（FP8）时使用 **bypass_mode**
+- 启用 **offloading** 在训练期间将模型移至内存（需要 bypass_mode）
+- 如果遇到内存不足错误，请降低 **batch_size**
+
+### 数据集准备
+
+- 尽可能使用一致的图像尺寸，或启用 **bucket_mode** 进行多分辨率训练
+- 确保条件输入数量与潜空间图像数量匹配
+- 质量比数量更重要——从 10-20 张高质量图像开始
+
+### 训练参数
+
+- **rank**：大多数情况从 8-16 开始。更高的秩（32-64）可捕获更多细节但可能过拟合
+- **steps**：从 100-500 步开始，监控损失图
+- **learning_rate**：默认值 0.0005 适用于大多数情况。更低的值（0.0001）可获得更稳定的训练
+
+### 继续训练
+
+从 **existing_lora** 下拉菜单中选择现有 LoRA 以从之前保存的检查点继续训练。总步数将累积。
+
+## 支持的算法
+
+**algorithm** 参数支持多种权重适配器类型：
+
+- **lora**：标准低秩适应（推荐）
+- **lokr**：带 Kronecker 积分解的 LoCon
+- **oft**：正交微调
+
+## 示例：单主题 LoRA
+
+训练特定主题 LoRA 的最小工作流：
+
+1. 使用 **Load Image** 加载训练图像
+2. 使用 **VAE Encode** 将图像编码为潜空间表示
+3. 使用 **CLIP Text Encode** 创建描述文字（例如 "a photo of [subject]"）
+4. 连接到 **Train LoRA** 并设置：
+   - steps: 200
+   - rank: 16
+   - learning_rate: 0.0001
+5. 使用 **Save LoRA Weights** 保存
+6. 使用 **Load LoRA Model** 连接到推理工作流进行测试
+
+<Note>
+当使用不同描述训练多张图像时，请连接多个条件输入以匹配潜空间批次大小。
+</Note>
