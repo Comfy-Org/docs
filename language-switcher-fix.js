@@ -7,7 +7,7 @@
  *
  * Language mapping:
  * - English (en): /path/to/page
- * - Chinese (cn): /zh-CN/path/to/page
+ * - Chinese (zh): /zh-CN/path/to/page
  */
 
 (function() {
@@ -20,8 +20,8 @@
       prefix: '',  // English pages have no prefix
       label: 'English'
     },
-    cn: {
-      code: 'cn',
+    zh: {
+      code: 'zh',
       prefix: '/zh-CN',  // Chinese pages are prefixed with /zh-CN
       label: '中文'
     }
@@ -33,7 +33,7 @@
   function getCurrentLanguage() {
     const path = window.location.pathname;
     if (path.startsWith('/zh-CN')) {
-      return 'cn';
+      return 'zh';
     }
     return 'en';
   }
@@ -184,6 +184,7 @@
                                  linkText.includes('chinese') ||
                                  linkText.includes('english') ||
                                  linkText === 'en' ||
+                                 linkText === 'zh' ||
                                  linkText === 'cn' ||
                                  href === '/' ||
                                  href === '/zh-CN/' ||
@@ -222,8 +223,8 @@
           // Determine which language this link is for
           let targetLang = null;
 
-          if (linkText.includes('中文') || linkText.includes('chinese') || linkText === 'cn') {
-            targetLang = 'cn';
+          if (linkText.includes('中文') || linkText.includes('chinese') || linkText === 'zh' || linkText === 'cn') {
+            targetLang = 'zh';
           } else if (linkText.includes('english') || linkText === 'en') {
             targetLang = 'en';
           } else if (url.pathname === '/' && !link.closest('[class*="footer"]')) {
@@ -233,7 +234,7 @@
               targetLang = 'en';
             }
           } else if (url.pathname.startsWith('/zh-CN')) {
-            targetLang = 'cn';
+            targetLang = 'zh';
           }
 
           if (targetLang) {
@@ -261,16 +262,16 @@
 
           if (itemId.endsWith('-en')) {
             targetLang = 'en';
-          } else if (itemId.endsWith('-cn')) {
-            targetLang = 'cn';
+          } else if (itemId.endsWith('-zh') || itemId.endsWith('-cn')) {
+            targetLang = 'zh';
           }
 
           if (!targetLang) {
             const text = item.textContent.trim().toLowerCase();
             if (text.includes('english') || text === 'en') {
               targetLang = 'en';
-            } else if (text.includes('中文') || text.includes('chinese') || text === 'cn') {
-              targetLang = 'cn';
+            } else if (text.includes('中文') || text.includes('chinese') || text === 'zh' || text === 'cn') {
+              targetLang = 'zh';
             }
           }
 
