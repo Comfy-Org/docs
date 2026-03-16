@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Tuple
 
 # Configuration rules
 RULES = {
-    'ZH_CN_DIR': 'zh-CN',
+    'ZH_CN_DIR': 'zh',
     'ZH_SNIPPETS_DIR': 'snippets/zh',
     'ZH_IMAGES_DIR': 'images/zh',
     'COMMON_IMAGES_DIR': 'images'
@@ -156,7 +156,7 @@ def fix_missing_leading_slash(file_path: str, content: str) -> Tuple[str, bool]:
         
         # Check if it looks like a documentation path (contains common doc patterns)
         doc_patterns = [
-            'zh-CN/', 'tutorials/', 'built-in-nodes/', 'interface/', 'installation/', 
+            'zh/', 'tutorials/', 'built-in-nodes/', 'interface/', 'installation/', 
             'development/', 'custom-nodes/', 'troubleshooting/', 'registry/', 'specs/',
             'get_started/', 'changelog/', 'comfy-cli/', 'snippets/', 'community/'
         ]

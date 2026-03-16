@@ -7,7 +7,7 @@
  *
  * Language mapping:
  * - English (en): /path/to/page
- * - Chinese (zh): /zh-CN/path/to/page
+ * - Chinese (zh): /zh/path/to/page
  * - Japanese (ja): /ja/path/to/page
  */
 
@@ -23,7 +23,7 @@
     },
     zh: {
       code: 'zh',
-      prefix: '/zh-CN',  // Chinese pages are prefixed with /zh-CN
+      prefix: '/zh',  // Chinese pages are prefixed with /zh
       label: '中文'
     },
     ja: {
@@ -38,7 +38,7 @@
    */
   function getCurrentLanguage() {
     const path = window.location.pathname;
-    if (path.startsWith('/zh-CN')) {
+    if (path.startsWith('/zh')) {
       return 'zh';
     }
     if (path.startsWith('/ja')) {
@@ -181,7 +181,7 @@
       // If no menu found yet, try to trigger it or wait
       if (!foundMenu) {
         // Look for any links that might be language switcher links
-        const allLinks = document.querySelectorAll('a[href="/"], a[href="/zh-CN/"], a[href*="zh-CN"], a[href="/ja/"], a[href*="/ja/"]');
+        const allLinks = document.querySelectorAll('a[href="/"], a[href="/zh/"], a[href*="zh/"], a[href="/ja/"], a[href*="/ja/"]');
 
         allLinks.forEach(link => {
           const href = link.getAttribute('href');
@@ -199,9 +199,9 @@
                                  linkText === 'cn' ||
                                  linkText === 'ja' ||
                                  href === '/' ||
-                                 href === '/zh-CN/' ||
+                                 href === '/zh/' ||
                                  href === '/ja/' ||
-                                 href.startsWith('/zh-CN') ||
+                                 href.startsWith('/zh') ||
                                  href.startsWith('/ja');
 
           if (isLanguageLink) {
@@ -249,7 +249,7 @@
             if (parent) {
               targetLang = 'en';
             }
-          } else if (url.pathname.startsWith('/zh-CN')) {
+          } else if (url.pathname.startsWith('/zh')) {
             targetLang = 'zh';
           } else if (url.pathname.startsWith('/ja')) {
             targetLang = 'ja';
