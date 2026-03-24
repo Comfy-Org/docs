@@ -86,6 +86,115 @@ When you submit a workflow, a **job** is created. Jobs are executed asynchronous
 3. Monitor progress via WebSocket or poll for status
 4. Retrieve outputs when complete
 
+### Parallel Execution (Concurrent Jobs)
+
+API users can submit multiple workflows concurrently without waiting for previous jobs to complete. Simply send multiple `POST /api/prompt` requests — no special headers or parameters are needed. The dispatcher will run them in parallel up to your subscription tier's limit.
+
+| Subscription Tier | Concurrent Jobs |
+|-------------------|-----------------|
+| Free              | 1               |
+| Standard          | 1               |
+| Creator           | 3               |
+| Pro               | 5               |
+
+Jobs submitted beyond your concurrency limit will queue normally and execute automatically as slots free up.
+
+<Info>
+  Parallel execution is currently available via the API only. See [pricing plans](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api) for subscription details.
+</Info>
+
+#### Example: Submitting Multiple Jobs in Parallel
+
+<CodeGroup>
+```python Python
+import os
+import json
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+async def submit_workflow(session, workflow):
+    """Submit a single workflow and return the prompt_id."""
+    async with session.post(
+        f"{BASE_URL}/api/prompt",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"prompt": workflow},
+    ) as response:
+        result = await response.json()
+        return result["prompt_id"]
+
+async def main():
+    with open("workflow_api.json") as f:
+        base_workflow = json.load(f)
+
+    # Create variations by changing the seed
+    workflows = []
+    for seed in [42, 123, 456]:
+        workflow = json.loads(json.dumps(base_workflow))
+        workflow["3"]["inputs"]["seed"] = seed
+        workflows.append(workflow)
+
+    # Submit all workflows concurrently
+    async with aiohttp.ClientSession() as session:
+        prompt_ids = await asyncio.gather(
+            *[submit_workflow(session, wf) for wf in workflows]
+        )
+
+    for pid in prompt_ids:
+        print(f"Job submitted: {pid}")
+
+    # Poll or use WebSocket to monitor each job...
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+async function submitWorkflow(
+  workflow: Record<string, any>
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function main() {
+  const base = JSON.parse(
+    await Deno.readTextFile("workflow_api.json")
+  );
+
+  // Create variations by changing the seed
+  const seeds = [42, 123, 456];
+  const workflows = seeds.map((seed) => {
+    const wf = structuredClone(base);
+    wf["3"].inputs.seed = seed;
+    return wf;
+  });
+
+  // Submit all workflows concurrently
+  const promptIds = await Promise.all(
+    workflows.map((wf) => submitWorkflow(wf))
+  );
+
+  for (const pid of promptIds) {
+    console.log(`Job submitted: ${pid}`);
+  }
+
+  // Poll or use WebSocket to monitor each job...
+}
+
+main();
+```
+</CodeGroup>
+
 ### Outputs
 
 Generated content (images, videos, audio) is stored in cloud storage. Output files can be downloaded via the `/api/view` endpoint, which returns a 302 redirect to a temporary signed URL.
