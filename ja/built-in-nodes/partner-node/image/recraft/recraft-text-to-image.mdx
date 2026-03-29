@@ -1,0 +1,173 @@
+---
+title: "Recraft Text to Image - ComfyUI 組み込みノードドキュメント"
+description: "テキストによる説明から高品質な画像を生成する Recraft パートナーノード"
+sidebarTitle: "Recraft Text to Image"
+icon: "circle"
+translationSourceHash: 78cce395
+translationFrom: built-in-nodes/partner-node/image/recraft/recraft-text-to-image.mdx, zh-CN/built-in-nodes/partner-node/image/recraft/recraft-text-to-image.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI 組み込み Recraft Text to Image ノード](/images/built-in-nodes/api_nodes/recraft/recraft-text-to-image.jpg)
+
+Recraft Text to Image ノードは、テキストプロンプトに基づいて高品質な画像を生成する機能を提供します。このノードは Recraft AI の画像生成 API に直接接続し、さまざまなスタイルの画像を作成できます。
+
+## パラメーター
+
+### 基本パラメーター
+
+| パラメーター | 型     | デフォルト値 | 説明                     |
+| ------------ | ------ | ------------ | ------------------------ |
+| prompt       | 文字列 | ""           | 画像生成用のテキスト説明 |
+| size         | 選択   | 1024x1024    | 出力画像サイズ           |
+| n            | 整数   | 1            | 生成画像数（1～6）       |
+| seed         | 整数   | 0            | 乱数シード値             |
+
+### オプションパラメーター
+
+| パラメーター        | 型               | 説明                                           |
+| ------------------ | ---------------- | ---------------------------------------------- |
+| recraft_style      | Recraft Style    | 画像スタイル設定（デフォルトは「リアルな写真」） |
+| negative_prompt    | 文字列           | 生成から除外したい要素を指定                   |
+| recraft_controls   | Recraft Controls | 追加制御パラメーター（色など）                 |
+
+### 出力
+
+| 出力  | 型   | 説明             |
+| ----- | ---- | ---------------- |
+| IMAGE | 画像 | 生成された画像   |
+
+
+## ソースコード
+
+[ノードソースコード（2025-05-03 更新）]
+
+```python
+class RecraftTextToImageNode:
+    """
+    Generates images synchronously based on prompt and resolution.
+    """
+
+    RETURN_TYPES = (IO.IMAGE,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/image/Recraft"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the image generation.",
+                    },
+                ),
+                "size": (
+                    [res.value for res in RecraftImageSize],
+                    {
+                        "default": RecraftImageSize.res_1024x1024,
+                        "tooltip": "The size of the generated image.",
+                    },
+                ),
+                "n": (
+                    IO.INT,
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 6,
+                        "tooltip": "The number of images to generate.",
+                    },
+                ),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "Seed to determine if node should re-run; actual results are nondeterministic regardless of seed.",
+                    },
+                ),
+            },
+            "optional": {
+                "recraft_style": (RecraftIO.STYLEV3,),
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "An optional text description of undesired elements on an image.",
+                    },
+                ),
+                "recraft_controls": (
+                    RecraftIO.CONTROLS,
+                    {
+                        "tooltip": "Optional additional controls over the generation via the Recraft Controls node."
+                    },
+                ),
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        prompt: str,
+        size: str,
+        n: int,
+        seed,
+        recraft_style: RecraftStyle = None,
+        negative_prompt: str = None,
+        recraft_controls: RecraftControls = None,
+        auth_token=None,
+        **kwargs,
+    ):
+        default_style = RecraftStyle(RecraftStyleV3.realistic_image)
+        if recraft_style is None:
+            recraft_style = default_style
+
+        controls_api = None
+        if recraft_controls:
+            controls_api = recraft_controls.create_api_model()
+
+        if not negative_prompt:
+            negative_prompt = None
+
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/recraft/image_generation",
+                method=HttpMethod.POST,
+                request_model=RecraftImageGenerationRequest,
+                response_model=RecraftImageGenerationResponse,
+            ),
+            request=RecraftImageGenerationRequest(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                model=RecraftModel.recraftv3,
+                size=size,
+                n=n,
+                style=recraft_style.style,
+                substyle=recraft_style.substyle,
+                style_id=recraft_style.style_id,
+                controls=controls_api,
+            ),
+            auth_token=auth_token,
+        )
+        response: RecraftImageGenerationResponse = operation.execute()
+        images = []
+        for data in response.data:
+            image = bytesio_to_image_tensor(
+                download_url_to_bytesio(data.url, timeout=1024)
+            )
+            if len(image.shape) < 4:
+                image = image.unsqueeze(0)
+            images.append(image)
+        output_image = torch.cat(images, dim=0)
+
+        return (output_image,)

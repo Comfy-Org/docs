@@ -1,0 +1,197 @@
+---
+title: "クイックスタート"
+translationSourceHash: 1af2e07e
+translationFrom: custom-nodes/walkthrough.mdx, zh-CN/custom-nodes/walkthrough.mdx
+---
+
+このページでは、カスタムノードの作成プロセスを段階的に説明します。
+
+この例では、画像バッチを受け取り、その中の 1 枚を返します。最初は、平均的に色が最も明るい画像を返すようにします。その後、選択基準の範囲を拡張し、最後にクライアントサイドコードを追加します。
+
+このページでは、Python または Javascript の知識はほとんど不要であることを前提としています。
+
+このウォークスルーを終えた後は、[バックエンドコード](./backend/server_overview) と [フロントエンドコード](./backend/server_overview) の詳細に進んでください。
+
+## 基本ノードの作成
+
+### 前提条件
+
+- 動作する ComfyUI の [インストール](/installation/manual_install) 環境。開発には、ComfyUI を手動でインストールすることを推奨します。
+- 動作する comfy-cli の [インストール](/comfy-cli/getting-started) 環境。
+
+### 環境構築
+
+```bash
+cd ComfyUI/custom_nodes
+comfy node scaffold
+```
+
+いくつかの質問に答えると、新しいディレクトリが設定されます。
+
+```bash
+ ~  % comfy node scaffold
+You've downloaded .cookiecutters/cookiecutter-comfy-extension before. Is it okay to delete and re-download it? [y/n] (y): y
+  [1/9] full_name (): Comfy
+  [2/9] email (you@gmail.com): me@comfy.org
+  [3/9] github_username (your_github_username): comfy
+  [4/9] project_name (My Custom Nodepack): FirstComfyNode
+  [5/9] project_slug (firstcomfynode): 
+  [6/9] project_short_description (A collection of custom nodes for ComfyUI): 
+  [7/9] version (0.0.1): 
+  [8/9] Select open_source_license
+    1 - GNU General Public License v3
+    2 - MIT license
+    3 - BSD license
+    4 - ISC license
+    5 - Apache Software License 2.0
+    6 - Not open source
+    Choose from [1/2/3/4/5/6] (1): 1
+  [9/9] include_web_directory_for_custom_javascript [y/n] (n): y
+Initialized empty Git repository in firstcomfynode/.git/
+✓ Custom node project created successfully!
+```
+
+### ノードの定義
+
+以下のコードを `src/nodes.py` の末尾に追加してください：
+
+```Python src/nodes.py
+class ImageSelector:
+    CATEGORY = "example"
+    @classmethod    
+    def INPUT_TYPES(s):
+        return { "required":  { "images": ("IMAGE",), } }
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "choose_image"
+```
+
+<Info>カスタムノードの基本構造については、[こちら](/custom-nodes/backend/server_overview) で詳しく説明されています。</Info>
+
+カスタムノードは Python クラスを使用して定義され、次の 4 つを含む必要があります：`CATEGORY`（カスタムノードが新規追加ノードメニューのどこに配置されるかを指定）、`INPUT_TYPES`（ノードが受け取る入力を定義するクラスメソッド。返される辞書の詳細は [後述](/custom-nodes/backend/server_overview#input-types) を参照）、`RETURN_TYPES`（ノードが生成する出力を定義）、および `FUNCTION`（ノード実行時に呼び出される関数名）。
+
+<Tip>入力と出力のデータタイプが `IMAGE`（単数形）であることに注意してください。画像バッチを受け取り、1 枚のみを返す場合でも同様です。Comfy では、`IMAGE` は画像バッチを意味し、単一の画像はサイズ 1 のバッチとして扱われます。</Tip>
+
+### メイン関数
+
+メイン関数 `choose_image` は、`INPUT_TYPES` で定義された名前付き引数を受け取り、`RETURN_TYPES` で定義された `tuple` を返します。画像は内部的には `torch.Tensor` として保存されているため、
+
+```Python
+import torch
+```
+
+次に、この関数をクラスに追加します。画像のデータタイプは形状 `[B,H,W,C]` の `torch.Tensor` です。ここで `B` はバッチサイズ、`C` はチャンネル数（RGB の場合は 3）です。このようなテンソルを反復処理すると、形状 `[H,W,C]` の `B` 個のテンソルシリーズが得られます。`.flatten()` メソッドはこれを長さ `H*W*C` の 1 次元テンソルに変換し、`torch.mean()` は平均を計算し、`.item()` は単一値のテンソルを Python の浮動小数点数に変換します。
+
+```Python
+def choose_image(self, images):
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    brightest = brightness.index(max(brightness))
+    result = images[brightest].unsqueeze(0)
+    return (result,)
+```
+
+最後の 2 行についての注釈：
+
+- `images[brightest]` は形状 `[H,W,C]` のテンソルを返します。`unsqueeze` は、この場合次元 0 に（長さ 1 の）次元を挿入するために使用され、`B=1` の `[B,H,W,C]`、つまり単一の画像を得ます。
+- `return (result,)` では、タプルを返すことを保証するために末尾のコンマが不可欠です。
+
+### ノードの登録
+
+Comfy に新しいノードを認識させるには、パッケージレベルで利用可能である必要があります。`src/nodes.py` の末尾にある `NODE_CLASS_MAPPINGS` 変数を変更してください。変更を確認するには ComfyUI を再起動する必要があります。
+
+```Python src/nodes.py
+
+NODE_CLASS_MAPPINGS = {
+    "Example" : Example,
+    "Image Selector" : ImageSelector,
+}
+
+# 必要に応じて、`NODE_DISPLAY_NAME_MAPPINGS` 辞書でノード名を変更できます。
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node",
+    "Image Selector": "Image Selector",
+}
+```
+
+<Info>ComfyUI がカスタムノードをどのように発見しロードするかについての詳しい説明は、[ノードライフサイクルドキュメント](/custom-nodes/backend/lifecycle) を参照してください。</Info>
+
+## オプションの追加
+
+そのノードは少し退屈かもしれないので、オプションを追加してみましょう。最も明るい画像、または最も赤い、青い、緑の画像を選択できるウィジェットです。`INPUT_TYPES` を以下のように編集してください：
+
+```Python
+@classmethod    
+def INPUT_TYPES(s):
+    return { "required":  { "images": ("IMAGE",), 
+                            "mode": (["brightest", "reddest", "greenest", "bluest"],)} }
+```
+
+次に、メイン関数を更新します。「最も赤い」の定義には、かなり単純な方法を使用します。ピクセルの平均 `R` 値を 3 色すべての平均で割ったものです。したがって：
+
+```Python
+def choose_image(self, images, mode):
+    batch_size = images.shape[0]
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    if (mode=="brightest"):
+        scores = brightness
+    else:
+        channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
+        absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
+        scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
+    best = scores.index(max(scores))
+    result = images[best].unsqueeze(0)
+    return (result,)
+```
+
+## UI の調整
+
+視覚的なフィードバックがあると良いかもしれないので、表示されるテキストメッセージを送信してみましょう。
+
+### サーバーからメッセージを送信
+
+これには、Python コードに 2 行追加する必要があります：
+
+```Python
+from server import PromptServer
+```
+
+また、`choose_image` メソッドの末尾に、フロントエンドへメッセージを送信する行を追加します（`send_sync` は一意であるべきメッセージタイプと辞書を取ります）：
+
+```Python
+PromptServer.instance.send_sync("example.imageselector.textmessage", {"message":f"Picked image {best+1}"})
+return (result,)
+```
+
+### クライアント拡張の作成
+
+クライアントに Javascript を追加するには、カスタムノードディレクトリに `web/js` サブディレクトリを作成し、`__init__.py` の末尾を修正して `WEB_DIRECTORY` をエクスポートすることで Comfy に伝えます：
+
+```Python
+WEB_DIRECTORY = "./web/js"
+__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+```
+
+クライアント拡張は `web/js` サブディレクトリ内の `.js` ファイルとして保存されるため、以下のコードで `image_selector/web/js/imageSelector.js` を作成してください。（詳細は [クライアントサイドコーディング](./js/javascript_overview) を参照）
+
+```Javascript
+import { app } from "../../scripts/app.js";
+app.registerExtension({
+	name: "example.imageselector",
+    async setup() {
+        function messageHandler(event) { alert(event.detail.message); }
+        app.api.addEventListener("example.imageselector.textmessage", messageHandler);
+    },
+})
+```
+
+行ったことは、拡張機能を登録し、`setup()` メソッド内で送信するメッセージタイプのリスナーを追加することだけです。これは、送信した辞書（`event.detail` に保存されています）を読み取ります。
+
+Comfy サーバーを停止し、再度起動して、ウェブページをリロードし、ワークフローを実行してください。
+
+
+### 完全な例
+
+完全な例は [こちら](https://gist.github.com/robinjhuang/fbf54b7715091c7b478724fc4dffbd03) で入手できます。示例ワークフローの [JSON ファイル](https://github.com/Comfy-Org/docs/blob/main/public/workflow.json) をダウンロードするか、以下で閲覧できます：
+
+<div align="center">
+  <img src="/images/firstnodeworkflow.png" alt="画像選択ワークフロー" width="100%" />
+</div>

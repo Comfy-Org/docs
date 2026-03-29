@@ -1,0 +1,141 @@
+---
+title: "遅延評価"
+translationSourceHash: 6a77cb83
+translationFrom: custom-nodes/backend/lazy_evaluation.mdx, zh-CN/custom-nodes/backend/lazy_evaluation.mdx
+---
+
+## 遅延評価
+
+デフォルトでは、ノードを実行する前に、すべての `required` および `optional` 入力が評価されます。しかし、場合によっては入力を使用しないこともあり、それを評価すると不要な処理が発生します。遅延評価が有益となるノードの例をいくつか挙げます：
+1. 比率が `0.0`（この場合、最初のモデルをロードする必要はありません）または `1.0`（この場合、2 番目のモデルをロードする必要はありません）である `ModelMergeSimple` ノード。
+2. 2 つの画像間の補間において、比率（またはマスク）が完全に `0.0` または完全に `1.0` である場合。
+3. どの入力を通過させるかを決定する入力を持つ Switch ノード。
+
+<Tip>入力を遅延評価にするコストは非常に低いです。可能であれば、通常はそうすべきです。</Tip>
+
+### 遅延入力の作成
+
+入力を入力を「遅延」入力にするには、2 つのステップがあります。それは以下の通りです：
+
+1. `INPUT_TYPES` が返す辞書で入力を遅延としてマークする
+2. 評価前に呼び出され、さらに入力が必要かどうかを判定する `check_lazy_status` という名前のメソッドを定義する（注：クラスメソッド*ではありません*）。
+
+これらを説明するために、マスクに従って 2 つの画像間を補間する「MixImages」ノードを作成します。マスク全体が `0.0` の場合、2 番目の画像に至るツリーのどの部分も評価する必要はありません。マスク全体が `1.0` の場合、最初の画像の評価をスキップできます。
+
+#### `INPUT_TYPES` の定義
+
+入力が遅延であることを宣言するには、入力のオプション辞書に `lazy: True` キー値ペアを追加するだけです。
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+この例では、`image1` と `image2` の両方が遅延入力としてマークされていますが、`mask` は常に評価されます。
+
+#### `check_lazy_status` の定義
+
+利用可能*でない*遅延入力が 1 つ以上ある場合、`check_lazy_status` メソッドが呼び出されます。このメソッドは、標準の実行関数と同じ引数を受け取ります。すべての利用可能な入力は最終値で渡され、利用できない遅延入力は `None` 値になります。
+
+`check_lazy_status` 関数の責任は、続行するために必要な遅延入力の名前のリストを返すことです。すべての遅延入力が利用可能な場合、関数は空のリストを返すべきです。
+
+`check_lazy_status` は複数回呼び出される可能性があることに注意してください。（例えば、ある遅延入力を評価した後に、別の入力を評価する必要があることがわかる場合があります。）
+
+<Tip>この関数は実際の入力値を使用するため、クラスメソッド*ではない*ことに注意してください。</Tip>
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### 完全な例
+
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # デモをシンプルに保つため、ここでは異なるバッチサイズの処理は試みていません
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        result = image1 * (1. - mask) + image2 * mask,
+        return (result[0],)
+```
+
+## 実行ブロッキング
+
+遅延評価はグラフの一部を「無効」にする推奨方法ですが、遅延評価自体を実装していない `OUTPUT` ノードを無効にしたい場合もあります。それが自分で開発した出力ノードである場合、以下のように遅延評価を追加すべきです：
+
+1. `enabled` 用の必須（新しいノードの場合）または任意（後方互換性を気にする場合）入力を追加し、デフォルトを `True` にする
+2. 他のすべての入力を `lazy` 入力にする
+3. `enabled` が `True` の場合のみ、他の入力を評価する
+
+制御できないノードである場合、`comfy_execution.graph.ExecutionBlocker` を利用できます。この特殊なオブジェクトは、任意のソケットからの出力として返すことができます。入力として `ExecutionBlocker` を受け取るノードは実行をスキップし、その `ExecutionBlocker` をすべての出力として返します。
+
+<Tip>**ExecutionBlocker が前方に伝播するのを防ぐ方法は意図的に存在しません。** これが必要だと思う場合は、実際に遅延評価を使用すべきです。</Tip>
+
+### 使用方法
+
+`ExecutionBlocker` を構築して使用する方法は 2 つあります。
+
+1. コンストラクタに `None` を渡して、サイレントに実行をブロックします。これは、実行のブロックが成功した実行の一部である場合（出力を無効にするなど）に役立ちます。
+```python
+def silent_passthrough(self, passthrough, blocked):
+    if blocked:
+        return (ExecutionBlocker(None),)
+    else:
+        return (passthrough,)
+```
+
+2. コンストラクタに文字列を渡して、オブジェクトを受け取ったためにノードがブロックされたときにエラーメッセージを表示します。これは、誰かが意味のない出力を使用した場合に意味のあるエラーメッセージを表示したい場合に役立ちます。例えば、VAE を含まないモデルをロードしたときの `VAE` 出力などです。
+
+```python
+def load_checkpoint(self, ckpt_name):
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # このエラーは、後続のノードで発生する "'NoneType' has no attribute" エラーよりも有用です
+        vae = ExecutionBlocker(f"No VAE contained in the loaded model {ckpt_name}")
+    return (model, clip, vae)

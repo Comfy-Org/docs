@@ -8,6 +8,7 @@
  * Language mapping:
  * - English (en): /path/to/page
  * - Chinese (zh): /zh-CN/path/to/page
+ * - Japanese (ja): /ja/path/to/page
  */
 
 (function() {
@@ -24,6 +25,11 @@
       code: 'zh',
       prefix: '/zh-CN',  // Chinese pages are prefixed with /zh-CN
       label: '中文'
+    },
+    ja: {
+      code: 'ja',
+      prefix: '/ja',  // Japanese pages are prefixed with /ja
+      label: '日本語'
     }
   };
 
@@ -34,6 +40,9 @@
     const path = window.location.pathname;
     if (path.startsWith('/zh-CN')) {
       return 'zh';
+    }
+    if (path.startsWith('/ja')) {
+      return 'ja';
     }
     return 'en';
   }
@@ -172,7 +181,7 @@
       // If no menu found yet, try to trigger it or wait
       if (!foundMenu) {
         // Look for any links that might be language switcher links
-        const allLinks = document.querySelectorAll('a[href="/"], a[href="/zh-CN/"], a[href*="zh-CN"]');
+        const allLinks = document.querySelectorAll('a[href="/"], a[href="/zh-CN/"], a[href*="zh-CN"], a[href="/ja/"], a[href*="/ja/"]');
 
         allLinks.forEach(link => {
           const href = link.getAttribute('href');
@@ -183,12 +192,17 @@
           const isLanguageLink = linkText.includes('中文') ||
                                  linkText.includes('chinese') ||
                                  linkText.includes('english') ||
+                                 linkText.includes('日本語') ||
+                                 linkText.includes('japanese') ||
                                  linkText === 'en' ||
                                  linkText === 'zh' ||
                                  linkText === 'cn' ||
+                                 linkText === 'ja' ||
                                  href === '/' ||
                                  href === '/zh-CN/' ||
-                                 href.startsWith('/zh-CN');
+                                 href === '/ja/' ||
+                                 href.startsWith('/zh-CN') ||
+                                 href.startsWith('/ja');
 
           if (isLanguageLink) {
             foundMenu = link.closest('[role="menu"], [role="listbox"], ul, div');
@@ -225,6 +239,8 @@
 
           if (linkText.includes('中文') || linkText.includes('chinese') || linkText === 'zh' || linkText === 'cn') {
             targetLang = 'zh';
+          } else if (linkText.includes('日本語') || linkText.includes('japanese') || linkText === 'ja') {
+            targetLang = 'ja';
           } else if (linkText.includes('english') || linkText === 'en') {
             targetLang = 'en';
           } else if (url.pathname === '/' && !link.closest('[class*="footer"]')) {
@@ -235,6 +251,8 @@
             }
           } else if (url.pathname.startsWith('/zh-CN')) {
             targetLang = 'zh';
+          } else if (url.pathname.startsWith('/ja')) {
+            targetLang = 'ja';
           }
 
           if (targetLang) {
@@ -264,6 +282,8 @@
             targetLang = 'en';
           } else if (itemId.endsWith('-zh') || itemId.endsWith('-cn')) {
             targetLang = 'zh';
+          } else if (itemId.endsWith('-ja')) {
+            targetLang = 'ja';
           }
 
           if (!targetLang) {
@@ -272,6 +292,8 @@
               targetLang = 'en';
             } else if (text.includes('中文') || text.includes('chinese') || text === 'zh' || text === 'cn') {
               targetLang = 'zh';
+            } else if (text.includes('日本語') || text.includes('japanese') || text === 'ja') {
+              targetLang = 'ja';
             }
           }
 

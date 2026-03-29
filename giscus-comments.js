@@ -472,11 +472,18 @@
           newDiscussionLink: 'Start New Discussion'
         },
         zh: {
-          title: '💬 参与讨论', 
+          title: '💬 参与讨论',
           message: '由于访问量较高，评论功能暂时不可用。',
           suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
           discussionLink: '查找相关讨论',
           newDiscussionLink: '发起新讨论'
+        },
+        ja: {
+          title: '💬 ディスカッションに参加',
+          message: 'アクセスが集中しているため、コメント機能は一時的にご利用いただけません。',
+          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          discussionLink: '関連ディスカッションを検索',
+          newDiscussionLink: '新しいディスカッションを開始'
         }
       },
       network: {
@@ -493,12 +500,20 @@
           suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
           discussionLink: '查找相关讨论',
           newDiscussionLink: '发起新讨论'
+        },
+        ja: {
+          title: '💬 ディスカッションに参加',
+          message: 'コメントを読み込めませんでした。',
+          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          discussionLink: '関連ディスカッションを検索',
+          newDiscussionLink: '新しいディスカッションを開始'
         }
       }
     };
-    
+
     const isChinesePage = window.location.pathname.includes('/zh-CN/') || window.location.pathname.includes('/cn/');
-    const lang = isChinesePage ? 'zh' : 'en';
+    const isJapanesePage = window.location.pathname.includes('/ja/');
+    const lang = isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
     const notice = noticeMessages[noticeType][lang];
     
     const noticeDiv = document.createElement('div');
@@ -639,9 +654,10 @@
     script.setAttribute('data-input-position', 'bottom');
     script.setAttribute('data-theme', currentTheme === 'dark' ? 'dark' : 'light');
     
-    // Set language based on path - only Chinese pages should be marked as Chinese
+    // Set language based on path
     const isChinesePage = newPath.includes('/zh-CN/') || newPath.includes('/cn/');
-    const giscusLang = isChinesePage ? 'zh-CN' : 'en';
+    const isJapanesePage = newPath.includes('/ja/');
+    const giscusLang = isJapanesePage ? 'ja' : isChinesePage ? 'zh-CN' : 'en';
     script.setAttribute('data-lang', giscusLang);
     
     // Debug logging

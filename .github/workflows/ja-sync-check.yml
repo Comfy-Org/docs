@@ -1,0 +1,215 @@
+name: Japanese Translation Sync Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.mdx'
+      - '!ja/**/*.mdx'
+      - '!snippets/ja/**/*.mdx'
+
+jobs:
+  check-ja-translations:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check changed MDX files have ja equivalents and check for moved files
+        id: check-translations
+        run: |
+          # Get list of changed MDX files
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^ja/" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" | grep -v "^snippets/ja/" || true)
+
+          # Get list of deleted MDX files (potentially moved)
+          DELETED_FILES=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^ja/" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" | grep -v "^snippets/ja/" || true)
+
+          # Get list of added MDX files (potentially destinations of moves)
+          ADDED_FILES=$(git diff --name-only --diff-filter=A ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "\.mdx$" | grep -v "^ja/" | grep -v "^zh-CN/" | grep -v "^snippets/zh/" | grep -v "^snippets/ja/" || true)
+
+          # Exit if no MDX files were changed, deleted or added
+          if [ -z "$CHANGED_FILES" ] && [ -z "$DELETED_FILES" ] && [ -z "$ADDED_FILES" ]; then
+            echo "No MDX files changed outside of ja and snippets/ja directories. Skipping check."
+            exit 0
+          fi
+
+          # Check for moved files - these would be deleted and added in the same PR
+          MOVED_FILES=""
+          MOVE_DESTINATIONS=""
+
+          if [ ! -z "$DELETED_FILES" ] && [ ! -z "$ADDED_FILES" ]; then
+            echo "Potential file moves detected:"
+            echo "------------------------"
+            echo "Deleted files:"
+            echo "$DELETED_FILES"
+            echo "------------------------"
+            echo "Added files:"
+            echo "$ADDED_FILES"
+            echo "------------------------"
+
+            # Check if redirects are added in docs.json for deleted files
+            DOCS_JSON_CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "docs.json" && echo "true" || echo "false")
+
+            if [ "$DOCS_JSON_CHANGED" = "false" ]; then
+              echo "Warning: docs.json was not modified - if files were moved, redirects should be added."
+            fi
+
+            # Check docs.json content for redirects if it was changed
+            if [ "$DOCS_JSON_CHANGED" = "true" ]; then
+              echo "Checking docs.json for redirects..."
+
+              # Use Node.js to check redirects with wildcard support
+              MISSING_REDIRECTS=$(node -e "
+                const fs = require('fs');
+                const docsJson = JSON.parse(fs.readFileSync('docs.json', 'utf8'));
+                const deletedFiles = process.argv.slice(1);
+                const redirects = docsJson.redirects || [];
+
+                function matchesPattern(filePath, pattern) {
+                  pattern = pattern.replace(/^\//, '');
+                  filePath = filePath.replace(/^\//, '');
+                  const regexPattern = pattern
+                    .replace(/\//g, '\\\\/')
+                    .replace(/:slug\*/g, '.*')
+                    .replace(/:slug/g, '[^/]+')
+                    .replace(/\*/g, '.*');
+                  const regex = new RegExp(\`^\${regexPattern}$\`);
+                  return regex.test(filePath);
+                }
+
+                const missing = [];
+                for (const file of deletedFiles) {
+                  const sourcePath = file.replace(/\.mdx$/, '');
+                  const hasRedirect = redirects.some(redirect => {
+                    const redirectSource = redirect.source.replace(/^\//, '');
+                    const filePathNormalized = sourcePath.replace(/^\//, '');
+                    return redirectSource === filePathNormalized || matchesPattern(filePathNormalized, redirectSource);
+                  });
+
+                  if (hasRedirect) {
+                    console.log(\`Found redirect for moved file: \${file}\`);
+                  } else {
+                    console.log(\`Missing redirect in docs.json for: \${file}\`);
+                    missing.push(file);
+                  }
+                }
+
+                if (missing.length > 0) {
+                  process.exit(1);
+                }
+              " $DELETED_FILES 2>&1 | tee /tmp/redirect_check.log || true)
+
+              # Check if there were missing redirects
+              if echo "$MISSING_REDIRECTS" | grep -q "Missing redirect"; then
+                MOVED_FILES=$(echo "$MISSING_REDIRECTS" | grep "Missing redirect" | sed 's/.*for: //')
+              else
+                MOVED_FILES=""
+              fi
+            else
+              # If docs.json wasn't changed, all deleted files are suspect
+              MOVED_FILES="$DELETED_FILES"
+            fi
+          fi
+
+          echo "Changed MDX files outside ja directory:"
+          echo "$CHANGED_FILES"
+          echo "------------------------"
+
+          # Check each file for corresponding ja updates
+          MISSING_TRANSLATIONS=""
+          for file in $CHANGED_FILES; do
+            # Determine the corresponding ja path based on whether it's a snippet or not
+            if [[ $file == snippets/* ]]; then
+              # For snippets, the Japanese version should be in snippets/ja/
+              ja_file="${file/snippets\//snippets\/ja\/}"
+            else
+              # For regular docs, the Japanese version should be in ja/
+              ja_file="ja/${file}"
+            fi
+
+            # Check if the corresponding ja file was also modified
+            if git diff --name-only --diff-filter=ACMRT ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "^${ja_file}$"; then
+              echo "Found corresponding change: ${ja_file}"
+            else
+              # Check if the ja file exists at all
+              if [ -f "${ja_file}" ]; then
+                echo "Missing update to existing file: ${ja_file}"
+                MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${ja_file}"
+              else
+                echo "Missing equivalent file: ${ja_file}"
+                MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${ja_file}"
+              fi
+            fi
+          done
+
+          # For added files, check corresponding ja files
+          for file in $ADDED_FILES; do
+            # Determine the corresponding ja path based on whether it's a snippet or not
+            if [[ $file == snippets/* ]]; then
+              # For snippets, the Japanese version should be in snippets/ja/
+              ja_file="${file/snippets\//snippets\/ja\/}"
+            else
+              # For regular docs, the Japanese version should be in ja/
+              ja_file="ja/${file}"
+            fi
+
+            # Check if the corresponding ja file was also added or renamed
+            if git diff --name-only --diff-filter=AR ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -q "^${ja_file}$"; then
+              echo "Found corresponding added/renamed file: ${ja_file}"
+            # Also check with rename detection to catch renamed files
+            elif git diff --name-status --find-renames ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep -E "^R[0-9]+\s+" | awk '{print $3}' | grep -q "^${ja_file}$"; then
+              echo "Found corresponding renamed file: ${ja_file}"
+            else
+              echo "Missing equivalent for added file: ${ja_file}"
+              MISSING_TRANSLATIONS="$MISSING_TRANSLATIONS ${ja_file}"
+            fi
+          done
+
+          # Determine if we need to fail the check
+          SHOULD_FAIL="false"
+
+          # Check for missing translations (warning only, does not fail the build)
+          if [ "$MISSING_TRANSLATIONS" != "" ]; then
+            echo "------------------------"
+            echo "The following translations need to be updated:"
+            for missing in $MISSING_TRANSLATIONS; do
+              echo "- $missing"
+            done
+            echo "::warning::The following ja translation files need to be updated to stay in sync with the English version:$MISSING_TRANSLATIONS"
+          fi
+
+          # Check for moved files without redirects
+          if [ "$MOVED_FILES" != "" ]; then
+            SHOULD_FAIL="true"
+            echo "------------------------"
+            echo "The following files were moved but missing redirects in docs.json:"
+            for moved in $MOVED_FILES; do
+              echo "- $moved"
+            done
+            echo "------------------------"
+            echo "Please add redirects in docs.json for moved files using the format:"
+            echo '{"redirects":[{"source":"/path/to/old-file","destination":"/path/to/new-file"}]}'
+            echo "------------------------"
+          fi
+
+          # Exit with error if we found issues
+          if [ "$SHOULD_FAIL" = "true" ]; then
+            echo "------------------------"
+            echo "Please fix the issues above before merging this PR."
+            exit 1
+          else
+            echo "------------------------"
+            echo "All checks passed!"
+          fi

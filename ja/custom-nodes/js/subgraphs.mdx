@@ -1,0 +1,219 @@
+---
+title: "サブグラフ"
+description: "ComfyUI 拡張機能におけるサブグラフの活用：ノード ID、グラフトラバース、イベント、ウィジェットのプロモート、およびクリーンアップ。"
+translationSourceHash: 43a2f1a8
+translationFrom: custom-nodes/js/subgraphs.mdx, zh-CN/custom-nodes/js/subgraphs.mdx
+---
+
+## 概要
+
+サブグラフを使用すると、ユーザーはノードを再利用可能でネスト可能なコンポーネントとしてグループ化できます。各サブグラフは UUID を持つ独自の `LGraph` です。ユーザー向けガイドについては、[Subgraphs](/interface/features/subgraph) を参照してください。
+
+## ノード識別子
+
+ComfyUI では 3 種類の異なるノード識別子タイプを使用します。誤ったものを使用すると、サイレント失敗（エラーなしで失敗すること）の原因となります。
+
+| タイプ | 形式 | 用途 |
+|------|--------|----------|
+| `node.id` | `42` (数値) | 直下のグラフレベルローカル。`graph.getNodeById(id)` |
+| 実行 ID | `"1:2:3"` (コロン区切り文字列) | バックエンドの進捗メッセージ、`UNIQUE_ID` |
+| ロケーター ID | `"<uuid>:<localId>"` または `"<localId>"` | UI 状態：バッジ、エラー、画像 |
+
+拡張機能内からノードのロケーター ID を構築するには：
+
+```javascript
+function getLocatorId(node) {
+  const graphId = node.graph?.id
+  return graphId ? `${graphId}:${node.id}` : String(node.id)
+}
+```
+
+## ノードのトラバース
+
+### 現在のレイヤーのみ
+
+```javascript
+for (const node of app.graph.nodes) {
+  console.log(node.id, node.type)
+}
+```
+
+### すべてノードを再帰的に
+
+ネストされたサブグラフに入るには、すべてのノードでコールバックを呼び出す再帰ヘルパーを使用します：
+
+```javascript
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+```
+
+完全な例：
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.SubgraphWalker",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node, graph) => {
+      console.log(`[${graph.id ?? "root"}] node ${node.id}: ${node.type}`)
+    })
+  }
+})
+```
+
+## ルート vs アクティブグラフ
+
+| 目的... | 使用対象 |
+|-----------------|-----|
+| ワークフロー内のすべてのノードを操作する | `app.graph` (ルート) |
+| 表示されているレイヤーのみを操作する | `app.canvas?.graph` |
+| 特定のサブグラフにアクセスする | `someNode.subgraph` |
+
+```javascript
+// すべてのノード（ネストされたサブグラフを含む）
+walkGraph(app.graph, (node) => { /* ... */ })
+
+// ユーザーが現在見ているノードのみ
+for (const node of app.canvas?.graph?.nodes ?? []) { /* ... */ }
+```
+
+## イベント
+
+### サブグレープレベルのイベント
+
+`subgraph.events` でディスパッチされます：
+
+| イベント | ペイロード | 発生時期 |
+|-------|---------|------|
+| `widget-promoted` | `{ widget, subgraphNode }` | ウィジェットが親ノードにプロモートされた場合 |
+| `widget-demoted` | `{ widget, subgraphNode }` | ウィジェットが親ノードから削除された場合 |
+| `input-added` | `{ input }` | 入力スロットが追加された場合 |
+| `removing-input` | `{ input, index }` | 入力スロットが削除されている場合 |
+| `output-added` | `{ output }` | 出力スロットが追加された場合 |
+| `removing-output` | `{ output, index }` | 出力スロットが削除されている場合 |
+| `renaming-input` | `{ input, index, oldName, newName }` | 入力スロットの名前が変更された場合 |
+| `renaming-output` | `{ output, index, oldName, newName }` | 出力スロットの名前が変更された場合 |
+
+### キャンバスレベルのイベント
+
+`app.canvas.canvas` (HTML キャンバス要素) でディスパッチされます：
+
+| イベント | ペイロード | 発生時期 |
+|-------|---------|------|
+| `subgraph-opened` | `{ subgraph, closingGraph, fromNode }` | ユーザーがサブグラフに移動した場合 |
+| `subgraph-converted` | `{ subgraphNode }` | 選択範囲がサブグラフに変換された場合 |
+
+### リスニングパターン
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.SubgraphEvents",
+  async setup() {
+    app.canvas.canvas.addEventListener("subgraph-opened", (e) => {
+      const { subgraph, fromNode } = e.detail
+      console.log(`Opened subgraph from node ${fromNode.id}`)
+    })
+  }
+})
+```
+
+## ウィジェットのプロモート
+
+`SubgraphInput` がサブグラフ内のウィジェットに接続されると、そのウィジェットのコピーが親サブグラフノードに表示されます。これにより `widget-promoted` が発生します。接続を削除すると `widget-demoted` が発生します。
+
+<Warning>
+ウィジェットのプロモート動作は依然として進化中であり、将来のリリースで変更される可能性があります。
+</Warning>
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.WidgetPromotion",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node) => {
+      if (!node.subgraph) return
+      if (node._promCleanup) node._promCleanup.abort()
+      const controller = new AbortController()
+      node._promCleanup = controller
+      const { signal } = controller
+
+      node.subgraph.events.addEventListener("widget-promoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" promoted`)
+      }, { signal })
+
+      node.subgraph.events.addEventListener("widget-demoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" demoted`)
+      }, { signal })
+
+      const origRemoved = node.onRemoved
+      node.onRemoved = function () {
+        controller.abort()
+        origRemoved?.apply(this, arguments)
+      }
+    })
+  }
+})
+```
+
+## クリーンアップ
+
+ノードが削除されたときにすべてのイベントリスナーをクリーンアップするには、`AbortController` を使用します。
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.Cleanup",
+  async nodeCreated(node) {
+    if (!node.subgraph) return
+
+    const controller = new AbortController()
+    const { signal } = controller
+
+    node.subgraph.events.addEventListener("input-added", (e) => {
+      console.log(`Input added: ${e.detail.input.name}`)
+    }, { signal })
+
+    node.subgraph.events.addEventListener("removing-input", (e) => {
+      console.log(`Input removing: ${e.detail.input.name}`)
+    }, { signal })
+
+    const origRemoved = node.onRemoved
+    node.onRemoved = function () {
+      controller.abort()
+      origRemoved?.apply(this, arguments)
+    }
+  }
+})
+```
+
+<Tip>
+`onRemoved` は削除時だけでなく、サブグラフ変換時にも発生する可能性があります。構造変更間で状態を保持する必要がある場合は、ティアダウンロジックを保護してください。
+</Tip>
+
+## 関連項目
+
+- [Subgraphs (User Guide)](/interface/features/subgraph)
+- [Extension Hooks](/custom-nodes/js/javascript_hooks)

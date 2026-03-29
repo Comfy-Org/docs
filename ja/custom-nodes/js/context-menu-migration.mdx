@@ -1,0 +1,321 @@
+---
+title: "コンテキストメニュー移行ガイド"
+translationSourceHash: 2aa4c123
+translationFrom: custom-nodes/js/context-menu-migration.mdx, zh-CN/custom-nodes/js/context-menu-migration.mdx
+---
+
+このガイドでは、非推奨となったモンキーパッチアプローチから、新しいコンテキストメニュー拡張 API への移行を支援します。
+
+`LGraphCanvas.prototype.getCanvasMenuOptions` および `nodeType.prototype.getExtraMenuOptions` をモンキーパッチする従来のアプローチは非推奨となりました：
+
+<Tip>ブラウザのコンソールに非推奨警告が表示される場合は、拡張機能が旧 API を使用しているため、移行が必要です。</Tip>
+
+## キャンバスメニューの移行
+
+### 従来のアプローチ（非推奨）
+
+従来のアプローチでは、拡張機能のセットアップ中にプロトタイプを変更していました：
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    // ❌ 旧：プロトタイプのモンキーパッチ
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+
+      options.push(null) // セパレーター
+      options.push({
+        content: "カスタムアクション",
+        callback: () => {
+          console.log("アクションがトリガーされました")
+        }
+      })
+
+      return options
+    }
+  }
+})
+```
+
+### 新しいアプローチ（推奨）
+
+新しいアプローチでは、専用の拡張フックを使用します：
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ 新：getCanvasMenuItems フックを使用
+  getCanvasMenuItems(canvas) {
+    return [
+      null, // セパレーター
+      {
+        content: "カスタムアクション",
+        callback: () => {
+          console.log("アクションがトリガーされました")
+        }
+      }
+    ]
+  }
+})
+```
+
+### 主な違い
+
+| 従来のアプローチ | 新しいアプローチ |
+|--------------|-------------|
+| `setup()` 内で変更 | `getCanvasMenuItems()` フックを使用 |
+| 既存の関数をラップ | メニュー項目を直接返す |
+| `options` 配列を変更 | 新しい配列を返す |
+| `this` 経由でキャンバスにアクセス | キャンバスがパラメータとして渡される |
+
+## ノードメニューの移行
+
+### 従来のアプローチ（非推奨）
+
+従来のアプローチでは、ノードタイプのプロトタイプを変更していました：
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeType.comfyClass === "KSampler") {
+      // ❌ 旧：ノードプロトタイプのモンキーパッチ
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
+        original?.apply(this, arguments)
+
+        options.push({
+          content: "シードをランダム化",
+          callback: () => {
+            const seedWidget = this.widgets.find(w => w.name === "seed")
+            if (seedWidget) {
+              seedWidget.value = Math.floor(Math.random() * 1000000)
+            }
+          }
+        })
+      }
+    }
+  }
+})
+```
+
+### 新しいアプローチ（推奨）
+
+新しいアプローチでは、専用の拡張フックを使用します：
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ 新：getNodeMenuItems フックを使用
+  getNodeMenuItems(node) {
+    const items = []
+
+    // 特定のノードタイプに対してのみ項目を追加
+    if (node.comfyClass === "KSampler") {
+      items.push({
+        content: "シードをランダム化",
+        callback: () => {
+          const seedWidget = node.widgets.find(w => w.name === "seed")
+          if (seedWidget) {
+            seedWidget.value = Math.floor(Math.random() * 1000000)
+          }
+        }
+      })
+    }
+
+    return items
+  }
+})
+```
+
+### 主な違い
+
+| 従来のアプローチ | 新しいアプローチ |
+|--------------|-------------|
+| `beforeRegisterNodeDef()` 内で変更 | `getNodeMenuItems()` フックを使用 |
+| `if` チェックでタイプを指定 | フック内の `if` チェックでタイプを指定 |
+| `options` 配列を変更 | 新しい配列を返す |
+| `this` 経由でノードにアクセス | ノードがパラメータとして渡される |
+
+## 一般的なパターン
+
+### 条件付きメニュー項目
+
+どちらのアプローチも条件付き項目をサポートしますが、新しい API の方が簡潔です：
+
+```javascript
+// ✅ 新：簡潔な条件ロジック
+getCanvasMenuItems(canvas) {
+  const items = []
+
+  if (canvas.selectedItems.size > 0) {
+    items.push({
+      content: `選択された ${canvas.selectedItems.size} 個のノードを処理`,
+      callback: () => {
+        // ノードを処理
+      }
+    })
+  }
+
+  return items
+}
+```
+
+### セパレーターの追加
+
+セパレーターの追加方法は、どちらのアプローチでも同じです：
+
+```javascript
+getCanvasMenuItems(canvas) {
+  return [
+    null, // セパレーター（水平線）
+    {
+      content: "マイアクション",
+      callback: () => {}
+    }
+  ]
+}
+```
+
+### サブメニューの作成
+
+サブメニューを作成する推奨方法は、宣言的な `submenu` プロパティを使用することです：
+
+```javascript
+getNodeMenuItems(node) {
+  return [
+    {
+      content: "詳細オプション",
+      submenu: {
+        options: [
+          { content: "オプション 1", callback: () => {} },
+          { content: "オプション 2", callback: () => {} }
+        ]
+      }
+    }
+  ]
+}
+```
+
+この宣言的アプローチはより簡潔で、ComfyUI コードベース全体で使用されているパターンと一致します。
+
+<Tip>`has_submenu: true` および `new LiteGraph.ContextMenu()` を使用したコールバックベースのアプローチもサポートされていますが、保守性を高めるために宣言的な `submenu` プロパティが推奨されます。</Tip>
+
+### 状態へのアクセス
+
+```javascript
+// ✅ 新：状態アクセスがより明確
+getCanvasMenuItems(canvas) {
+  // キャンバスプロパティへのアクセス
+  const selectedCount = canvas.selectedItems.size
+  const graphMousePos = canvas.graph_mouse
+
+  return [/* メニュー項目 */]
+}
+
+getNodeMenuItems(node) {
+  // ノードプロパティへのアクセス
+  const nodeType = node.comfyClass
+  const isDisabled = node.mode === 2
+  const widgets = node.widgets
+
+  return [/* メニュー項目 */]
+}
+```
+
+## トラブルシューティング
+
+### 旧 API の使用箇所を特定する方法
+
+コード内で以下のパターンを探してください：
+
+```javascript
+// ❌ 旧 API の兆候:
+LGraphCanvas.prototype.getCanvasMenuOptions = function() { /* ... */ }
+nodeType.prototype.getExtraMenuOptions = function() { /* ... */ }
+```
+
+### 非推奨警告の理解
+
+コンソールに以下の警告が表示された場合：
+
+```
+[DEPRECATED] Monkey-patching getCanvasMenuOptions is deprecated. (Extension: "MyExtension")
+Please use the new context menu API instead.
+See: https://docs.comfy.org/custom-nodes/js/context-menu-migration
+```
+
+拡張機能が旧アプローチを使用しており、移行が必要です。
+
+### 移行成功の確認
+
+移行後：
+
+1. `setup()` および `beforeRegisterNodeDef()` からすべてのプロトタイプ変更を削除
+2. `getCanvasMenuItems()` および/または `getNodeMenuItems()` フックを追加
+3. メニュー項目が正しく表示されることをテスト
+4. コンソールに非推奨警告が表示されないことを確認
+
+### 移行の完全な例
+
+**移行前:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+      options.push({ content: "アクション", callback: () => {} })
+      return options
+    }
+  },
+  async beforeRegisterNodeDef(nodeType) {
+    if (nodeType.comfyClass === "KSampler") {
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(_, options) {
+        original?.apply(this, arguments)
+        options.push({ content: "ノードアクション", callback: () => {} })
+      }
+    }
+  }
+})
+```
+
+**移行後:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  getCanvasMenuItems(canvas) {
+    return [
+      { content: "アクション", callback: () => {} }
+    ]
+  },
+  getNodeMenuItems(node) {
+    if (node.comfyClass === "KSampler") {
+      return [
+        { content: "ノードアクション", callback: () => {} }
+      ]
+    }
+    return []
+  }
+})
+```
+
+## 追加リソース
+
+- [注釈付きの例](./javascript_examples) - 新しい API を使用したさらに多くの例
+- [拡張フック](./javascript_hooks) - 利用可能な拡張フックの完全なリスト
+- [コマンドとキーバインド](./javascript_commands_keybindings) - メニューアクションにキーボードショートカットを追加

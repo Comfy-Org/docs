@@ -1,0 +1,89 @@
+---
+title: "注釈付きの例"
+translationSourceHash: 5a16b33d
+translationFrom: custom-nodes/backend/snippets.mdx, zh-CN/custom-nodes/backend/snippets.mdx
+---
+
+サンプルコードの断片コレクションが増え続けています……
+
+## 画像とマスク
+
+### 画像の読み込み
+
+画像をバッチサイズ 1 として読み込みます（`nodes.py` の `LoadImage` ソースコードに基づきます）
+```python
+i = Image.open(image_path)
+i = ImageOps.exif_transpose(i)
+if i.mode == 'I':
+    i = i.point(lambda i: i * (1 / 255))
+image = i.convert("RGB")
+image = np.array(image).astype(np.float32) / 255.0
+image = torch.from_numpy(image)[None,]
+```
+
+### 画像バッチの保存
+
+画像のバッチを保存します（`nodes.py` の `SaveImage` ソースコードに基づきます）
+```python     
+for (batch_number, image) in enumerate(images):
+    i = 255. * image.cpu().numpy()
+    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+    filepath = # バッチ番号を考慮したパス
+    img.save(filepath)
+```
+
+### マスクの反転
+
+マスクの反転は単純なプロセスです。マスクは [0,1] の範囲に正規化されているため：
+
+```python
+mask = 1.0 - mask
+```
+
+### マスクを画像形状に変換
+
+```Python
+# [B,H,W,C] が必要です。ここで C = 1
+if len(mask.shape)==2: # [H,W] のため、B と C を次元 1 として挿入
+    mask = mask[None,:,:,None]
+elif len(mask.shape)==3 and mask.shape[2]==1: # [H,W,C] の場合
+    mask = mask[None,:,:,:]
+elif len(mask.shape)==3:                      # [B,H,W] の場合
+    mask = mask[:,:,:,None]
+```
+
+### マスクを透過層として使用
+
+インペインティングやセグメンテーションなどのタスクで使用する場合、MASK の値は最終的に最も近い整数に丸められ、二値になります。0 は無視される領域を示し、1 は対象となる領域を示します。ただし、これは MASK がそれらのノードに渡されるまで発生しません。この柔軟性により、デジタル写真のコンテキストにおける透過層として MASK を使用できます：
+
+```python
+# マスクを元の透過層に戻すために反転
+mask = 1.0 - mask
+
+# `C`（チャンネル）次元を Unsqueeze
+mask = mask.unsqueeze(-1)
+
+# `C` 次元に沿って結合（"cat"）
+rgba_image = torch.cat((rgb_image, mask), dim=-1)
+```
+
+## ノイズ
+
+### ノイズバリエーションの作成
+
+これは 2 つのソースからのノイズを混合するノイズオブジェクトを作成する例です。`weight2` を変えることで、わずかなノイズのバリエーションを作成するために使用できます。
+
+```python
+class Noise_MixedNoise:
+    def __init__(self, nosie1, noise2, weight2):
+        self.noise1  = noise1
+        self.noise2  = noise2
+        self.weight2 = weight2
+
+    @property
+    def seed(self): return self.noise1.seed
+
+    def generate_noise(self, input_latent:torch.Tensor) -> torch.Tensor:
+        noise1 = self.noise1.generate_noise(input_latent)
+        noise2 = self.noise2.generate_noise(input_latent)
+        return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
