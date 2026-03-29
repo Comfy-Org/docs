@@ -283,10 +283,10 @@ interface PathMapping {
 function defaultMapping(relPath: string): PathMapping {
   return {
     enPath: join(ROOT, relPath),
-    zhPath: join(ROOT, "zh-CN", relPath),
+    zhPath: join(ROOT, "zh", relPath),
     jaPath: join(ROOT, "ja", relPath),
     enRel: relPath,
-    zhRel: `zh-CN/${relPath}`,
+    zhRel: `zh/${relPath}`,
   };
 }
 
@@ -345,7 +345,7 @@ async function translateFile(
 
   // Post-process: add /ja/ prefix to internal href links
   output = output.replace(
-    /href="\/(?!ja\/|zh-CN\/|logo\/|images\/|snippets\/)([^"]*?)"/g,
+    /href="\/(?!ja\/|zh\/|logo\/|images\/|snippets\/)([^"]*?)"/g,
     'href="/ja/$1"'
   );
 
@@ -413,7 +413,7 @@ async function main() {
   // Collect files
   let files: string[];
   if (fileArgs.length > 0) {
-    files = fileArgs.map((f) => f.replace(/^(ja\/|zh-CN\/|snippets\/(ja|zh)\/)/, ""));
+    files = fileArgs.map((f) => f.replace(/^(ja\/|zh\/|snippets\/(ja|zh)\/)/, ""));
   } else if (snippetsMode) {
     // Collect EN snippet files (snippets/ minus snippets/zh/ and snippets/ja/)
     const all = await collectMdx(join(ROOT, "snippets"));
@@ -426,7 +426,7 @@ async function main() {
       .map((f) => relative(ROOT, f))
       .filter(
         (f) =>
-          !f.startsWith("zh-CN/") &&
+          !f.startsWith("zh/") &&
           !f.startsWith("ja/") &&
           !f.startsWith("snippets/") &&
           !f.startsWith("node_modules/") &&

@@ -1,0 +1,334 @@
+---
+title: "Cloud API 概述"
+description: "通过编程方式访问 Comfy Cloud，在云端运行工作流、管理文件并监控执行状态"
+---
+
+import GetApiKey from '/snippets/zh/get-api-key.mdx'
+import PollJobCompletion from '/snippets/zh/cloud/poll-job-completion.mdx'
+import WebSocketProgress from '/snippets/zh/cloud/websocket-progress.mdx'
+import DownloadOutputs from '/snippets/zh/cloud/download-outputs.mdx'
+import CompleteExample from '/snippets/zh/cloud/complete-example.mdx'
+
+<Warning>
+  **实验性 API：** 此 API 目前处于实验阶段，可能会发生变更。端点、请求/响应格式和行为可能会在不另行通知的情况下进行修改。
+</Warning>
+
+# Comfy Cloud API
+
+Comfy Cloud API 提供以编程方式访问 Comfy Cloud 的能力，可在云端基础设施上运行工作流。该 API 与本地 ComfyUI 的 API 兼容，便于迁移现有集成。
+
+<Note>
+  **需要订阅：** 通过 API 运行工作流需要有效的 Comfy Cloud 订阅。详情请参阅[定价方案](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)。
+</Note>
+
+## 基础 URL
+
+```
+https://cloud.comfy.org
+```
+
+## 身份验证
+
+所有 API 请求都需要通过 `X-API-Key` 请求头传递 API 密钥。
+
+### 获取 API 密钥
+
+<GetApiKey />
+
+<Warning>
+  请妥善保管您的 API 密钥。切勿将其提交到版本控制系统或公开分享。
+</Warning>
+
+### 使用 API 密钥
+
+在每个请求中通过 `X-API-Key` 请求头传递您的 API 密钥：
+
+<CodeGroup>
+```bash curl
+curl -X GET "https://cloud.comfy.org/api/user" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+const response = await fetch("https://cloud.comfy.org/api/user", {
+  headers: { "X-API-Key": API_KEY },
+});
+const user = await response.json();
+```
+
+```python Python
+import os
+import requests
+
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+headers = {"X-API-Key": API_KEY}
+
+response = requests.get(
+    "https://cloud.comfy.org/api/user",
+    headers=headers
+)
+```
+</CodeGroup>
+
+## 核心概念
+
+### 工作流
+
+ComfyUI 工作流是描述节点图的 JSON 对象。API 接受"API 格式"的工作流（以节点 ID 为键，包含 class_type、inputs 等），该格式由 ComfyUI 前端的"Save (API Format)"选项导出。
+
+### 任务
+
+当您提交工作流时，会创建一个**任务**。任务以异步方式执行：
+1. 通过 `POST /api/prompt` 提交工作流
+2. 收到 `prompt_id`（任务 ID）
+3. 通过 WebSocket 监控进度或轮询状态
+4. 完成后获取输出
+
+### 并行执行（并发任务）
+
+API 用户可以同时提交多个工作流，无需等待之前的任务完成。只需发送多个 `POST /api/prompt` 请求即可——不需要特殊的请求头或参数。调度器会根据您的订阅等级限制并行运行任务。
+
+| 订阅等级 | 并发任务数 |
+|----------|-----------|
+| Free     | 1         |
+| Standard | 1         |
+| Creator  | 3         |
+| Pro      | 5         |
+
+超出并发限制的任务将正常排队，并在有空闲槽位时自动执行。
+
+<Info>
+  并行执行目前仅通过 API 提供。请查看[定价方案](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)了解订阅详情。
+</Info>
+
+#### 示例：并行提交多个任务
+
+<CodeGroup>
+```python Python
+import os
+import json
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+async def submit_workflow(session, workflow):
+    """提交单个工作流并返回 prompt_id。"""
+    async with session.post(
+        f"{BASE_URL}/api/prompt",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"prompt": workflow},
+    ) as response:
+        result = await response.json()
+        return result["prompt_id"]
+
+async def main():
+    with open("workflow_api.json") as f:
+        base_workflow = json.load(f)
+
+    # 通过更改种子创建变体
+    workflows = []
+    for seed in [42, 123, 456]:
+        workflow = json.loads(json.dumps(base_workflow))
+        workflow["3"]["inputs"]["seed"] = seed
+        workflows.append(workflow)
+
+    # 并发提交所有工作流
+    async with aiohttp.ClientSession() as session:
+        prompt_ids = await asyncio.gather(
+            *[submit_workflow(session, wf) for wf in workflows]
+        )
+
+    for pid in prompt_ids:
+        print(f"Job submitted: {pid}")
+
+    # 使用轮询或 WebSocket 监控每个任务...
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+async function submitWorkflow(
+  workflow: Record<string, any>
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function main() {
+  const base = JSON.parse(
+    await Deno.readTextFile("workflow_api.json")
+  );
+
+  // 通过更改种子创建变体
+  const seeds = [42, 123, 456];
+  const workflows = seeds.map((seed) => {
+    const wf = structuredClone(base);
+    wf["3"].inputs.seed = seed;
+    return wf;
+  });
+
+  // 并发提交所有工作流
+  const promptIds = await Promise.all(
+    workflows.map((wf) => submitWorkflow(wf))
+  );
+
+  for (const pid of promptIds) {
+    console.log(`Job submitted: ${pid}`);
+  }
+
+  // 使用轮询或 WebSocket 监控每个任务...
+}
+
+main();
+```
+</CodeGroup>
+
+### 输出
+
+生成的内容（图像、视频、音频）存储在云存储中。输出文件可通过 `/api/view` 端点下载，该端点会返回 302 重定向到临时签名 URL。
+
+## 快速入门
+
+以下是完整示例，展示如何提交工作流、监控进度并获取输出：
+
+### 步骤 1：提交工作流
+
+<CodeGroup>
+```bash curl
+curl -X POST "https://cloud.comfy.org/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": '"$(cat workflow_api.json)"'}'
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+// 加载您的工作流（从 ComfyUI 以 API 格式导出）
+const workflow = JSON.parse(await Deno.readTextFile("workflow_api.json"));
+
+// 提交工作流
+const response = await fetch(`${BASE_URL}/api/prompt`, {
+  method: "POST",
+  headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: workflow }),
+});
+const result = await response.json();
+const promptId = result.prompt_id;
+console.log(`Job submitted: ${promptId}`);
+```
+
+```python Python
+import os
+import requests
+import json
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+# 加载您的工作流（从 ComfyUI 以 API 格式导出）
+with open("workflow_api.json") as f:
+    workflow = json.load(f)
+
+# 提交工作流
+response = requests.post(
+    f"{BASE_URL}/api/prompt",
+    headers=get_headers(),
+    json={"prompt": workflow}
+)
+result = response.json()
+prompt_id = result["prompt_id"]
+print(f"Job submitted: {prompt_id}")
+```
+</CodeGroup>
+
+### 步骤 2：监控任务进度
+
+您可以使用轮询或 WebSocket 来监控任务完成情况，以便获取实时更新。
+
+#### 选项 A：轮询（简单）
+
+<PollJobCompletion />
+
+#### 选项 B：WebSocket（实时进度）
+
+用于实时进度更新并收集输出元数据：
+
+<WebSocketProgress />
+
+<Note>
+  详细的消息类型和二进制预览图像处理请参阅 [WebSocket 参考](/zh/development/cloud/api-reference#实时进度-websocket)。
+</Note>
+
+### 步骤 3：下载输出
+
+任务完成后，下载生成的文件。从 WebSocket 返回的 `outputs` 对象（或通过历史端点获取）包含按节点 ID 组织的输出数据。每个节点的输出可能包含 `images`、`video` 或 `audio` 数组，其中包含文件元数据。
+
+**输出结构示例：**
+```json
+{
+  "9": {
+    "images": [
+      {
+        "filename": "ComfyUI_00001_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ]
+  }
+}
+```
+
+节点 ID（此例中的 `"9"`）对应于工作流中的 SaveImage 或其他输出节点。您可以通过打开工作流 JSON 文件并查找 `class_type` 为 `SaveImage`、`VHS_VideoCombine` 等的节点来找到这些 ID。
+
+<DownloadOutputs />
+
+<Info>
+  `/api/view` 端点返回 302 重定向到临时签名 URL。您的 HTTP 客户端必须跟随重定向才能下载文件。
+</Info>
+
+### 完整示例
+
+以下是结合所有三个步骤的完整端到端示例：
+
+<CompleteExample />
+
+## 可用端点
+
+| 类别 | 描述 |
+|----------|-------------|
+| [工作流](/zh/development/cloud/api-reference#运行工作流) | 提交工作流、检查状态 |
+| [任务](/zh/development/cloud/api-reference#检查任务状态) | 监控任务状态和队列 |
+| [输入](/zh/development/cloud/api-reference#上传输入) | 上传图像、遮罩和其他输入 |
+| [输出](/zh/development/cloud/api-reference#下载输出) | 下载生成的内容 |
+| [WebSocket](/zh/development/cloud/api-reference#实时进度-websocket) | 实时进度更新 |
+| [对象信息](/zh/development/cloud/api-reference#对象信息) | 可用节点及其定义 |
+
+## 后续步骤
+
+上面的快速入门涵盖了提交工作流和获取结果的基础知识。对于更高级的用例，请参阅 [Cloud API 参考](/zh/development/cloud/api-reference)：
+
+- **[上传输入文件](/zh/development/cloud/api-reference#上传输入)** - 为需要外部输入的工作流上传图像、遮罩或其他用户提供的内容
+- **[修改工作流输入](/zh/development/cloud/api-reference#修改工作流输入)** - 在提交前动态更改工作流参数，如提示词、随机种子或节点设置
+- **[使用合作伙伴节点](/zh/development/cloud/api-reference#使用合作伙伴节点)** - 调用需要额外 API 密钥配置的外部 AI 服务（Flux Pro、Ideogram 等）
+- **[队列管理](/zh/development/cloud/api-reference#队列管理)** - 监控队列状态、取消任务或中断正在运行的执行
+- **[错误处理](/zh/development/cloud/api-reference#错误处理)** - 处理 HTTP 错误、执行失败，并了解异常类型
+
+其他资源：
+- [OpenAPI 规范](/zh/development/cloud/openapi) - 用于代码生成的机器可读 API 规范
