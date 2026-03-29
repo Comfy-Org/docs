@@ -1,0 +1,151 @@
+---
+title: "ComfyUI 模型問題のトラブルシューティングと解決方法"
+description: "アーキテクチャの不一致、模型の不足、読み込みエラーなど、模型関連の問題のトラブルシューティング"
+icon: "cube"
+sidebarTitle: "模型問題"
+translationSourceHash: 16031496
+translationFrom: troubleshooting/model-issues.mdx, zh-CN/troubleshooting/model-issues.mdx
+translationMismatches:
+  - "1. Prevention strategies list differs (EN has 3 items, ZH has 4 items including ComfyUI Manager compatibility indicator). 2. Slow Model Loading solutions differ (EN lacks --highvram option present in ZH)."
+---
+
+## 模型アーキテクチャの不一致
+
+**症状：** 生成過程中にテンソル次元エラーが発生する、特に VAE デコード段階
+
+**一般的なエラーメッセージ：**
+- `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [4, 4, 1, 1], expected input[1, 16, 144, 112] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [320, 4, 3, 3], expected input[2, 16, 192, 128] to have 4 channels, but got 16 channels instead`
+- `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
+- `Tensors must have same number of dimensions: got 2 and 3`
+- `mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)`
+
+**根本原因：** 異なるアーキテクチャファミリーの模型を混合して使用している
+
+### 解決策
+
+1. **模型ファミリーの互換性を確認する：**
+   - **Flux 模型**は 16 チャンネルの潜在空間を使用し、デュアルテキストエンコーダー条件付け（CLIP-L + T5-XXL）を伴います
+   - **SD1.5 模型**は 4 チャンネルの潜在空間を使用し、単一の CLIP ViT-L/14 テキストエンコーダーを伴います
+   - **SDXL 模型**は 4 チャンネルの潜在空間を使用し、デュアルテキストエンコーダー（CLIP ViT-L/14 + OpenCLIP ViT-bigG/14）を伴います
+   - **SD3 模型**は 16 チャンネルの潜在空間を使用し、トリプルテキストエンコーダー条件付け（CLIP-L + OpenCLIP bigG + T5-XXL）を伴います
+   - **ControlNet 模型**はベースチェックポイントのアーキテクチャに一致する必要があります（SD1.5 ControlNet は SD1.5 チェックポイントとのみ動作し、SDXL ControlNet は SDXL チェックポイントとのみ動作しますなど）
+
+2. **一般的な不一致シナリオと修正：**
+
+   **Flux + 誤った VAE：**
+   ```
+   問題：Flux チェックポイントで taesd または sdxl_vae.safetensors を使用している
+   修正：Hugging Face Flux リリースから ae.safetensors（Flux VAE）を使用する
+   ```
+
+   **Flux + 不正確な CLIP 設定：**
+   ```
+   問題：DualClipLoader の両方の CLIP スロットで t5xxl_fp8_e4m3fn.safetensors を使用している
+   修正：一方のスロットで t5xxl_fp8_e4m3fn.safetensors を使用し、もう一方のスロットで clip_l.safetensors を使用する
+   ```
+
+   **ControlNet アーキテクチャの不一致：**
+   ```
+   問題：SD1.5 ControlNet を SDXL チェックポイントで使用している（またはその逆）
+   エラー："mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)"
+   修正：チェックポイントアーキテクチャ用に設計された ControlNet 模型を使用する
+        - SD1.5 チェックポイントには SD1.5 ControlNet が必要
+        - SDXL チェックポイントには SDXL ControlNet が必要
+   ```
+
+3. **迅速な診断：**
+   ```bash
+   # エラーが VAE デコード段階で発生するか確認する
+   # "expected input[X, Y, Z] to have N channels, but got M channels" を探す
+   # Y 値はチャンネル数を示す：4 = SD 模型，16 = Flux 模型
+   ```
+
+4. **予防戦略：**
+   - すべてのワークフロー模型を同一のアーキテクチャファミリー内に保つ
+   - 同じソース/リリースから完全な模型パッケージをダウンロードする（多くの場合、Hugging Face リポジトリ内にすべて存在する）
+   - 新しい模型を試す際は、カスタマイズ前にテンプレートワークフローまたは公式 ComfyUI ワークフロー例から開始する
+
+## 模型不足エラー
+
+**エラーメッセージ例：** 
+```
+Prompt execution failed
+Prompt outputs failed validation:
+CheckpointLoaderSimple:
+- Value not in list: ckpt_name: 'model-name.safetensors' not in []
+```
+
+### 解決策
+
+1. **必要な模型をダウンロードする：**
+   - ComfyUI Manager を使用して模型を自動ダウンロードする
+   - 模型が正しいサブフォルダにあることを確認する
+
+2. **模型パスを確認する：**
+   - **チェックポイント**: `models/checkpoints/`
+   - **VAE**: `models/vae/`
+   - **LoRA**: `models/loras/`
+   - **ControlNet**: `models/controlnet/`
+   - **埋め込み**: `models/embeddings/`
+
+3. **UI 間で模型を共有するか、カスタムパスを使用する：**
+   - 詳細な手順については [ComfyUI 模型の共有とカスタム模型ディレクトリ設定](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration) を参照
+   - `extra_model_paths.yaml` ファイルを編集してカスタム模型ディレクトリを追加する
+
+### 模型検索パス設定
+
+模型をカスタム場所に配置している場合、ComfyUI がそれらを見つけるように設定するための詳細ガイド [ComfyUI 模型の共有とカスタム模型ディレクトリ設定](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration) を参照してください。
+
+## 模型読み込みエラー
+
+**エラーメッセージ：** "Error while deserializing header"
+
+### 解決策
+
+1. **模型を再ダウンロードする** - ダウンロード過程中にファイルが破損している可能性があります
+2. **利用可能なディスク容量を確認する** - 模型読み込みのに十分な容量があることを確認する（模型は 2-15GB 以上の場合があります）
+3. **ファイル権限を確認する** - ComfyUI が模型ファイルを読み取れることを確認する
+4. **異なる模型でテストする** - 問題が模型固有のものかシステム全体のものかを確認する
+
+## 模型パフォーマンス問題
+
+### 模型読み込みが遅い
+
+**症状：** 模型の切り替えや生成開始時に長時間の遅延が発生する
+
+**解決策：**
+1. **より高速なストレージを使用する：**
+   - HDD を使用している場合、模型を SSD に移動する
+   - 最高のパフォーマンスには NVMe SSD を使用する
+
+2. **キャッシュ設定を調整する：**
+   ```bash
+   python main.py --cache-classic       # 旧式（積極的）キャッシュを使用する
+   python main.py --cache-lru 10         # LRU キャッシュのサイズを増やす
+   ```
+
+### 大型模型におけるメモリ問題
+
+**"RuntimeError: CUDA out of memory"：**
+
+```bash
+# 段階的なメモリ削減
+python main.py --lowvram          # 最初に試す
+python main.py --novram           # lowvram が不十分な場合
+python main.py --cpu              # 最後の手段
+```
+
+**模型固有のメモリ最適化：**
+```bash
+# 低い精度を強制する
+python main.py --force-fp16
+
+# アテンションメモリの使用量を削減する
+python main.py --use-pytorch-cross-attention
+```
+
+<Note>
+追加の模型設定とセットアップ情報については、[模型ドキュメント](/development/core-concepts/models) を参照してください。
+</Note>

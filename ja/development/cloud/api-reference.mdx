@@ -1,0 +1,935 @@
+---
+title: "Cloud API リファレンス"
+description: "Comfy Cloud の完全な API リファレンスとコード例"
+translationSourceHash: ef54c171
+translationFrom: development/cloud/api-reference.mdx, zh-CN/development/cloud/api-reference.mdx
+translationMismatches:
+  - "English source uses <PollJobCompletion /> component for \"Checking Job Status\" section, while Chinese source has inline CodeGroup with polling code examples. English source structure will be preserved."
+  - "URLs in Chinese source include /zh-CN/ prefix for internal links, English source does not. English URL structure will be preserved."
+---
+
+import PollJobCompletion from '/snippets/cloud/poll-job-completion.mdx'
+import WebSocketProgress from '/snippets/cloud/websocket-progress.mdx'
+import DownloadOutputs from '/snippets/cloud/download-outputs.mdx'
+
+<Warning>
+  **実験的 API:** この API は実験的であり、変更される可能性があります。エンドポイント、リクエスト/レスポンス形式、および動作は予告なしに変更される場合があります。一部のエンドポイントはローカル ComfyUI との互換性のために維持されていますが、異なるセマンティクスを持つ場合があります（例：無視されるフィールド）。
+</Warning>
+
+このページでは、一般的な Comfy Cloud API 操作の完全な例を提供します。
+
+<Note>
+  **サブスクリプションが必要:** API を介してワークフローを実行するには、有効な Comfy Cloud サブスクリプションが必要です。詳細については[料金プラン](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)をご覧ください。
+</Note>
+
+## 設定
+
+すべての例で、これらの共通のインポートと設定を使用します：
+
+<CodeGroup>
+```bash curl
+export COMFY_CLOUD_API_KEY="your-api-key"
+export BASE_URL="https://cloud.comfy.org"
+```
+
+```typescript TypeScript
+import { readFile, writeFile } from "fs/promises";
+
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+function getHeaders(): HeadersInit {
+  return {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json",
+  };
+}
+```
+
+```python Python
+import os
+import requests
+import json
+import time
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json"
+    }
+```
+</CodeGroup>
+
+---
+
+## オブジェクト情報
+
+利用可能なノード定義を取得します。これは、利用可能なノードとその入出力仕様を理解するのに役立ちます。
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/object_info" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getObjectInfo(): Promise<Record<string, any>> {
+  const response = await fetch(`${BASE_URL}/api/object_info`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const objectInfo = await getObjectInfo();
+console.log(`Available nodes: ${Object.keys(objectInfo).length}`);
+
+const ksampler = objectInfo["KSampler"] ?? {};
+console.log(`KSampler inputs: ${Object.keys(ksampler.input?.required ?? {})}`);
+```
+
+```python Python
+def get_object_info():
+    """Fetch all available node definitions from cloud."""
+    response = requests.get(
+        f"{BASE_URL}/api/object_info",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+
+# Get all nodes
+object_info = get_object_info()
+print(f"Available nodes: {len(object_info)}")
+
+# Get a specific node's definition
+ksampler = object_info.get("KSampler", {})
+inputs = list(ksampler.get('input', {}).get('required', {}).keys())
+print(f"KSampler inputs: {inputs}")
+```
+</CodeGroup>
+
+---
+
+## 入力のアップロード
+
+ワークフローで使用するための画像、マスク、またはその他のファイルをアップロードします。
+
+### 直接アップロード（Multipart）
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/upload/image" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "image=@my_image.png" \
+  -F "type=input" \
+  -F "overwrite=true"
+```
+
+```typescript TypeScript
+async function uploadInput(
+  filePath: string,
+  inputType: string = "input"
+): Promise<{ name: string; subfolder: string }> {
+  const file = await readFile(filePath);
+  const formData = new FormData();
+  formData.append("image", new Blob([file]), filePath.split("/").pop());
+  formData.append("type", inputType);
+  formData.append("overwrite", "true");
+
+  const response = await fetch(`${BASE_URL}/api/upload/image`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const result = await uploadInput("my_image.png");
+console.log(`Uploaded: ${result.name} to ${result.subfolder}`);
+```
+
+```python Python
+def upload_input(file_path: str, input_type: str = "input") -> dict:
+    """Upload a file directly to cloud.
+    
+    Args:
+        file_path: Path to the file to upload
+        input_type: "input" for images, "temp" for temporary files
+        
+    Returns:
+        Upload response with filename and subfolder
+    """
+    with open(file_path, "rb") as f:
+        files = {"image": f}
+        data = {"type": input_type, "overwrite": "true"}
+        
+        response = requests.post(
+            f"{BASE_URL}/api/upload/image",
+            headers={"X-API-Key": API_KEY},  # No Content-Type for multipart
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+
+# Upload an image
+result = upload_input("my_image.png")
+print(f"Uploaded: {result['name']} to {result['subfolder']}")
+```
+</CodeGroup>
+
+### マスクのアップロード
+
+<Note>
+  `subfolder` パラメータは API 互換性のために受け入れられますが、クラウドストレージでは無視されます。すべてのファイルはフラットなコンテンツアドレス指定ネームスペースに保存されます。
+</Note>
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/upload/mask" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "image=@mask.png" \
+  -F "type=input" \
+  -F "subfolder=clipspace" \
+  -F 'original_ref={"filename":"my_image.png","subfolder":"","type":"input"}'
+```
+
+```typescript TypeScript
+async function uploadMask(
+  filePath: string,
+  originalRef: { filename: string; subfolder: string; type: string }
+): Promise<{ name: string; subfolder: string }> {
+  const file = await readFile(filePath);
+  const formData = new FormData();
+  formData.append("image", new Blob([file]), filePath.split("/").pop());
+  formData.append("type", "input");
+  formData.append("subfolder", "clipspace");
+  formData.append("original_ref", JSON.stringify(originalRef));
+
+  const response = await fetch(`${BASE_URL}/api/upload/mask`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const maskResult = await uploadMask("mask.png", {
+  filename: "my_image.png",
+  subfolder: "",
+  type: "input",
+});
+console.log(`Uploaded mask: ${maskResult.name}`);
+```
+
+```python Python
+def upload_mask(file_path: str, original_ref: dict) -> dict:
+    """Upload a mask associated with an original image.
+    
+    Args:
+        file_path: Path to the mask file
+        original_ref: Reference to the original image {"filename": "...", "subfolder": "...", "type": "..."}
+    """
+    with open(file_path, "rb") as f:
+        files = {"image": f}
+        data = {
+            "type": "input",
+            "subfolder": "clipspace",
+            "original_ref": json.dumps(original_ref)
+        }
+        
+        response = requests.post(
+            f"{BASE_URL}/api/upload/mask",
+            headers={"X-API-Key": API_KEY},
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+---
+
+## ワークフローの実行
+
+実行のためにワークフローを送信します。
+
+<Info>
+  **同時送信をサポート:** サブスクリプションティアに応じて、前のジョブの完了を待たずに複数のワークフローを送信できます。ジョブはティアの制限まで並列で実行されます—追加のジョブは自動的にキューイングされます。詳細と同時実行制限については[並列実行](/development/cloud/overview#parallel-execution-concurrent-jobs)をご覧ください。
+</Info>
+
+### ワークフローの送信
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": '"$(cat workflow_api.json)"'}'
+```
+
+```typescript TypeScript
+async function submitWorkflow(workflow: Record<string, any>): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const result = await response.json();
+
+  if (result.error) {
+    throw new Error(`Workflow error: ${result.error}`);
+  }
+  return result.prompt_id;
+}
+
+const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+const promptId = await submitWorkflow(workflow);
+console.log(`Submitted job: ${promptId}`);
+```
+
+```python Python
+def submit_workflow(workflow: dict) -> str:
+    """Submit a workflow and return the prompt_id (job ID).
+    
+    Args:
+        workflow: ComfyUI workflow in API format
+        
+    Returns:
+        prompt_id for tracking the job
+    """
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={"prompt": workflow}
+    )
+    response.raise_for_status()
+    result = response.json()
+    
+    if "error" in result:
+        raise ValueError(f"Workflow error: {result['error']}")
+    
+    return result["prompt_id"]
+
+# Load and submit a workflow
+with open("workflow_api.json") as f:
+    workflow = json.load(f)
+
+prompt_id = submit_workflow(workflow)
+print(f"Submitted job: {prompt_id}")
+```
+</CodeGroup>
+
+### パートナーノードの使用
+
+ワークフローに[パートナーノード](/tutorials/api-nodes/overview)（Flux Pro、Ideogram などの外部 AI サービスを呼び出すノード）が含まれている場合、リクエストペイロードの `extra_data` フィールドに Comfy API キーを含める必要があります。
+
+<Note>
+  ブラウザでワークフローを実行する際、ComfyUI フロントエンドは自動的に API キーを `extra_data` にパッケージ化します。このセクションは API を直接呼び出す場合のみ関連します。
+</Note>
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": '"$(cat workflow_api.json)"',
+    "extra_data": {
+      "api_key_comfy_org": "your-comfy-api-key"
+    }
+  }'
+```
+
+```typescript TypeScript
+async function submitWorkflowWithPartnerNodes(
+  workflow: Record<string, any>,
+  apiKey: string
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({
+      prompt: workflow,
+      extra_data: {
+        api_key_comfy_org: apiKey,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const result = await response.json();
+  return result.prompt_id;
+}
+
+// ワークフローにパートナーノードが含まれている場合に使用（例：Flux Pro、Ideogram など）
+const promptId = await submitWorkflowWithPartnerNodes(workflow, API_KEY);
+```
+
+```python Python
+def submit_workflow_with_partner_nodes(workflow: dict, api_key: str) -> str:
+    """Submit a workflow that uses Partner Nodes.
+    
+    Args:
+        workflow: ComfyUI workflow in API format
+        api_key: Your API key from platform.comfy.org
+        
+    Returns:
+        prompt_id for tracking the job
+    """
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={
+            "prompt": workflow,
+            "extra_data": {
+                "api_key_comfy_org": api_key
+            }
+        }
+    )
+    response.raise_for_status()
+    return response.json()["prompt_id"]
+
+# ワークフローにパートナーノードが含まれている場合に使用
+prompt_id = submit_workflow_with_partner_nodes(workflow, API_KEY)
+```
+</CodeGroup>
+
+<Info>
+  API キーは [platform.comfy.org](https://platform.comfy.org/login) で生成してください。これは Cloud API 認証（`X-API-Key` ヘッダー）に使用されるのと同じキーです。
+</Info>
+
+### ワークフロー入力の修改
+
+<CodeGroup>
+```typescript TypeScript
+function setWorkflowInput(
+  workflow: Record<string, any>,
+  nodeId: string,
+  inputName: string,
+  value: any
+): Record<string, any> {
+  if (workflow[nodeId]) {
+    workflow[nodeId].inputs[inputName] = value;
+  }
+  return workflow;
+}
+
+// Example: Set seed and prompt
+let workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+workflow = setWorkflowInput(workflow, "3", "seed", 12345);
+workflow = setWorkflowInput(workflow, "6", "text", "a beautiful landscape");
+```
+
+```python Python
+def set_workflow_input(workflow: dict, node_id: str, input_name: str, value) -> dict:
+    """Modify a workflow input value.
+    
+    Args:
+        workflow: The workflow dict
+        node_id: ID of the node to modify
+        input_name: Name of the input field
+        value: New value
+        
+    Returns:
+        Modified workflow
+    """
+    if node_id in workflow:
+        workflow[node_id]["inputs"][input_name] = value
+    return workflow
+
+# Example: Set seed and prompt
+workflow = set_workflow_input(workflow, "3", "seed", 12345)
+workflow = set_workflow_input(workflow, "6", "text", "a beautiful landscape")
+```
+</CodeGroup>
+
+---
+
+## ジョブステータスの確認
+
+ジョブの完了をポーリングします。
+
+<PollJobCompletion />
+
+---
+
+## リアルタイム進捗のための WebSocket
+
+リアルタイムの実行更新を取得するために WebSocket に接続します。
+
+<Note>
+  `clientId` パラメータは現在無視されます—ユーザーのすべての接続が同じメッセージを受け取ります。前方互換性のために、一意の `clientId` を渡してください。
+</Note>
+
+<WebSocketProgress />
+
+### WebSocket メッセージタイプ
+
+特に記載がない限り、メッセージは JSON テキストフレームとして送信されます。
+
+| タイプ | 説明 |
+|------|-------------|
+| `status` | `queue_remaining` カウントを含むキュー状態更新 |
+| `notification` | ユーザーフレンドリーな状態メッセージ（`value` フィールドには "Executing workflow..." などのテキストが含まれます） |
+| `execution_start` | ワークフロー実行が開始されました |
+| `executing` | 特定のノードが現在実行中です（`node` フィールドのノード ID） |
+| `progress` | ノード内のステップ進捗（サンプリングステップの `value`/`max`） |
+| `progress_state` | ノードメタデータを含む拡張進捗状態（ネストされた `nodes` オブジェクト） |
+| `executed` | ノードが出力付きで完了しました（`output` フィールドの画像、動画など） |
+| `execution_cached` | 出力がキャッシュされているためスキップされたノード（`nodes` 配列） |
+| `execution_success` | ワークフロー全体が正常に完了しました |
+| `execution_error` | ワークフローが失敗しました（`exception_type`、`exception_message`、`traceback` を含む） |
+| `execution_interrupted` | ワークフローがユーザーによってキャンセルされました |
+
+#### バイナリメッセージ（プレビュー画像）
+
+画像生成中、ComfyUI はプレビュー画像を含む**バイナリ WebSocket フレーム**を送信します。これらは生のバイナリデータです（JSON ではありません）：
+
+| バイナリタイプ | 値 | 説明 |
+|-------------|-------|-------------|
+| `PREVIEW_IMAGE` | `1` | 拡散サンプリング中の進行中プレビュー |
+| `TEXT` | `3` | ノードからのテキスト出力（進捗テキスト） |
+| `PREVIEW_IMAGE_WITH_METADATA` | `4` | ノードコンテキストメタデータ付きプレビュー画像 |
+
+**バイナリフレーム形式**（すべての整数はビッグエンディアン）：
+
+<Tabs>
+  <Tab title="PREVIEW_IMAGE (1)">
+    | オフセット | サイズ | フィールド | 説明 |
+    |--------|------|-------|-------------|
+    | 0 | 4 バイト | `type` | `0x00000001` |
+    | 4 | 4 バイト | `image_type` | 形式コード（1=JPEG, 2=PNG） |
+    | 8 | 可変 | `image_data` | 生の画像バイト |
+  </Tab>
+  
+  <Tab title="TEXT (3)">
+    | オフセット | サイズ | フィールド | 説明 |
+    |--------|------|-------|-------------|
+    | 0 | 4 バイト | `type` | `0x00000003` |
+    | 4 | 4 バイト | `node_id_len` | node_id 文字列の長さ |
+    | 8 | N バイト | `node_id` | UTF-8 エンコードされたノード ID |
+    | 8+N | 可変 | `text` | UTF-8 エンコードされた進捗テキスト |
+  </Tab>
+  
+  <Tab title="PREVIEW_WITH_METADATA (4)">
+    | オフセット | サイズ | フィールド | 説明 |
+    |--------|------|-------|-------------|
+    | 0 | 4 バイト | `type` | `0x00000004` |
+    | 4 | 4 バイト | `metadata_len` | メタデータ JSON の長さ |
+    | 8 | N バイト | `metadata` | UTF-8 JSON（下記参照） |
+    | 8+N | 可変 | `image_data` | 生の JPEG/PNG バイト |
+
+    **メタデータ JSON 構造：**
+    ```json
+    {
+      "node_id": "3",
+      "display_node_id": "3",
+      "real_node_id": "3",
+      "prompt_id": "abc-123",
+      "parent_node_id": null
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  各 JSON メッセージタイプの完全なスキーマ定義については、[OpenAPI 仕様](/development/cloud/openapi)をご覧ください。
+</Note>
+
+---
+
+## 出力のダウンロード
+
+ジョブ完了後に生成されたファイルを取得します。
+
+<DownloadOutputs />
+
+---
+
+## 完全なエンドツーエンドの例
+
+すべてをまとめた完全な例を以下に示します：
+
+<CodeGroup>
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+function getHeaders(): HeadersInit {
+  return { "X-API-Key": API_KEY, "Content-Type": "application/json" };
+}
+
+async function submitWorkflow(workflow: Record<string, any>): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function waitForCompletion(
+  promptId: string,
+  timeout: number = 300000
+): Promise<Record<string, any>> {
+  const wsUrl = `wss://cloud.comfy.org/ws?clientId=${crypto.randomUUID()}&token=${API_KEY}`;
+  const outputs: Record<string, any> = {};
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("Job timed out"));
+    }, timeout);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.data?.prompt_id !== promptId) return;
+
+      const msgType = data.type;
+      const msgData = data.data ?? {};
+
+      if (msgType === "progress") {
+        console.log(`Progress: ${msgData.value}/${msgData.max}`);
+      } else if (msgType === "executed" && msgData.output) {
+        outputs[msgData.node] = msgData.output;
+      } else if (msgType === "execution_success") {
+        clearTimeout(timer);
+        ws.close();
+        resolve(outputs);
+      } else if (msgType === "execution_error") {
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error(msgData.exception_message ?? "Unknown error"));
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+  });
+}
+
+async function downloadOutputs(
+  outputs: Record<string, any>,
+  outputDir: string
+): Promise<void> {
+  for (const nodeOutputs of Object.values(outputs)) {
+    for (const key of ["images", "video", "audio"]) {
+      for (const fileInfo of (nodeOutputs as any)[key] ?? []) {
+        const params = new URLSearchParams({
+          filename: fileInfo.filename,
+          subfolder: fileInfo.subfolder ?? "",
+          type: fileInfo.type ?? "output",
+        });
+        // Get redirect URL (don't follow to avoid sending auth to storage)
+        const response = await fetch(`${BASE_URL}/api/view?${params}`, {
+          headers: { "X-API-Key": API_KEY },
+          redirect: "manual",
+        });
+        if (response.status !== 302) throw new Error(`HTTP ${response.status}`);
+        const signedUrl = response.headers.get("location")!;
+        // Fetch from signed URL without auth headers
+        const fileResponse = await fetch(signedUrl);
+        if (!fileResponse.ok) throw new Error(`HTTP ${fileResponse.status}`);
+
+        const path = `${outputDir}/${fileInfo.filename}`;
+        await writeFile(path, Buffer.from(await fileResponse.arrayBuffer()));
+        console.log(`Downloaded: ${path}`);
+      }
+    }
+  }
+}
+
+async function main() {
+  // 1. Load workflow
+  const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+
+  // 2. Modify workflow parameters
+  workflow["3"].inputs.seed = 42;
+  workflow["6"].inputs.text = "a beautiful sunset over mountains";
+
+  // 3. Submit workflow
+  const promptId = await submitWorkflow(workflow);
+  console.log(`Job submitted: ${promptId}`);
+
+  // 4. Wait for completion with progress
+  const outputs = await waitForCompletion(promptId);
+  console.log(`Job completed! Found ${Object.keys(outputs).length} output nodes`);
+
+  // 5. Download outputs
+  await downloadOutputs(outputs, "./outputs");
+  console.log("Done!");
+}
+
+main();
+```
+
+```python Python
+import os
+import requests
+import json
+import asyncio
+import aiohttp
+import uuid
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+def upload_image(file_path: str) -> dict:
+    """Upload an image and return the reference for use in workflows."""
+    with open(file_path, "rb") as f:
+        response = requests.post(
+            f"{BASE_URL}/api/upload/image",
+            headers={"X-API-Key": API_KEY},
+            files={"image": f},
+            data={"type": "input", "overwrite": "true"}
+        )
+    response.raise_for_status()
+    return response.json()
+
+def submit_workflow(workflow: dict) -> str:
+    """Submit workflow and return prompt_id."""
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={"prompt": workflow}
+    )
+    response.raise_for_status()
+    return response.json()["prompt_id"]
+
+async def wait_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
+    """Wait for job completion via WebSocket."""
+    ws_url = BASE_URL.replace("https://", "wss://") + f"/ws?clientId={uuid.uuid4()}&token={API_KEY}"
+    outputs = {}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url) as ws:
+            start = asyncio.get_event_loop().time()
+            async for msg in ws:
+                if asyncio.get_event_loop().time() - start > timeout:
+                    raise TimeoutError("Job timed out")
+                
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                    
+                data = json.loads(msg.data)
+                if data.get("data", {}).get("prompt_id") != prompt_id:
+                    continue
+                
+                msg_type = data.get("type")
+                msg_data = data.get("data", {})
+                
+                if msg_type == "progress":
+                    print(f"Progress: {msg_data.get('value')}/{msg_data.get('max')}")
+                elif msg_type == "executed":
+                    if output := msg_data.get("output"):
+                        outputs[msg_data["node"]] = output
+                elif msg_type == "execution_success":
+                    return outputs
+                elif msg_type == "execution_error":
+                    raise RuntimeError(msg_data.get("exception_message", "Unknown error"))
+    
+    return outputs
+
+def download_outputs(outputs: dict, output_dir: str):
+    """Download all output files."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for node_outputs in outputs.values():
+        for key in ["images", "video", "audio"]:
+            for file_info in node_outputs.get(key, []):
+                params = {
+                    "filename": file_info["filename"],
+                    "subfolder": file_info.get("subfolder", ""),
+                    "type": file_info.get("type", "output")
+                }
+                response = requests.get(f"{BASE_URL}/api/view", headers=get_headers(), params=params)
+                response.raise_for_status()
+                
+                path = os.path.join(output_dir, file_info["filename"])
+                with open(path, "wb") as f:
+                    f.write(response.content)
+                print(f"Downloaded: {path}")
+
+async def main():
+    # 1. Load workflow
+    with open("workflow_api.json") as f:
+        workflow = json.load(f)
+    
+    # 2. Optionally upload input images
+    # image_ref = upload_image("input.png")
+    # workflow["1"]["inputs"]["image"] = image_ref["name"]
+    
+    # 3. Modify workflow parameters
+    workflow["3"]["inputs"]["seed"] = 42
+    workflow["6"]["inputs"]["text"] = "a beautiful sunset over mountains"
+    
+    # 4. Submit workflow
+    prompt_id = submit_workflow(workflow)
+    print(f"Job submitted: {prompt_id}")
+    
+    # 5. Wait for completion with progress
+    outputs = await wait_for_completion(prompt_id)
+    print(f"Job completed! Found {len(outputs)} output nodes")
+    
+    # 6. Download outputs
+    download_outputs(outputs, "./outputs")
+    print("Done!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+</CodeGroup>
+
+---
+
+## キュー管理
+
+### キュー状態の取得
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/queue" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getQueue(): Promise<{
+  queue_running: any[];
+  queue_pending: any[];
+}> {
+  const response = await fetch(`${BASE_URL}/api/queue`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const queue = await getQueue();
+console.log(`Running: ${queue.queue_running.length}`);
+console.log(`Pending: ${queue.queue_pending.length}`);
+```
+
+```python Python
+def get_queue():
+    """Get current queue status."""
+    response = requests.get(
+        f"{BASE_URL}/api/queue",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+
+queue = get_queue()
+print(f"Running: {len(queue.get('queue_running', []))}")
+print(f"Pending: {len(queue.get('queue_pending', []))}")
+```
+</CodeGroup>
+
+### ジョブのキャンセル
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/queue" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"delete": ["PROMPT_ID_HERE"]}'
+```
+
+```typescript TypeScript
+async function cancelJob(promptId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/queue`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ delete: [promptId] }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def cancel_job(prompt_id: str):
+    """Cancel a pending or running job."""
+    response = requests.post(
+        f"{BASE_URL}/api/queue",
+        headers=get_headers(),
+        json={"delete": [prompt_id]}
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### 現在の実行の中断
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/interrupt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function interrupt(): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/interrupt`, {
+    method: "POST",
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def interrupt():
+    """Interrupt the currently running job."""
+    response = requests.post(
+        f"{BASE_URL}/api/interrupt",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+```
+</CodeGroup>
+
+---
+
+## エラーハンドリング
+
+### HTTP エラー
+
+REST API エンドポイントは標準的な HTTP ステータスコードを返します：
+
+| ステータス | 説明 |
+|--------|-------------|
+| `400` | 無効なリクエスト（不正なワークフロー、欠落したフィールド） |
+| `401` | 未認証（無効または欠落した API キー） |
+| `402` | クレジット不足 |
+| `429` | サブスクリプションが非アクティブ |
+| `500` | 内部サーバーエラー |
+
+### 実行エラー
+
+ワークフロー実行中、エラーは `execution_error` WebSocket メッセージを介して配信されます。`exception_type` フィールドはエラーカテゴリを識別します：
+
+| 例外タイプ | 説明 |
+|----------------|-------------|
+| `ValidationError` | 無効なワークフローまたは入力 |
+| `ModelDownloadError` | 必要なモデルが利用できないか、ダウンロードに失敗 |
+| `ImageDownloadError` | URL から入力画像のダウンロードに失敗 |
+| `OOMError` | GPU メモリ不足 |
+| `InsufficientFundsError` | アカウント残高が低すぎる（パートナーノード用） |
+| `InactiveSubscriptionError` | サブスクリプションがアクティブでない |

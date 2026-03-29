@@ -1,0 +1,100 @@
+---
+title: "ルート"
+translationSourceHash: 5064650f
+translationFrom: development/comfyui-server/comms_routes.mdx, zh-CN/development/comfyui-server/comms_routes.mdx
+---
+
+## ルート
+
+サーバーは一連の `get` および `post` メソッドを定義しており、これらは `server.py` 内の `@routes` を検索することで確認できます。Web クライアントでワークフローを送信すると、それは `/prompt` エンドポイントに POST され、プロンプトの検証を行って実行キューに追加します。検証に成功すれば `prompt_id` と `number`（キュー内の位置）を返し、失敗すれば `error` と `node_errors` を返します。プロンプトキューは `execution.py` で定義されており、そこでは `PromptExecutor` クラスも定義されています。
+
+### 組み込みルート
+
+`server.py` は以下のルートを定義します：
+
+#### コア API ルート
+
+| パス                           | get/post/ws | 目的                                                                   |
+| ------------------------------ | ----------- | ---------------------------------------------------------------------- |
+| `/`                            | get         | Comfy Web ページを読み込み                                             |
+| `/ws`                          | websocket   | サーバーとのリアルタイム通信のための WebSocket エンドポイント            |
+| `/embeddings`                  | get         | 利用可能な埋め込みモデル名のリストを取得                               |
+| `/extensions`                  | get         | `WEB_DIRECTORY` を登録している拡張機能のリストを取得                   |
+| `/features`                    | get         | サーバーの機能と能力を取得                                             |
+| `/models`                      | get         | 利用可能なモデルタイプのリストを取得                                   |
+| `/models/{folder}`             | get         | 特定のフォルダ内のモデルを取得                                         |
+| `/workflow_templates`          | get         | カスタムノードモジュールと関連するテンプレートワークフローのマップを取得 |
+| `/upload/image`                | post        | 画像をアップロード                                                     |
+| `/upload/mask`                 | post        | マスクをアップロード                                                   |
+| `/view`                        | get         | 画像を表示。多くのオプションがあります。`server.py` の `@routes.get("/view")` を参照 |
+| `/view_metadata`/{folder_name} | get         | モデルのメタデータを取得                                               |
+| `/system_stats`                | get         | システム情報（Python バージョン、デバイス、VRAM など）を取得           |
+| `/prompt`                      | get         | 現在のキュー状態と実行情報を取得                                       |
+| `/prompt`                      | post        | プロンプトをキューに送信                                               |
+| `/object_info`                 | get         | すべてのノードタイプの詳細を取得                                       |
+| `/object_info/{node_class}`    | get         | 1 つのノードタイプの詳細を取得                                         |
+| `/history`                     | get         | キュー履歴を取得                                                       |
+| `/history/{prompt_id}`         | get         | 特定のプロンプトのキュー履歴を取得                                     |
+| `/history`                     | post        | 履歴をクリアまたは履歴アイテムを削除                                   |
+| `/queue`                       | get         | 実行キューの現在の状態を取得                                           |
+| `/queue`                       | post        | キュー操作を管理（保留中/実行中をクリア）                              |
+| `/interrupt`                   | post        | 現在のワークフロー実行を停止                                           |
+| `/free`                        | post        | 指定されたモデルをアンロードしてメモリを解放                           |
+| `/userdata`                    | get         | 指定されたディレクトリ内のユーザーデータファイルをリスト               |
+| `/v2/userdata`                 | get         | ファイルとディレクトリを構造化された形式でリストする拡張バージョン     |
+| `/userdata/{file}`             | get         | 特定のユーザーデータファイルを取得                                     |
+| `/userdata/{file}`             | post        | ユーザーデータファイルをアップロードまたは更新                         |
+| `/userdata/{file}`             | delete      | 特定のユーザーデータファイルを削除                                     |
+| `/userdata/{file}/move/{dest}` | post        | ユーザーデータファイルを移動または名前変更                             |
+| `/users`                       | get         | ユーザー情報を取得                                                     |
+| `/users`                       | post        | 新しいユーザーを作成（マルチユーザーモードのみ）                       |
+
+### WebSocket 通信
+
+`/ws` エンドポイントは、クライアントとサーバー間のリアルタイム双方向通信を提供します。これは以下のために使用されます：
+- 実行進捗の更新を受信
+- ノード実行状態をリアルタイムで取得
+- エラーメッセージとデバッグ情報を受信
+- キュー状態が変更された際のライブ更新
+
+WebSocket 接続は、以下のような不同类型的な JSON メッセージを送信します：
+- `status` - 全体のシステム状態更新
+- `execution_start` - プロンプト実行開始時
+- `execution_cached` - キャッシュされた結果が使用された場合
+- `executing` - ノード実行中の更新
+- `progress` - 長時間実行される操作の進捗更新
+- `executed` - ノードの実行完了時
+
+### カスタムルート
+
+実行中にクライアントからサーバーへメッセージを送信したい場合は、サーバーにカスタムルートを追加する必要があります。
+複雑な場合は [aiohttp フレームワークドキュメント](https://docs.aiohttp.org/) を詳しく調べる必要がありますが、ほとんどの場合は以下のように処理できます：
+
+```Python
+from server import PromptServer
+from aiohttp import web
+routes = PromptServer.instance.routes
+@routes.post('/my_new_path')
+async def my_function(request):
+    the_data = await request.post()
+    # the_data now holds a dictionary of the values sent
+    MyClass.handle_my_message(the_data)
+    return web.json_response({})
+```
+
+<Tip>何をしているか完全に理解していない限り、クラス内で `my_function` を定義しようとしないでください。
+`@routes.post` デコレータは多くの処理を行います！代わりに、上記のように関数を定義し、その後クラスメソッドを呼び出してください。</Tip>
+
+<Tip>何も変更しない場合は、`@routes.get` を定義することもできます。</Tip>
+
+クライアントは、以下のようなコードで `FormData` オブジェクトを送信することでこの新しいルートを使用できます。
+これにより、上記コードの `the_data` には `message` および `node_id` キーが含まれることになります：
+
+```Javascript
+import { api } from "../../scripts/api.js";
+function send_message(node_id, message) {
+    const body = new FormData();
+    body.append('message',message);
+    body.append('node_id', node_id);
+    api.fetchApi("/my_new_path", { method: "POST", body, });
+}

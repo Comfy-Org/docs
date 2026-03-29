@@ -1,0 +1,163 @@
+---
+title: "Recraft Text to Vector — ComfyUI ネイティブノードドキュメント"
+description: "テキスト記述からスケーラブルなベクターグラフィックスを生成する Recraft パートナーノード"
+sidebarTitle: "Recraft Text to Vector"
+icon: "circle"
+translationSourceHash: e04e8d4e
+translationFrom: built-in-nodes/partner-node/image/recraft/recraft-text-to-vector.mdx, zh-CN/built-in-nodes/partner-node/image/recraft/recraft-text-to-vector.mdx
+---
+
+![ComfyUI ネイティブ Recraft Text to Vector ノード](/images/built-in-nodes/api_nodes/recraft/recraft-text-to-vector.jpg)
+
+Recraft Text to Vector ノードは、Recraft の API を使用してテキスト記述から高品質なベクターグラフィックス（SVG 形式）を生成します。ロゴ、アイコン、および無限にスケール可能なイラストの作成に最適です。
+
+## パラメーター
+
+### 基本パラメーター
+
+| パラメーター     | 型       | デフォルト値 | 説明                                               |
+| ---------------- | -------- | ------------ | -------------------------------------------------- |
+| `prompt`         | 文字列   | `""`         | 生成するベクターグラフィックスのテキスト記述       |
+| `substyle`       | 選択項目 | -            | ベクタースタイルのサブタイプ                       |
+| `size`           | 選択項目 | `1024x1024`  | ベクトル出力のキャンバスサイズ                     |
+| `n`              | 整数     | `1`          | 生成する結果の数（1～6）                           |
+| `seed`           | 整数     | `0`          | 乱数シード値                                       |
+
+### オプションパラメーター
+
+| パラメーター         | 型               | 説明                                           |
+| -------------------- | ---------------- | ---------------------------------------------- |
+| `negative_prompt`    | 文字列           | 生成から除外する要素を指定                     |
+| `recraft_controls`   | Recraft Controls | 追加の制御パラメーター（色など）               |
+
+### 出力
+
+| 出力 | 型     | 説明                                                         |
+| ---- | ------ | ------------------------------------------------------------ |
+| `SVG`| ベクター | 生成された SVG ベクターグラフィックス。保存には `SaveSVG` ノードへ接続してください。 |
+
+## ソースコード
+
+[ノードソースコード（2025-05-03 更新）]
+
+```python
+
+class RecraftTextToVectorNode:
+    """
+    Generates SVG synchronously based on prompt and resolution.
+    """
+
+    RETURN_TYPES = (RecraftIO.SVG,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/image/Recraft"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the image generation.",
+                    },
+                ),
+                "substyle": (get_v3_substyles(RecraftStyleV3.vector_illustration),),
+                "size": (
+                    [res.value for res in RecraftImageSize],
+                    {
+                        "default": RecraftImageSize.res_1024x1024,
+                        "tooltip": "The size of the generated image.",
+                    },
+                ),
+                "n": (
+                    IO.INT,
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 6,
+                        "tooltip": "The number of images to generate.",
+                    },
+                ),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "Seed to determine if node should re-run; actual results are nondeterministic regardless of seed.",
+                    },
+                ),
+            },
+            "optional": {
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "default": "",
+                        "forceInput": True,
+                        "tooltip": "An optional text description of undesired elements on an image.",
+                    },
+                ),
+                "recraft_controls": (
+                    RecraftIO.CONTROLS,
+                    {
+                        "tooltip": "Optional additional controls over the generation via the Recraft Controls node."
+                    },
+                ),
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        prompt: str,
+        substyle: str,
+        size: str,
+        n: int,
+        seed,
+        negative_prompt: str = None,
+        recraft_controls: RecraftControls = None,
+        auth_token=None,
+        **kwargs,
+    ):
+        # create RecraftStyle so strings will be formatted properly (i.e. "None" will become None)
+        recraft_style = RecraftStyle(RecraftStyleV3.vector_illustration, substyle=substyle)
+
+        controls_api = None
+        if recraft_controls:
+            controls_api = recraft_controls.create_api_model()
+
+        if not negative_prompt:
+            negative_prompt = None
+
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/recraft/image_generation",
+                method=HttpMethod.POST,
+                request_model=RecraftImageGenerationRequest,
+                response_model=RecraftImageGenerationResponse,
+            ),
+            request=RecraftImageGenerationRequest(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                model=RecraftModel.recraftv3,
+                size=size,
+                n=n,
+                style=recraft_style.style,
+                substyle=recraft_style.substyle,
+                controls=controls_api,
+            ),
+            auth_token=auth_token,
+        )
+        response: RecraftImageGenerationResponse = operation.execute()
+        svg_data = []
+        for data in response.data:
+            svg_data.append(download_url_to_bytesio(data.url, timeout=1024))
+
+        return (SVG(svg_data),)

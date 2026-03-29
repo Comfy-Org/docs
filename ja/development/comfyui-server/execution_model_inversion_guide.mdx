@@ -1,0 +1,111 @@
+---
+title: "実行モデル反転ガイド"
+translationSourceHash: dfad1b9a
+translationFrom: development/comfyui-server/execution_model_inversion_guide.mdx, zh-CN/development/comfyui-server/execution_model_inversion_guide.mdx
+---
+
+[PR #2666](https://github.com/comfyanonymous/ComfyUI/pull/2666) は、実行モデルを「出力側から入力側への再帰モデル」から「入力側から出力側へのトポロジカルソート」へと反転させます。ほとんどのカスタムノードは引き続き「動作し続ける」はずですが、このページはカスタムノード作成者向けに、*壊れる可能性*のある事項についてのガイドとして役立てることを目的としています。
+
+## 破壊的変更
+### モンキーパッチング
+
+実行モデルにモンキーパッチを適用していたコードは、動作しなくなる可能性が高いです。なお、この PR による実行パフォーマンスは、最も一般的なモンキーパッチ方案を上回るため、それらの多くは不要になります。
+
+### オプション入力検証
+
+この PR 以前は、一連の `"required"`（必須）入力を通じてのみ出力に接続されていたノードのみが実際に検証されていました。カスタムノードが `"optional"`（オプション）入力にのみ接続されていた場合、以前は検証失敗が表示されないことがありました。
+
+<Tip>もしあなたのノードの出力がすでに `"required"`（必須）入力に接続できるものであれば、このセクションの内容が適用される可能性は低いです。これは主に、カスタムタイプを使用し、かつ専ら `"optional"`（オプション）入力を使用するカスタムノード作成者に適用されます。</Tip>
+
+以下に、検証失敗の原因となり得る事項と推奨される解決策をいくつか示します。
+
+- カスタムウィジェットを設定するために、比較できないタイプ（例：辞書）上で `min` や `max` などの予約済み [追加パラメータ](/custom-nodes/backend/datatypes#additional-parameters) を使用すること。
+    - 使用している追加パラメータを、`uiMin` や `uiMax` などの予約されていないキーに変更します。*（推奨ソリューション）*
+        ```python
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "my_size": ("VEC2", {"uiMin": 0.0, "uiMax": 1.0}),
+                }
+            }
+        ```
+
+    - この入力に対してカスタムの [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) 関数を定義し、その検証をスキップするようにします。*（簡易ソリューション）*
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, my_size):
+            return True
+        ```
+
+- 複合タイプ（例：`CUSTOM_A,CUSTOM_B`）の使用
+    - （出力として使用する場合）[この PR の単体テスト](https://github.com/comfyanonymous/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R2) で見られるような `MakeSmartType` などのラッパーを定義して使用します。
+        ```python
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": (MakeSmartType("FOO,BAR"), {}),
+                    }
+                }
+
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+    - （入力として使用する場合）`input_types` 引数を受け取るカスタムの [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) 関数を定義し、タイプ検証をスキップするようにします。
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, input_types):
+            return True
+        ```
+    - （両方に対応し、便利）[この PR の単体テスト](https://github.com/comfyanonymous/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R15) で見られる `@VariantSupport` デコレータを定義して使用します。
+        ```python
+        @VariantSupport
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": ("FOO,BAR", {}),
+                    }
+                }
+            
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+
+- グラフ定義内で定数としてリスト（例：`[1, 2, 3]`）を使用すること（例：定数 `VEC3` 入力を表現するため）。これは以前はフロントエンド拡張を必要としていました。以前は、サイズがちょうど `2` のリストはいずれにせよ失敗していました——それらは壊れたリンクとして扱われていました。
+    - リストを `{ "value": [1, 2, 3] }` のような辞書でラップします。
+
+### 実行順序
+
+実行順序は、どのノードがどの ID を持っているかに依存して常に変化していましたが、 теперь どの値がキャッシュされているかにも依存して変化する可能性があります。一般的に、実行順序は（グラフの構造によって強制されるものを超えて）非決定的であり、変更される可能性があるものと見なすべきです。
+
+実行順序に依存しないでください。
+
+*HIC SUNT DRACONES*
+
+## 新機能
+
+### 検証の変更
+
+前述の [オプション入力検証](#optional-input-validation) の変更による影響を軽減するために、`VALIDATE_INPUTS` 関数にいくつかの機能が追加されました。
+
+- `VALIDATE_INPUTS` 関数によって受け取られる入力については、デフォルトの検証がスキップされるようになります。
+- `VALIDATE_INPUTS` 関数は `**kwargs` を受け取ることができるようになりました。これにより、すべての入力がノード作成者によって検証済みとして扱われます。
+- `VALIDATE_INPUTS` 関数は `input_types` という名前の入力を受け取ることができます。この入力は、各入力（リンクを介して接続された）を接続された出力のタイプにマッピングする辞書になります。この引数が存在する場合、ノードの入力に対するタイプ検証はスキップされます。
+
+詳細は [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate-inputs) をご覧ください。
+
+### 遅延評価
+
+入力は遅延評価（Lazy Evaluation）できるようになりました（つまり、接続されたノードとそのすべての祖先ノードを評価する前に、それらが必要かどうかを確認するために待機できます）。詳細は [遅延評価](/custom-nodes/backend/lazy_evaluation) をご覧ください。
+
+### ノード展開
+
+実行時において、ノードはノードのサブグラフに展開できます。これにより、ループの実装（末尾再帰を介して）が可能になります。詳細は [ノード展開](/custom-nodes/backend/expansion) をご覧ください。

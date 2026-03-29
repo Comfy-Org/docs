@@ -1,0 +1,227 @@
+---
+title: "ノード置換"
+description: "廃止されたノードからの移行をユーザー支援するためにノード置換を登録します"
+translationSourceHash: 1d172fb1
+translationFrom: custom-nodes/backend/node-replacement.mdx, zh-CN/custom-nodes/backend/node-replacement.mdx
+---
+
+ノード置換 API を使用すると、カスタムノード開発者は廃止されたノードから新しい同等のノードへの移行パスを定義できます。ノードを更新または改名すると、ユーザーはワークフローを自動的にアップグレードできます。
+
+## 利用シーン
+
+- **ノードクラス名の変更**: ノードのクラス名を変更した場合（表示名の変更には代わりに `DISPLAY_NAME` を使用してください）
+- **ノードの統合**: 複数のノードが 1 つに統合された場合（例：`Load3DAnimation` が `Load3D` に統合）
+- **入力のリファクタリング**: バージョン間で入力名またはタイプが変更された場合
+- **タイプミスの修正**: 既存のワークフローを壊さずにノード名を修正する場合
+
+## 置換の登録場所
+
+拡張機能の `on_load` ライフサイクルフック中に置換を登録します。カスタムノードパッケージ内に専用ファイル（例：`node_replacements.py`）を作成します：
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # ここで置換を登録
+```
+
+## 完全な例
+
+カスタムノードパッケージ内でノード置換を構造化する方法を示す完全な例は以下の通りです：
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """このパッケージのすべてのノード置換を登録します。"""
+    
+    # 単純な改名 - 入力の変更は不要
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # 入力マッピング付きの複雑な置換
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # デフォルト値付きの新入力
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # ここにはノードは定義されておらず、置換のみ
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## コアの例
+
+ComfyUI コアは組み込みノードの移行にノード置換を使用します。以下は [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_replacements.py) の実際の例です：
+
+### 単純なノード統合
+
+`Load3DAnimation` が `Load3D` に統合された場合：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### タイプミスの修正
+
+`SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning` のタイプミスを修正する場合：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### デフォルト値付きの入力改名
+
+`ImageScaleBy` を `ResizeImageMaskNode` に置換する場合：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Autogrow 入力マッピング
+
+Autogrow（動的入力）を使用するノードの場合、ドット記法を使用します：
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## NodeReplace パラメータ
+
+| パラメータ | タイプ | 説明 |
+|-----------|------|-------------|
+| `new_node_id` | str | 置換ノードのクラス名 |
+| `old_node_id` | str | 廃止されたノードのクラス名 |
+| `old_widget_ids` | list[str] \| None | ウィジェット ID を相対インデックスにバインドする順序付きリスト |
+| `input_mapping` | list \| None | 入力を旧ノードから新ノードにマッピングする方法 |
+| `output_mapping` | list \| None | 出力を旧ノードから新ノードにマッピングする方法 |
+
+## 入力マッピング
+
+各入力マッピングエントリーは、入力が旧ノードから新ノードにどのように転送されるかを定義します。
+
+**旧入力からマッピング：**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**固定値を設定：**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**動的/autogrow 入力をマッピング（ドット記法を使用）：**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## 出力マッピング
+
+出力マッピングはインデックスベースの参照を使用します：
+
+```python
+{"new_idx": 0, "old_idx": 0}  # 最初の出力をマッピング
+{"new_idx": 1, "old_idx": 0}  # 旧出力 0 -> 新出力 1
+```
+
+## ウィジェット ID バインディング
+
+`old_widget_ids` フィールドは、ウィジェット ID を位置インデックスにマッピングします。ワークフロー JSON は ID ではなく位置によってウィジェット値を保存するため、これは必須です。
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# インデックス 0 のウィジェット = "steps"
+# インデックス 1 のウィジェット = "cfg"
+# インデックス 2 のウィジェット = "sampler"
+```
+
+## REST API
+
+登録されたすべての置換を取得：
+
+```
+GET /api/node_replacements
+```
+
+**レスポンス：**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## フロントエンドの動作
+
+ワークフローに廃止されたノードが含まれている場合、フロントエンドは以下を行います：
+
+1. `GET /api/node_replacements` から置換情報を取得
+2. `old_node_id` に一致するノードを検出
+3. ユーザーにアップグレードを促す
+4. 入力/出力マッピングを自動的に適用
+5. 接続とウィジェット値を保持
+
+フロントエンドの実装を確認：
+- [ビジネスロジック PR #8364](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [追加ロジック PR #8483](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [UI ビュー PR #8604](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)

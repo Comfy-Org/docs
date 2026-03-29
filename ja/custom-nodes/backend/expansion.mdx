@@ -1,0 +1,54 @@
+---
+title: "ノード拡張"
+translationSourceHash: a24451b6
+translationFrom: custom-nodes/backend/expansion.mdx, zh-CN/custom-nodes/backend/expansion.mdx
+---
+
+## ノード拡張
+
+通常、ノードが実行されると、その実行関数はすぐにそのノードの出力結果を返します。「ノード拡張」は、ノードがグラフ内で自身の代わりに配置されるべき新しいノードのサブグラフを返すことを可能にする、比較的高度な技術です。この技術により、カスタムノードがループを実装できるようになります。
+
+### 簡単な例
+
+まず、ノード拡張がどのように見えるかの簡単な例を以下に示します：
+
+<Tip>サブグラフを作成する際には、`GraphBuilder` クラスの使用を強く推奨します。必須ではありませんが、多くの簡単なミスを防ぐことができます。</Tip>
+```python
+def load_and_merge_checkpoints(self, checkpoint_path1, checkpoint_path2, ratio):
+    from comfy_execution.graph_utils import GraphBuilder # 通常はファイルの先頭に
+    graph = GraphBuilder()
+    checkpoint_node1 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path1)
+    checkpoint_node2 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path2)
+    merge_model_node = graph.node("ModelMergeSimple", model1=checkpoint_node1.out(0), model2=checkpoint_node2.out(0), ratio=ratio)
+    merge_clip_node = graph.node("ClipMergeSimple", clip1=checkpoint_node1.out(1), clip2=checkpoint_node2.out(1), ratio=ratio)
+    return {
+        # (MODEL, CLIP, VAE) 出力を返す
+        "result": (merge_model_node.out(0), merge_clip_node.out(0), checkpoint_node1.out(2)),
+        "expand": graph.finalize(),
+    }
+```
+
+この同じノードは以前、ComfyUI 内部を手動で呼び出すことで実装できましたが、拡張を使用することで、各サブノードが個別にキャッシュされるようになります（そのため、`model2` を変更しても `model1` を再ロードする必要はありません）。
+
+### 要件
+
+ノード拡張を実行するには、ノードは以下のキーを含む辞書を返す必要があります：
+1. `result`: ノードの出力を含むタプル。これは、通常のノードから返すような確定された値とノード出力の混合である可能性があります。
+2. `expand`: 拡張を実行するための確定されたグラフ。`GraphBuilder` を使用しない場合は、以下を参照してください。
+
+#### GraphBuilder を使用しない場合の追加要件
+
+`expand` キーから期待される形式は、ComfyUI API 形式と同じです。以下の要件は `GraphBuilder` によって処理されますが、これを使用しないことを選択した場合は、手動で処理する必要があります：
+
+1. ノード ID はグラフ全体で一意である必要があります。（これには、リストの使用により同一ノードが複数回実行される場合における、各実行間での一意性も含まれます。）
+2. ノード ID は、グラフの複数回実行間で決定的かつ一貫している必要があります（キャッシュによる部分的な実行を含む）。
+
+たとえグラフを実際に構築するために `GraphBuilder` を使用したくない場合でも（例えば、ファイルからグラフの生 JSON をロードしているためなど）、`GraphBuilder.alloc_prefix()` 関数を使用してプレフィックスを生成し、`comfy.graph_utils.add_graph_prefix` を使用して既存のグラフを修正し、これらの要件を満たすようにすることができます。
+
+### 効率的なサブグラフキャッシュ
+
+サブグラフ内のノードにリテラルではない入力（torch テンソルなど）を渡すことはできますが、これはサブグラフ*内部*のキャッシュを抑制する可能性があります。可能な場合は、ノード自体ではなくサブグラフオブジェクトへのリンクを渡すべきです。（これを容易に行うために、入力の[追加パラメータ](./datatypes#additional-parameters)内で入力を `rawLink` として宣言できます。）
+
+## 関連資料
+
+- [サブグラフ（開発者ガイド）](/custom-nodes/js/subgraphs) — 拡張機能開発者向けのフロントエンドガイド

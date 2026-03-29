@@ -1,0 +1,123 @@
+---
+title: "Save SVG - ComfyUI 組み込みノードドキュメント"
+description: "SVGベクターグラフィックスをファイルに保存するためのユーティリティノード"
+sidebarTitle: "Save SVG" 
+icon: "circle"
+translationSourceHash: 18f13733
+translationFrom: built-in-nodes/partner-node/image/recraft/save-svg.mdx, zh-CN/built-in-nodes/partner-node/image/recraft/save-svg.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI 組み込み Save SVG ノード](/images/built-in-nodes/api_nodes/recraft/save-svg.jpg)
+
+Save SVG ノードは、Recraft のベクターグラフィックス生成ノードから得られた SVG データを、ファイルシステム上の利用可能なファイルとして保存します。これはベクターグラフィックスの処理およびエクスポートを行うために不可欠なコンポーネントです。
+
+## ノードの機能
+
+このノードは SVG ベクトルデータを受信し、ファイルシステム上に標準的な SVG ファイルとして保存します。自動ファイル名付与および保存先パスの指定をサポートしており、ベクターグラフィックスを他のソフトウェアで開いて編集できるようにします。
+
+## パラメーター
+
+### 基本パラメーター
+
+| パラメーター       | 型      | デフォルト値 | 説明                                                                 |
+| ----------------- | ------- | ------------ | -------------------------------------------------------------------- |
+| svg               | SVG     | -            | 保存する SVG ベクターデータ                                           |
+| filename_prefix   | 文字列  | "recraft"    | ファイル名のプレフィックス                                            |
+| output_dir        | 文字列  | -            | 出力ディレクトリ。デフォルトは `ComfyUI/output/svg/` の ComfyUI 出力フォルダ |
+| index             | 整数    | -1           | 保存インデックス。-1 の場合、生成されたすべての SVG を保存します              |
+
+### 出力
+
+| 出力 | 型  | 説明                     |
+| ---- | --- | ------------------------ |
+| SVG  | SVG | 入力された SVG データをそのまま出力します |
+
+## 使用例
+
+<Card title="Recraft Text to Image ワークフローの例" icon="book" href="/ja/tutorials/partner-nodes/recraft/recraft-text-to-image">
+Recraft Text to Image ワークフローの例
+</Card>
+
+## ソースコード
+
+[ノードのソースコード (2025-05-03 更新)]
+
+```python
+class SaveSVGNode:
+    """
+    Save SVG files on disk.
+    """
+
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+        self.prefix_append = ""
+
+    RETURN_TYPES = ()
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "save_svg"
+    CATEGORY = "api node/image/Recraft"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "svg": (RecraftIO.SVG,),
+                "filename_prefix": ("STRING", {"default": "svg/ComfyUI", "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."})
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO"
+            }
+        }
+
+    def save_svg(self, svg: SVG, filename_prefix="svg/ComfyUI", prompt=None, extra_pnginfo=None):
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir)
+        results = list()
+
+        # Prepare metadata JSON
+        metadata_dict = {}
+        if prompt is not None:
+            metadata_dict["prompt"] = prompt
+        if extra_pnginfo is not None:
+            metadata_dict.update(extra_pnginfo)
+
+        # Convert metadata to JSON string
+        metadata_json = json.dumps(metadata_dict, indent=2) if metadata_dict else None
+
+        for batch_number, svg_bytes in enumerate(svg.data):
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}_.svg"
+
+            # Read SVG content
+            svg_bytes.seek(0)
+            svg_content = svg_bytes.read().decode('utf-8')
+
+            # Inject metadata if available
+            if metadata_json:
+                # Create metadata element with CDATA section
+                metadata_element = f"""  <metadata>
+    <![CDATA[
+{metadata_json}
+    ]]>
+  </metadata>
+"""
+                # Insert metadata after opening svg tag using regex
+                import re
+                svg_content = re.sub(r'(<svg[^>]*>)', r'\1\n' + metadata_element, svg_content)
+
+            # Write the modified SVG to file
+            with open(os.path.join(full_output_folder, file), 'wb') as svg_file:
+                svg_file.write(svg_content.encode('utf-8'))
+
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+        return { "ui": { "images": results } }
