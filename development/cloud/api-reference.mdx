@@ -111,7 +111,362 @@ print(f"KSampler inputs: {inputs}")
 
 ---
 
-## Uploading Inputs
+## Assets API
+
+The Assets API provides a unified, tag-based system for managing files (images, models, outputs) with content-addressed storage and rich metadata support.
+
+### Key Features
+
+- **Content-addressed storage**: Files are deduplicated using Blake3 hashes
+- **Tag-based organization**: Flexible tagging instead of folder hierarchies
+- **Metadata support**: Attach custom JSON metadata to assets
+- **Filtering and search**: Query assets by tags, name, or metadata
+
+### List Assets
+
+Retrieve a paginated list of your assets with optional filtering.
+
+<CodeGroup>
+```bash curl
+# List all assets
+curl -X GET "$BASE_URL/api/assets" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+
+# Filter by tags
+curl -X GET "$BASE_URL/api/assets?include_tags=output,image" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+
+# Search by name
+curl -X GET "$BASE_URL/api/assets?name_contains=portrait" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+interface Asset {
+  id: string;
+  name: string;
+  hash: string;
+  size_bytes: number;
+  mime_type: string;
+  tags: string[];
+  created_at: string;
+  preview_url?: string;
+}
+
+interface ListAssetsResponse {
+  assets: Asset[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+async function listAssets(options: {
+  include_tags?: string[];
+  exclude_tags?: string[];
+  name_contains?: string;
+  sort?: "name" | "created_at" | "size";
+  order?: "asc" | "desc";
+  offset?: number;
+  limit?: number;
+} = {}): Promise<ListAssetsResponse> {
+  const params = new URLSearchParams();
+  if (options.include_tags?.length) {
+    params.set("include_tags", options.include_tags.join(","));
+  }
+  if (options.exclude_tags?.length) {
+    params.set("exclude_tags", options.exclude_tags.join(","));
+  }
+  if (options.name_contains) params.set("name_contains", options.name_contains);
+  if (options.sort) params.set("sort", options.sort);
+  if (options.order) params.set("order", options.order);
+  if (options.offset !== undefined) params.set("offset", String(options.offset));
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+
+  const response = await fetch(`${BASE_URL}/api/assets?${params}`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+// List output images
+const { assets } = await listAssets({ include_tags: ["output", "image"] });
+console.log(`Found ${assets.length} output images`);
+```
+
+```python Python
+def list_assets(
+    include_tags: list = None,
+    exclude_tags: list = None,
+    name_contains: str = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    offset: int = 0,
+    limit: int = 20
+) -> dict:
+    """List assets with optional filtering.
+    
+    Args:
+        include_tags: Only include assets with ALL these tags
+        exclude_tags: Exclude assets with ANY of these tags
+        name_contains: Filter by name substring (case-insensitive)
+        sort: Sort field (name, created_at, size, updated_at)
+        order: Sort direction (asc or desc)
+        offset: Pagination offset
+        limit: Max items per page (1-500)
+        
+    Returns:
+        Dict with 'assets' array and pagination info
+    """
+    params = {
+        "sort": sort,
+        "order": order,
+        "offset": offset,
+        "limit": limit
+    }
+    if include_tags:
+        params["include_tags"] = ",".join(include_tags)
+    if exclude_tags:
+        params["exclude_tags"] = ",".join(exclude_tags)
+    if name_contains:
+        params["name_contains"] = name_contains
+    
+    response = requests.get(
+        f"{BASE_URL}/api/assets",
+        headers=get_headers(),
+        params=params
+    )
+    response.raise_for_status()
+    return response.json()
+
+# List all output images
+result = list_assets(include_tags=["output"])
+print(f"Found {len(result['assets'])} output assets")
+```
+</CodeGroup>
+
+### Upload Asset
+
+Upload a file with tags and metadata.
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/assets" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "file=@image.png" \
+  -F "tags=input,reference" \
+  -F "name=My Reference Image"
+```
+
+```typescript TypeScript
+async function uploadAsset(
+  file: File | Blob,
+  options: {
+    name?: string;
+    tags?: string[];
+    mime_type?: string;
+    user_metadata?: Record<string, any>;
+  } = {}
+): Promise<Asset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (options.name) formData.append("name", options.name);
+  if (options.tags?.length) formData.append("tags", options.tags.join(","));
+  if (options.mime_type) formData.append("mime_type", options.mime_type);
+  if (options.user_metadata) {
+    formData.append("user_metadata", JSON.stringify(options.user_metadata));
+  }
+
+  const response = await fetch(`${BASE_URL}/api/assets`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+// Upload with tags
+const asset = await uploadAsset(imageBlob, {
+  name: "reference.png",
+  tags: ["input", "reference"],
+});
+console.log(`Uploaded: ${asset.id}`);
+```
+
+```python Python
+def upload_asset(
+    file_path: str,
+    name: str = None,
+    tags: list = None,
+    user_metadata: dict = None
+) -> dict:
+    """Upload an asset with optional metadata.
+    
+    Args:
+        file_path: Path to the file to upload
+        name: Display name for the asset
+        tags: List of tags to apply
+        user_metadata: Custom JSON metadata
+        
+    Returns:
+        Created asset details
+    """
+    with open(file_path, "rb") as f:
+        files = {"file": f}
+        data = {}
+        if name:
+            data["name"] = name
+        if tags:
+            data["tags"] = ",".join(tags)
+        if user_metadata:
+            data["user_metadata"] = json.dumps(user_metadata)
+        
+        response = requests.post(
+            f"{BASE_URL}/api/assets",
+            headers={"X-API-Key": API_KEY},
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+
+# Upload with tags
+asset = upload_asset("image.png", name="reference", tags=["input", "reference"])
+print(f"Uploaded: {asset['id']}")
+```
+</CodeGroup>
+
+### Get Asset Details
+
+Retrieve full details for a specific asset.
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/assets/{asset_id}" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getAsset(assetId: string): Promise<Asset> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+```
+
+```python Python
+def get_asset(asset_id: str) -> dict:
+    """Get asset details by ID."""
+    response = requests.get(
+        f"{BASE_URL}/api/assets/{asset_id}",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### Manage Tags
+
+Add or remove tags from assets.
+
+<CodeGroup>
+```bash curl
+# Add tags
+curl -X POST "$BASE_URL/api/assets/{asset_id}/tags" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": ["favorite", "portrait"]}'
+
+# Remove tags
+curl -X DELETE "$BASE_URL/api/assets/{asset_id}/tags" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": ["temporary"]}'
+```
+
+```typescript TypeScript
+async function addAssetTags(assetId: string, tags: string[]): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}/tags`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ tags }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
+async function removeAssetTags(assetId: string, tags: string[]): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}/tags`, {
+    method: "DELETE",
+    headers: getHeaders(),
+    body: JSON.stringify({ tags }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def add_asset_tags(asset_id: str, tags: list) -> dict:
+    """Add tags to an asset."""
+    response = requests.post(
+        f"{BASE_URL}/api/assets/{asset_id}/tags",
+        headers=get_headers(),
+        json={"tags": tags}
+    )
+    response.raise_for_status()
+    return response.json()
+
+def remove_asset_tags(asset_id: str, tags: list) -> dict:
+    """Remove tags from an asset."""
+    response = requests.delete(
+        f"{BASE_URL}/api/assets/{asset_id}/tags",
+        headers=get_headers(),
+        json={"tags": tags}
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### Delete Asset
+
+<CodeGroup>
+```bash curl
+curl -X DELETE "$BASE_URL/api/assets/{asset_id}" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function deleteAsset(assetId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/assets/${assetId}`, {
+    method: "DELETE",
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def delete_asset(asset_id: str) -> None:
+    """Delete an asset."""
+    response = requests.delete(
+        f"{BASE_URL}/api/assets/{asset_id}",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+```
+</CodeGroup>
+
+---
+
+## Uploading Inputs (Legacy)
+
+<Note>
+  **Legacy Endpoints:** These endpoints (`/api/upload/*`) are maintained for compatibility with local ComfyUI. For new integrations, consider using the [Assets API](#assets-api) when available.
+</Note>
 
 Upload images, masks, or other files for use in workflows.
 
