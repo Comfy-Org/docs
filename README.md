@@ -43,7 +43,7 @@ A GitHub Action will check for redirects and fail the PR if they are missing. Re
 >   }
 > ]
 > ```
-> Don't forget to include the corresponding Chinese translation file in the `zh-CN` directory as well!
+> Don't forget to include the corresponding Chinese translation file in the `zh` directory as well!
 
 You can also refer to the [Mintlify doc](https://www.mintlify.com/docs/create/redirects) to learn how to add and match a wildcard path.
 
@@ -78,11 +78,11 @@ Mintlify uses versioning to add other languages. To add a translation of a page,
 
 1. Create a file under the language code with the same exact filename of the original English filename.
 
-For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh-CN/get_started/introduction.mdx`. 
+For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh/get_started/introduction.mdx`. 
 
 Specifications for file editing can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document
 
-> **Important**: When you modify an existing MDX file in the English documentation, you must also update the corresponding file in the `zh-CN` directory. A GitHub Action will automatically check for this and fail the PR if the corresponding Chinese translations are not updated.
+> **Important**: When you modify an existing MDX file in the English documentation, you must also update the corresponding file in the `zh` directory. A GitHub Action will automatically check for this and fail the PR if the corresponding Chinese translations are not updated.
 
 2. Update navigation for `docs.json`
 
@@ -114,7 +114,7 @@ For `introduction.mdx`:
               {
                 "group": "开始行动",
                 "pages": [
-                  "zh-CN/get_started/introduction",
+                  "zh/get_started/introduction",
                   ...
                 ]
               }
