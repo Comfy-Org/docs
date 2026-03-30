@@ -330,7 +330,9 @@ def process_file(
                 )
                 new_sections.append(translated_section)
 
-        result = new_frontmatter + "\n" + "\n".join(new_sections)
+        # Join sections preserving their original whitespace, add trailing newline
+        joined = "".join(s.rstrip() + "\n" for s in new_sections)
+        result = new_frontmatter.rstrip() + "\n\n" + joined.rstrip() + "\n"
         lang_abs.write_text(result, encoding="utf-8")
 
     return lang_filepath
