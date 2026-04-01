@@ -14,6 +14,18 @@ Section matching strategy:
   indices by comparing line numbers against each section's start/end lines.
   This is language-agnostic and correctly handles inserted, deleted, or
   reordered sections.
+
+Robustness:
+  - Per-section error isolation: if a section fails, keeps original translation
+    and logs [FALLBACK]. Other sections are unaffected.
+  - API retry with exponential backoff (3 attempts).
+  - MDX tag count validation: if translated output has mismatched MDX tags,
+    falls back to original translation.
+  - Frontmatter integrity check: validates --- delimiters after translation.
+  - File-level error isolation: one file failing doesn't stop others.
+  - Empty response guard: keeps original if API returns empty content.
+  - Fallback to full-file translation if diff parsing yields no changed sections
+    but the file is confirmed changed.
 """
 
 import argparse
@@ -22,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +47,9 @@ except ImportError:
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 CONFIG_PATH = SCRIPT_DIR / "translation-config.json"
+
+# MDX component tags to validate (opening tags)
+MDX_TAG_PATTERN = re.compile(r'<(Card|Accordion|AccordionGroup|Note|Warning|Tip|Steps|Step|Tab|Tabs|Columns|video|CardGroup|Frame|ResponseField|ParamField)\b')
 
 
 def load_config() -> dict:
@@ -199,6 +215,56 @@ def get_changed_section_indices(diff: str, sections: list[dict]) -> set[int]:
     return changed_indices
 
 
+def count_mdx_tags(content: str) -> dict[str, int]:
+    """Count occurrences of known MDX component tags."""
+    counts = {}
+    for m in MDX_TAG_PATTERN.finditer(content):
+        tag = m.group(1)
+        counts[tag] = counts.get(tag, 0) + 1
+    return counts
+
+
+def validate_mdx_tags(original: str, translated: str) -> bool:
+    """
+    Return True if translated content has the same MDX tag counts as original.
+    Allows translated to have 0 of a tag only if original also has 0.
+    """
+    orig_counts = count_mdx_tags(original)
+    trans_counts = count_mdx_tags(translated)
+    for tag, count in orig_counts.items():
+        if count > 0 and trans_counts.get(tag, 0) != count:
+            return False
+    return True
+
+
+def validate_frontmatter(text: str) -> bool:
+    """Return True if text starts and ends with --- delimiters."""
+    stripped = text.strip()
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return False
+    return lines[0].strip() == "---" and lines[-1].strip() == "---"
+
+
+def call_api_with_retry(fn, max_retries: int = 3, initial_delay: float = 2.0):
+    """
+    Call fn() with exponential backoff on failure.
+    Raises the last exception if all retries fail.
+    """
+    delay = initial_delay
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                print(f"    [RETRY {attempt + 1}/{max_retries}] API error: {e}. Retrying in {delay:.0f}s...")
+                time.sleep(delay)
+                delay *= 2
+    raise last_exc
+
+
 def translate_content(
     client: OpenAI,
     en_content: str,
@@ -234,15 +300,18 @@ Only change what has changed — preserve existing translations where English is
     else:
         user_prompt = f"Translate the following MDX content into {target_language_name}:\n\n{en_content}"
 
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-    )
-    return response.choices[0].message.content.strip()
+    def _call():
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        return response.choices[0].message.content.strip()
+
+    return call_api_with_retry(_call)
 
 
 def translate_frontmatter(
@@ -264,12 +333,102 @@ Return only the frontmatter block including the --- delimiters.
     if existing_frontmatter:
         prompt += f"\n\nExisting {target_language_name} frontmatter for reference:\n{existing_frontmatter}"
 
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    return response.choices[0].message.content.strip()
+    def _call():
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+        return response.choices[0].message.content.strip()
+
+    return call_api_with_retry(_call)
+
+
+def safe_translate_section(
+    client: OpenAI,
+    index: int,
+    en_section: dict,
+    existing_lang_section: Optional[str],
+    lang: dict,
+    preserve_terms: list[str],
+    fallback_log: list[str],
+) -> str:
+    """
+    Translate a single section with error isolation.
+    Returns the translated content, or falls back to existing_lang_section
+    (or en_section content as last resort) on any error.
+    """
+    heading = en_section["heading"] or "(intro)"
+    en_content = en_section["content"]
+
+    try:
+        translated = translate_content(
+            client, en_content,
+            target_language=lang["code"],
+            target_language_name=lang["name"],
+            preserve_terms=preserve_terms,
+            existing_translation=existing_lang_section,
+        )
+
+        # Guard: empty response
+        if not translated.strip():
+            msg = f"[FALLBACK] Section [{index}] '{heading}': empty API response, keeping original"
+            print(f"    {msg}")
+            fallback_log.append(msg)
+            return existing_lang_section if existing_lang_section else en_content
+
+        # Guard: MDX tag mismatch
+        if not validate_mdx_tags(en_content, translated):
+            msg = f"[FALLBACK] Section [{index}] '{heading}': MDX tag mismatch after translation, keeping original"
+            print(f"    {msg}")
+            fallback_log.append(msg)
+            return existing_lang_section if existing_lang_section else en_content
+
+        return translated
+
+    except Exception as e:
+        msg = f"[FALLBACK] Section [{index}] '{heading}': translation error ({e}), keeping original"
+        print(f"    {msg}")
+        fallback_log.append(msg)
+        return existing_lang_section if existing_lang_section else en_content
+
+
+def safe_translate_frontmatter(
+    client: OpenAI,
+    en_frontmatter: str,
+    lang: dict,
+    existing_frontmatter: str,
+    fallback_log: list[str],
+) -> str:
+    """
+    Translate frontmatter with integrity validation and fallback.
+    """
+    try:
+        translated = translate_frontmatter(
+            client, en_frontmatter,
+            target_language_name=lang["name"],
+            existing_frontmatter=existing_frontmatter,
+        )
+
+        if not translated.strip():
+            msg = "[FALLBACK] Frontmatter: empty response, keeping original"
+            print(f"    {msg}")
+            fallback_log.append(msg)
+            return existing_frontmatter
+
+        if not validate_frontmatter(translated):
+            msg = "[FALLBACK] Frontmatter: missing --- delimiters after translation, keeping original"
+            print(f"    {msg}")
+            fallback_log.append(msg)
+            return existing_frontmatter
+
+        return translated
+
+    except Exception as e:
+        msg = f"[FALLBACK] Frontmatter: error ({e}), keeping original"
+        print(f"    {msg}")
+        fallback_log.append(msg)
+        return existing_frontmatter
 
 
 def process_file(
@@ -280,10 +439,11 @@ def process_file(
     after_sha: str,
     config: dict,
     dry_run: bool = False,
-) -> Optional[str]:
+) -> tuple[Optional[str], list[str]]:
     """
     Translate a single file for a single language.
-    Returns the lang_filepath if a translation was written, None otherwise.
+    Returns (lang_filepath, fallback_log) if a translation was written,
+    (None, []) otherwise.
     """
     if en_filepath.startswith("snippets/"):
         snippets_dir = lang.get("snippets_dir", f"snippets/{lang['code']}")
@@ -296,7 +456,7 @@ def process_file(
 
     if not en_abs.exists():
         print(f"  [SKIP] English source not found: {en_filepath}")
-        return None
+        return None, []
 
     en_content = en_abs.read_text(encoding="utf-8")
     existing_content = lang_abs.read_text(encoding="utf-8") if lang_abs.exists() else None
@@ -305,20 +465,28 @@ def process_file(
     print(f"  → {'[NEW]' if is_new_file else '[UPDATE]'} {lang_filepath}")
 
     if dry_run:
-        return lang_filepath
+        return lang_filepath, []
 
     preserve_terms = config.get("preserve_terms", [])
+    fallback_log: list[str] = []
 
     if is_new_file:
-        translated = translate_content(
-            client, en_content,
-            target_language=lang["code"],
-            target_language_name=lang["name"],
-            preserve_terms=preserve_terms,
-        )
-        lang_abs.parent.mkdir(parents=True, exist_ok=True)
-        lang_abs.write_text(translated, encoding="utf-8")
-        return lang_filepath
+        try:
+            translated = translate_content(
+                client, en_content,
+                target_language=lang["code"],
+                target_language_name=lang["name"],
+                preserve_terms=preserve_terms,
+            )
+            if not translated.strip():
+                print(f"  [ERROR] Empty translation for new file {en_filepath}, skipping")
+                return None, []
+            lang_abs.parent.mkdir(parents=True, exist_ok=True)
+            lang_abs.write_text(translated, encoding="utf-8")
+            return lang_filepath, []
+        except Exception as e:
+            print(f"  [ERROR] Failed to translate new file {en_filepath}: {e}")
+            return None, []
 
     # --- Diff-based update ---
     diff = get_file_diff(before_sha, after_sha, en_filepath)
@@ -332,6 +500,12 @@ def process_file(
     # Use diff hunk line numbers to find which English sections changed
     changed_indices = get_changed_section_indices(diff, en_sections)
 
+    # Fallback: if diff parsing found no changed sections but file is confirmed changed,
+    # translate all sections (file-level change without section-level hunk info)
+    if not changed_indices and diff.strip():
+        print(f"    [WARN] No sections mapped from diff hunks; translating all sections as fallback")
+        changed_indices = set(range(len(en_sections)))
+
     # Translate frontmatter if translatable fields changed
     frontmatter_changed = any(
         line.startswith(('+', '-'))
@@ -343,10 +517,10 @@ def process_file(
     new_frontmatter = parsed_lang["frontmatter"]
     if frontmatter_changed or not parsed_lang["frontmatter"].strip():
         print(f"    Translating frontmatter...")
-        new_frontmatter = translate_frontmatter(
-            client, parsed_en["frontmatter"],
-            target_language_name=lang["name"],
+        new_frontmatter = safe_translate_frontmatter(
+            client, parsed_en["frontmatter"], lang,
             existing_frontmatter=parsed_lang["frontmatter"],
+            fallback_log=fallback_log,
         )
 
     # Build translated section list:
@@ -360,12 +534,9 @@ def process_file(
             heading = en_section["heading"]
             print(f"    Translating section [{i}]: {heading or '(intro)'}...")
             existing_lang_section = lang_sections[i]["content"] if i < len(lang_sections) else None
-            translated = translate_content(
-                client, en_section["content"],
-                target_language=lang["code"],
-                target_language_name=lang["name"],
-                preserve_terms=preserve_terms,
-                existing_translation=existing_lang_section,
+            translated = safe_translate_section(
+                client, i, en_section, existing_lang_section,
+                lang, preserve_terms, fallback_log,
             )
             new_sections.append(translated)
         elif i < len(lang_sections):
@@ -373,11 +544,9 @@ def process_file(
         else:
             heading = en_section["heading"]
             print(f"    Translating new section [{i}]: {heading or '(intro)'}...")
-            translated = translate_content(
-                client, en_section["content"],
-                target_language=lang["code"],
-                target_language_name=lang["name"],
-                preserve_terms=preserve_terms,
+            translated = safe_translate_section(
+                client, i, en_section, None,
+                lang, preserve_terms, fallback_log,
             )
             new_sections.append(translated)
 
@@ -385,7 +554,7 @@ def process_file(
     result = new_frontmatter.rstrip() + "\n\n" + joined.rstrip() + "\n"
     lang_abs.write_text(result, encoding="utf-8")
 
-    return lang_filepath
+    return lang_filepath, fallback_log
 
 
 def main():
@@ -419,6 +588,7 @@ def main():
         print(f"  {f}")
 
     translated_files: dict[str, list[str]] = {}
+    all_fallbacks: dict[str, list[str]] = {}
 
     for lang in languages:
         needs_translation = []
@@ -441,9 +611,14 @@ def main():
         print(f"\n[{lang['code']}] Files to translate: {len(needs_translation)}")
         translated = []
         for en_file in needs_translation:
-            result = process_file(client, en_file, lang, args.before, args.after, config, args.dry_run)
-            if result:
-                translated.append(result)
+            try:
+                result, fallbacks = process_file(client, en_file, lang, args.before, args.after, config, args.dry_run)
+                if result:
+                    translated.append(result)
+                    if fallbacks:
+                        all_fallbacks[result] = fallbacks
+            except Exception as e:
+                print(f"  [ERROR] Unexpected error processing {en_file} for {lang['code']}: {e}")
 
         if translated:
             translated_files[lang["name"]] = translated
@@ -457,6 +632,9 @@ def main():
         summary_lines.append(f"### {lang_name}")
         for f in files:
             summary_lines.append(f"- `{f}`")
+            if f in all_fallbacks:
+                for fb in all_fallbacks[f]:
+                    summary_lines.append(f"  - ⚠️ {fb}")
         summary_lines.append("")
 
     summary = "\n".join(summary_lines)
