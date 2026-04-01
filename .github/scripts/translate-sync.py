@@ -314,13 +314,53 @@ Only change what has changed — preserve existing translations where English is
     return call_api_with_retry(_call)
 
 
+def extract_custom_frontmatter_fields(existing_fm: str, en_fm: str) -> str:
+    """
+    Extract fields from existing_fm that are NOT present in en_fm.
+    These are custom fields added by translators (e.g. translationSourceHash,
+    translationFrom, translationMismatches) that should be preserved.
+    Returns a string of extra lines to inject before the closing ---.
+    """
+    if not existing_fm.strip() or not en_fm.strip():
+        return ""
+
+    def parse_keys(fm: str) -> set[str]:
+        keys = set()
+        for line in fm.splitlines():
+            m = re.match(r'^([a-zA-Z][a-zA-Z0-9_-]*):', line)
+            if m:
+                keys.add(m.group(1))
+        return keys
+
+    en_keys = parse_keys(en_fm)
+    extra_lines = []
+    in_extra_block = False
+    current_key = None
+
+    for line in existing_fm.splitlines():
+        key_match = re.match(r'^([a-zA-Z][a-zA-Z0-9_-]*):', line)
+        if key_match:
+            current_key = key_match.group(1)
+            if current_key not in en_keys and current_key not in ('title', 'description', 'sidebarTitle'):
+                in_extra_block = True
+                extra_lines.append(line)
+            else:
+                in_extra_block = False
+        elif in_extra_block and (line.startswith(' ') or line.startswith('\t') or line.strip() == ''):
+            extra_lines.append(line)
+        else:
+            in_extra_block = False
+
+    return "\n".join(extra_lines)
+
+
 def translate_frontmatter(
     client: OpenAI,
     frontmatter: str,
     target_language_name: str,
     existing_frontmatter: Optional[str] = None,
 ) -> str:
-    """Translate translatable frontmatter fields only."""
+    """Translate translatable frontmatter fields only, preserving custom fields."""
     if not frontmatter.strip():
         return frontmatter
 
@@ -341,7 +381,20 @@ Return only the frontmatter block including the --- delimiters.
         )
         return response.choices[0].message.content.strip()
 
-    return call_api_with_retry(_call)
+    translated = call_api_with_retry(_call)
+
+    # Re-inject custom fields from existing translation that aren't in English source
+    if existing_frontmatter:
+        extra = extract_custom_frontmatter_fields(existing_frontmatter, frontmatter)
+        if extra:
+            # Insert extra fields before the closing ---
+            lines = translated.splitlines()
+            close_idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == '---'), -1)
+            if close_idx > 0:
+                lines.insert(close_idx, extra)
+                translated = "\n".join(lines)
+
+    return translated
 
 
 def safe_translate_section(
