@@ -1,0 +1,90 @@
+---
+title: "メッセージ"
+translationSourceHash: 7229c28c
+translationFrom: development/comfyui-server/comms_messages.mdx, zh/development/comfyui-server/comms_messages.mdx
+---
+
+## メッセージ
+
+実行中（またはキューの状態が変化した際）、`PromptExecutor` は `PromptServer` の `send_sync` メソッドを通じてクライアントへメッセージを送信します。
+
+これらのメッセージは `api.js` 内で定義されたソケットイベントリスナーによって受信されます（本文執筆時点では約 90 行目付近、または `this.socket.addEventListener` を検索してください）。
+このリスナーは、既知のメッセージタイプごとに `CustomEvent` オブジェクトを作成し、登録されたすべてのリスナーへ dispatch（発行）します。
+
+拡張機能は、標準的な Javascript の慣習に従ってイベントを受信するように登録できます（通常は `setup()` 関数内で行います）。
+
+```Javascript
+api.addEventListener(message_type, messageHandler);
+```
+
+`message_type` が内置のものではない場合、既知のメッセージタイプリストに自動的に追加されます。`messageHandler` は `CustomEvent` オブジェクトと共に呼び出されます。このオブジェクトはソケットによって発生したイベントを拡張し、サーバーから送信されたデータの辞書である `.detail` プロパティを追加したものです。したがって、使用法は一般的に以下のようになります。
+
+```Javascript
+function messageHandler(event) {
+    if (event.detail.node == aNodeIdThatIsInteresting) {
+        // event.detail.other_things で何か処理を行う
+    }
+}
+```
+
+### 内置メッセージタイプ
+
+実行中（またはキューの状態が変化した際）、`PromptExecutor` は `PromptServer` の `send_sync` メソッドを通じて以下のメッセージをクライアントへ送信します。拡張機能はこれらのいずれかのリスナーとして登録できます。
+
+| イベント                   | 発生条件                                                                       | データ                                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `execution_start`       | プロンプトが実行されようとするとき                                              | `prompt_id`                                                                                             |
+| `execution_error`       | 実行中にエラーが発生したとき                                      | `prompt_id`、および追加情報                                                                |
+| `execution_interrupted` | ノードが `InterruptProcessingException` を発生させて実行が停止されたとき | `prompt_id`、`node_id`、`node_type`、および `executed`（実行済みノードのリスト）                           |
+| `execution_cached`      | 実行開始時                                                  | `prompt_id`、`nodes`（キャッシュされた出力が使用可能なためスキップされるノードのリスト） |
+| `execution_success`     | プロンプト内のすべてのノードが正常に実行されたとき             | `prompt_id`、`timestamp`                                                                                |
+| `executing`             | 新しいノードが実行されようとするとき                                    | `node`（ノード ID、または完了を示す `None`）、`prompt_id`                                          |
+| `executed`              | ノードが UI 要素を返すとき                                           | `node`（ノード ID）、`prompt_id`、`output`                                                                 |
+| `progress`              | 必要なフックを実装したノードの実行中               | `node`（ノード ID）、`prompt_id`、`value`、`max`                                                           |
+| `status`                | キューの状態が変化したとき                                        | `exec_info`（`queue_remaining` を含む辞書。キュー内のエントリー数）                 |
+
+### executed の使用について
+
+名前にもかかわらず、`executed` メッセージはノードの実行が完了するたびに送信されるわけではありません（`executing` とは異なります）。ノードが UI の更新を返す場合にのみ送信されます。
+
+これを行うには、メイン関数はタプルではなく辞書を返す必要があります。
+
+```python
+# メインメソッドの末尾
+        return { "ui":a_new_dictionary, "result": the_tuple_of_output_values }
+```
+
+`a_new_dictionary` は `executed` メッセージ内の `output` の値として送信されます。
+ノードに出力がない場合、`result` キーは省略できます（例：`nodes.py` 内の `SaveImage` のコードを参照）。
+
+### カスタムメッセージタイプ
+
+上記の通り、クライアント側では独自のメッセージタイプ名に対してリスナーとして登録するだけで、カスタムメッセージタイプを追加できます。
+
+```Javascript
+api.addEventListener("my.custom.message", messageHandler);
+```
+
+サーバー側でもコードは同様にかつ簡潔です。
+
+```Python
+from server import PromptServer
+# その後、（通常）メイン実行関数内で
+        PromptServer.instance.send_sync("my.custom.message", a_dictionary)
+```
+
+#### node_id の取得
+
+内置メッセージのほとんどは、`node` の値に現在のノード ID を含みます。同様のことを行いたい場合もあるでしょう。
+
+ノード ID はサーバー側で隠し入力を通じて利用可能です。これは `INPUT_TYPES` 辞書の `hidden` キーを使用して取得します。
+
+```Python
+    @classmethod    
+    def INPUT_TYPES(s):
+        return {"required" : { }, # 必要な入力をここに記載 
+                "hidden": { "node_id": "UNIQUE_ID" } } # ノード ID 取得のために hidden キーを追加
+
+    def my_main_function(self, required_inputs, node_id):
+        # 何か処理を行う
+        PromptServer.instance.send_sync("my.custom.message", {"node": node_id, "other_things": etc})

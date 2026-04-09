@@ -1,0 +1,71 @@
+---
+title: "データリスト"
+translationSourceHash: 8b83584c
+translationFrom: custom-nodes/backend/lists.mdx, zh/custom-nodes/backend/lists.mdx
+---
+
+## 長さ 1 の処理
+
+内部的には、Comfy サーバーはノード間を流れるデータを、関連するデータ型の Python `list`（通常は長さ 1）として表現します。
+通常の動作では、ノードが出力を返す際、出力 `tuple` 内の各要素は個別にリスト（長さ 1）にラップされます。その後、次のノードが呼び出される際、データはアンラップされてメイン関数に渡されます。
+
+<Tip>Comfy がラップとアンラップを自動で行うため、通常これを気にする必要はありません。</Tip>
+
+<Tip>これはバッチ処理に関するものではありません。バッチ（例えば、潜変量や画像など）はリスト内の*単一のエントリー*です（[テンソルデータタイプ](./images_and_masks) を参照）。</Tip>
+
+## リスト処理
+
+場合によっては、単一のワークフロー内で複数のデータインスタンスが処理されることがあり、その場合、内部データはデータインスタンスを含むリストになります。
+例えば、VRAM 不足を防ぐために一連の画像を 1 つずつ処理したり、異なるサイズの画像を扱ったりする場合がこれに該当します。
+
+デフォルトでは、Comfy はリスト内の値を順次処理します。
+- 入力が異なる長さの `list` である場合、短い方は最後の値を繰り返してパディングされます
+- メインメソッドは、入力リスト内の各値に対して 1 回ずつ呼び出されます
+- 出力は `list` であり、それぞれの長さは最も長い入力と同じになります
+
+関連するコードは、`execution.py` 内の `map_node_over_list` メソッドで見つけることができます。
+
+しかし、Comfy はノードの出力を長さ 1 の `list` にラップするため、カスタムノードが返す `tuple` に `list` が含まれている場合、その `list` はラップされ、単一のデータとして扱われます。
+返されるリストをラップせず、順次処理用のデータシリーズとして扱うことを Comfy に指示するには、ノードはクラス属性 `OUTPUT_IS_LIST` を提供する必要があります。これは `RETURN_TYPES` と同じ長さの `tuple[bool]` であり、どの出力をそのように扱うべきかを指定します。
+
+ノードはデフォルトの入力動作を上書きし、単一の呼び出しでリスト全体を受け取ることもできます。これは、クラス属性 `INPUT_IS_LIST` を `True` に設定することで実現します。
+
+以下は組み込みノードからの（軽く注釈付きの）例です。`ImageRebatch` は 1 つ以上の画像バッチを受け取り（`INPUT_IS_LIST` が `True` であるためリストとして受け取ります）、それを要求されたサイズのバッチに再バッチ処理します。
+
+<Tip>`INPUT_IS_LIST` はノードレベルです。すべての入力が同じ扱いを受けます。そのため、`batch_size` ウィジェットの値は `batch_size[0]` によって得られます。</Tip>
+
+```Python
+
+class ImageRebatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "images": ("IMAGE",),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}) }}
+    RETURN_TYPES = ("IMAGE",)
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (True, )
+    FUNCTION = "rebatch"
+    CATEGORY = "image/batch"
+
+    def rebatch(self, images, batch_size):
+        batch_size = batch_size[0]    # すべてリストとして渡されるため、batch_size は list[int] です
+
+        output_list = []
+        all_images = []
+        for img in images:                    # 各 img は画像のバッチです
+            for i in range(img.shape[0]):     # 各 i は単一の画像です
+                all_images.append(img[i:i+1])
+
+        for i in range(0, len(all_images), batch_size): # batch_size ごとにチャンクを取り、それぞれを新しいバッチにします
+            output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # 画像バッチの幅または高さが異なる場合、エラーになります！
+
+        return (output_list,)
+```
+
+
+
+
+
+
+
+#### INPUT_IS_LIST

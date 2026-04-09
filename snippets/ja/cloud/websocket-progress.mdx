@@ -1,0 +1,126 @@
+<CodeGroup>
+```typescript TypeScript
+async function listenForCompletion(
+  promptId: string,
+  timeout: number = 300000
+): Promise<Record<string, any>> {
+  const wsUrl = `wss://cloud.comfy.org/ws?clientId=${crypto.randomUUID()}&token=${API_KEY}`;
+  const outputs: Record<string, any> = {};
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error(`タスクが ${timeout / 1000} 秒以内に完了しませんでした`));
+    }, timeout);
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const msgType = data.type;
+      const msgData = data.data ?? {};
+
+      // 自分のタスクのみをフィルタリング
+      if (msgData.prompt_id !== promptId) return;
+
+      if (msgType === "executing") {
+        const node = msgData.node;
+        if (node) {
+          console.log(`ノードを実行中：${node}`);
+        } else {
+          console.log("実行完了");
+        }
+      } else if (msgType === "progress") {
+        console.log(`進行状況：${msgData.value}/${msgData.max}`);
+      } else if (msgType === "executed" && msgData.output) {
+        outputs[msgData.node] = msgData.output;
+      } else if (msgType === "execution_success") {
+        console.log("タスクが正常に完了しました！");
+        clearTimeout(timer);
+        ws.close();
+        resolve(outputs);
+      } else if (msgType === "execution_error") {
+        const errorMsg = msgData.exception_message ?? "不明なエラー";
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error(`実行エラー：${errorMsg}`));
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+  });
+}
+
+// 完了を待機し、出力を収集
+const outputs = await listenForCompletion(promptId);
+```
+
+```python Python
+import asyncio
+import aiohttp
+import json
+import uuid
+
+async def listen_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
+    """WebSocket に接続し、タスクの完了を監視します。
+
+    Returns:
+        タスクの最終出力
+    """
+    ws_url = BASE_URL.replace("https://", "wss://")
+    client_id = str(uuid.uuid4())
+    ws_url = f"{ws_url}/ws?clientId={client_id}&token={API_KEY}"
+
+    outputs = {}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(ws_url) as ws:
+            async def receive_messages():
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type")
+                        msg_data = data.get("data", {})
+
+                        # 自分のタスクのみをフィルタリング
+                        if msg_data.get("prompt_id") != prompt_id:
+                            continue
+
+                        if msg_type == "executing":
+                            node = msg_data.get("node")
+                            if node:
+                                print(f"ノードを実行中：{node}")
+
+                        elif msg_type == "progress":
+                            value = msg_data.get("value", 0)
+                            max_val = msg_data.get("max", 100)
+                            print(f"進行状況：{value}/{max_val}")
+
+                        elif msg_type == "executed":
+                            node_id = msg_data.get("node")
+                            output = msg_data.get("output", {})
+                            if output:
+                                outputs[node_id] = output
+
+                        elif msg_type == "execution_success":
+                            print("タスクが正常に完了しました！")
+                            return outputs
+
+                        elif msg_type == "execution_error":
+                            error_msg = msg_data.get("exception_message", "不明なエラー")
+                            raise RuntimeError(f"実行エラー：{error_msg}")
+
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        raise RuntimeError(f"WebSocket エラー：{ws.exception()}")
+
+            try:
+                return await asyncio.wait_for(receive_messages(), timeout=timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"タスクが {timeout} 秒以内に完了しませんでした")
+
+# 完了を待機し、出力を収集
+outputs = await listen_for_completion(prompt_id)
+```
+</CodeGroup>

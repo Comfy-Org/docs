@@ -1,0 +1,170 @@
+---
+title: "Luma Image to Image - ComfyUI 組み込みノードドキュメント"
+description: "Luma AI を使用して画像を編集するノード"
+sidebarTitle: "Luma Image to Image"
+icon: "circle"
+translationSourceHash: 4a7d1330
+translationFrom: built-in-nodes/partner-node/image/luma/luma-image-to-image.mdx, zh/built-in-nodes/partner-node/image/luma/luma-image-to-image.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI 組み込み Luma Image to Image ノード](/images/built-in-nodes/api_nodes/luma/luma-image-to-image.jpg)
+
+Luma Image to Image ノードは、テキストプロンプトに基づいて既存の画像を Luma AI 技術で編集できるようにし、元の画像の特定の特徴や構造を保持します。
+
+## ノードの機能
+
+このノードは Luma AI のテキストから画像を生成する API に接続し、詳細なテキストプロンプトを用いて画像を生成することを可能にします。Luma AI は、優れたリアリズムとディテール表現が特徴であり、特に写真のようにリアルなコンテンツやアーティスティックなスタイルの画像生成に優れています。
+
+## パラメーター
+
+### 基本パラメーター
+
+| パラメーター         | 型      | デフォルト | 説明                                                                                   |
+| ------------------ | ------- | ---------- | -------------------------------------------------------------------------------------- |
+| prompt             | 文字列  | ""         | 生成するコンテンツを記述するテキストプロンプト                                         |
+| model              | 選択肢  | -          | 使用する生成モデルを選択                                                               |
+| aspect_ratio       | 選択肢  | 16:9       | 出力画像のアスペクト比を設定                                                           |
+| seed               | 整数    | 0          | ノードを再実行するかどうかを判定するためのシード値ですが、実際の出力結果はシードに依存しません |
+| style_image_weight | 浮動小数点数 | 1.0        | スタイル参照画像の重み（範囲：0.02～1.0）。`style_image` が指定されている場合のみ有効です |
+
+### オプションパラメーター  
+以下のパラメーターが入力されない場合、ノードは「テキストから画像」モードで動作します。
+
+| パラメーター       | 型       | 説明                                                                                                                              |
+| ----------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| image_luma_ref    | LUMA_REF | Luma 参照ノードとの接続。入力画像を通じて生成結果に影響を与え、最大4枚の画像を考慮できます                                          |
+| style_image       | 画像     | スタイル参照画像。1枚のみ使用され、生成画像のスタイルに影響を与えます。`style_image_weight` でその影響度を調整できます                    |
+| character_image   | 画像     | 生成結果にキャラクターの特徴を追加します。複数枚の画像をバッチとして指定可能で、最大4枚まで対応します                                 |
+
+### 出力
+
+| 出力  | 型   | 説明           |
+| ----- | ---- | -------------- |
+| IMAGE | 画像 | 生成された画像 |
+
+## 使用例
+
+## 動作原理
+
+Luma Image to Image ノードは、入力画像を解析し、テキストプロンプトと組み合わせることで編集プロセスを制御します。Luma AI の生成モデルを活用し、プロンプトに基づいた創造的な画像変更を行います。
+
+ノードの処理手順：
+
+1. まず、入力画像を ComfyAPI にアップロードします  
+2. 次に、取得した画像の URL とプロンプトを Luma API に送信します  
+3. Luma AI の処理完了を待ちます  
+4. 生成された画像をダウンロードして返します  
+
+`image_weight` パラメーターは、元の画像の影響度を制御します。値が 0 に近いほど元の画像の特徴がより多く保持され、1 に近いほど大幅な変更が可能になります。
+
+## ソースコード
+
+[ノードのソースコード（2025-05-05 更新）]
+
+```python
+
+class LumaImageModifyNode(ComfyNodeABC):
+    """
+    Modifies images synchronously based on prompt and aspect ratio.
+    """
+
+    RETURN_TYPES = (IO.IMAGE,)
+    DESCRIPTION = cleandoc(__doc__ or "")  # Handle potential None value
+    FUNCTION = "api_call"
+    API_NODE = True
+    CATEGORY = "api node/image/Luma"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": (IO.IMAGE,),
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the image generation",
+                    },
+                ),
+                "image_weight": (
+                    IO.FLOAT,
+                    {
+                        "default": 1.0,
+                        "min": 0.02,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Weight of the image; the closer to 0.0, the less the image will be modified.",
+                    },
+                ),
+                "model": ([model.value for model in LumaImageModel],),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "control_after_generate": True,
+                        "tooltip": "Seed to determine if node should re-run; actual results are nondeterministic regardless of seed.",
+                    },
+                ),
+            },
+            "optional": {},
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    def api_call(
+        self,
+        prompt: str,
+        model: str,
+        image: torch.Tensor,
+        image_weight: float,
+        seed,
+        auth_token=None,
+        **kwargs,
+    ):
+        # first, upload image
+        download_urls = upload_images_to_comfyapi(
+            image, max_images=1, auth_token=auth_token
+        )
+        image_url = download_urls[0]
+        # next, make Luma call with download url provided
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/luma/generations/image",
+                method=HttpMethod.POST,
+                request_model=LumaImageGenerationRequest,
+                response_model=LumaGeneration,
+            ),
+            request=LumaImageGenerationRequest(
+                prompt=prompt,
+                model=model,
+                modify_image_ref=LumaModifyImageRef(
+                    url=image_url, weight=round(image_weight, 2)
+                ),
+            ),
+            auth_token=auth_token,
+        )
+        response_api: LumaGeneration = operation.execute()
+
+        operation = PollingOperation(
+            poll_endpoint=ApiEndpoint(
+                path=f"/proxy/luma/generations/{response_api.id}",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=LumaGeneration,
+            ),
+            completed_statuses=[LumaState.completed],
+            failed_statuses=[LumaState.failed],
+            status_extractor=lambda x: x.state,
+            auth_token=auth_token,
+        )
+        response_poll = operation.execute()
+
+        img_response = requests.get(response_poll.assets.image)
+        img = process_image_response(img_response)
+        return (img,)

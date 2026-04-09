@@ -1,0 +1,106 @@
+---
+title: "Pika 2.2 画像から動画へ - ComfyUI ネイティブノードドキュメント"
+description: "Pika AI を使用して静止画を動画に変換するノード"
+sidebarTitle: "Pika 2.2 画像から動画へ"
+icon: "circle"
+translationSourceHash: 9c4d8c57
+translationFrom: built-in-nodes/partner-node/video/pika/pika-image-to-video.mdx, zh/built-in-nodes/partner-node/video/pika/pika-image-to-video.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI ネイティブ Pika 2.2 画像から動画へノード](/images/built-in-nodes/api_nodes/pika/pika-2-2-image-to-video.jpg)
+
+Pika 2.2 画像から動画へノードは、Pika の最新バージョン 2.2 API に接続し、静止画を動画に変換します。このノードは元の画像の視覚的特徴を保持しつつ、テキストプロンプトに基づいた自然な動きを追加します。
+
+## パラメーター
+
+### 必須パラメーター
+
+| パラメーター       | 型      | デフォルト値 | 説明                                     |
+| ----------------- | ------- | ------------ | ---------------------------------------- |
+| image             | 画像    | -            | 動画に変換する入力画像                     |
+| prompt_text       | 文字列  | ""           | 動画の動きおよびコンテンツを記述するテキストプロンプト |
+| negative_prompt   | 文字列  | ""           | 動画に含めたくない要素                      |
+| seed              | 整数    | 0            | 生成時の乱数シード                         |
+| resolution        | 選択肢  | "1080p"      | 出力動画の解像度                           |
+| duration          | 選択肢  | "5s"         | 生成される動画の長さ                       |
+
+### 出力
+
+| 出力  | 型   | 説明         |
+| ----- | ---- | ------------ |
+| VIDEO | 動画 | 生成された動画 |
+
+## 動作原理
+
+このノードは、入力画像およびパラメーター（プロンプト、解像度、再生時間など）をマルチパートフォームデータとして Pika の API サーバーに送信します。API が処理を行い、生成された動画を返します。ユーザーはプロンプト、ネガティブプロンプト、乱数シードなどのパラメーターを調整することで、出力結果を制御できます。
+
+## ソースコード
+
+[ノードソースコード（2025-05-05 更新）]
+
+```python
+
+class PikaImageToVideoV2_2(PikaNodeBase):
+    """Pika 2.2 画像から動画へノード。"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": (
+                    IO.IMAGE,
+                    {"tooltip": "動画に変換する画像"},
+                ),
+                **cls.get_base_inputs_types(PikaBodyGenerate22I2vGenerate22I2vPost),
+            },
+            "hidden": {
+                "auth_token": "AUTH_TOKEN_COMFY_ORG",
+            },
+        }
+
+    DESCRIPTION = "Pika API v2.2 に画像とプロンプトを送信し、動画を生成します。"
+    RETURN_TYPES = ("VIDEO",)
+
+    def api_call(
+        self,
+        image: torch.Tensor,
+        prompt_text: str,
+        negative_prompt: str,
+        seed: int,
+        resolution: str,
+        duration: int,
+        auth_token: Optional[str] = None,
+    ) -> tuple[VideoFromFile]:
+        """Pika 2.2 画像から動画へ向けた API 呼び出し。"""
+        # 画像を BytesIO に変換
+        image_bytes_io = tensor_to_bytesio(image)
+        image_bytes_io.seek(0)  # ストリーム位置を先頭に戻す
+
+        # マルチパートアップロード用のファイルデータを準備
+        pika_files = {"image": ("image.png", image_bytes_io, "image/png")}
+
+        # Pydantic モデルを使用してファイル以外のデータを準備
+        pika_request_data = PikaBodyGenerate22I2vGenerate22I2vPost(
+            promptText=prompt_text,
+            negativePrompt=negative_prompt,
+            seed=seed,
+            resolution=resolution,
+            duration=duration,
+        )
+
+        initial_operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path=PATH_IMAGE_TO_VIDEO,
+                method=HttpMethod.POST,
+                request_model=PikaBodyGenerate22I2vGenerate22I2vPost,
+                response_model=PikaGenerateResponse,
+            ),
+            request=pika_request_data,
+            files=pika_files,
+            content_type="multipart/form-data",
+            auth_token=auth_token,
+        )
+
+        return self.execute_task(initial_operation, auth_token)

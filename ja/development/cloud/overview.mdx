@@ -1,0 +1,336 @@
+---
+title: "Cloud API 概要"
+description: "Comfy Cloud へのプログラムによるアクセス。ワークフローの実行、ファイル管理、実行状況の監視が可能です"
+translationSourceHash: a2f0050c
+translationFrom: development/cloud/overview.mdx, zh/development/cloud/overview.mdx
+---
+
+import PollJobCompletion from '/snippets/cloud/poll-job-completion.mdx'
+import WebSocketProgress from '/snippets/cloud/websocket-progress.mdx'
+import DownloadOutputs from '/snippets/cloud/download-outputs.mdx'
+import CompleteExample from '/snippets/cloud/complete-example.mdx'
+import GetApiKey from '/snippets/get-api-key.mdx'
+
+<Warning>
+  **実験的 API:** この API は実験的であり、変更される可能性があります。エンドポイント、リクエスト/レスポンス形式、および動作は予告なく変更される場合があります。
+</Warning>
+
+# Comfy Cloud API
+
+Comfy Cloud API は、Comfy Cloud インフラストラクチャ上でワークフローを実行するためのプログラムによるアクセスを提供します。この API はローカルの ComfyUI の API と互換性があり、既存の統合を簡単に移行できます。
+
+<Note>
+  **サブスクリプションが必要:** API を介してワークフローを実行するには、有効な Comfy Cloud サブスクリプションが必要です。詳細は[料金プラン](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)をご覧ください。
+</Note>
+
+## ベース URL
+
+```
+https://cloud.comfy.org
+```
+
+## 認証
+
+すべての API リクエストには、`X-API-Key` ヘッダーを介して API キーを渡す必要があります。
+
+### API キーの取得
+
+<GetApiKey />
+
+<Warning>
+  API キーは安全に保管してください。バージョン管理システムにコミットしたり、公開で共有したりしないでください。
+</Warning>
+
+### API キーの使用
+
+すべてのリクエストで `X-API-Key` ヘッダーに API キーを渡します：
+
+<CodeGroup>
+```bash curl
+curl -X GET "https://cloud.comfy.org/api/user" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+const response = await fetch("https://cloud.comfy.org/api/user", {
+  headers: { "X-API-Key": API_KEY },
+});
+const user = await response.json();
+```
+
+```python Python
+import os
+import requests
+
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+headers = {"X-API-Key": API_KEY}
+
+response = requests.get(
+    "https://cloud.comfy.org/api/user",
+    headers=headers
+)
+```
+</CodeGroup>
+
+## 核心概念
+
+### ワークフロー
+
+ComfyUI ワークフローは、ノードのグラフを記述する JSON オブジェクトです。API は「API 形式」のワークフローを受け付けます（ノード ID をキーとし、class_type、inputs などを含む）。この形式は、ComfyUI フロントエンドの「Save (API Format)」オプションによって生成されます。
+
+### ジョブ
+
+ワークフローを送信すると、**ジョブ**が作成されます。ジョブは非同期で実行されます：
+1. `POST /api/prompt` を介してワークフローを送信
+2. `prompt_id`（ジョブ ID）を受け取る
+3. WebSocket を介して進捗を監視するか、ステータスをポーリング
+4. 完了時に出力を取得
+
+### 並列実行（同時ジョブ）
+
+API ユーザーは、前のジョブの完了を待たずに、複数のワークフローを同時に送信できます。複数の `POST /api/prompt` リクエストを送信するだけです。特別なヘッダーやパラメーターは必要ありません。ディスパッチャーは、サブスクリプションティアの制限まで、それらを並列で実行します。
+
+| サブスクリプションティア | 同時ジョブ数 |
+|-------------------|-----------------|
+| Free              | 1               |
+| Standard          | 1               |
+| Creator           | 3               |
+| Pro               | 5               |
+
+同時実行制限を超えて送信されたジョブは、通常通りキューに入れられ、スロットが空くと自動的に実行されます。
+
+<Info>
+  並列実行は現在、API を介してのみ利用可能です。サブスクリプションの詳細は[料金プラン](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)をご覧ください。
+</Info>
+
+#### 例：複数のジョブを並列で送信
+
+<CodeGroup>
+```python Python
+import os
+import json
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+async def submit_workflow(session, workflow):
+    """単一のワークフローを送信し、prompt_id を返します。"""
+    async with session.post(
+        f"{BASE_URL}/api/prompt",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"prompt": workflow},
+    ) as response:
+        result = await response.json()
+        return result["prompt_id"]
+
+async def main():
+    with open("workflow_api.json") as f:
+        base_workflow = json.load(f)
+
+    # シードを変更してバリエーションを作成
+    workflows = []
+    for seed in [42, 123, 456]:
+        workflow = json.loads(json.dumps(base_workflow))
+        workflow["3"]["inputs"]["seed"] = seed
+        workflows.append(workflow)
+
+    # すべてのワークフローを同時に送信
+    async with aiohttp.ClientSession() as session:
+        prompt_ids = await asyncio.gather(
+            *[submit_workflow(session, wf) for wf in workflows]
+        )
+
+    for pid in prompt_ids:
+        print(f"Job submitted: {pid}")
+
+    # 各ジョブをポーリングまたは WebSocket で監視...
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+async function submitWorkflow(
+  workflow: Record<string, any>
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function main() {
+  const base = JSON.parse(
+    await Deno.readTextFile("workflow_api.json")
+  );
+
+  # シードを変更してバリエーションを作成
+  const seeds = [42, 123, 456];
+  const workflows = seeds.map((seed) => {
+    const wf = structuredClone(base);
+    wf["3"].inputs.seed = seed;
+    return wf;
+  });
+
+  # すべてのワークフローを同時に送信
+  const promptIds = await Promise.all(
+    workflows.map((wf) => submitWorkflow(wf))
+  );
+
+  for (const pid of promptIds) {
+    console.log(`Job submitted: {pid}`);
+  }
+
+  # 各ジョブをポーリングまたは WebSocket で監視...
+}
+
+main();
+```
+</CodeGroup>
+
+### 出力
+
+生成されたコンテンツ（画像、動画、音声）はクラウドストレージに保存されます。出力ファイルは `/api/view` エンドポイントを介してダウンロードできます。このエンドポイントは、一時署名付き URL への 302 リダイレクトを返します。
+
+## クイックスタート
+
+ワークフローの送信、進捗の監視、出力の取得方法を示す完全な例を以下に示します：
+
+### ステップ 1：ワークフローの送信
+
+<CodeGroup>
+```bash curl
+curl -X POST "https://cloud.comfy.org/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": '"$(cat workflow_api.json)"'}'
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+# ワークフローを読み込む（ComfyUI から API 形式でエクスポート）
+const workflow = JSON.parse(await Deno.readTextFile("workflow_api.json"));
+
+# ワークフローを送信
+const response = await fetch(`${BASE_URL}/api/prompt`, {
+  method: "POST",
+  headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: workflow }),
+});
+const result = await response.json();
+const promptId = result.prompt_id;
+console.log(`Job submitted: {promptId}`);
+```
+
+```python Python
+import os
+import requests
+import json
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+# ワークフローを読み込む（ComfyUI から API 形式でエクスポート）
+with open("workflow_api.json") as f:
+    workflow = json.load(f)
+
+# ワークフローを送信
+response = requests.post(
+    f"{BASE_URL}/api/prompt",
+    headers=get_headers(),
+    json={"prompt": workflow}
+)
+result = response.json()
+prompt_id = result["prompt_id"]
+print(f"Job submitted: {prompt_id}")
+```
+</CodeGroup>
+
+### ステップ 2：ジョブの進捗を監視
+
+ポーリングまたは WebSocket を使用して、ジョブの完了を監視できます。
+
+#### オプション A：ポーリング（シンプル）
+
+<PollJobCompletion />
+
+#### オプション B：WebSocket（リアルタイム進捗）
+
+リアルタイムの進捗更新と出力メタデータの収集には：
+
+<WebSocketProgress />
+
+<Note>
+  詳細なメッセージタイプとバイナリプレビュー画像の処理については、[WebSocket リファレンス](/development/cloud/api-reference#websocket-for-real-time-progress)をご覧ください。
+</Note>
+
+### ステップ 3：出力のダウンロード
+
+ジョブが完了したら、生成されたファイルをダウンロードします。WebSocket から返される `outputs` オブジェクト（または履歴エンドポイントを介して利用可能）には、ノード ID ごとに整理された出力データが含まれています。各ノードの出力には、ファイルメタデータを含む `images`、`video`、または `audio` 配列が含まれる場合があります。
+
+**出力構造の例：**
+```json
+{
+  "9": {
+    "images": [
+      {
+        "filename": "ComfyUI_00001_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ]
+  }
+}
+```
+
+ノード ID（この例では `"9"`）は、ワークフロー内の SaveImage または他の出力ノードに対応します。これらの ID は、ワークフロー JSON ファイルを開き、`class_type` が `SaveImage`、`VHS_VideoCombine` などのノードを探すことで見つけることができます。
+
+<DownloadOutputs />
+
+<Info>
+  `/api/view` エンドポイントは、一時署名付き URL への 302 リダイレクトを返します。ファイルをダウンロードするには、HTTP クライアントがリダイレクトに従う必要があります。
+</Info>
+
+### 完全な例
+
+以下は、3 つのすべてのステップを組み合わせた完全なエンドツーエンドの例です：
+
+<CompleteExample />
+
+## 利用可能なエンドポイント
+
+| カテゴリ | 説明 |
+|----------|-------------|
+| [ワークフロー](/development/cloud/api-reference#running-workflows) | ワークフローの送信、ステータスの確認 |
+| [ジョブ](/development/cloud/api-reference#checking-job-status) | ジョブのステータスとキューの監視 |
+| [入力](/development/cloud/api-reference#uploading-inputs) | 画像、マスク、その他の入力のアップロード |
+| [出力](/development/cloud/api-reference#downloading-outputs) | 生成されたコンテンツのダウンロード |
+| [WebSocket](/development/cloud/api-reference#websocket-for-real-time-progress) | リアルタイムの進捗更新 |
+| [オブジェクト情報](/development/cloud/api-reference#object-info) | 利用可能なノードとその定義 |
+
+## 次のステップ
+
+上記のクイックスタートでは、ワークフローの送信と結果の取得の基礎をカバーしています。より高度なユースケースについては、[Cloud API リファレンス](/development/cloud/api-reference)を参照してください：
+
+- **[入力ファイルのアップロード](/development/cloud/api-reference#uploading-inputs)** - 外部入力を必要とするワークフローのために、画像、マスク、またはその他のユーザー提供コンテンツをアップロード
+- **[ワークフロー入力の修正](/development/cloud/api-reference#modify-workflow-inputs)** - 送信前にプロンプト、シード、またはノード設定などのワークフローパラメーターを動的に変更
+- **[パートナーノードの使用](/development/cloud/api-reference#using-partner-nodes)** - 追加の API キー設定を必要とする外部 AI サービス（Flux Pro、Ideogram など）を呼び出す
+- **[キュー管理](/development/cloud/api-reference#queue-management)** - キューのステータスの監視、ジョブのキャンセル、または実行中の実行の中断
+- **[エラー処理](/development/cloud/api-reference#error-handling)** - HTTP エラー、実行失敗の処理、および例外タイプの理解
+
+追加リソース：
+- [OpenAPI 仕様](/development/cloud/openapi) - コード生成用の機械可読 API 仕様

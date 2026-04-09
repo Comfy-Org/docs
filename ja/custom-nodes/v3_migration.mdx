@@ -1,0 +1,835 @@
+---
+title: "V3 移行ガイド"
+description: "既存の V1 ノードを新しい V3 スキーマに移行する方法。"
+translationSourceHash: 70a36c8e
+translationFrom: custom-nodes/v3_migration.mdx, zh/custom-nodes/v3_migration.mdx
+---
+
+## 概要
+
+ComfyUI V3 スキーマは、ノードを定義するためのより整理された方法を導入しており、今後のノード機能の拡張は V3 スキーマでのみ追加されます。このガイドを使用して、既存の V1 ノードを新しい V3 スキーマに移行できます。
+
+## 核心概念
+
+V3 スキーマは新しいバージョン管理された Comfy API 上に維持されており、将来のスキーマの改訂は下位互換性があります。```comfy_api.latest``` は開発中の最新番号付き API を指し、latest の前のバージョンが「安定版」と見なせます。バージョン ```v0_0_2``` は現在（かつ最初）の API バージョンであるため、警告なしに変更が行われる可能性があります。安定版と見なされると、```latest``` が指すために新しいバージョン ```v0_0_3``` が作成されます。
+
+```python
+# 最新の ComfyUI API を使用
+from comfy_api.latest import ComfyExtension, io, ui
+
+# 特定のバージョンの ComfyUI API を使用
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### V1 対 V3 アーキテクチャ
+
+V3 スキーマの主な変更点は以下の通りです：
+- 入力と出力が辞書ではなくオブジェクトで定義される。
+- 実行メソッドは 'execute' という名前に固定され、クラスメソッドである。
+- ```def comfy_entrypoint()``` 関数が ComfyExtension オブジェクトを返し、NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS の代わりに公開ノードを定義する。
+- ノードオブジェクトは 'state' を公開しない - ```def __init__(self)``` はノードの関数で公開される内容に影響を与えない（すべてクラスメソッドであるため）。ノードクラスは実行前にもサニタイズされる。
+
+#### V1 (レガシー)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (モダン)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## 移行ステップ
+
+V1 から V3 への移行は、ほとんどの場合単純で、構文の変更のみです。
+
+### ステップ 1: ベースクラスの変更
+
+すべての V3 スキーマノードは ```ComfyNode``` から継承する必要があります。継承チェーンのトップに ```ComfyNode``` 親があれば、複数の継承層でも問題ありません。
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # __init__ は不要
+```
+
+### ステップ 2: INPUT_TYPES を define_schema に変換
+
+ノード ID、表示名、カテゴリなどのノードプロパティは、以前は辞書やクラスプロパティなどコードの異なる場所に割り当てられていましたが、現在は ```Schema``` クラスを介して一緒に管理されます。
+
+```define_schema(cls)``` 関数は、V1 の INPUT_TYPES(s) とほぼ同じ方法で ```Schema``` オブジェクトを返すことが期待されます。
+
+サポートされているコア入力/出力型は ```comfy_api/{version}``` の ```_io.py``` に保存および文書化されており、デフォルトで ```io``` として名前空間化されています。入力/出力は辞書や文字列ではなくクラスで定義されるようになったため、カスタム型は独自のクラスを定義するか、```io``` のヘルパー関数 ```Custom``` を使用することでサポートされます。
+
+カスタム型については、以下のセクションで詳しく説明します。
+
+型クラスには以下のプロパティがあります：
+- 入力用の ```class Input```（例：```Model.Input(...)```）
+- 出力用の ```class Output```（例：```Model.Output(...)```）。すべての型が出力としてサポートされているわけではないことに注意。
+- 型の型ヒントを取得するための ```Type```（例：```Model.Type```）。一部の型ヒントは単に ```any``` であり、将来更新される可能性があることに注意。これらの型ヒントは強制されず、有用なドキュメントとして機能するのみ。
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # V1 での任意の型の処理
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # V3 での任意の型の処理
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### ステップ 3: 実行メソッドの更新
+
+V3 のすべての実行関数は ```execute``` という名前で、クラスメソッドです。
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # 処理
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # 処理
+    image = 1.0 - image
+
+    # オプションの UI プレビュー付きで返す
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### ステップ 4: ノードプロパティの変換
+
+以下にプロパティ名の例を示します。詳細は ```comfy_api.latest._io``` のソースコードを参照してください。
+
+| V1 プロパティ | V3 スキーマフィールド | 備考 |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | Schema の `outputs` | Output オブジェクトのリスト |
+| `RETURN_NAMES` | Output の `display_name` | 出力ごとの表示名 |
+| `FUNCTION` | 常に `execute` | メソッド名が標準化 |
+| `CATEGORY` | Schema の `category` | 文字列値 |
+| `OUTPUT_NODE` | Schema の `is_output_node` | 布尔フラグ |
+| `DEPRECATED` | Schema の `is_deprecated` | 布尔フラグ |
+| `EXPERIMENTAL` | Schema の `is_experimental` | 布尔フラグ |
+
+### ステップ 5: 特殊メソッドの処理
+
+V1 と同じ特殊メソッドがサポートされていますが、より明確にするために小文字化または完全に改名されています。使用方法は同じです。
+
+#### 検証 (V1 → V3)
+
+入力検証関数は ```validate_inputs``` に改名されました。
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # 検証ロジック
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # 有効な場合は True、無効な場合はエラー文字列を返す
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### 遅延評価 (V1 → V3)
+
+```check_lazy_status``` 関数はクラスメソッドになり、それ以外は同じです。
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### キャッシュ制御 (V1 → V3)
+
+キャッシュ制御の機能は V1 と同じですが、元の関数名はどのように動作するかについて非常に誤解を招くものでした。
+
+V1 の ```IS_CHANGED``` 関数は、戻り値がノードを前回実行したときと**同じ**場合、ノードの再実行をトリガーしないように信号を送ります。
+
+したがって、関数 ```IS_CHANGED``` は ```fingerprint_inputs``` に改名されました。開発者による最も一般的な間違いの 1 つは、```True``` を返すとノードが常に再実行されると考えることでした。```True``` が常に返されるため、ノードを 1 回だけ実行してキャッシュ値を再利用するという逆の効果になります。
+
+この関数を使用する例として、LoadImage ノードがあります。選択されたファイルのハッシュを返すため、ファイルが変更された場合、ノードは強制的に再実行されます。
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### ステップ 6: 拡張機能とエントリーポイントの作成
+
+ノード ID をノードクラス/表示名にリンクするための辞書を定義する代わりに、```ComfyExtension``` クラスと定義が期待される ```comfy_entrypoint``` 関数ができました。
+
+将来、```get_node_list``` を介してノード以外を登録するために、ComfyExtension により多くの関数が追加される可能性があります。
+
+```comfy_entrypoint``` は非同期でも同期でも構いませんが、```get_node_list``` は非同期として定義する必要があります。
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # 非同期として宣言する必要あり
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # ここにノードを追加
+        ]
+
+# 非同期または非非同期として宣言可能、両方機能します
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## 入力型リファレンス
+
+ステップ 2 ですでに説明しましたが、ここに V1 対 V3 の型リファレンス比較をいくつか示します。完全な型宣言は ```comfy_api.latest._io``` を参照してください。
+
+### 基本型
+
+| V1 型 | V3 型 | 例 |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+#### control_after_generate
+
+Int および Combo 入力は、各生成後に値を自動的に変更するための制御ウィジェットを追加する `control_after_generate` パラメータをサポートします。V1 ではこれは単純な `bool` でしたが、V3 では明示的な制御のために `io.ControlAfterGenerate` 列挙型を使用できます。`True` を渡すことは `io.ControlAfterGenerate.randomize` と同等です。
+
+| 値 | 動作 |
+|-------|----------|
+| `io.ControlAfterGenerate.fixed` | 各生成後に値は同じまま。 |
+| `io.ControlAfterGenerate.increment` | 各生成後に値がステップ分増加。 |
+| `io.ControlAfterGenerate.decrement` | 各生成後に値がステップ分減少。 |
+| `io.ControlAfterGenerate.randomize` | 各生成後に値がランダム化。 |
+
+```python
+# 制御ウィジェットを有効化（ユーザーが UI でモードを選択）
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, control_after_generate=True)
+
+# 特定のデフォルトモードを設定
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
+    control_after_generate=io.ControlAfterGenerate.randomize)
+```
+
+### ComfyUI 型
+
+| V1 型 | V3 型 | 例 |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="Input image")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### Combo（ドロップダウン/選択リスト）
+
+V3 の Combo 型には明示的なクラス定義が必要です。
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## スキーマリファレンス
+
+```Schema``` データクラスは V3 ノードのすべてのプロパティを定義します。以下に利用可能なすべてのフィールドの完全なリファレンスを示します：
+
+| フィールド | 型 | デフォルト | 説明 |
+|-------|------|---------|-------------|
+| `node_id` | `str` | *必須* | ノードのグローバル一意 ID。カスタムノードは競合を避けるためにプレフィックス/サフィックスを追加すべき。 |
+| `display_name` | `str` | `None` | UI に表示される名前。設定されていない場合、`node_id` にフォールバック。 |
+| `category` | `str` | `"sd"` | 「ノードを追加」メニューのカテゴリ（例：`"image/transform"`）。 |
+| `description` | `str` | `""` | ノードにホバーしたときに表示されるツールチップ。 |
+| `inputs` | `list[Input]` | `[]` | 入力定義のリスト。 |
+| `outputs` | `list[Output]` | `[]` | 出力定義のリスト。 |
+| `hidden` | `list[Hidden]` | `[]` | 要求する隠し入力のリスト（[隠し入力](#隠し入力) を参照）。 |
+| `search_aliases` | `list[str]` | `[]` | 検索の代替名。同義語や改名後の旧名に有用。 |
+| `is_output_node` | `bool` | `False` | ノードを出力ノードとしてマークし、それとその依存関係を実行させる。 |
+| `is_input_list` | `bool` | `False` | True の場合、いくつのアイテムが渡されても、すべての入力が `list[type]` になる。 |
+| `is_deprecated` | `bool` | `False` | ノードを非推奨としてフラグ付けし、ユーザーに代替手段を探すよう通知。 |
+| `is_experimental` | `bool` | `False` | ノードを実験的としてフラグ付けし、変更される可能性があることをユーザーに警告。 |
+| `is_dev_only` | `bool` | `False` | 開発モードが有効でない限り、検索/メニューからノードを隠す。 |
+| `is_api_node` | `bool` | `False` | ノードを Comfy API サービスの API ノードとしてフラグ付け。 |
+| `not_idempotent` | `bool` | `False` | True の場合、ノードは常に再実行され、グラフ内の別の同一ノードからのキャッシュ出力を再利用しない。 |
+| `enable_expand` | `bool` | `False` | `NodeOutput` がノード拡張用の `expand` プロパティを含めることを許可。 |
+| `accept_all_inputs` | `bool` | `False` | True の場合、プロンプトからのすべての入力が schema で定義されていなくても kwargs として渡される。 |
+
+### 共通入力パラメータ
+
+すべての入力型はこれらの基本パラメータを共有します：
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|------|---------|-------------|
+| `id` | `str` | *必須* | 入力の一意識別子。`execute` での kwarg 名として使用。 |
+| `display_name` | `str` | `None` | UI に表示されるラベル。デフォルトは `id`。 |
+| `optional` | `bool` | `False` | 入力がオプションかどうか。 |
+| `tooltip` | `str` | `None` | ホバー時のツールチップテキスト。 |
+| `lazy` | `bool` | `None` | 入力を遅延評価としてマーク（[遅延評価](#遅延評価-v1--v3) を参照）。 |
+| `raw_link` | `bool` | `None` | True の場合、解決された値ではなく生のリンク情報を渡す。 |
+| `advanced` | `bool` | `None` | True の場合、入力は UI の「詳細」トグルの背後に隠される。 |
+
+ウィジェット入力（Int、Float、String、Boolean、Combo）は additionally サポート：
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|------|---------|-------------|
+| `default` | 様々 | `None` | ウィジェットのデフォルト値。 |
+| `socketless` | `bool` | `None` | True の場合、入力ソケットを隠す（ウィジェットのみ、受信接続なし）。 |
+| `force_input` | `bool` | `None` | True の場合、ウィジェットをソケット入力として表示することを強制。 |
+
+## 高度な機能
+
+### 隠し入力
+
+隠し入力は、プロンプトメタデータ、ノード ID、その他の内部値などの実行コンテキストへのアクセスを提供します。UI には表示されません。
+
+V1 では、隠し入力は `INPUT_TYPES` の `"hidden"` キーとして宣言されました。V3 では、Schema の `hidden` パラメータを介して宣言され、その値は `cls.hidden` を介してアクセスされます。
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {...},
+        "hidden": {
+            "unique_id": "UNIQUE_ID",
+            "prompt": "PROMPT",
+            "extra_pnginfo": "EXTRA_PNGINFO",
+        }
+    }
+
+def execute(self, unique_id, prompt, extra_pnginfo, ...):
+    # 隠し値は通常の引数として渡される
+    print(unique_id)
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="MyNode",
+        inputs=[...],
+        hidden=[io.Hidden.unique_id, io.Hidden.prompt, io.Hidden.extra_pnginfo],
+    )
+
+@classmethod
+def execute(cls, ...) -> io.NodeOutput:
+    # 隠し値は cls.hidden を介してアクセス
+    print(cls.hidden.unique_id)
+    print(cls.hidden.prompt)
+    print(cls.hidden.extra_pnginfo)
+```
+
+利用可能な隠し値：
+
+| Hidden 列挙 | 説明 |
+|-------------|-------------|
+| `io.Hidden.unique_id` | ノードの一意識別子。クライアント側の id と一致。 |
+| `io.Hidden.prompt` | クライアントから送信された完全なプロンプト。 |
+| `io.Hidden.extra_pnginfo` | 保存された `.png` ファイルのメタデータにコピーされる辞書。 |
+| `io.Hidden.dynprompt` | 実行中に変更される可能性のある `DynamicPrompt` インスタンス。 |
+| `io.Hidden.auth_token_comfy_org` | フロントエンドで ComfyOrg アカウントにサインインして取得したトークン。 |
+| `io.Hidden.api_key_comfy_org` | ComfyOrg によって生成された API キー。フロントエンドのサインインをスキップ可能。 |
+
+<Note>
+一部の隠し値は Schema フラグに基づいて自動的に追加されます。出力ノード（`is_output_node=True`）は自動的に `prompt` と `extra_pnginfo` を受け取ります。API ノード（`is_api_node=True`）は自動的に認証トークンを受け取ります。
+</Note>
+
+### UI ヘルパー
+
+V3 は `ui` モジュールに組み込みの UI ヘルパーを提供し、プレビューやファイル保存などの一般的なパターンを処理します。これらを `ui` パラメータを介して `io.NodeOutput` に渡します。
+
+#### プレビューヘルパー
+
+プレビューヘルパーは一時的なファイルを保存し、ノード内表示用の UI データを返します。
+
+```python
+from comfy_api.latest import ui
+
+# ノードで画像をプレビュー
+return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+
+# マスクをプレビュー（表示用に自動的に 3 チャンネルに変換）
+return io.NodeOutput(mask, ui=ui.PreviewMask(mask, cls=cls))
+
+# オーディオをプレビュー
+return io.NodeOutput(audio, ui=ui.PreviewAudio(audio, cls=cls))
+
+# テキストをプレビュー
+return io.NodeOutput(ui=ui.PreviewText("Some text value"))
+
+# 3D モデルをプレビュー
+return io.NodeOutput(ui=ui.PreviewUI3D(model_file, camera_info))
+```
+
+#### 保存ヘルパー
+
+保存ヘルパーは、適切なメタデータ埋め込みと共にファイルを出力ディレクトリに保存する方法を提供します。これらは通常、出力ノードで使用されます。
+
+```python
+from comfy_api.latest import ui, io
+
+# 画像を保存し UI データを返す（最も一般的なパターン）
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_images_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,  # メタデータ用に隠しプロンプト/extra_pnginfo を渡す
+    )
+)
+
+# アニメーション PNG を保存
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_png_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        compress_level=4,
+    )
+)
+
+# アニメーション WebP を保存
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_webp_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        lossless=True,
+        quality=80,
+        method=4,
+    )
+)
+
+# オーディオを保存（flac、mp3、opus をサポート）
+return io.NodeOutput(
+    ui=ui.AudioSaveHelper.get_save_audio_ui(
+        audio=audio,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        format="flac",
+    )
+)
+```
+
+<Tip>
+保存/プレビューヘルパーに `cls=cls` を渡すと、保存されたファイルにワークフローメタデータ（プロンプト、extra_pnginfo）を自動的に埋め込むことができます。schema の hidden リストに `io.Hidden.prompt` と `io.Hidden.extra_pnginfo` を含めるか、`is_output_node=True` を設定して自動的に追加されるようにしてください。
+</Tip>
+
+#### 生の UI 辞書を返す
+
+ヘルパーがない UI データを返す必要がある場合、辞書を直接渡すことができます：
+
+```python
+return io.NodeOutput(ui={"images": results})
+```
+
+### 出力ノード
+
+副作用（ファイル保存など）を生成するノード用。V1 と同様、ノードを出力としてマークすると、ノードのコンテキストウィンドウに `run` 再生ボタンが表示され、グラフの部分実行が可能になります。
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # 空である必要はありません。
+        is_output_node=True  # 出力ノードとしてマーク
+    )
+```
+
+### カスタム型
+
+クラス定義または ```Custom``` ヘルパー関数のいずれかを介して、カスタム入力/出力型を作成します。
+
+```python
+from comfy_api.latest import io
+
+# 方法 1: デコレータを使用してクラスで
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Python 型ヒント
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# 方法 2: Custom ヘルパーを使用
+# 便宜上、変数に保存せずにヘルパーを直接使用することも可能
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```
+
+### MultiType 入力
+
+`MultiType` は、入力が複数の型を受け入れることを許可します。これは、ノードが同じ入力スロットを介して異なるデータ型で動作できる場合に有用です。
+
+最初の引数（`id`）が文字列ではなく `Input` クラスのインスタンスである場合、その入力はオーバーライドされた値を持つウィジェットを作成するために使用されます。それ以外の場合、入力はソケットのみです。
+
+```python
+# ソケットのみのマルチタイプ入力（ウィジェットなし）
+io.MultiType.Input("input", types=[io.Image, io.Mask])
+
+# ウィジェットフォールバック付きマルチタイプ入力（何も接続されていない場合に String ウィジェットを表示）
+io.MultiType.Input(
+    io.String.Input("model_file", default="", multiline=False),
+    types=[io.File3DGLB, io.File3DGLTF, io.File3DOBJ],
+    tooltip="3D モデルファイルまたはパス文字列",
+)
+```
+
+### MatchType（汎用型マッチング）
+
+`MatchType` は型リンクされた入力と出力を作成します。ユーザーが特定の型を MatchType 入力に接続すると、同じテンプレートを共有するすべての他の入力と出力が自動的にその型に制約されます。これが、Switch や Create List などのノードが任意の型で動作する方法です。
+
+```python
+@classmethod
+def define_schema(cls):
+    # テンプレートを作成 - 同じテンプレートを共有するすべての入力/出力は型を一致させる
+    template = io.MatchType.Template("switch")
+    return io.Schema(
+        node_id="SwitchNode",
+        display_name="Switch",
+        category="logic",
+        inputs=[
+            io.Boolean.Input("switch"),
+            io.MatchType.Input("on_false", template=template, lazy=True),
+            io.MatchType.Input("on_true", template=template, lazy=True),
+        ],
+        outputs=[
+            io.MatchType.Output(template=template, display_name="output"),
+        ],
+    )
+```
+
+許可される型を制限することもできます：
+
+```python
+# Image、Mask、または Latent 型のみを許可
+template = io.MatchType.Template("input_type", allowed_types=[io.Image, io.Mask, io.Latent])
+```
+
+### 動的入力
+
+V3 は、ユーザーインタラクションに基づいて利用可能な入力を変更する動的入力型を導入します。これらの機能には V1 の同等物はありません。
+
+#### Autogrow
+
+`Autogrow` は、ユーザーがより多く接続するにつれて自動的に増加する可変数の入力を作成します。2 つのテンプレートタイプがあります：
+
+**TemplatePrefix** は番号付きプレフィックスを持つ入力を生成します（例：`image0`、`image1`、`image2`...）：
+
+```python
+@classmethod
+def define_schema(cls):
+    autogrow_template = io.Autogrow.TemplatePrefix(
+        input=io.Image.Input("image"),  # 各入力のテンプレート
+        prefix="image",                  # 生成された入力名のプレフィックス
+        min=2,                           # 表示される最小入力数
+        max=50,                          # 許可される最大入力数
+    )
+    return io.Schema(
+        node_id="BatchImagesNode",
+        display_name="Batch Images",
+        category="image",
+        inputs=[io.Autogrow.Input("images", template=autogrow_template)],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, images: io.Autogrow.Type) -> io.NodeOutput:
+    # 'images' は入力名をその値にマッピングする辞書
+    image_list = list(images.values())
+    return io.NodeOutput(batch(image_list))
+```
+
+**TemplateNames** は特定の名前を持つ入力を生成します：
+
+```python
+template = io.Autogrow.TemplateNames(
+    input=io.Float.Input("float"),
+    names=["x", "y", "z"],  # 各入力の明示的な名前
+    min=1,                    # 表示される最小入力数
+)
+```
+
+Autogrow は MatchType と組み合わせて、型一致入力のリストを作成できます：
+
+```python
+@classmethod
+def define_schema(cls):
+    template_matchtype = io.MatchType.Template("type")
+    template_autogrow = io.Autogrow.TemplatePrefix(
+        input=io.MatchType.Input("input", template=template_matchtype),
+        prefix="input",
+    )
+    return io.Schema(
+        node_id="CreateList",
+        display_name="Create List",
+        category="logic",
+        is_input_list=True,
+        inputs=[io.Autogrow.Input("inputs", template=template_autogrow)],
+        outputs=[
+            io.MatchType.Output(
+                template=template_matchtype,
+                is_output_list=True,
+                display_name="list",
+            ),
+        ],
+    )
+```
+
+#### DynamicCombo
+
+`DynamicCombo` は、選択されたオプションに応じて異なる入力を表示/非表示にするドロップダウンを作成します。これは、異なるモードが異なるパラメータを必要とするノードに有用です。
+
+```python
+@classmethod
+def define_schema(cls):
+    return io.Schema(
+        node_id="ResizeNode",
+        display_name="Resize",
+        category="transform",
+        inputs=[
+            io.Image.Input("image"),
+            io.DynamicCombo.Input("resize_type", options=[
+                io.DynamicCombo.Option("scale by dimensions", [
+                    io.Int.Input("width", default=512, min=0, max=8192),
+                    io.Int.Input("height", default=512, min=0, max=8192),
+                ]),
+                io.DynamicCombo.Option("scale by multiplier", [
+                    io.Float.Input("multiplier", default=1.0, min=0.01, max=8.0),
+                ]),
+                io.DynamicCombo.Option("scale to megapixels", [
+                    io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0),
+                ]),
+            ]),
+        ],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, image, resize_type: dict) -> io.NodeOutput:
+    # resize_type は選択されたオプションキーとその入力を含む辞書
+    selected = resize_type["resize_type"]
+    if selected == "scale by dimensions":
+        width = resize_type["width"]
+        height = resize_type["height"]
+        # ...
+    elif selected == "scale by multiplier":
+        multiplier = resize_type["multiplier"]
+        # ...
+```
+
+DynamicCombo オプションはネストすることもできます：
+
+```python
+io.DynamicCombo.Input("combo", options=[
+    io.DynamicCombo.Option("option1", [io.String.Input("string")]),
+    io.DynamicCombo.Option("option2", [
+        io.DynamicCombo.Input("subcombo", options=[
+            io.DynamicCombo.Option("sub_opt1", [io.Float.Input("x"), io.Float.Input("y")]),
+            io.DynamicCombo.Option("sub_opt2", [io.Mask.Input("mask", optional=True)]),
+        ])
+    ]),
+])
+```
+
+### 非同期実行
+
+V3 は非同期 `execute` メソッドをサポートします。これは、I/O 操作、API 呼び出し、またはその他の非同期作業を実行するノードに有用です。`execute` を `async` として宣言するだけです：
+
+```python
+@classmethod
+async def execute(cls, prompt, **kwargs) -> io.NodeOutput:
+    result = await some_async_operation(prompt)
+    return io.NodeOutput(result)
+```
+
+### ComfyAPI
+
+`ComfyAPI` クラスは、進捗報告やノード置換登録などの ComfyUI ランタイムサービスへのアクセスを提供します。インポートしてインスタンスを作成します：
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+```
+
+#### 進捗報告
+
+ノードの `execute` メソッド内から実行進捗を報告します。進捗バーは ComfyUI インターフェースに表示されます。これは、V1 で `comfy.utils.PROGRESS_BAR_HOOK` を使用するパターンを置き換えます。
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+
+@classmethod
+async def execute(cls, images, **kwargs) -> io.NodeOutput:
+    total = len(images)
+    for i, image in enumerate(images):
+        process(image)
+        await api.execution.set_progress(
+            value=i + 1,
+            max_value=total,
+            preview_image=image,  # オプション：進捗中にプレビューを表示
+        )
+    return io.NodeOutput(result)
+```
+
+<Note>
+`set_progress` は `preview_image` パラメータとして PIL Image、`ImageInput` テンソル、または `None` を受け入れます。`execute` 内から呼び出されると、`node_id` は実行コンテキストから自動的に決定されます。
+</Note>
+
+#### ノード置換
+
+ノ

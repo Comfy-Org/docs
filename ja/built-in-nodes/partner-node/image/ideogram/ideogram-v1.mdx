@@ -1,0 +1,170 @@
+---
+title: "Ideogram V1 - ComfyUI ネイティブノードドキュメント"
+description: "Ideogram API を使用して、高精度なテキストレンダリング画像を生成するノード"
+sidebarTitle: "Ideogram V1"
+icon: "circle"
+translationSourceHash: 543db2e1
+translationFrom: built-in-nodes/partner-node/image/ideogram/ideogram-v1.mdx, zh/built-in-nodes/partner-node/image/ideogram/ideogram-v1.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI ネイティブ Ideogram V1 ノード](/images/built-in-nodes/api_nodes/ideogram/ideogram-v1.jpg)
+
+Ideogram V1 ノードは、Ideogram のテキストから画像を生成する API を用いて、高品質なテキストレンダリング機能を備えた画像を生成できます。
+
+## パラメータ説明
+
+### 必須パラメータ
+
+| パラメータ            | 型     | デフォルト値 | 説明                                                                 |
+| --------------------- | ------ | ------------ | -------------------------------------------------------------------- |
+| `prompt`              | 文字列 | `""`         | 生成するコンテンツを記述するテキストプロンプト                        |
+| `turbo`               | ブール値 | `False`      | Turbo モードを使用するかどうか（生成が高速だが、画質がやや低下する可能性あり） |
+| `aspect_ratio`        | 選択肢 | `"1:1"`      | 画像のアスペクト比                                                    |
+| `magic_prompt_option` | 選択肢 | `"AUTO"`     | 生成時に MagicPrompt を使用するかを決定するオプション：`AUTO`、`ON`、`OFF` |
+| `seed`                | 整数   | `0`          | 乱数シード値（0～2147483647）                                         |
+| `negative_prompt`     | 文字列 | `""`         | 画像に含めたくない要素を指定                                          |
+| `num_images`          | 整数   | `1`          | 生成する画像の枚数（1～8）                                            |
+
+
+### 出力
+
+| 出力  | 型   | 説明             |
+| ----- | ---- | ---------------- |
+| `IMAGE` | 画像 | 生成された画像結果 |
+
+## ソースコード
+
+[ノードソースコード（2025-05-03 更新）] 
+
+```python
+class IdeogramV1(ComfyNodeABC):
+    """
+    Generates images synchronously using the Ideogram V1 model.
+
+    Images links are available for a limited period of time; if you would like to keep the image, you must download it.
+    """
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls) -> InputTypeDict:
+        return {
+            "required": {
+                "prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Prompt for the image generation",
+                    },
+                ),
+                "turbo": (
+                    IO.BOOLEAN,
+                    {
+                        "default": False,
+                        "tooltip": "Whether to use turbo mode (faster generation, potentially lower quality)",
+                    }
+                ),
+            },
+            "optional": {
+                "aspect_ratio": (
+                    IO.COMBO,
+                    {
+                        "options": list(V1_V2_RATIO_MAP.keys()),
+                        "default": "1:1",
+                        "tooltip": "The aspect ratio for image generation.",
+                    },
+                ),
+                "magic_prompt_option": (
+                    IO.COMBO,
+                    {
+                        "options": ["AUTO", "ON", "OFF"],
+                        "default": "AUTO",
+                        "tooltip": "Determine if MagicPrompt should be used in generation",
+                    },
+                ),
+                "seed": (
+                    IO.INT,
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": True,
+                        "display": "number",
+                    },
+                ),
+                "negative_prompt": (
+                    IO.STRING,
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Description of what to exclude from the image",
+                    },
+                ),
+                "num_images": (
+                    IO.INT,
+                    {"default": 1, "min": 1, "max": 8, "step": 1, "display": "number"},
+                ),
+            },
+            "hidden": {"auth_token": "AUTH_TOKEN_COMFY_ORG"},
+        }
+
+    RETURN_TYPES = (IO.IMAGE,)
+    FUNCTION = "api_call"
+    CATEGORY = "api node/image/ideogram/v1"
+    DESCRIPTION = cleandoc(__doc__ or "")
+    API_NODE = True
+
+    def api_call(
+        self,
+        prompt,
+        turbo=False,
+        aspect_ratio="1:1",
+        magic_prompt_option="AUTO",
+        seed=0,
+        negative_prompt="",
+        num_images=1,
+        auth_token=None,
+    ):
+        # Determine the model based on turbo setting
+        aspect_ratio = V1_V2_RATIO_MAP.get(aspect_ratio, None)
+        model = "V_1_TURBO" if turbo else "V_1"
+
+        operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path="/proxy/ideogram/generate",
+                method=HttpMethod.POST,
+                request_model=IdeogramGenerateRequest,
+                response_model=IdeogramGenerateResponse,
+            ),
+            request=IdeogramGenerateRequest(
+                image_request=ImageRequest(
+                    prompt=prompt,
+                    model=model,
+                    num_images=num_images,
+                    seed=seed,
+                    aspect_ratio=aspect_ratio if aspect_ratio != "ASPECT_1_1" else None,
+                    magic_prompt_option=(
+                        magic_prompt_option if magic_prompt_option != "AUTO" else None
+                    ),
+                    negative_prompt=negative_prompt if negative_prompt else None,
+                )
+            ),
+            auth_token=auth_token,
+        )
+
+        response = operation.execute()
+
+        if not response.data or len(response.data) == 0:
+            raise Exception("No images were generated in the response")
+
+        image_urls = [image_data.url for image_data in response.data if image_data.url]
+
+        if not image_urls:
+            raise Exception("No image URLs were generated in the response")
+
+        return (download_and_process_images(image_urls),)

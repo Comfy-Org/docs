@@ -1,0 +1,152 @@
+---
+title: "Kling Start-End Frame to Video - ComfyUI 組み込みノード"
+description: "Kling の AI 技術を用いて、開始フレームと終了フレームの間で滑らかな動画トランジションを生成するノード"
+sidebarTitle: "Kling Start-End Frame to Video"
+icon: "circle"
+translationSourceHash: e61c56b6
+translationFrom: built-in-nodes/partner-node/video/kwai_vgi/kling-start-end-frame-to-video.mdx, zh/built-in-nodes/partner-node/video/kwai_vgi/kling-start-end-frame-to-video.mdx
+translationMismatches:
+  - "description"
+---
+
+![ComfyUI 組み込み Kling Start-End Frame to Video ノード](/images/built-in-nodes/api_nodes/kwai_vgi/kling-start-end-frame-to-video.jpg)
+
+Kling Start-End Frame to Video ノードを使用すると、2 枚の画像の間で滑らかな動画トランジションを生成できます。このノードは、流暢な変換を実現するために、すべての中間フレームを自動的に生成します。
+
+## パラメーター
+
+### 必須パラメーター
+
+| パラメーター       | 型     | 説明                                     |
+| ----------------- | ------ | ---------------------------------------- |
+| start_frame       | 画像   | 動画の開始画像                           |
+| end_frame         | 画像   | 動画の終了画像                           |
+| prompt            | 文字列 | 動画の内容およびトランジションを説明するテキスト |
+| negative_prompt   | 文字列 | 動画に含めたくない要素                   |
+| cfg_scale         | 浮動小数点数 | プロンプトへの従い具合を制御する値       |
+| aspect_ratio      | 選択   | 出力動画のアスペクト比                   |
+| mode              | 選択   | 動画生成設定（モード／再生時間／モデル名） |
+
+### mode オプション
+
+利用可能なモードの組み合わせ：
+- standard mode / 5s duration / kling-v1  
+- standard mode / 5s duration / kling-v1-5
+- pro mode / 5s duration / kling-v1
+- pro mode / 5s duration / kling-v1-5
+- pro mode / 5s duration / kling-v1-6
+- pro mode / 10s duration / kling-v1-5
+- pro mode / 10s duration / kling-v1-6
+
+デフォルト値：「pro mode / 5s duration / kling-v1」
+
+### 出力
+
+| 出力  | 型   | 説明         |
+| ----- | ---- | ------------ |
+| VIDEO | 動画 | 生成された動画 |
+
+## 動作原理
+
+このノードは、開始フレームと終了フレームを解析し、それらの間で滑らかなトランジションシーケンスを生成します。その後、画像およびパラメーターを Kling の API サーバーへ送信し、流暢な変換に必要なすべての中間フレームを生成します。
+
+トランジションのスタイルおよびコンテンツはプロンプトで制御可能であり、ネガティブプロンプトを用いることで不要な要素の出現を回避できます。
+
+## ソースコード
+
+[ノードのソースコード（2025-05-03 更新）]
+```python
+
+
+class KlingStartEndFrameNode(KlingImage2VideoNode):
+    """
+    Kling First Last Frame Node. This node allows creation of a video from a first and last frame. It calls the normal image to video endpoint, but only allows the subset of input options that support the `image_tail` request field.
+    """
+
+    @staticmethod
+    def get_mode_string_mapping() -> dict[str, tuple[str, str, str]]:
+        """
+        Returns a mapping of mode strings to their corresponding (mode, duration, model_name) tuples.
+        Only includes config combos that support the `image_tail` request field.
+        """
+        return {
+            "standard mode / 5s duration / kling-v1": ("std", "5", "kling-v1"),
+            "standard mode / 5s duration / kling-v1-5": ("std", "5", "kling-v1-5"),
+            "pro mode / 5s duration / kling-v1": ("pro", "5", "kling-v1"),
+            "pro mode / 5s duration / kling-v1-5": ("pro", "5", "kling-v1-5"),
+            "pro mode / 5s duration / kling-v1-6": ("pro", "5", "kling-v1-6"),
+            "pro mode / 10s duration / kling-v1-5": ("pro", "10", "kling-v1-5"),
+            "pro mode / 10s duration / kling-v1-6": ("pro", "10", "kling-v1-6"),
+        }
+
+    @classmethod
+    def INPUT_TYPES(s):
+        modes = list(KlingStartEndFrameNode.get_mode_string_mapping().keys())
+        return {
+            "required": {
+                "start_frame": model_field_to_node_input(
+                    IO.IMAGE, KlingImage2VideoRequest, "image"
+                ),
+                "end_frame": model_field_to_node_input(
+                    IO.IMAGE, KlingImage2VideoRequest, "image_tail"
+                ),
+                "prompt": model_field_to_node_input(
+                    IO.STRING, KlingImage2VideoRequest, "prompt", multiline=True
+                ),
+                "negative_prompt": model_field_to_node_input(
+                    IO.STRING,
+                    KlingImage2VideoRequest,
+                    "negative_prompt",
+                    multiline=True,
+                ),
+                "cfg_scale": model_field_to_node_input(
+                    IO.FLOAT, KlingImage2VideoRequest, "cfg_scale"
+                ),
+                "aspect_ratio": model_field_to_node_input(
+                    IO.COMBO,
+                    KlingImage2VideoRequest,
+                    "aspect_ratio",
+                    enum_type=AspectRatio,
+                ),
+                "mode": (
+                    modes,
+                    {
+                        "default": modes[2],
+                        "tooltip": "The configuration to use for the video generation following the format: mode / duration / model_name.",
+                    },
+                ),
+            },
+            "hidden": {"auth_token": "AUTH_TOKEN_COMFY_ORG"},
+        }
+
+    DESCRIPTION = "Generate a video sequence that transitions between your provided start and end images. The node creates all frames in between, producing a smooth transformation from the first frame to the last."
+
+    def parse_inputs_from_mode(self, mode: str) -> tuple[str, str, str]:
+        """Parses the mode input into a tuple of (model_name, duration, mode)."""
+        return KlingStartEndFrameNode.get_mode_string_mapping()[mode]
+
+    def api_call(
+        self,
+        start_frame: torch.Tensor,
+        end_frame: torch.Tensor,
+        prompt: str,
+        negative_prompt: str,
+        cfg_scale: float,
+        aspect_ratio: str,
+        mode: str,
+        auth_token: Optional[str] = None,
+    ):
+        mode, duration, model_name = self.parse_inputs_from_mode(mode)
+        return super().api_call(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            model_name=model_name,
+            start_frame=start_frame,
+            cfg_scale=cfg_scale,
+            mode=mode,
+            aspect_ratio=aspect_ratio,
+            duration=duration,
+            end_frame=end_frame,
+            auth_token=auth_token,
+        )
+

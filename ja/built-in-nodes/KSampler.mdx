@@ -1,0 +1,89 @@
+---
+title: "KSampler - ComfyUI 組み込みノードのドキュメンテーション"
+description: "ComfyUIにおけるKSamplerノードの完全なドキュメンテーションです。入力、出力、パラメーターおよび使用方法について学びましょう。"
+sidebarTitle: "KSampler"
+icon: "circle"
+mode: wide
+translationSourceHash: 5184492d
+translationFrom: built-in-nodes/KSampler.mdx, zh/built-in-nodes/KSampler.mdx
+---
+KSamplerは、指定されたモデルおよび正の条件（positive）・負の条件（negative）に基づいて、入力された元の潜在画像（latent image）を変換するサンプラーです。  
+まず、設定された**seed（乱数シード）** と **denoise（デノイズ強度）** に従って、元の画像データにノイズを付加します。その後、事前に設定された**Model（モデル）** と、**positive（正の条件）**・**negative（負の条件）** のガイド条件を組み合わせて画像を生成します。
+
+## 入力
+
+| パラメーター名         | データ型       | 必須 | デフォルト値 | 範囲／選択肢             | 説明                                                                                     |
+| ---------------------- | -------------- | ---- | ------------ | ------------------------ | ---------------------------------------------------------------------------------------- |
+| Model                  | checkpoint     | はい | なし         | -                        | デノイズ処理に使用される入力モデル                                                       |
+| seed                   | Int            | はい | 0            | 0 ～ 18446744073709551615 | ランダムノイズを生成する際に使用される値。同一の「seed」を用いると、同一の画像が再現されます |
+| steps                  | Int            | はい | 20           | 1 ～ 10000               | デノイズ処理で使用するステップ数。ステップ数が多いほど、結果の精度が高くなります         |
+| cfg                    | float          | はい | 8.0          | 0.0 ～ 100.0             | 生成画像が入力条件にどれだけ忠実になるかを制御します。推奨値は6～8です                    |
+| sampler_name           | UI オプション  | はい | なし         | 複数のアルゴリズム       | デノイズに使用するサンプラーを選択します。生成速度やスタイルに影響を与えます             |
+| scheduler              | UI オプション  | はい | なし         | 複数のスケジューラ       | ノイズをどのタイミング・どの割合で除去するかを制御します。生成プロセスに影響を与えます     |
+| Positive               | conditioning   | はい | なし         | -                        | デノイズを誘導する正の条件。画像に含めたい要素を指定します                               |
+| Negative               | conditioning   | はい | なし         | -                        | デノイズを誘導する負の条件。画像に含めたくない要素を指定します                           |
+| Latent_Image           | Latent         | はい | なし         | -                        | デノイズ対象となる潜在画像（latent image）                                               |
+| denoise                | float          | いいえ | 1.0          | 0.0 ～ 1.0               | ノイズ除去の割合を決定します。値が小さいほど、入力画像との関連性が低くなり、画像間変換（image-to-image）に適しています |
+| control_after_generate | UI オプション  | いいえ | なし         | Random／Inc／Dec／Keep   | 各プロンプト実行後にseedを変更する機能を提供します                                     |
+
+## 出力
+
+| パラメーター | 機能                                       |
+| ------------ | ------------------------------------------ |
+| Latent       | サンプラーによるデノイズ後の潜在画像を出力します |
+
+## ソースコード
+
+[2025年5月15日更新]
+
+```Python
+
+def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+    latent_image = latent["samples"]
+    latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
+
+    if disable_noise:
+        noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
+    else:
+        batch_inds = latent["batch_index"] if "batch_index" in latent else None
+        noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
+
+    noise_mask = None
+    if "noise_mask" in latent:
+        noise_mask = latent["noise_mask"]
+
+    callback = latent_preview.prepare_callback(model, steps)
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = comfy.sample.sample(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent_image,
+                                  denoise=denoise, disable_noise=disable_noise, start_step=start_step, last_step=last_step,
+                                  force_full_denoise=force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=seed)
+    out = latent.copy()
+    out["samples"] = samples
+    return (out, )
+class KSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL", {"tooltip": "入力潜在画像のデノイズに使用されるモデル。"}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "ノイズ生成に使用されるランダムシード。"}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "デノイズ処理で使用されるステップ数。"}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "Classifier-Free Guidance（CFG）スケール。創造性とプロンプトへの忠実度のバランスを調整します。値が高すぎると品質が低下する場合があります。"}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS, {"tooltip": "サンプリング時に使用されるアルゴリズム。生成結果の品質、速度、スタイルに影響を与えます。"}),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"tooltip": "ノイズを段階的に除去して画像を形成する際の制御方法を定義します。"}),
+                "positive": ("CONDITIONING", {"tooltip": "画像に含めたい属性を記述した条件付け情報。"}),
+                "negative": ("CONDITIONING", {"tooltip": "画像に含めたくない属性を記述した条件付け情報。"}),
+                "latent_image": ("LATENT", {"tooltip": "デノイズ対象となる潜在画像。"}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "適用されるデノイズ量。値が小さいほど初期画像の構造を保持でき、画像間変換（image-to-image）に適しています。"}),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("デノイズ済みの潜在画像。",)
+    FUNCTION = "sample"
+
+    CATEGORY = "sampling"
+    DESCRIPTION = "指定されたモデルおよび正・負の条件付け情報を用いて、潜在画像のデノイズを行います。"
+
+    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0):
+        return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)

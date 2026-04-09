@@ -201,7 +201,7 @@
 
   // Create placeholder for lazy loading
   function createGiscusPlaceholder() {
-    const isChinesePage = window.location.pathname.includes('/zh-CN/') || window.location.pathname.includes('/cn/');
+    const isChinesePage = window.location.pathname.includes('/zh/') || window.location.pathname.includes('/cn/');
     const placeholderText = isChinesePage 
       ? '💬 点击或滚动到此处加载评论'
       : '💬 Click or scroll here to load comments';
@@ -405,7 +405,7 @@
     
     if (pathSegments.length > 0) {
       // Use the complete path as search term, keeping language prefixes
-      // Example: /zh-CN/development/core-concepts/workflow -> "zh-CN development core concepts workflow"
+      // Example: /zh/development/core-concepts/workflow -> "zh development core concepts workflow"
       searchQuery = pathSegments
         .join(' ')
         .replace(/[-_]/g, ' ') // Replace dashes/underscores with spaces
@@ -443,7 +443,7 @@
       
       if (pathSegments.length > 0) {
         // Create title from complete path, keeping language prefixes
-        // Example: /zh-CN/development/core-concepts/workflow -> "zh-CN/development/core-concepts/workflow"
+        // Example: /zh/development/core-concepts/workflow -> "zh/development/core-concepts/workflow"
         const pathTitle = pathSegments.join('/');
         discussionTitle = pathTitle;
       }
@@ -472,11 +472,18 @@
           newDiscussionLink: 'Start New Discussion'
         },
         zh: {
-          title: '💬 参与讨论', 
+          title: '💬 参与讨论',
           message: '由于访问量较高，评论功能暂时不可用。',
           suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
           discussionLink: '查找相关讨论',
           newDiscussionLink: '发起新讨论'
+        },
+        ja: {
+          title: '💬 ディスカッションに参加',
+          message: 'アクセスが集中しているため、コメント機能は一時的にご利用いただけません。',
+          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          discussionLink: '関連ディスカッションを検索',
+          newDiscussionLink: '新しいディスカッションを開始'
         }
       },
       network: {
@@ -493,12 +500,20 @@
           suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
           discussionLink: '查找相关讨论',
           newDiscussionLink: '发起新讨论'
+        },
+        ja: {
+          title: '💬 ディスカッションに参加',
+          message: 'コメントを読み込めませんでした。',
+          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          discussionLink: '関連ディスカッションを検索',
+          newDiscussionLink: '新しいディスカッションを開始'
         }
       }
     };
-    
-    const isChinesePage = window.location.pathname.includes('/zh-CN/') || window.location.pathname.includes('/cn/');
-    const lang = isChinesePage ? 'zh' : 'en';
+
+    const isChinesePage = window.location.pathname.includes('/zh/') || window.location.pathname.includes('/cn/');
+    const isJapanesePage = window.location.pathname.includes('/ja/');
+    const lang = isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
     const notice = noticeMessages[noticeType][lang];
     
     const noticeDiv = document.createElement('div');
@@ -639,9 +654,10 @@
     script.setAttribute('data-input-position', 'bottom');
     script.setAttribute('data-theme', currentTheme === 'dark' ? 'dark' : 'light');
     
-    // Set language based on path - only Chinese pages should be marked as Chinese
-    const isChinesePage = newPath.includes('/zh-CN/') || newPath.includes('/cn/');
-    const giscusLang = isChinesePage ? 'zh-CN' : 'en';
+    // Set language based on path
+    const isChinesePage = newPath.includes('/zh/') || newPath.includes('/cn/');
+    const isJapanesePage = newPath.includes('/ja/');
+    const giscusLang = isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
     script.setAttribute('data-lang', giscusLang);
     
     // Debug logging
@@ -717,7 +733,7 @@
     const newPath = window.location.pathname;
     
     // Exclude paths that should not have comments
-    const excludedPaths = ['/', '/zh-CN', '/zh-CN/'];
+    const excludedPaths = ['/', '/zh', '/zh/'];
 
     // Skip if current path is in excluded list or contains API/search paths
     if (excludedPaths.includes(newPath) || newPath.includes('/api/') || newPath.includes('/search')) {
