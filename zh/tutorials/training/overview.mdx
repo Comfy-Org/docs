@@ -1,0 +1,137 @@
+---
+title: "原生 LoRA 训练"
+sidebarTitle: "LoRA 训练"
+description: "使用内置训练节点直接在 ComfyUI 中训练 LoRA 模型"
+---
+
+ComfyUI 原生支持训练 LoRA（Low-Rank Adaptation）模型，无需外部工具或自定义节点。本文档提供训练流程的整体概览，各节点的详细参数说明请参阅对应的节点文档。
+
+<Warning>
+训练节点目前标记为**实验性功能**。功能和行为可能会在未来版本中发生变化。
+</Warning>
+
+## 节点概览
+
+原生 LoRA 训练系统由**数据集节点**和**训练节点**两个部分组成。
+
+### 数据集节点
+
+用于准备和管理训练数据：
+
+| 节点 | 用途 |
+|------|------|
+| [Load Image Dataset from Folder](/zh/built-in-nodes/LoadImageDataSetFromFolder) | 从输入文件夹批量加载图像 |
+| [Load Image and Text Dataset from Folder](/zh/built-in-nodes/LoadImageTextDataSetFromFolder) | 加载图像及对应的文字说明（支持 kohya-ss 目录结构）|
+| [Make Training Dataset](/zh/built-in-nodes/MakeTrainingDataset) | 用 VAE 和 CLIP 编码图像与文本，生成训练数据 |
+| [Resolution Bucket](/zh/built-in-nodes/ResolutionBucket) | 按分辨率分桶，以便高效批量训练 |
+| [Save Training Dataset](/zh/built-in-nodes/SaveTrainingDataset) | 将编码后的数据集保存到磁盘，避免重复编码 |
+| [Load Training Dataset](/zh/built-in-nodes/LoadTrainingDataset) | 从磁盘加载已保存的编码数据集 |
+
+### 训练节点
+
+用于执行训练、保存和推理：
+
+| 节点 | 用途 |
+|------|------|
+| [Train LoRA](/zh/built-in-nodes/TrainLoraNode) | 从潜空间图像和条件数据训练 LoRA 模型 |
+| [Save LoRA Weights](/zh/built-in-nodes/SaveLoRA) | 将 LoRA 权重导出为 safetensors 文件 |
+| [Load LoRA Model](/zh/built-in-nodes/LoraModelLoader) | 将训练好的 LoRA 权重应用到模型（用于推理）|
+| [Plot Loss Graph](/zh/built-in-nodes/LossGraphNode) | 可视化训练过程中的损失变化 |
+
+## 系统要求
+
+- 具有足够显存的 GPU（训练通常比推理需要更多内存）
+- 训练图像（存放在 `ComfyUI/input/` 的子文件夹中）
+- 基础模型（checkpoint）
+
+## 典型训练流程
+
+<Steps>
+<Step title="加载训练图像">
+
+将训练图像放入 `ComfyUI/input/` 下的子文件夹。
+
+- 若只需图像，使用 **Load Image Dataset from Folder**
+- 若需要图文配对，使用 **Load Image and Text Dataset from Folder**（每张图像需对应同名 `.txt` 说明文件）
+
+<Tip>
+从 10–20 张高质量图像开始，质量比数量更重要。
+</Tip>
+</Step>
+
+<Step title="编码数据集">
+
+将图像和文本连接到 **Make Training Dataset** 节点，提供 VAE 和 CLIP 模型进行编码，得到 `latents` 和 `conditioning` 输出。
+
+若需要多次训练同一数据集，可用 **Save Training Dataset** 将编码结果保存到磁盘，后续直接用 **Load Training Dataset** 加载，避免重复编码。
+</Step>
+
+<Step title="（可选）分辨率分桶">
+
+若训练图像尺寸不一致，将编码后的数据通过 **Resolution Bucket** 节点按分辨率分组，并在 Train LoRA 节点中启用 **bucket_mode**，以实现高效的批量训练。
+</Step>
+
+<Step title="配置并运行 Train LoRA">
+
+将模型、潜空间数据和条件数据连接到 **Train LoRA** 节点，根据需要调整训练参数后执行工作流。
+
+常用起始配置：
+
+| 参数 | 推荐起始值 |
+|------|-----------|
+| `steps` | 100–500 |
+| `rank` | 8–16 |
+| `learning_rate` | 0.0001–0.0005 |
+| `optimizer` | AdamW |
+| `loss_function` | MSE |
+
+节点将输出训练好的 `lora` 权重、`loss_map` 损失历史和完成的 `steps` 数。
+</Step>
+
+<Step title="监控训练进度">
+
+将 `loss_map` 连接到 **Plot Loss Graph** 节点，查看训练损失曲线。损失趋于平稳后即可停止训练。
+</Step>
+
+<Step title="保存并测试 LoRA">
+
+将 `lora` 输出连接到 **Save LoRA Weights** 导出为 `.safetensors` 文件，保存在 `ComfyUI/output/loras/` 目录中。
+
+在推理工作流中，使用 **Load LoRA Model** 节点将训练好的 LoRA 应用到基础模型进行测试。
+</Step>
+</Steps>
+
+## 显存优化
+
+| 方案 | 说明 |
+|------|------|
+| **gradient_checkpointing**（默认启用） | 通过重计算激活值减少显存占用 |
+| 降低 **batch_size** | 最直接的减少显存方式 |
+| 增大 **grad_accumulation_steps** | 在不增加显存的前提下等效增大 batch size |
+| **offloading** | 将模型权重卸载到 CPU，需同时启用 gradient_checkpointing |
+| **bypass_mode** | 通过前向钩子应用适配器，适用于量化模型（FP8/FP4）|
+
+## 量化模型训练
+
+对 FP8/FP4 等量化模型训练 LoRA，推荐在 **Train LoRA** 中使用以下配置：
+
+- `training_dtype`: `none`
+- `quantized_backward`: 启用
+- `bypass_mode`: 启用
+
+推理时在 **Load LoRA Model** 中也需启用 `bypass`。
+
+## 继续训练
+
+在 **Train LoRA** 的 `existing_lora` 参数中选择已保存的 LoRA 文件，即可从之前的检查点继续训练，总步数会自动累积。
+
+## 支持的训练算法
+
+通过 **Train LoRA** 的 `algorithm` 参数可选择不同的权重适配器：
+
+| 算法 | 说明 |
+|------|------|
+| **LoRA** | 标准低秩适应，推荐用于大多数场景 |
+| **LoHa** | 基于 Hadamard 积的低秩适应 |
+| **LoKr** | 基于 Kronecker 积的低秩适应，参数效率更高 |
+| **OFT** | 正交微调（实验性） |
