@@ -1,8 +1,8 @@
 # ComfyUI Documentation
-| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) |
+
+| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) | [日本語](https://github.com/Comfy-Org/docs/blob/main/README.ja-JP.md) |
 
 ## Development
-
 
 To preview documentation changes locally, first install dependencies and then start the development server:
 
@@ -25,7 +25,6 @@ npx @mintlify/scraping@latest openapi-file <path-to-openapi-file>
 ```
 
 This will only generate the MDX files for each endpoint. You need to add a link to these files in `docs.json`, and the up-to-date API spec will be shown on that doc page.
-
 
 ## Special Note on Renaming Files
 
@@ -78,7 +77,7 @@ Mintlify uses versioning to add other languages. To add a translation of a page,
 
 1. Create a file under the language code with the same exact filename of the original English filename.
 
-For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh/get_started/introduction.mdx`. 
+For example: If you are translating `introduction.mdx` into Chinese, create a file under `zh/get_started/introduction.mdx`.
 
 Specifications for file editing can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document
 
@@ -165,8 +164,8 @@ When adding workflow examples to the documentation, please:
 
 [![Video Title](https://img.youtube.com/vi/_zYbP8w7G8A/0.jpg)](https://youtu.be/_zYbP8w7G8A)
 
-1. Upload your workflow JSON and preview image to the [example_workflows repository](https://github.com/Comfy-Org/example_workflows)
-1. Use the raw GitHub content URL in your documentation. To convert a GitHub file URL to a raw content URL:
+2. Upload your workflow JSON and preview image to the [example_workflows repository](https://github.com/Comfy-Org/example_workflows)
+3. Use the raw GitHub content URL in your documentation. To convert a GitHub file URL to a raw content URL:
    - Start with your GitHub file URL:
      ```
      https://github.com/Comfy-Org/example_workflows/blob/main/your-workflow.json
@@ -175,8 +174,7 @@ When adding workflow examples to the documentation, please:
      ```
      https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/your-workflow.json
      ```
-   
+
    You can also click the "Raw" button on the GitHub file page and copy the URL directly.
 
 This ensures the workflow metadata is preserved in the docs site when dragging it into ComfyUI.
-
