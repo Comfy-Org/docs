@@ -1,6 +1,6 @@
 ---
-title: "ComfyUI 预处理器工作流"
-description: "学习如何在 ComfyUI 中使用深度估计、线稿转换、姿态检测和法线提取预处理器"
+title: "ComfyUI 图像预处理器详解"
+description: "全面了解 ComfyUI 中的图像预处理器，包括 Canny 边缘检测、深度估计、OpenPose 姿态检测、线稿提取和法线提取等"
 sidebarTitle: "预处理器"
 ---
 
@@ -10,7 +10,7 @@ sidebarTitle: "预处理器"
 这些工作流包含自定义节点。在运行工作流之前，你需要使用 [ComfyUI 管理器](/zh/manager/overview) 安装这些自定义节点。
 </Note>
 
-预处理器是从图像中提取结构信息的基础工具。它们将图像转换为条件信号，如深度图、线稿、姿态骨架和表面法线。这些输出可以在 ControlNet、图生图和视频工作流中提供更好的控制和一致性。
+预处理器是从图像中提取结构信息的基础工具。它们将图像转换为条件信号，如边缘图、深度图、姿态骨架和表面法线。这些输出在 ControlNet、图生图和视频工作流中提供精确的控制和一致性。
 
 将预处理器作为独立工作流使用可以实现：
 - 无需重新运行完整图表即可快速迭代
@@ -18,16 +18,102 @@ sidebarTitle: "预处理器"
 - 更容易调试和调优
 - 更可预测的图像和视频结果
 
-## 深度估计
+### 预处理器与 ControlNet 的关系
 
-深度估计将平面图像转换为表示场景中相对距离的深度图。这种结构信号是受控生成、空间感知编辑和重新打光工作流的基础。
+预处理器本身不生成图像，它们的作用是将原始图像转换为 ControlNet 模型能够理解的条件图。典型的工作流程为：
 
-此工作流强调：
-- 干净、稳定的深度提取
-- 一致的归一化以供下游使用
-- 与 ControlNet 和图像编辑管道的轻松集成
+1. **输入图像** → **预处理器** → **条件图**（如边缘图、深度图）
+2. **条件图** → **ControlNet** → **引导扩散模型生成**
 
-深度输出可以在多个处理过程中重复使用，使迭代更容易，无需重新运行昂贵的上游步骤。
+不同类型的 ControlNet 模型需要对应类型的预处理结果。例如，Canny ControlNet 需要 Canny 边缘图，Depth ControlNet 需要深度图。
+
+### ComfyUI 中的预处理器节点
+
+ComfyUI 核心内置了 **Canny** 边缘检测节点。要使用其他预处理器（如深度估计、姿态检测等），你需要安装以下自定义节点包：
+
+- [ComfyUI ControlNet aux](https://github.com/Fannovel16/comfyui_controlnet_aux) — 包含大量预处理器节点（深度、姿态、线稿、法线等）
+- [ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet) — 提供高级 ControlNet 应用节点
+
+---
+
+## Canny 边缘检测
+
+Canny 是最经典的边缘检测算法之一，也是 ComfyUI 核心内置的唯一预处理器节点。它通过检测图像中的亮度梯度变化来提取清晰的边缘轮廓。
+
+### 工作原理
+
+Canny 边缘检测包含以下步骤：
+1. **高斯模糊降噪** — 减少图像噪声对边缘检测的干扰
+2. **梯度计算** — 使用 Sobel 算子计算每个像素的亮度梯度强度和方向
+3. **非极大值抑制** — 沿梯度方向只保留局部最大值，使边缘变细
+4. **双阈值过滤** — 使用高阈值和低阈值确定强边缘和弱边缘
+5. **边缘连接** — 将与强边缘相连的弱边缘保留，丢弃孤立的弱边缘
+
+### 关键参数
+
+| 参数 | 说明 |
+|------|------|
+| `low_threshold` | 低阈值，低于此值的像素被认为不是边缘。典型值：100 |
+| `high_threshold` | 高阈值，高于此值的像素被认为是强边缘。典型值：200 |
+
+- **降低阈值** → 检测更多细节边缘，但可能引入噪声
+- **提高阈值** → 只保留最明显的边缘，输出更干净
+
+### 适用场景
+
+- 需要精确轮廓控制的图像生成（建筑、产品、机械零件）
+- 线稿风格的图像重绘
+- 与 [Canny ControlNet](/zh/tutorials/controlnet/controlnet) 配合使用
+- 快速提取图像的结构信息作为生成参考
+
+### 使用建议
+
+- 对于高对比度图像，使用较高的阈值（如 150/300）
+- 对于低对比度或细节丰富的图像，使用较低的阈值（如 50/150）
+- Canny 对噪声敏感，建议在输入前对图像进行适当降噪
+
+---
+
+## 深度估计（Depth estimation）
+
+深度估计将平面图像转换为深度图，用灰度值表示场景中物体的相对距离。这种结构信号是空间感知生成、重新打光和 3D 感知编辑的基础。
+
+### 常用深度估计模型
+
+#### Depth Anything V2
+
+目前最推荐的深度估计模型，由 TikTok 和港大团队开发。相比前代有显著的精度提升。
+
+- **优势**：精度高、泛化能力强、支持多种分辨率
+- **模型规模**：提供 Small/Base/Large/Giant 多个版本，可根据速度和精度需求选择
+- **适用场景**：通用深度估计，适合绝大多数场景
+
+#### MiDaS
+
+Intel 开发的经典深度估计模型，历史悠久，社区支持广泛。
+
+- **优势**：运行速度快，资源占用低
+- **适用场景**：对速度要求高但精度要求适中的场景
+
+#### ZoeDepth
+
+结合了相对深度和绝对深度估计的模型，可以输出具有真实尺度的深度信息。
+
+- **优势**：支持度量深度估计（metric depth），不仅是相对深度
+- **适用场景**：需要真实深度信息的应用（如 3D 重建辅助）
+
+### 深度图输出说明
+
+- **白色区域**：距离相机较近的物体
+- **黑色区域**：距离相机较远的物体
+- 深度图是单通道灰度图像，通常会归一化到 0-255 范围
+
+### 适用场景
+
+- 控制图像中的空间层次关系（前景/中景/背景）
+- 与 [Depth ControlNet](/zh/tutorials/controlnet/depth-controlnet) 配合控制 3D 空间布局
+- 建筑可视化、场景构图
+- 视频工作流中保持帧间深度一致性
 
 <Card title="深度估计工作流" icon="cloud" href="https://cloud.comfy.org/?template=utility-depthAnything-v2-relative-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   在 Comfy Cloud 上运行
@@ -37,35 +123,54 @@ sidebarTitle: "预处理器"
   下载 JSON
 </Card>
 
-## 线稿转换
+---
 
-线稿预处理器将图像提炼为其基本边缘和轮廓，去除纹理和颜色，同时保留结构。
+## OpenPose 姿态检测
 
-此工作流旨在：
-- 生成干净、高对比度的线稿
-- 最小化断裂或噪声边缘
-- 为风格化和重绘工作流提供可靠的结构指导
+OpenPose 是由卡内基梅隆大学开发的实时多人姿态估计系统。它从图像中检测人体关键点（如头部、肩膀、手肘、膝盖等），输出骨骼结构图，用于精确控制生成图像中的人物姿态。
 
-线稿与深度和姿态配合特别好，提供强大的结构约束而不会过度约束风格。
+### 工作原理
 
-<Card title="线稿转换工作流" icon="cloud" href="https://cloud.comfy.org/?template=utility-lineart-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
-  在 Comfy Cloud 上运行
-</Card>
+OpenPose 使用深度学习模型同时预测：
+1. **关键点置信图（Confidence Maps）** — 每个身体部位在图像中的位置概率
+2. **部位亲和场（Part Affinity Fields）** — 描述不同关键点之间的连接关系
 
-<Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility-lineart-video.json">
-  下载 JSON
-</Card>
+通过这两类信息，OpenPose 可以在多人场景中正确地将关键点组合为完整的骨骼。
 
-## 姿态检测
+### 检测类型
 
-姿态检测从图像中提取身体关键点和骨骼结构，实现对人体姿势和动作的精确控制。
+| 类型 | 说明 | 关键点数量 |
+|------|------|-----------|
+| **Body（身体）** | 检测全身主要关节点 | 18 个 |
+| **Hand（手部）** | 检测手指和手腕的精细关节 | 每只手 21 个 |
+| **Face（面部）** | 检测面部特征点（眼睛、鼻子、嘴巴、脸部轮廓） | 70 个 |
 
-此工作流专注于：
-- 清晰、可读的姿态输出
-- 适合跨帧重用的稳定关键点检测
-- 与基于姿态的 ControlNet 和动画管道的兼容性
+在 ComfyUI 的 ControlNet aux 中，你可以选择不同的检测模式：
+- **OpenPose** — 仅身体关键点
+- **OpenPose + Face** — 身体 + 面部
+- **OpenPose + Hand** — 身体 + 手部
+- **OpenPose Full** — 身体 + 面部 + 手部（最完整但速度较慢）
 
-通过将姿态提取隔离到专用工作流中，姿态数据变得更容易检查、优化和重用。
+### 输出颜色编码
+
+OpenPose 的输出使用颜色编码表示不同的骨骼连接：
+- 不同颜色的线段代表不同的身体部位连接
+- 圆点代表关键点位置
+- 黑色背景上绘制彩色骨架图
+
+### 适用场景
+
+- 控制人物姿态和动作（如指定站姿、坐姿、舞蹈动作）
+- 与 [Pose ControlNet](/zh/tutorials/controlnet/pose-controlnet-2-pass) 配合使用
+- 多人场景中分别控制每个人的姿态
+- 动画和视频工作流中保持角色动作一致性
+
+### 使用建议
+
+- 输入图像中人物越清晰，检测结果越准确
+- 遮挡严重的部位可能检测失败，可以手动编辑骨骼图进行修正
+- 对于需要精细手部控制的场景，务必启用 Hand 检测
+- 处理速度与选择的检测模式相关，Full 模式最慢但最完整
 
 <Card title="姿态检测工作流" icon="cloud" href="https://cloud.comfy.org/?template=utility-openpose-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   在 Comfy Cloud 上运行
@@ -75,20 +180,88 @@ sidebarTitle: "预处理器"
   下载 JSON
 </Card>
 
-## 法线提取
+---
+
+## 线稿提取（Lineart）
+
+线稿预处理器将图像提炼为边缘和轮廓，去除纹理和颜色，同时保留结构信息。与 Canny 不同，线稿预处理器使用深度学习模型，能够理解图像的语义信息，输出更接近人工手绘线稿的结果。
+
+### 常用线稿模型
+
+#### Lineart（标准线稿）
+
+使用深度学习模型提取图像的线稿表示，输出干净、连续的线条。
+
+- **优势**：线条连续性好，接近手绘效果
+- **适用场景**：角色设计、插画风格转换、漫画/动画制作
+
+#### Lineart Anime（动漫线稿）
+
+专门针对动漫/二次元风格优化的线稿提取模型。
+
+- **优势**：更适合动漫角色的线条特征，眼睛、头发等细节处理更好
+- **适用场景**：动漫风格图像处理、二次元角色重绘
+
+#### Lineart Coarse（粗线稿）
+
+提取更粗、更简洁的线条，适合需要大致结构而不需要过多细节的场景。
+
+- **优势**：线条更粗犷，结构更简洁
+- **适用场景**：草图级别的结构控制、风格化生成
+
+### Lineart vs Canny 对比
+
+| 特性 | Lineart | Canny |
+|------|---------|-------|
+| 方法 | 深度学习模型 | 传统算法 |
+| 语义理解 | 有，理解物体结构 | 无，仅检测亮度变化 |
+| 线条连续性 | 好，类似手绘 | 一般，可能有断裂 |
+| 噪声敏感度 | 低 | 高 |
+| 速度 | 较慢（需要 GPU） | 快 |
+| 参数调节 | 少 | 需要调节阈值 |
+
+### 适用场景
+
+- 风格化和重绘工作流
+- 漫画/动画角色设计
+- 与深度和姿态配合提供多层次的结构约束
+- 保留结构的同时改变画风
+
+<Card title="线稿转换工作流" icon="cloud" href="https://cloud.comfy.org/?template=utility-lineart-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
+  在 Comfy Cloud 上运行
+</Card>
+
+<Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility-lineart-video.json">
+  下载 JSON
+</Card>
+
+---
+
+## 法线提取（Normal map）
 
 法线估计将平面图像转换为表面法线图——一个描述表面每个部分朝向的逐像素方向场（通常编码为 RGB）。这种信号对于重新打光、材质感知风格化和高度结构化的编辑非常有用。
 
-此工作流强调：
-- 干净、稳定的法线提取，最小化斑点
-- 一致的方向和归一化以供可靠的下游使用
-- ControlNet 就绪的输出，用于重新打光、优化和保持结构的编辑
-- 跨处理过程重用，无需重新运行早期步骤即可迭代
+### 工作原理
 
-法线输出可用于：
+法线图使用 RGB 三个通道分别编码表面在三个轴向的法线方向：
+- **R（红色）通道** — 表面在 X 轴方向的倾斜（左右）
+- **G（绿色）通道** — 表面在 Y 轴方向的倾斜（上下）
+- **B（蓝色）通道** — 表面在 Z 轴方向的倾斜（前后）
+
+平坦表面在法线图中显示为统一的蓝紫色（因为法线指向正 Z 方向），而有起伏的表面会显示出丰富的颜色变化。
+
+### 适用场景
+
 - 在保持几何形状的同时驱动重新打光/着色变化
 - 为风格化和重绘管道添加更强的 3D 结构
 - 与姿态/深度配合用于动画工作时提高跨帧一致性
+- 材质和纹理相关的精细控制
+
+### 使用建议
+
+- 法线图对光照变化非常敏感，输入图像的光照越均匀，结果越准确
+- 可以与深度图配合使用，提供互补的 3D 结构信息
+- ControlNet-ready 的输出可直接用于重新打光、优化和保持结构的编辑
 
 <Card title="法线提取工作流" icon="cloud" href="https://cloud.comfy.org/?template=utility-normal_crafter-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   在 Comfy Cloud 上运行
@@ -98,4 +271,59 @@ sidebarTitle: "预处理器"
   下载 JSON
 </Card>
 
+---
 
+## 其他常用预处理器
+
+### Scribble（涂鸦/草图）
+
+将图像转换为简单的涂鸦风格线条，或者直接使用手绘草图作为控制条件。
+
+- **适用场景**：快速草图指导生成、概念设计阶段
+- **特点**：对输入要求最低，手绘草图即可使用
+
+### SoftEdge / HED
+
+使用 HED（Holistically-Nested Edge Detection）算法提取柔和的边缘。相比 Canny，HED 的边缘更柔和、更自然。
+
+- **适用场景**：需要柔和边缘控制的场景，如自然风景、人像
+- **特点**：边缘过渡自然，不会产生硬边
+
+### Segmentation（语义分割）
+
+将图像分割为不同的语义区域（如天空、建筑、道路、人物等），每个区域用不同的颜色表示。
+
+- **适用场景**：需要按区域控制生成内容的场景，如城市街景、室内设计
+- **特点**：提供最高层次的语义控制，但不保留细节结构
+
+### MLSD（线段检测）
+
+检测图像中的直线段，特别适合建筑和室内场景。
+
+- **适用场景**：建筑设计、室内设计、需要直线结构的场景
+- **特点**：只检测直线段，忽略曲线和有机形状
+
+---
+
+## 预处理器选择指南
+
+| 预处理器 | 控制类型 | 最佳场景 | 内置/自定义 |
+|---------|---------|---------|-----------|
+| **Canny** | 边缘轮廓 | 产品、建筑、机械 | 内置 |
+| **Depth** | 空间深度 | 场景构图、3D 布局 | 自定义节点 |
+| **OpenPose** | 人体姿态 | 人物动作控制 | 自定义节点 |
+| **Lineart** | 线稿结构 | 角色设计、插画 | 自定义节点 |
+| **Normal** | 表面法线 | 重新打光、材质 | 自定义节点 |
+| **Scribble** | 草图 | 概念设计 | 自定义节点 |
+| **SoftEdge** | 柔和边缘 | 自然场景 | 自定义节点 |
+| **Segmentation** | 语义区域 | 区域内容控制 | 自定义节点 |
+| **MLSD** | 直线段 | 建筑、室内 | 自定义节点 |
+
+### 组合使用建议
+
+多种预处理器可以组合使用，通过 [混合 ControlNet](/zh/tutorials/controlnet/mixing-controlnets) 实现多层次的精细控制：
+
+- **Depth + Lineart**：保持空间关系的同时强化轮廓，适合建筑和产品设计
+- **Depth + OpenPose**：控制人物姿态并保持正确的空间关系，适合人物场景
+- **OpenPose + Lineart**：精确控制人物姿态和服装细节
+- **Canny + Depth**：边缘精度与空间感兼得，适合需要严格结构控制的场景
