@@ -1,0 +1,144 @@
+# Assets vs Files: Uploading Inputs to Comfy Cloud
+
+<Warning>
+**Experimental API:** This API is experimental and subject to change. Endpoints, request/response formats, and behavior may be modified without notice.
+</Warning>
+
+## Overview
+
+Comfy Cloud provides two separate systems for uploading files: the **Assets API** and the **File API**. These serve different purposes and behave differently from local ComfyUI. This guide explains the distinction and helps you choose the right approach.
+
+---
+
+## Assets vs Files: What's the Difference?
+
+| | Assets API (`/api/assets`) | File API (`/api/upload/image`) |
+|---|---|---|
+| **Purpose** | Persistent, reusable storage | Workflow input for a specific job |
+| **Storage** | Content-addressed (hash-based) | Tag-based organization |
+| **Deduplication** | Yes — same content returns existing asset | No |
+| **Use as workflow input** | Yes (see below) | Yes |
+| **Recommended for** | Models, reusable images, large files | One-off job inputs |
+| **Legacy compatibility** | New API | Drop-in compatible with local ComfyUI |
+
+> **Recommendation:** For new integrations, use the Assets API. The File API exists primarily for compatibility with existing ComfyUI clients.
+
+---
+
+## Uploading Assets
+
+The Assets API supports two upload methods.
+
+### Method 1: Direct File Upload (Recommended)
+
+Use `multipart/form-data` to upload a file directly from your local machine or application.
+```bash
+curl -X POST https://cloud.comfy.org/api/assets \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -F "file=@/path/to/your/image.png" \
+  -F "tags=input" \
+  -F "name=my-image.png"
+```
+
+This method works reliably for all supported file types including images, audio, and video.
+
+### Method 2: URL-Based Upload
+
+Use `application/json` to upload an asset from a remote URL.
+```bash
+curl -X POST https://cloud.comfy.org/api/assets \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/image.png",
+    "name": "image.png",
+    "tags": ["input"]
+  }'
+```
+
+<Warning>
+**URL-based uploads have strict source requirements.** See the Supported Sources section below before using this method.
+</Warning>
+
+---
+
+## Supported Sources for URL-Based Uploads
+
+URL-based uploads will fail with `UNSUPPORTED_SOURCE` if the source does not meet all of the following requirements:
+
+- The URL must use `https://`
+- The URL must be publicly accessible with no authentication required
+- The server must respond with a valid `Content-Type` header matching the file type
+- The server must not block automated requests or require cookies/sessions
+- The file must be within the size limit (see error `413` for oversized files)
+
+**Common failure scenarios:**
+
+| Scenario | Error | Solution |
+|---|---|---|
+| URL requires login or token | `403` | Use direct file upload instead |
+| URL not publicly reachable | `404` | Verify the URL is accessible without authentication |
+| Server blocks automated access | `UNSUPPORTED_SOURCE` | Use direct file upload instead |
+| Unsupported file type | `415` | Check supported MIME types |
+| Network timeout or unreachable host | `422` | Retry or use direct file upload |
+
+If you are consistently receiving `UNSUPPORTED_SOURCE` errors with public S3 URLs or CDN-hosted files, switch to **Method 1 (direct file upload)** as the most reliable alternative.
+
+---
+
+## Using Assets as Workflow Inputs
+
+Once an asset is uploaded, you can reference it in a workflow job using its returned `id`.
+
+**Step 1: Upload the asset and capture the ID**
+```python
+import requests
+
+response = requests.post(
+    "https://cloud.comfy.org/api/assets",
+    headers={"X-API-Key": "YOUR_API_KEY"},
+    files={"file": open("image.png", "rb")},
+    data={"name": "image.png", "tags": "input"}
+)
+
+asset = response.json()
+asset_id = asset["id"]
+```
+
+**Step 2: Reference the asset in your workflow**
+
+Pass the `asset_id` as the input value for the relevant node in your workflow JSON before submitting via `POST /api/prompt`.
+
+---
+
+## Deduplication Behavior
+
+The Assets API uses **content-addressed storage** based on a Blake3 hash of the file contents. If you upload the same file twice, the API returns the existing asset rather than creating a duplicate. The response will include `"created_new": false`.
+
+This means:
+- `200` = asset already existed, existing asset returned
+- `201` = new asset created successfully
+
+---
+
+## Quick Reference: Which Method Should I Use?
+Need to upload a file for a workflow?
+│
+├── Is it a file you'll reuse across multiple jobs?
+│   └── YES → Use Assets API (POST /api/assets, multipart/form-data)
+│
+├── Is it a one-time input for a single job?
+│   └── YES → File API (POST /api/upload/image) works fine
+│
+└── Are you migrating from local ComfyUI?
+└── YES → File API is drop-in compatible, no changes needed
+
+---
+
+## Related Endpoints
+
+- `POST /api/assets` — Upload a new asset
+- `GET /api/assets` — List your uploaded assets
+- `GET /api/assets/{id}` — Get asset details
+- `POST /api/upload/image` — Legacy file upload (workflow input)
+- `GET /api/view` — View/download a file
