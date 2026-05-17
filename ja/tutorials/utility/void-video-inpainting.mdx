@@ -1,0 +1,116 @@
+---
+title: "VOID：ComfyUI ビデオ修復ワークフロー"
+sidebarTitle: "VOID ビデオ修復"
+description: "Netflix がオープンソース化した VOID ビデオ修復モデルを使って、動画からオブジェクトを削除する方法を学びます"
+---
+
+import UpdateReminder from '/snippets/tutorials/update-reminder.mdx'
+
+<UpdateReminder />
+
+VOID（Video Object Inpainting and Deletion）は、Netflix が 2026年5月14日にオープンソース化した強力なビデオ修復モデルです。2パス拡散パイプラインを採用し、動画からオブジェクトを削除し、時間的に一貫性のあるコンテンツで穴を埋めます。
+
+VOID は ComfyUI でネイティブサポートされており（PR [#13403](https://github.com/Comfy-Org/ComfyUI/pull/13403)）、完全なモデルウェイトは [Apache 2.0 ライセンス](https://github.com/Netflix/void-model?tab=Apache-2.0-1-ov-file) のもとで提供されています。
+
+[VOID モデル - GitHub](https://github.com/Netflix/void-model)
+
+<video controls width="100%">
+  <source src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/output/utility_void_video_inpainting.mp4" type="video/mp4" />
+</video>
+
+VOID は、動画から不要なオブジェクトを削除しながら、自然な動き、照明、シーンの一貫性を維持します。上の例は、シーンからオブジェクトを削除した後の処理結果を示しています。
+
+### 主な強み
+
+- **単なる単一フレームの修正ではない真のオブジェクト削除** — クリップ全体で一貫性のある動きと照明を生成
+- **インタラクション認識シーム修復** — オブジェクト（および近隣要素への影響）が**最初から存在しなかった**かのように遮蔽ピクセルが補完され、影や重なりなどの因果的手がかりが単純な消去よりも自然に見える
+- **2パス最適化** — Pass 2 は Pass 1 単独よりも優れた時間的安定性（少ないジッターやフラッシュ）を提供。特に長いカットやテクスチャ背景で効果的
+
+> **制限事項：** 不明瞭なマスク、乱雑な動き、またはフレームを支配する対象物は、依然として最適とは言えない結果を生む可能性があります — プロンプトでは根本的に誤ったセグメンテーションを修正できません。
+
+## VOID ビデオ修復ワークフロー
+
+### 1. ワークフローをダウンロード
+
+ComfyUI を最新バージョンにアップデートし、メニューから `ワークフロー` -> `テンプレートを閲覧` に進み、Utility カテゴリから "VOID: Video Inpainting" を見つけてください。
+
+<CardGroup cols={2}>
+  <Card title="JSON ワークフローをダウンロード" icon="download" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/templates/utility_void_video_inpainting.json">
+    Download workflow
+  </Card>
+  <Card title="Comfy Cloud で実行" icon="cloud" href="https://cloud.comfy.org/?template=utility_void_video_inpainting&utm_source=docs">
+    Open in cloud
+  </Card>
+</CardGroup>
+
+### 2. モデルをダウンロード
+
+すべてのモデルは [Comfy-Org VOID モデルリポジトリ](https://huggingface.co/Comfy-Org/void-model) でホストされています。
+
+**拡散モデル** — 中核となる2パス修復モデル：
+
+- [void_pass2.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass2.safetensors) — 精錬パス、時間的安定性に優れる
+- [void_pass1.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass1.safetensors) — 一次パス
+
+**VAE：**
+
+- [cogvideox_vae.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/vae/cogvideox_vae.safetensors)
+
+**オプティカルフロー：**
+
+- [raft_large_C_T_SKHT_V2-ff5fadd5.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/optical_flow/raft_large_C_T_SKHT_V2-ff5fadd5.safetensors)
+
+**SAM3 セグメンテーション：**
+
+- [sam3.1_multiplex_fp16.safetensors](https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors)
+
+**テキストエンコーダ：**
+
+- [t5xxl_fp16.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors)
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 checkpoints/
+│   │   └── sam3.1_multiplex_fp16.safetensors
+│   ├── 📂 text_encoders/
+│   │   └── t5xxl_fp16.safetensors
+│   ├── 📂 vae/
+│   │   └── cogvideox_vae.safetensors
+│   ├── 📂 optical_flow/
+│   │   └── raft_large_C_T_SKHT_V2-ff5fadd5.safetensors
+│   └── 📂 diffusion_models/
+│       ├── void_pass2.safetensors
+│       └── void_pass1.safetensors
+```
+
+### 3. ワークフローの使い方
+
+**入力パラメータ：**
+
+- **ソース動画** — `Load Video` ノードで動画を読み込みます（ComfyUI `input/` フォルダに配置）
+- **ポジティブプロンプト（修復フィル）** — オブジェクト削除**後**のシーンを説明します。削除されたものではなく、残ったものとその見え方に焦点を当てます
+  - 例：`empty kitchen counter, daylight, tiles visible`
+- **ネガティブプロンプト** — オプションのアーティファクト防止リスト。空でも可
+- **SAM3 オブジェクトプロンプト** — **削除したいもの**の短いラベル
+  - 例：`person in blue jacket`、`red cup on table`
+
+**プロンプトの役割分担：**
+
+| プロンプト | 役割 |
+|--------|------|
+| SAM3 オブジェクト | **何を**削除するか |
+| ポジティブ（修復） | **どのように**穴を埋めるか |
+
+長いクリップやテクスチャ背景では **Pass 2**（精錬パス）を使用することで時間的安定性が向上します。**Pass 1** のみの方が高速ですが、ジッターが発生しやすくなります。
+
+<Card title="Subgraph について学ぶ" icon="book-open" href="/interface/features/subgraph">
+  このワークフローはモジュラーな動画処理に Subgraph ノードを使用しています。Subgraph ドキュメントを参照して、ワークフローのカスタマイズと拡張方法を学んでください。
+</Card>
+
+## 補足説明
+
+- **マスクの品質が重要** — 削除対象をしっかり囲むクリーンなマスクが最良の結果を生みます
+- **プロンプト作成のコツ** — 削除後、シーンが自然に見えるべき姿を説明し、削除そのものを説明しないでください
+- **ネガティブプロンプト** は、繰り返し現れる欠陥（ウォーターマーク、ぼやけ、余分な手足など）が見られる場合にのみ使用してください
+- **2パスワークフロー** — テンプレートは Pass 1 から Pass 2 を自動実行します。テスト中は Pass 1 のみを実行して迅速に反復することもできます

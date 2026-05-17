@@ -1,0 +1,116 @@
+---
+title: "VOID：ComfyUI 视频修复工作流"
+sidebarTitle: "VOID 视频修复"
+description: "学习使用 Netflix 开源的 VOID 视频修复模型在 ComfyUI 中移除视频中的物体"
+---
+
+import UpdateReminder from '/snippets/tutorials/update-reminder.mdx'
+
+<UpdateReminder />
+
+VOID（Video Object Inpainting and Deletion）是 Netflix 于 2026 年 5 月 14 日开源的一款强大的视频修复模型。它采用两阶段扩散 pipeline，能够从视频中移除物体并以时间连贯的内容填补空缺。
+
+VOID 在 ComfyUI 中获得原生支持（PR [#13403](https://github.com/Comfy-Org/ComfyUI/pull/13403)），完整模型权重基于 [Apache 2.0 协议](https://github.com/Netflix/void-model?tab=Apache-2.0-1-ov-file) 发布。
+
+[VOID 模型 - GitHub](https://github.com/Netflix/void-model)
+
+<video controls width="100%">
+  <source src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/output/utility_void_video_inpainting.mp4" type="video/mp4" />
+</video>
+
+VOID 能够从视频中移除不需要的物体，同时保持自然的运动、光照和画面连贯性。以上示例展示了从场景中移除物体后的处理结果。
+
+### 核心优势
+
+- **真正的物体移除**，而非单帧修补 — 在整个片段中生成连贯的运动和光照
+- **交互感知的缝隙修复** — 被遮挡的像素将被填充，仿佛物体及其对邻近元素的影响从未存在过，阴影、重叠等因果线索比简单的擦除更加自然
+- **双阶段优化** — Pass 2 提供了更优的时间稳定性（更少的抖动和闪烁），尤其适用于长片段或纹理复杂的背景
+
+> **限制：** 模糊的遮罩、杂乱的运动或占据画面大部分的物体可能仍会产生不理想的结果——提示词无法修正根本的分割错误。
+
+## VOID 视频修复工作流
+
+### 1. 工作流文件下载
+
+请更新你的 ComfyUI 到最新版本，并通过菜单 `工作流` -> `浏览模板` 找到 Utility 类别下的 "VOID: Video Inpainting"。
+
+<CardGroup cols={2}>
+  <Card title="下载 JSON 格式工作流" icon="download" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/refs/heads/main/templates/utility_void_video_inpainting.json">
+    Download workflow
+  </Card>
+  <Card title="在 Comfy Cloud 中运行" icon="cloud" href="https://cloud.comfy.org/?template=utility_void_video_inpainting&utm_source=docs">
+    Open in cloud
+  </Card>
+</CardGroup>
+
+### 2. 手动下载模型
+
+所有模型均托管在 [Comfy-Org VOID 模型仓库](https://huggingface.co/Comfy-Org/void-model)。
+
+**扩散模型** — 核心的两阶段修复模型：
+
+- [void_pass2.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass2.safetensors) — 精炼阶段，时间稳定性更佳
+- [void_pass1.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/diffusion_models/void_pass1.safetensors) — 主要阶段
+
+**VAE：**
+
+- [cogvideox_vae.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/vae/cogvideox_vae.safetensors)
+
+**光流模型：**
+
+- [raft_large_C_T_SKHT_V2-ff5fadd5.safetensors](https://huggingface.co/Comfy-Org/void-model/resolve/main/optical_flow/raft_large_C_T_SKHT_V2-ff5fadd5.safetensors)
+
+**SAM3 分割模型：**
+
+- [sam3.1_multiplex_fp16.safetensors](https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors)
+
+**文本编码器：**
+
+- [t5xxl_fp16.safetensors](https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors)
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 checkpoints/
+│   │   └── sam3.1_multiplex_fp16.safetensors
+│   ├── 📂 text_encoders/
+│   │   └── t5xxl_fp16.safetensors
+│   ├── 📂 vae/
+│   │   └── cogvideox_vae.safetensors
+│   ├── 📂 optical_flow/
+│   │   └── raft_large_C_T_SKHT_V2-ff5fadd5.safetensors
+│   └── 📂 diffusion_models/
+│       ├── void_pass2.safetensors
+│       └── void_pass1.safetensors
+```
+
+### 3. 使用工作流
+
+**输入参数：**
+
+- **源视频** — 通过 `Load Video` 节点加载视频（放入 ComfyUI `input/` 文件夹）
+- **正向提示词（修复填充）** — 描述移除物体**之后**的场景。关注剩余内容和画面效果，而非被移除的物体
+  - 示例：`empty kitchen counter, daylight, tiles visible`
+- **负向提示词** — 可选的防伪影词表，可以留空
+- **SAM3 目标提示词** — 简短的**要遮罩移除**的对象描述
+  - 示例：`person in blue jacket`、`red cup on table`
+
+**提示词分工：**
+
+| 提示词 | 作用 |
+|--------|------|
+| SAM3 目标 | **移除什么** |
+| 正向（修复） | **如何填补空洞** |
+
+长片段或纹理复杂的背景建议使用 **Pass 2**（精炼阶段）获得更好的时间稳定性。仅使用 **Pass 1** 速度更快，但可能出现更多抖动。
+
+<Card title="了解 Subgraph" icon="book-open" href="/interface/features/subgraph">
+  本工作流使用了 Subgraph 节点来实现模块化的视频处理。查阅 Subgraph 文档了解如何自定义和扩展工作流。
+</Card>
+
+## 补充说明
+
+- **遮罩质量至关重要** — 围绕目标物体的清晰紧致的遮罩能产生最佳效果
+- **提示词写作技巧** — 描述移除后场景应自然呈现的样子，而非描述移除本身
+- **负向提示词** 仅在你看到反复出现的缺陷时使用（水印、模糊、多余肢体等）
+- **双阶段工作流** — 模板会自动运行 Pass 1 然后 Pass 2；测试时也可以仅运行 Pass 1 以加快迭代
