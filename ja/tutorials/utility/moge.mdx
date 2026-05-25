@@ -1,0 +1,138 @@
+---
+title: "ComfyUI MoGe 使用例"
+description: "このガイドでは、ComfyUI で MoGe を使用して単眼幾何推定を行う方法を説明します：メートルスケールのポイントマップ、深度マップ、法線マップ、メッシュ生成。"
+sidebarTitle: "MoGe"
+---
+
+import UpdateReminder from '/snippets/tutorials/update-reminder.mdx'
+
+# ComfyUI MoGe の紹介
+
+[MoGe](https://github.com/microsoft/MoGe)（CVPR 2025、Microsoft Research）は、オープンドメインの単一画像から3D幾何情報を復元する強力な単眼幾何モデルです。メートルスケールのポイントマップ、深度マップ、法線マップ、カメラFOVを1回のフォワードパスで推定します。
+
+主な機能：
+
+- **正確な3D幾何推定**：単一画像からポイントマップ、深度マップ、法線マップを同時出力
+- **メートルスケール**（MoGe-2）：実世界スケールのポイントマップと深度マップ
+- **柔軟な解像度**：様々な解像度とアスペクト比（2:1〜1:2）に対応
+- **高速推論**：A100 / RTX 3090 で約60ms/枚（FP16、ViT-L）
+- **透視画像およびパノラマ画像からのメッシュ生成**
+
+MoGe は2つのバージョンを提供：
+
+| ファイル | バージョン | メートルスケール | 法線マップ | パラメータ数 |
+|----------|-----------|:---------------:|:---------:|:----------:|
+| `moge_1_vitl_fp16` | **MoGe-1** | - | - | 314M |
+| `moge_2_vitl_normal_fp16` | **MoGe-2** | ✅ | ✅ | 331M |
+
+> MoGe-2 はメートルスケールと高品質な法線マップ推定を追加、よりシャープなビジュアル詳細と低レイテンシを実現。**MoGe-2 with normal（`moge_2_vitl_normal_fp16`）を推奨します。**
+
+<Tip>
+ComfyUI は MoGe ノードをネイティブサポートしています。始める前に [ComfyUI](https://github.com/comfyanonymous/ComfyUI) を最新バージョンに更新してください。
+
+このチュートリアルのワークフロー例（PNG画像）にはワークフローJSONがメタデータとして含まれています：
+- ComfyUI に直接ドラッグ＆ドロップできます
+- またはメニュー `Workflows` -> `Open (ctrl+o)` で開けます
+
+ワークフローを読み込むと、必要なモデルのダウンロードが促されます。生成された `.glb` モデルは `ComfyUI/output/mesh` フォルダに出力されます。
+</Tip>
+
+## モデルのインストール
+
+MoGe チェックポイントをダウンロードし、ComfyUI の該当フォルダに保存します：
+
+- **MoGe-2（推奨）**：[moge_2_vitl_normal_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/resolve/main/moge_2_vitl_normal_fp16.safetensors)
+- **MoGe-1（ベースライン）**：[moge_1_vitl_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/resolve/main/moge_1_vitl_fp16.safetensors)
+
+```
+ComfyUI/
+├── models/
+│   ├── geometry_estimation/
+│   │   ├── moge_2_vitl_normal_fp16.safetensors
+│   │   └── moge_1_vitl_fp16.safetensors
+```
+
+## ワークフロー例
+
+---
+
+## 1. 深度推定
+
+**機能：** 単一画像からメートルスケールの深度マップ、カラー深度プレビュー、マスクを生成——MoGe が1回の推論で推定するメートルスケール深度をそのまま出力します。シーンの深度リファレンスとしてコンポジットや深度エフェクトに有用で、メッシュ生成の前処理としても使えます。
+
+MoGe は画像からカメラFOVも自動推定します。必要に応じて実際のFOVを入力するとさらに精度が向上します。
+
+<UpdateReminder/>
+
+<CardGroup cols={2}>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_moge_depth_estimation.json">
+    JSONをダウンロード、またはテンプレートライブラリで "MoGe Depth Estimation" を検索
+  </Card>
+</CardGroup>
+
+### 1.1 ワークフロー
+
+![MoGe depth estimation workflow](https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/moge/moge_depth_estimation.webp)
+
+### 1.2 実行手順
+
+1. `LoadMoGeModel` ノードが MoGe チェックポイントをロードしていることを確認
+2. `Load Image` ノードに画像をロード
+3. `Queue` ボタン、またはショートカット `Ctrl(cmd) + Enter` で実行
+4. カラー深度プレビュー、生深度プレビュー、マスクが出力されます
+
+---
+
+## 2. 透視写真を3Dメッシュに変換
+
+**機能：** 単一の透視写真をテクスチャ付きGLBメッシュに変換し、法線と深度のプレビューも生成します。MoGe が可視シーンからポイントマップ、深度、法線を推定し、メッシュに変換します。これは**単眼幾何推定**であり、オクルージョン領域や物体の裏側は欠落や断片が生じます。シーンのラピッドプロトタイピングや参照ジオメトリ、深度/法線のメッシュ可視化には有用ですが、マルチビュー3D再構築の代替にはなりません。
+
+<UpdateReminder/>
+
+<CardGroup cols={2}>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_perspective_to_mesh.json">
+    JSONをダウンロード、またはテンプレートライブラリで "3D MoGe Perspective to Mesh" を検索
+  </Card>
+</CardGroup>
+
+### 2.1 ワークフロー
+
+![MoGe perspective to mesh workflow](https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/moge/moge_perspective_to_mesh.webp)
+
+### 2.2 実行手順
+
+1. `LoadMoGeModel` ノードが MoGe チェックポイントをロードしていることを確認
+2. `Load Image` ノードに透視写真をロード
+3. （オプション）OpenGL および DirectX の法線プレビューを表示
+4. `Queue` または `Ctrl(cmd) + Enter` で実行
+
+---
+
+## 3. パノラマをメッシュに変換
+
+**機能：** 360°パノラマ（正距円筒図法）をテクスチャ付きGLBメッシュに変換します。`MoGePanoramaInference` がパノラマを12の視点に分割し、それぞれで独立して単眼幾何推定を実行、単一のメッシュに統合します。各セグメントは単一視点からの推定であるため、結果は大まかなシーン再構築——360°シーンの空間概要を得るには有用ですが、オクルージョン領域や表面背後は欠落や断片が生じます。
+
+<UpdateReminder/>
+
+<CardGroup cols={2}>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_panorama_to_mesh.json">
+    JSONをダウンロード、またはテンプレートライブラリで "3D MoGe Panorama to Mesh" を検索
+  </Card>
+</CardGroup>
+
+### 3.1 ワークフロー
+
+![MoGe panorama to mesh workflow](https://raw.githubusercontent.com/Comfy-Org/example_workflows/main/3d/moge/moge_panorama_to_mesh.webp)
+
+### 3.2 実行手順
+
+1. `LoadMoGeModel` ノードが MoGe チェックポイントをロードしていることを確認
+2. `Load Image` ノードに正距円筒図法のパノラマ画像をロード
+3. `Queue` ボタン、または `Ctrl(cmd) + Enter` で実行
+
+---
+
+## コミュニティリソース
+
+- [MoGe GitHub (microsoft/MoGe)](https://github.com/microsoft/MoGe) — 研究論文とコード
+- [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe) — 公式 ComfyUI モデルウェイト
