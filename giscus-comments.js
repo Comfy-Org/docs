@@ -7,6 +7,16 @@
   let intersectionObserver = null;
   let themeObserver = null;
   let loadingTimeout = null;
+  let routeLoadTimer = null;
+  let intersectionLoadTimer = null;
+
+  const INITIAL_LOAD_DELAY_MS = 3200;
+  const SPA_LOAD_DELAY_MS = 2200;
+  const INTERSECTION_LOAD_DELAY_MS = 1200;
+  const INTERSECTION_ROOT_MARGIN = '0px 0px 64px 0px';
+  const CONTENT_STABILITY_CHECK_INTERVAL_MS = 250;
+  const CONTENT_STABILITY_REQUIRED_MS = 1000;
+  const CONTENT_STABILITY_MAX_WAIT_MS = 5000;
   
   // Add CSS styles once
   function addStyles() {
@@ -195,6 +205,16 @@
       clearTimeout(loadingTimeout);
       loadingTimeout = null;
     }
+
+    if (routeLoadTimer) {
+      clearTimeout(routeLoadTimer);
+      routeLoadTimer = null;
+    }
+
+    if (intersectionLoadTimer) {
+      clearTimeout(intersectionLoadTimer);
+      intersectionLoadTimer = null;
+    }
     
     giscusLoaded = false;
   }
@@ -230,16 +250,106 @@
     intersectionObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting && !giscusLoaded) {
-          loadGiscusContent(container);
-          intersectionObserver.disconnect();
+          if (!intersectionLoadTimer) {
+            intersectionLoadTimer = setTimeout(() => {
+              intersectionLoadTimer = null;
+              if (giscusLoaded) return;
+              loadGiscusContent(container);
+              if (intersectionObserver) {
+                intersectionObserver.disconnect();
+                intersectionObserver = null;
+              }
+            }, INTERSECTION_LOAD_DELAY_MS);
+          }
+        } else if (intersectionLoadTimer) {
+          clearTimeout(intersectionLoadTimer);
+          intersectionLoadTimer = null;
         }
       });
     }, {
-      rootMargin: '200px 0px', // Start loading 200px before the element comes into view
-      threshold: 0
+      rootMargin: INTERSECTION_ROOT_MARGIN,
+      threshold: 0.15
     });
     
     intersectionObserver.observe(container);
+  }
+
+  function waitForWindowLoad() {
+    if (document.readyState === 'complete') {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      window.addEventListener('load', resolve, { once: true });
+    });
+  }
+
+  function waitForNextPaint() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    });
+  }
+
+  async function waitForPageContentStability() {
+    await waitForWindowLoad();
+    await waitForNextPaint();
+
+    const contentRoot = document.querySelector('.mdx-content.prose, .mdx-content, main, [role="main"]');
+    if (!contentRoot) return;
+
+    await new Promise((resolve) => {
+      const startedAt = Date.now();
+      let stableForMs = 0;
+      let previousSignature = '';
+
+      const checkStability = () => {
+        const signature = [
+          contentRoot.childElementCount,
+          contentRoot.scrollHeight,
+          contentRoot.clientHeight,
+          (contentRoot.textContent || '').trim().length
+        ].join(':');
+
+        if (signature === previousSignature) {
+          stableForMs += CONTENT_STABILITY_CHECK_INTERVAL_MS;
+        } else {
+          stableForMs = 0;
+          previousSignature = signature;
+        }
+
+        const waitedTooLong = Date.now() - startedAt >= CONTENT_STABILITY_MAX_WAIT_MS;
+        if (stableForMs >= CONTENT_STABILITY_REQUIRED_MS || waitedTooLong) {
+          resolve();
+          return;
+        }
+
+        setTimeout(checkStability, CONTENT_STABILITY_CHECK_INTERVAL_MS);
+      };
+
+      checkStability();
+    });
+  }
+
+  function scheduleGiscusLoad(delayMs) {
+    const scheduledPath = window.location.pathname;
+
+    if (routeLoadTimer) {
+      clearTimeout(routeLoadTimer);
+    }
+
+    routeLoadTimer = setTimeout(async () => {
+      routeLoadTimer = null;
+
+      if (window.location.pathname !== scheduledPath) return;
+
+      await waitForPageContentStability();
+
+      if (window.location.pathname !== scheduledPath) return;
+
+      loadGiscus();
+    }, delayMs);
   }
   
   // Find the best content container for giscus
@@ -779,13 +889,13 @@
       const url = location.href;
       if (url !== lastUrl) {
         lastUrl = url;
-        setTimeout(loadGiscus, 800); // Increased delay for content to load
+        scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
       }
     }).observe(document, {subtree: true, childList: true});
     
     // Also listen for popstate events
     window.addEventListener('popstate', () => {
-      setTimeout(loadGiscus, 800);
+      scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
     });
     
     // Listen for pushstate/replacestate (modern SPA frameworks)
@@ -794,12 +904,12 @@
     
     history.pushState = function() {
       originalPushState.apply(history, arguments);
-      setTimeout(loadGiscus, 800);
+      scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
     };
     
     history.replaceState = function() {
       originalReplaceState.apply(history, arguments);
-      setTimeout(loadGiscus, 800);
+      scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
     };
   }
   
@@ -863,10 +973,10 @@
     
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(loadGiscus, 1500); // Longer delay on initial load
+        scheduleGiscusLoad(INITIAL_LOAD_DELAY_MS);
       });
     } else {
-      setTimeout(loadGiscus, 1500); // Longer delay on initial load  
+      scheduleGiscusLoad(INITIAL_LOAD_DELAY_MS);
     }
   }
   
