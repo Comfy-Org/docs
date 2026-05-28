@@ -1,0 +1,137 @@
+---
+title: "ネイティブ LoRA トレーニング"
+sidebarTitle: "LoRA トレーニング"
+description: "ComfyUI の組み込みトレーニングノードを使って LoRA モデルを直接トレーニングする"
+---
+
+ComfyUI は、外部ツールやカスタムノードを必要とせずに LoRA（Low-Rank Adaptation）モデルのトレーニングをネイティブにサポートしています。このページではトレーニングワークフローの全体像を説明します。各ノードの詳細なパラメーター説明については、対応するノードドキュメントをご参照ください。
+
+<Warning>
+トレーニングノードは現在**実験的機能**としてマークされています。機能と動作は将来のリリースで変更される可能性があります。
+</Warning>
+
+## ノード概要
+
+ネイティブ LoRA トレーニングシステムは、**データセットノード**と**トレーニングノード**の2つに分かれています。
+
+### データセットノード
+
+トレーニングデータの準備と管理に使用します：
+
+| ノード | 用途 |
+|------|------|
+| [Load Image Dataset from Folder](/ja/built-in-nodes/LoadImageDataSetFromFolder) | 入力サブフォルダーから画像をバッチ読み込み |
+| [Load Image and Text Dataset from Folder](/ja/built-in-nodes/LoadImageTextDataSetFromFolder) | 画像とキャプションのペアを読み込み（kohya-ss フォルダー構造に対応） |
+| [Make Training Dataset](/ja/built-in-nodes/MakeTrainingDataset) | VAE で画像を、CLIP でテキストをエンコードしてトレーニングデータを生成 |
+| [Resolution Bucket](/ja/built-in-nodes/ResolutionBucket) | 効率的なバッチ学習のために解像度ごとにグループ化 |
+| [Save Training Dataset](/ja/built-in-nodes/SaveTrainingDataset) | エンコード済みデータセットをディスクに保存して再エンコードを省略 |
+| [Load Training Dataset](/ja/built-in-nodes/LoadTrainingDataset) | 保存済みのエンコード済みデータセットをディスクから読み込み |
+
+### トレーニングノード
+
+トレーニングの実行、結果の保存、LoRA の適用に使用します：
+
+| ノード | 用途 |
+|------|------|
+| [Train LoRA](/ja/built-in-nodes/TrainLoraNode) | 潜在表現と条件付けデータから LoRA をトレーニング |
+| [Save LoRA Weights](/ja/built-in-nodes/SaveLoRA) | トレーニング済み LoRA の重みを safetensors ファイルとして出力 |
+| [Load LoRA Model](/ja/built-in-nodes/LoraModelLoader) | トレーニング済み LoRA の重みをモデルに適用（推論用） |
+| [Plot Loss Graph](/ja/built-in-nodes/LossGraphNode) | トレーニング損失の推移を可視化 |
+
+## 必要条件
+
+- 十分な VRAM を持つ GPU（トレーニングは推論よりも多くのメモリを必要とします）
+- `ComfyUI/input/` のサブフォルダーに配置したトレーニング画像
+- ベースモデル（チェックポイント）
+
+## 典型的なトレーニングワークフロー
+
+<Steps>
+<Step title="トレーニング画像の読み込み">
+
+`ComfyUI/input/` 以下のサブフォルダーにトレーニング画像を配置します。
+
+- 画像のみの場合は **Load Image Dataset from Folder** を使用
+- 画像とキャプションのペアには **Load Image and Text Dataset from Folder** を使用（各画像に同名の `.txt` ファイルが必要）
+
+<Tip>
+10〜20 枚の高品質な画像から始めましょう。量より質が重要です。
+</Tip>
+</Step>
+
+<Step title="データセットのエンコード">
+
+画像とテキストを VAE・CLIP モデルとともに **Make Training Dataset** ノードに接続します。`latents` と `conditioning` が出力されます。
+
+同じデータセットを複数回のトレーニングに使う場合は、**Save Training Dataset** で保存しておき、次回以降は **Load Training Dataset** から読み込むことで再エンコードを省略できます。
+</Step>
+
+<Step title="（任意）解像度バケット">
+
+画像のサイズが異なる場合は、エンコード済みデータを **Resolution Bucket** ノードで解像度ごとにグループ化し、Train LoRA ノードで **bucket_mode** を有効にすることで効率的なバッチトレーニングが可能になります。
+</Step>
+
+<Step title="Train LoRA の設定と実行">
+
+モデル、潜在表現、条件付けデータを **Train LoRA** ノードに接続し、必要に応じてパラメーターを調整します。
+
+推奨の初期設定：
+
+| パラメーター | 推奨初期値 |
+|-----------|-----------|
+| `steps` | 100〜500 |
+| `rank` | 8〜16 |
+| `learning_rate` | 0.0001〜0.0005 |
+| `optimizer` | AdamW |
+| `loss_function` | MSE |
+
+ノードは学習済みの `lora` 重み、`loss_map`、完了した `steps` 数を出力します。
+</Step>
+
+<Step title="トレーニング進捗の監視">
+
+`loss_map` を **Plot Loss Graph** ノードに接続して損失曲線を確認します。損失が収束したらトレーニングを停止できます。
+</Step>
+
+<Step title="LoRA の保存とテスト">
+
+`lora` を **Save LoRA Weights** に接続すると `ComfyUI/output/loras/` に `.safetensors` ファイルが保存されます。
+
+推論ワークフローでは **Load LoRA Model** ノードを使ってトレーニング済み LoRA をベースモデルに適用し、結果を確認します。
+</Step>
+</Steps>
+
+## VRAM の最適化
+
+| 手法 | 説明 |
+|------|------|
+| **gradient_checkpointing**（デフォルトで有効） | 逆伝播時にアクティベーションを再計算して VRAM を削減 |
+| **batch_size** を下げる | 最も直接的な VRAM 削減方法 |
+| **grad_accumulation_steps** を上げる | 追加 VRAM なしで大きなバッチサイズと同等の効果 |
+| **offloading** | モデルの重みを CPU に移動。gradient_checkpointing の有効化が必要 |
+| **bypass_mode** | 重みを直接変更せずフォワードフックでアダプターを適用。量化モデル（FP8/FP4）に必要 |
+
+## 量化モデルのトレーニング
+
+FP8/FP4 などの量化モデルで LoRA をトレーニングする場合、**Train LoRA** に以下の設定を使用します：
+
+- `training_dtype`: `none`
+- `quantized_backward`: 有効
+- `bypass_mode`: 有効
+
+推論時は **Load LoRA Model** でも `bypass` を有効にしてください。
+
+## トレーニングの続行
+
+**Train LoRA** の `existing_lora` に保存済みの LoRA ファイルを指定すると、チェックポイントから学習を再開できます。総ステップ数は自動的に累積されます。
+
+## サポートされているアルゴリズム
+
+**Train LoRA** の `algorithm` パラメーターで重みアダプターの種類を選択します：
+
+| アルゴリズム | 説明 |
+|-----------|------|
+| **LoRA** | 標準の低ランク適応。ほとんどのケースで推奨 |
+| **LoHa** | アダマール積を使った低ランク適応 |
+| **LoKr** | クロネッカー積を使った低ランク適応。よりパラメーター効率が高い |
+| **OFT** | 直交ファインチューニング（実験的） |

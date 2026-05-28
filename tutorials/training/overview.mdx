@@ -1,0 +1,137 @@
+---
+title: "Native LoRA Training"
+sidebarTitle: "LoRA Training"
+description: "Train LoRA models directly in ComfyUI using built-in training nodes"
+---
+
+ComfyUI includes native support for training LoRA (Low-Rank Adaptation) models without requiring external tools or custom nodes. This page provides an overview of the training workflow. For detailed parameter documentation, refer to the individual node pages linked below.
+
+<Warning>
+The training nodes are marked as **experimental**. Features and behavior may change in future releases.
+</Warning>
+
+## Node Overview
+
+The native LoRA training system is organized into **dataset nodes** and **training nodes**.
+
+### Dataset Nodes
+
+Used to prepare and manage training data:
+
+| Node | Purpose |
+|------|---------|
+| [Load Image Dataset from Folder](/built-in-nodes/LoadImageDataSetFromFolder) | Batch-load images from an input subfolder |
+| [Load Image and Text Dataset from Folder](/built-in-nodes/LoadImageTextDataSetFromFolder) | Load images with paired captions (supports kohya-ss folder structure) |
+| [Make Training Dataset](/built-in-nodes/MakeTrainingDataset) | Encode images with VAE and text with CLIP to produce training data |
+| [Resolution Bucket](/built-in-nodes/ResolutionBucket) | Group latents by resolution for efficient batched training |
+| [Save Training Dataset](/built-in-nodes/SaveTrainingDataset) | Save encoded dataset to disk to avoid re-encoding on future runs |
+| [Load Training Dataset](/built-in-nodes/LoadTrainingDataset) | Load a previously saved encoded dataset from disk |
+
+### Training Nodes
+
+Used to run training, save results, and apply the LoRA:
+
+| Node | Purpose |
+|------|---------|
+| [Train LoRA](/built-in-nodes/TrainLoraNode) | Train a LoRA from latents and conditioning data |
+| [Save LoRA Weights](/built-in-nodes/SaveLoRA) | Export trained LoRA weights to a safetensors file |
+| [Load LoRA Model](/built-in-nodes/LoraModelLoader) | Apply trained LoRA weights to a model for inference |
+| [Plot Loss Graph](/built-in-nodes/LossGraphNode) | Visualize training loss over time |
+
+## Requirements
+
+- A GPU with sufficient VRAM (training typically requires more memory than inference)
+- Training images placed in a subfolder under `ComfyUI/input/`
+- A base model (checkpoint)
+
+## Typical Training Workflow
+
+<Steps>
+<Step title="Load training images">
+
+Place your training images in a subfolder under `ComfyUI/input/`.
+
+- Use **Load Image Dataset from Folder** for images only
+- Use **Load Image and Text Dataset from Folder** for image–caption pairs (each image needs a matching `.txt` file with the same base name)
+
+<Tip>
+Start with 10–20 high-quality images. Quality matters more than quantity.
+</Tip>
+</Step>
+
+<Step title="Encode the dataset">
+
+Connect images and text to **Make Training Dataset** along with a VAE and CLIP model. This produces `latents` and `conditioning` outputs.
+
+To reuse the same dataset across multiple training runs, save it with **Save Training Dataset** and load it later with **Load Training Dataset** — no re-encoding needed.
+</Step>
+
+<Step title="(Optional) Resolution bucketing">
+
+If your images have varying dimensions, pass the encoded data through **Resolution Bucket** to group them by resolution, then enable **bucket_mode** in the Train LoRA node for efficient batched training.
+</Step>
+
+<Step title="Configure and run Train LoRA">
+
+Connect the model, latents, and conditioning to **Train LoRA** and adjust parameters as needed.
+
+Recommended starting values:
+
+| Parameter | Starting value |
+|-----------|---------------|
+| `steps` | 100–500 |
+| `rank` | 8–16 |
+| `learning_rate` | 0.0001–0.0005 |
+| `optimizer` | AdamW |
+| `loss_function` | MSE |
+
+The node outputs trained `lora` weights, a `loss_map`, and the completed `steps` count.
+</Step>
+
+<Step title="Monitor training progress">
+
+Connect `loss_map` to **Plot Loss Graph** to visualize the loss curve. Training can be stopped once the loss plateaus.
+</Step>
+
+<Step title="Save and test your LoRA">
+
+Connect `lora` to **Save LoRA Weights** to export a `.safetensors` file to `ComfyUI/output/loras/`.
+
+In your inference workflow, use **Load LoRA Model** to apply the trained LoRA to the base model and test the results.
+</Step>
+</Steps>
+
+## VRAM Optimization
+
+| Technique | Notes |
+|-----------|-------|
+| **gradient_checkpointing** (on by default) | Reduces VRAM by recomputing activations during backward pass |
+| Lower **batch_size** | Most direct way to reduce VRAM |
+| Higher **grad_accumulation_steps** | Equivalent to a larger batch size with no extra VRAM cost |
+| **offloading** | Moves model weights to CPU; requires gradient_checkpointing to be enabled |
+| **bypass_mode** | Applies adapters via forward hooks instead of weight modification; required for quantized models (FP8/FP4) |
+
+## Quantized Model Training
+
+To train a LoRA on a quantized model (FP8/FP4), use these settings in **Train LoRA**:
+
+- `training_dtype`: `none`
+- `quantized_backward`: enabled
+- `bypass_mode`: enabled
+
+Also enable `bypass` in **Load LoRA Model** when using the resulting LoRA for inference.
+
+## Continuing Training
+
+Set `existing_lora` in **Train LoRA** to an existing saved LoRA file to resume from a checkpoint. The total step count accumulates automatically.
+
+## Supported Algorithms
+
+The `algorithm` parameter in **Train LoRA** selects the weight adapter type:
+
+| Algorithm | Notes |
+|-----------|-------|
+| **LoRA** | Standard low-rank adaptation — recommended for most use cases |
+| **LoHa** | Hadamard-product low-rank adaptation |
+| **LoKr** | Kronecker-product low-rank adaptation — more parameter-efficient |
+| **OFT** | Orthogonal Fine-Tuning (experimental) |
