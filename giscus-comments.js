@@ -638,7 +638,14 @@
       </div>
     `;
     
-    container.innerHTML = '';
+    // Remove any previously inserted notice to avoid duplicates, but keep the
+    // original giscus iframe/content intact so false-positive detections don't
+    // erase a successfully loaded comment widget.
+    const existingNotice = container.querySelector('.giscus-notice');
+    if (existingNotice) {
+      existingNotice.remove();
+    }
+    
     container.appendChild(noticeDiv);
     container.classList.remove('loading');
     container.classList.add('loaded');
