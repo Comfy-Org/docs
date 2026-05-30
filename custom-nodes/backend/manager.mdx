@@ -17,7 +17,7 @@ Custom nodes are nodes developed by the community. It allows you to implement ne
 ## ComfyUI Manager
 
 While custom nodes can be installed manually, most people use
-[ComfyUI Manager](https://github.com/ltdrdata/ComfyUI-Manager) to install them. **ComfyUI Manager** takes care of installing, 
+[ComfyUI Manager](https://github.com/Comfy-Org/ComfyUI-Manager) to install them. **ComfyUI Manager** takes care of installing, 
 updating, and removing custom nodes, and any dependencies. But it isn't part
 of the Comfy core, so you need to manually install it. 
 
@@ -25,11 +25,11 @@ of the Comfy core, so you need to manually install it.
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/ltdrdata/ComfyUI-Manager.git
+git clone https://github.com/Comfy-Org/ComfyUI-Manager.git
 ```
 
 Restart Comfy afterwards. 
-See [ComfyUI Manager Install](https://github.com/ltdrdata/ComfyUI-Manager?tab=readme-ov-file#installation) for details or special cases.
+See [ComfyUI Manager Install](https://github.com/Comfy-Org/ComfyUI-Manager?tab=readme-ov-file#installation) for details or special cases.
 
 */}
 
@@ -37,7 +37,7 @@ See [ComfyUI Manager Install](https://github.com/ltdrdata/ComfyUI-Manager?tab=re
 
 To make your custom node available through **ComfyUI Manager** you need to save it as a git repository (generally at `github.com`)
 and then submit a Pull Request on the **ComfyUI Manager** git, in which you have edited `custom-node-list.json` to add your node.
-[More details](https://github.com/ltdrdata/ComfyUI-Manager?tab=readme-ov-file#how-to-register-your-custom-node-into-comfyui-manager).
+[More details](https://github.com/Comfy-Org/ComfyUI-Manager?tab=readme-ov-file#how-to-register-your-custom-node-into-comfyui-manager).
 
 When a user installs the node, **ComfyUI Manager** will:
 
@@ -72,4 +72,4 @@ a custom node. These are all optional.
 <Tip>Disabled custom node subdirectory have `.disabled` appended to their names, and Comfy ignores these modules</Tip>
 - `node_list.json` - only required if the custom nodes pattern of NODE_CLASS_MAPPINGS is not conventional.
 
-See the [ComfyUI Manager guide](https://github.com/ltdrdata/ComfyUI-Manager?tab=readme-ov-file#custom-node-support-guide) for official details.
+See the [ComfyUI Manager guide](https://github.com/Comfy-Org/ComfyUI-Manager?tab=readme-ov-file#custom-node-support-guide) for official details.

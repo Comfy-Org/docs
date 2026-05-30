@@ -36,7 +36,7 @@ ComfyUI is a Python-based project. We build a standalone Python environment to r
 
 ### ComfyUI Dependencies
 
-You can view ComfyUI's current dependencies in the [requirements.txt](https://github.com/comfyanonymous/ComfyUI/blob/master/requirements.txt) file:
+You can view ComfyUI's current dependencies in the [requirements.txt](https://github.com/Comfy-Org/ComfyUI/blob/master/requirements.txt) file:
 
 {/* Note: These are the requirements at the time of writing, not necessarily the most recently updated version. Check the GitHub link above for the latest. */}
 
@@ -88,7 +88,7 @@ Additionally, ComfyUI's frontend [ComfyUI_frontend](https://github.com/Comfy-Org
 Thanks to the efforts of many authors in the ComfyUI community, we can extend ComfyUI's functionality by using different custom nodes, enabling impressive creativity.
 
 Typically, each custom node has its own dependencies and a separate `requirements.txt` file.
-If you use [ComfyUI Manager](https://github.com/ltdrdata/ComfyUI-Manager) to install custom nodes, ComfyUI Manager will usually automatically install the corresponding dependencies.
+If you use [ComfyUI Manager](https://github.com/Comfy-Org/ComfyUI-Manager) to install custom nodes, ComfyUI Manager will usually automatically install the corresponding dependencies.
 
 There are also cases where you need to install dependencies manually. Currently, all custom nodes are installed in the `ComfyUI/custom_nodes` directory.
 
@@ -130,7 +130,7 @@ These types of dependency conflicts may be more difficult to resolve, and you ma
 ## Models
 
 Models are a significant asset dependency for ComfyUI. Various custom nodes and workflows are built around specific models, such as the Stable Diffusion series, Flux series, Ltxv, and others.
-These models are an essential foundation for creation with ComfyUI, so we need to ensure that the models we use are properly available. Typically, our models are saved in the corresponding directory under `ComfyUI/models/`. Of course, you can also create an [extra_model_paths.yaml](https://github.com/comfyanonymous/ComfyUI/blob/master/extra_model_paths.yaml.example) by modifying the template to make additional model paths recognized by ComfyUI.
+These models are an essential foundation for creation with ComfyUI, so we need to ensure that the models we use are properly available. Typically, our models are saved in the corresponding directory under `ComfyUI/models/`. Of course, you can also create an [extra_model_paths.yaml](https://github.com/Comfy-Org/ComfyUI/blob/master/extra_model_paths.yaml.example) by modifying the template to make additional model paths recognized by ComfyUI.
 This allows multiple ComfyUI instances to share the same model library, reducing disk usage.
 
 ## Software
