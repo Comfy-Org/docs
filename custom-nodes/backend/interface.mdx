@@ -7,11 +7,11 @@ description: "What are custom nodes and how are they used?"
 
 A custom node is a combination of Python code and potentially some models weights. Custom nodes are extremely powerful, and allows the Comfy community to build their own functionality into ComfyUI.
 
-If you prefer to read code, check out the [example](https://github.com/comfyanonymous/ComfyUI/blob/master/custom_nodes/example_node.py.example) in the repository. Otherwise, we will explore one of Comfy's built-in nodes below.
+If you prefer to read code, check out the [example](https://github.com/Comfy-Org/ComfyUI/blob/master/custom_nodes/example_node.py.example) in the repository. Otherwise, we will explore one of Comfy's built-in nodes below.
 
 ## Interface
 
-Let's examine the interface of a custom node by looking at ComfyUI's built-in [Load Checkpoint](https://github.com/comfyanonymous/ComfyUI/blob/master/nodes.py#L529C7-L529C29) node. This loads a checkpoint file.
+Let's examine the interface of a custom node by looking at ComfyUI's built-in [Load Checkpoint](https://github.com/Comfy-Org/ComfyUI/blob/master/nodes.py#L529C7-L529C29) node. This loads a checkpoint file.
 
 ### Functions
 
