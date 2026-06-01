@@ -16,10 +16,20 @@ Comfy Cloud MCP connects AI assistants — including Claude Desktop, Claude Code
 **Before you start, make sure you have:**
 
 - An active **Comfy Cloud subscription** (required to submit workflows)
-- A **Comfy API key** (starts with `comfyui-`)
 - Your email enabled for the **closed beta** (see note above)
+- A way to sign in: **OAuth** (recommended where supported) or a **Comfy API key** (`comfyui-…`)
 
-If you don't have an API key yet, see the guide to get one:
+### Sign in with OAuth or API key
+
+**OAuth (no API key to paste)** — In **Claude Code** or **Claude Desktop**, add the remote server `https://cloud.comfy.org/mcp` and use the client’s **Authenticate** control to sign in with your Comfy account. Partner generation and workflows use the same tools once connected.
+
+**API key** — Still fully supported. Use the one-click installer or manual setup below if your client does not offer OAuth, or if you prefer a key.
+
+<Warning>
+  **OAuth rollout.** The MCP server already accepts OAuth on production, but sign-in may not work end-to-end for everyone until the next Comfy Cloud production deployment finishes (the discovery endpoint must catch up). Until OAuth works for you, use an API key — existing API-key setups are unchanged.
+</Warning>
+
+If you use an API key and do not have one yet, see the guide to get one:
 
 <CardGroup cols={1}>
   <Card title="Getting an API Key" icon="key" href="/development/api-development/getting-an-api-key">
@@ -27,9 +37,9 @@ If you don't have an API key yet, see the guide to get one:
   </Card>
 </CardGroup>
 
-### Install & Connect
+### Install & Connect (API key)
 
-The easiest way to get started is with the one-click installer. It detects your MCP client (Claude Code, Cursor, Amp), asks for your Comfy API key, and configures the remote MCP server — no Node.js or other dependencies required.
+The one-click installer detects your MCP client (Claude Code, Cursor, Amp), asks for your Comfy API key, and configures the remote MCP server — no Node.js or other dependencies required.
 
 <Tabs>
   <Tab title="macOS / Linux">
@@ -45,9 +55,9 @@ The easiest way to get started is with the one-click installer. It detects your 
   </Tab>
 </Tabs>
 
-### Manual Setup (Alternative)
+### Manual setup with API key
 
-If you prefer to configure manually, Comfy Cloud MCP is hosted at `https://cloud.comfy.org/mcp`. Point your MCP client at the server URL with your API key:
+Comfy Cloud MCP is hosted at `https://cloud.comfy.org/mcp`. Point your MCP client at that URL with your API key:
 
 <Tabs>
   <Tab title="Claude Code">
@@ -112,9 +122,22 @@ If you prefer to configure manually, Comfy Cloud MCP is hosted at `https://cloud
 
 **Just ask.** The agent picks the right tools on its own — *"generate a cat astronaut in space"*, *"find SDXL checkpoints"*, *"upscale this"*.
 
+### How generation is routed
+
+The agent chooses between two paths:
+
+| Path | Tool | Best for |
+|:-----|:-----|:---------|
+| **Partner APIs** | `partner_generate` | Named providers (Flux, Grok, Nano Banana, Ideogram, GPT-image, Seedream, etc.) |
+| **Custom workflows** | `submit_workflow` | Open-source models, LoRA/ControlNet, multi-step graphs, or anything not covered by `partner_generate` |
+
+For partner providers, `partner_generate` **always tries a real Comfy Cloud workflow run first**. The output is saved to your asset library with the workflow embedded so you can reopen it in the editor. The tool returns a `prompt_id` — poll with `get_job_status`, then download with `get_output` (same as any other workflow).
+
+For image-input requests or models not yet on the persistable set, the server **falls back automatically** to a direct partner-proxy response with instant download URLs. That fallback is internal; you cannot opt into or out of it. Those direct results are **not** saved to the asset library.
+
 ## Available Tools
 
-### Generate via Workflow
+### Workflow execution
 
 | Tool | Description |
 |:-----|:------------|
@@ -124,11 +147,11 @@ If you prefer to configure manually, Comfy Cloud MCP is hosted at `https://cloud
 | `cancel_job` | Cancel a pending or running job |
 | `get_queue` | Check how many jobs are running and pending |
 
-### Generate via Partner APIs (No Cloud GPU Cost)
+### Partner API generation
 
 | Tool | Description |
 |:-----|:------------|
-| `partner_generate` | Generate using partner APIs — Flux Pro, Nano Banana, Grok, GPT-image-1, Ideogram, Seedream (no Cloud GPU cost) |
+| `partner_generate` | Generate with partner APIs (Flux, Nano Banana, Grok, GPT-image, Ideogram, Seedream, etc.). Runs through a Comfy Cloud workflow by default; returns `prompt_id` and saves to your asset library. Poll `get_job_status` / `get_output` like any workflow. Unsupported cases fall back to instant proxy URLs automatically. |
 
 ### Discovery
 
@@ -152,8 +175,8 @@ If you prefer to configure manually, Comfy Cloud MCP is hosted at `https://cloud
 |:-----|:------------|
 | `list_saved_workflows` | Browse your saved workflows from Comfy Cloud |
 | `get_saved_workflow` | Inspect a saved workflow's nodes, inputs, and configuration |
-| `save_workflow` | Save the current workflow configuration |
-| `run_saved_workflow` | Execute a previously saved workflow |
+| `save_workflow` | Save a workflow to your workspace (save or API format; API format is converted automatically) |
+| `run_saved_workflow` | Fetch a saved workflow, convert to API format, and submit it for execution |
 
 ### Feedback (Beta)
 
@@ -185,15 +208,15 @@ Tool errors include a once-per-session pointer back to these channels so you don
 ```
 ┌──────────────┐    HTTPS/MCP    ┌─────────────────────────────────────────────┐
 │  AI Agent    │◄───────────────►│            Comfy Cloud                      │
-│  (Claude,    │   X-API-Key     │  cloud.comfy.org/mcp → Workflow Execution   │
-│   Cursor,    │                 │                        on Cloud GPUs        │
+│  (Claude,    │  API key or     │  cloud.comfy.org/mcp → Workflow execution   │
+│   Cursor,    │  OAuth bearer   │                        on Cloud GPUs        │
 │   Amp)       │                 │                                             │
 └──────────────┘                 └─────────────────────────────────────────────┘
 ```
 
 Your AI agent connects directly to the hosted MCP server at `cloud.comfy.org/mcp`. The server translates MCP tool calls into workflow executions on Comfy Cloud GPUs — no local server or GPU required.
 
-The AI agent uses the discovery tools to find templates and nodes, then constructs the ComfyUI API-format workflow JSON, submits it, and returns the results — just describe what you want in natural language.
+For partner models, the agent typically calls `partner_generate` first (workflow + library save). For everything else it uses discovery tools (`search_templates`, `search_nodes`, `cql`), builds ComfyUI API-format workflow JSON, and submits via `submit_workflow` — just describe what you want in natural language.
 
 ---
 
@@ -241,20 +264,20 @@ The agent will search for a matching template, build the ComfyUI workflow, submi
 </Warning>
 
 **Workflows**
-- **Cannot run saved workflows by ID.** You can browse and inspect saved workflows (`list_saved_workflows`, `get_saved_workflow`), but not always execute them directly. Saved workflows use the ComfyUI graph format, which requires conversion to API format. The AI agent must reconstruct the workflow from scratch.
-- **Generated assets have no workflow metadata.** Images created via the MCP server don't include workflow JSON in their metadata, so they won't show the workflow when opened in ComfyUI.
+- **`run_saved_workflow` coverage.** The tool fetches a saved workflow, converts save format → API format, and submits it. Complex input overrides or workflows with unsupported nodes may still need manual fixes or a rebuild via `submit_workflow`.
+- **Workflow metadata varies by path.** Outputs from `partner_generate` (workflow path) land in the asset library with the graph embedded for reopening in the editor. Outputs from `submit_workflow` or the direct `partner_generate` fallback may not include full workflow metadata in the asset library.
 - **Workflow accuracy depends on the AI.** The agent constructs ComfyUI workflows from natural language. Complex multi-node workflows or unusual node configurations may require iteration.
+- **`partner_generate` scope.** Text-to-image on the persistable model set runs as a saved workflow. Image-input generations, unmapped models, and non-image modalities use the direct proxy fallback (instant URL, not library-persisted) until workflow persist support expands.
 
 **File Handling**
 - **Upload size limits** may apply depending on your MCP client.
 - **Image previews are resized.** Inline previews are limited to 1024px (JPEG). Full-resolution files are saved to disk.
 
 **Authentication**
-- **API key only.** Authentication requires a Comfy Cloud API key passed via the `X-API-Key` header. Browser-based OAuth is not yet available.
+- **API key or OAuth.** Manual setup uses a Comfy Cloud API key in the `X-API-Key` header. MCP clients that sign in with Comfy OAuth send an `Authorization: Bearer` token instead; both are supported on the hosted server.
 
 **Client-Specific**
 - **Claude Desktop** — Generated images appear in the artifact side panel via HTML, not as native image artifacts.
-- **Claude Desktop chat mode** — Requires OAuth, which is coming soon. Use **Code mode** in the meantime — it picks up the Claude Code config automatically.
 
 ---
 
@@ -266,7 +289,7 @@ Restart your MCP client (close and reopen Claude Code, Claude Desktop, Cursor, o
 
 ### API key errors
 
-Verify your API key is valid at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). Make sure the key is passed in the `X-API-Key` header (not as a Bearer token). Generate a new key if needed and update your client config.
+Verify your API key is valid at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). For manual config, pass the key in the `X-API-Key` header — do not send a `comfyui-` key as a Bearer token. OAuth-connected clients should use `Authorization: Bearer` with the token from the Comfy sign-in flow, not `X-API-Key`. Generate a new API key if needed and update your client config.
 
 ### Connection errors
 
