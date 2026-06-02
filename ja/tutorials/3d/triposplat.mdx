@@ -1,0 +1,139 @@
+---
+title: "TripoSplat 画像からガウシアンスプラット ComfyUI ワークフロー例"
+description: "TripoSplat を使用して、単一の 2D 画像から高品質な 3D ガウシアンスプラット表現を生成します。密度とレンダリング予算を制御可能。"
+sidebarTitle: "TripoSplat"
+---
+
+import UpdateReminder from '/snippets/ja/tutorials/update-reminder.mdx'
+
+**TripoSplat** は、単一の 2D 画像から直接 **3D ガウシアンスプラット（Gaussian splat）** 表現を生成するオープンソースモデルです。VAST-AI によって開発され、オープンソースライセンスで公開されています。
+
+複数視点の入力が必要だったり、主にメッシュを生成する従来の 3D 再構築手法とは異なり、TripoSplat は **ガウシアンスプラット** 表現を作成します。これは、数千の色付き 3D ガウシアンを空間に配置してシーンを表現するレンダリング技術で、高速で高品質なレンダリングと制御可能な密度・予算を実現します。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_triposplat_image_to_gaussian_splat-1.webp" alt="TripoSplat ワークフロー" />
+
+<UpdateReminder />
+
+<CardGroup cols={1}>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_triposplat_image_to_gaussian_splat.json">
+    JSON をダウンロード、またはテンプレートライブラリで "TripoSplat" を検索
+  </Card>
+</CardGroup>
+
+## 仕組み
+
+TripoSplat は **フィードフォワードアーキテクチャ** を使用し、単一の RGB 画像を受け取って 3D ガウシアンプリミティブのセットを直接予測します。パイプラインの流れ：
+
+1. **画像エンコード** — 入力画像がビジョンエンコーダー（DINOv2）で処理される
+2. **トライプレーン生成** — 特徴がトライプレーン表現にデコードされる
+3. **ガウシアン予測** — トライプレーンをサンプリングしてガウシアンパラメータ（位置、スケール、回転、不透明度、色）を生成
+4. **レンダリング** — 微分可能なスプラッティングを使用して任意の視点からガウシアンをレンダリング
+
+<Card title="サブグラフについて" icon="book-open" href="/ja/interface/features/subgraph">
+  このワークフローはサブグラフノードを使用してモジュール化された処理を行います。サブグラフのドキュメントを参照して、ワークフローをカスタマイズおよび拡張する方法を学んでください。
+</Card>
+
+## ワークフローノードガイド
+
+### LoadImage
+- 入力画像を読み込みます（PNG/JPG）
+- サンプル画像：`white-hotel-on-rocky-island.png`（テンプレートライブラリから入手可能）
+
+### TripoSplat（サブグラフ）
+
+画像を処理して 3D ガウシアンスプラットを生成するメインのサブグラフノード。公開パラメータ：
+
+| パラメータ | デフォルト | 説明 |
+|---|---|---|
+| `switch` | — | サブグラフの有効/無効 |
+| `num_gaussians` | — | 生成するガウシアンプリミティブの数（品質/パフォーマンス制御） |
+| `seed` | — | 再現性のためのシード値 |
+| `unet_name` | — | TripoSplat 拡散モデルチェックポイント |
+| `clip_name` | — | CLIP ビジョンエンコーダーモデル |
+| `vae_name` | — | エンコード/デコード用の VAE（2つ：メイン VAE とエンコーダー） |
+| `bg_removal_name` | — | 背景除去モデル |
+
+### CreateCameraInfo
+- 結果をレンダリングするカメラ軌道を定義
+- パラメータ：軌道タイプ、角度、距離、視野など
+- デフォルト：仰角 35°、距離 30、ズーム 2.5
+
+### RenderSplat
+- 定義されたカメラ角度からガウシアンスプラットを 2D 画像にレンダリング
+- パラメータ：出力解像度（デフォルト 1024×1024）、画質設定
+
+### SplatToMesh
+- ガウシアンスプラットをメッシュに変換（オプション）
+- パラメータ：メッシュ密度、スムージング、簡略化
+
+### SaveGLB
+- 結果を GLB 3D ファイルとして保存
+
+### SaveVideo
+- レンダリングされた 3D シーンの動画を保存
+
+### SplatToFile3D
+- ガウシアンスプラットを SPZ 形式でエクスポート
+
+### CreateVideo
+- レンダリングフレームから動画を作成
+
+## 実行手順
+
+1. **画像を読み込む** — **LoadImage** ノードで単一の 2D 画像を読み込みます
+2. **TripoSplat サブグラフを実行** — モデルがガウシアンスプラット表現を生成します
+3. **出力形式を選択** — GLB、SPZ、動画、またはメッシュに変換
+4. **結果を表示** — 生成された 3D ファイルまたはレンダリングプレビューを確認
+
+## 出力オプション
+
+| ノード | 形式 | 用途 |
+|---|---|---|
+| **SaveGLB** | `.glb` | 標準的な 3D ファイル形式。3D ソフトウェアにインポート可能 |
+| **SplatToFile3D** | `.spz` | 圧縮されたガウシアンスプラット形式。効率的な保存 |
+| **RenderSplat** | 2D 画像 | 任意の角度から結果を素早くプレビュー |
+| **SplatToMesh** | メッシュ | 従来のメッシュに変換してさらに編集 |
+
+## モデルダウンロード
+
+TripoSplat モデルと必要なファイルをダウンロードします。対応する `models/` サブディレクトリに配置してください。
+
+<CardGroup cols={2}>
+  <Card title="TripoSplat 拡散モデル" icon="download" href="https://huggingface.co/VAST-AI/TripoSplat/resolve/main/diffusion_models/triposplat_fp16.safetensors">
+    triposplat_fp16.safetensors — TripoSplat 拡散モデルチェックポイント
+  </Card>
+  <Card title="TripoSplat VAE デコーダー" icon="download" href="https://huggingface.co/VAST-AI/TripoSplat/resolve/main/vae/triposplat_vae_decoder_fp16.safetensors">
+    triposplat_vae_decoder_fp16.safetensors — VAE デコーダー
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="Flux2 VAE" icon="download" href="https://huggingface.co/VAST-AI/TripoSplat/resolve/main/vae/flux2-vae.safetensors">
+    flux2-vae.safetensors — Flux.2 VAE、潜在表現エンコード用
+  </Card>
+  <Card title="DINOv2 CLIP" icon="download" href="https://huggingface.co/VAST-AI/TripoSplat/resolve/main/clip_vision/dino_v3_vit_h.safetensors">
+    dino_v3_vit_h.safetensors — CLIP ビジョンエンコーダー（DINOv2）
+  </Card>
+</CardGroup>
+
+<CardGroup cols={1}>
+  <Card title="BiRefNet 背景除去" icon="download" href="https://huggingface.co/VAST-AI/TripoSplat/resolve/main/background_removal/birefnet.safetensors">
+    birefnet.safetensors — 前処理用の背景除去モデル
+  </Card>
+</CardGroup>
+
+### モデル保存場所
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │      └── triposplat_fp16.safetensors
+│   ├── 📂 vae/
+│   │      ├── triposplat_vae_decoder_fp16.safetensors
+│   │      └── flux2-vae.safetensors
+│   ├── 📂 clip_vision/
+│   │      └── dino_v3_vit_h.safetensors
+│   └── 📂 background_removal/
+│          └── birefnet.safetensors
+```
