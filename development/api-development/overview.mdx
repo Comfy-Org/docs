@@ -1,0 +1,48 @@
+---
+title: "APIs Overview"
+description: "An overview of the different ways to interact with ComfyUI programmatically"
+icon: "list"
+---
+
+ComfyUI offers several API options depending on where you want to run your workflows and how much infrastructure you want to manage. This page helps you choose the right approach.
+
+---
+
+## Which API Should I Use?
+
+| | Cloud API | ComfyUI Server API |
+|---|---|---|
+| **Where it runs** | Comfy Cloud (managed GPUs) | Your own machine |
+| **GPU management** | Handled for you | You manage your own hardware |
+| **Models** | Pre-installed and managed by Comfy | You download and manage locally |
+| **Authentication** | `X-API-Key` header (Comfy Cloud account) | None (local) or API key for Partner Nodes |
+| **Base URL** | `https://cloud.comfy.org` | Your server URL (e.g. `http://localhost:8188`) |
+| **Protocol** | REST + WebSocket | REST + WebSocket |
+| **Pricing** | Subscription-based (Creator/Pro tiers) | Free (your own compute) |
+| **Best for** | Quick integration, no infrastructure | Full control, custom hardware & models |
+
+Both APIs use the same workflow format ([API format](/development/api-development/workflow-api-format)), so you can develop and test workflows locally and move them to the cloud without changes.
+
+---
+
+## Getting Started
+
+<CardGroup cols={3}>
+  <Card title="Cloud API" icon="cloud" href="/development/cloud/overview">
+    Run workflows on Comfy's managed infrastructure. No GPU setup required.
+  </Card>
+  <Card title="ComfyUI Server API" icon="server" href="/development/comfyui-server/comms_overview">
+    Run ComfyUI as a server on your own machine and call it via API.
+  </Card>
+  <Card title="Partner Node API Integration" icon="key" href="/development/comfyui-server/api-key-integration">
+    Use paid Partner Nodes in headless or API-driven workflows.
+  </Card>
+</CardGroup>
+
+---
+
+## Prerequisites
+
+Before using any API, you'll need:
+
+- An API key (see [Getting an API Key](/development/api-development/getting-an-api-key))

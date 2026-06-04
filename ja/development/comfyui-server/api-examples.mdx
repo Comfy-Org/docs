@@ -1,0 +1,254 @@
+---
+title: "API 例"
+description: "ComfyUI Server API を呼び出す3つのパターン"
+---
+
+このページでは、シンプルな HTTP 送信から WebSocket を使用したリアルタイム画像出力まで、ComfyUI Server API との3つの対話方法を紹介します。
+
+すべての例は[デフォルトの SD1.5 ワークフロー](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples)を使用しています。API を使用する前に、ワークフローを [API 形式](/ja/development/api-development/workflow-api-format) でエクスポートする必要があります。
+
+<Note>
+  これらの例は Python 標準ライブラリと `websocket-client` パッケージ（`pip install websocket-client`）を使用しています。API プロトコルは言語に依存しません — TypeScript と curl 版については [Cloud API リファレンス](/ja/development/cloud/api-reference)を参照してください。
+</Note>
+
+---
+
+## 方法1：送信して忘れる（HTTP のみ）
+
+ソース：[`basic_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/basic_api_example.py)
+
+最もシンプルな方法：ワークフローを送信し、結果を待ちません。後で出力を確認するような「送りっぱなし」のジョブに適しています。
+
+```python
+"""basic_api_example.py — HTTP のみでワークフローを送信。"""
+
+import json
+from urllib import request
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt}
+    data = json.dumps(p).encode("utf-8")
+    req = request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    request.urlopen(req)
+
+
+if __name__ == "__main__":
+    # API 形式でエクスポートされたワークフローを読み込み
+    prompt_text = """{
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "cfg": 8, "denoise": 1,
+                "latent_image": ["5", 0],
+                "model": ["4", 0],
+                "negative": ["7", 0],
+                "positive": ["6", 0],
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "seed": 8566257, "steps": 20
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"batch_size": 1, "height": 512, "width": 512}
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "masterpiece best quality man"}
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "bad hands"}
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "ComfyUI", "images": ["8", 0]}
+        }
+    }"""
+
+    prompt = json.loads(prompt_text)
+    # 送信前に入力を変更
+    prompt["3"]["inputs"]["seed"] = 5
+    prompt["6"]["inputs"]["text"] = "masterpiece best quality man"
+
+    queue_prompt(prompt)
+    print("Prompt submitted successfully.")
+```
+
+<Info>
+  この方法は `SaveImage` ノードを使用するため、画像はサーバーのディスクに保存されます。画像を取得するには `GET /view?filename=...` を呼び出す必要があります。
+</Info>
+
+---
+
+## 方法2：WebSocket + History（完了を監視）
+
+ソース：[`websockets_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example.py)
+
+WebSocket で実行完了を待ち、`/history` エンドポイントから結果を取得します。ほとんどのユースケースで推奨されるパターンです。
+
+```python
+"""websockets_api_example.py — WebSocket で実行を監視、/history からダウンロード。"""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt, prompt_id):
+    p = {"prompt": prompt, "client_id": client_id, "prompt_id": prompt_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    urllib.request.urlopen(req)
+
+
+def get_image(filename, subfolder, folder_type):
+    params = urllib.parse.urlencode({
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type,
+    })
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/view?{params}"
+    ) as response:
+        return response.read()
+
+
+def get_history(prompt_id):
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/history/{prompt_id}"
+    ) as response:
+        return json.loads(response.read())
+
+
+def get_images(ws, prompt):
+    prompt_id = str(uuid.uuid4())
+    queue_prompt(prompt, prompt_id)
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["node"] is None and data["prompt_id"] == prompt_id:
+                    break  # 実行完了
+        # バイナリフレームはプレビュー画像 — ここではスキップ
+        continue
+
+    history = get_history(prompt_id)[prompt_id]
+    output_images = {}
+    for node_id in history["outputs"]:
+        node_output = history["outputs"][node_id]
+        images_output = []
+        if "images" in node_output:
+            for image in node_output["images"]:
+                image_data = get_image(
+                    image["filename"], image["subfolder"], image["type"]
+                )
+                images_output.append(image_data)
+        output_images[node_id] = images_output
+    return output_images
+```
+
+<Tip>
+  WebSocket のバイナリフレームには生成途中のプレビュー画像が含まれています。ライブプレビュー用にデコードできます（バイナリ形式の詳細は[サーバーメッセージ](/ja/development/comfyui-server/comms_messages)ページを参照）。
+</Tip>
+
+---
+
+## 方法3：WebSocket + SaveImageWebsocket（リアルタイム画像）
+
+ソース：[`websockets_api_example_ws_images.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example_ws_images.py)
+
+画像をディスクに保存せずに受け取りたい場合は、`SaveImageWebsocket` ノードを使用します。画像は WebSocket のバイナリフレームで直接配信されます。
+
+```python
+"""websockets_api_example_ws_images.py — WebSocket 経由で画像を直接受信。"""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt, "client_id": client_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    return json.loads(urllib.request.urlopen(req).read())
+
+
+def get_images(ws, prompt):
+    prompt_id = queue_prompt(prompt)["prompt_id"]
+    output_images = {}
+    current_node = ""
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["prompt_id"] == prompt_id:
+                    if data["node"] is None:
+                        break  # 実行完了
+                    current_node = data["node"]
+        else:
+            # バイナリフレーム — SaveImageWebsocket の画像データ
+            if current_node == "save_image_websocket_node":
+                images_output = output_images.get(current_node, [])
+                # 先頭8バイトはタイプ/メタデータ、残りが画像データ
+                images_output.append(out[8:])
+                output_images[current_node] = images_output
+
+    return output_images
+```
+
+<Info>
+  ワークフローは通常の `SaveImage` ノードの代わりに `class_type: "SaveImageWebsocket"`（組み込みノード）を使用する必要があります。
+</Info>
+
+---
+
+## どの方法を選ぶべきか？
+
+<CardGroup cols={3}>
+  <Card title="方法1: HTTP のみ" icon="paper-plane">
+    **送って忘れる。** 即時の出力が必要ない場合に。
+  </Card>
+  <Card title="方法2: WebSocket + History" icon="chart-line" href="#方法2websocket--history完了を監視">
+    **推奨。** 完了を待ち、結果をダウンロード。シンプルさと信頼性の最適なバランス。
+  </Card>
+  <Card title="方法3: SaveImageWebsocket" icon="images" href="#方法3websocket--saveimagewebsocketリアルタイム画像">
+    **リアルタイム画像。** ディスク書き込みなしで画像を受け取りたいインタラクティブなアプリに。
+  </Card>
+</CardGroup>
+
+完全な API リファレンス（エンドポイント、ペイロード形式、エラー処理）については、[サーバールート](/ja/development/comfyui-server/comms_routes)および[サーバーメッセージ](/ja/development/comfyui-server/comms_messages)ページを参照してください。

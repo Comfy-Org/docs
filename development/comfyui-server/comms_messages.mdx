@@ -1,5 +1,6 @@
 ---
 title: "Messages"
+icon: "comment"
 ---
 
 ## Messages

@@ -1,0 +1,278 @@
+---
+title: "API 示例"
+description: "调用 ComfyUI Server API 的三种常见方式"
+---
+
+本页演示了与 ComfyUI Server API 交互的三种方式，从简单的 HTTP 提交到完整的 WebSocket 集成实时图像输出。
+
+所有示例均使用[默认的 SD1.5 工作流](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples)进行演示。使用 API 之前，你需要先导出工作流的 [API 格式](/zh/development/api-development/workflow-api-format)。
+
+<Note>
+  这些示例使用 Python 标准库和 `websocket-client` 包（`pip install websocket-client`）。底层 API 协议与语言无关 — 请参阅 [Cloud API 参考](/zh/development/cloud/api-reference) 了解 TypeScript 和 curl 版本。
+</Note>
+
+---
+
+## 方法一：提交即忘（仅 HTTP）
+
+源码：[`basic_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/basic_api_example.py)
+
+最简单的方式：提交工作流，不等待结果。适用于不需要即时输出的场景。
+
+```python
+"""basic_api_example.py — 仅通过 HTTP 提交工作流。"""
+
+import json
+from urllib import request
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt}
+    data = json.dumps(p).encode("utf-8")
+    req = request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    request.urlopen(req)
+
+
+if __name__ == "__main__":
+    # 加载 API 格式导出的工作流
+    prompt_text = """{
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "cfg": 8, "denoise": 1,
+                "latent_image": ["5", 0],
+                "model": ["4", 0],
+                "negative": ["7", 0],
+                "positive": ["6", 0],
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "seed": 8566257, "steps": 20
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"batch_size": 1, "height": 512, "width": 512}
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "masterpiece best quality man"}
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "bad hands"}
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "ComfyUI", "images": ["8", 0]}
+        }
+    }"""
+
+    prompt = json.loads(prompt_text)
+    # 提交前修改输入
+    prompt["3"]["inputs"]["seed"] = 5
+    prompt["6"]["inputs"]["text"] = "masterpiece best quality man"
+
+    queue_prompt(prompt)
+    print("Prompt submitted successfully.")
+```
+
+<Info>
+  此方法使用 `SaveImage` 节点，图片会保存到服务器磁盘。要获取图片，需要调用 `GET /view?filename=...`。
+</Info>
+
+---
+
+## 方法二：WebSocket + History（监控执行完成）
+
+源码：[`websockets_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example.py)
+
+使用 WebSocket 等待执行完成，然后通过 `/history` 端点获取结果。这是大多数场景的推荐方式。
+
+```python
+"""websockets_api_example.py — 通过 WebSocket 监控执行，通过 /history 下载。"""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt, prompt_id):
+    p = {"prompt": prompt, "client_id": client_id, "prompt_id": prompt_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    urllib.request.urlopen(req)
+
+
+def get_image(filename, subfolder, folder_type):
+    params = urllib.parse.urlencode({
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type,
+    })
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/view?{params}"
+    ) as response:
+        return response.read()
+
+
+def get_history(prompt_id):
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/history/{prompt_id}"
+    ) as response:
+        return json.loads(response.read())
+
+
+def get_images(ws, prompt):
+    prompt_id = str(uuid.uuid4())
+    queue_prompt(prompt, prompt_id)
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["node"] is None and data["prompt_id"] == prompt_id:
+                    break  # 执行完成
+        # 二进制帧是预览图片 — 此处跳过
+        continue
+
+    history = get_history(prompt_id)[prompt_id]
+    output_images = {}
+    for node_id in history["outputs"]:
+        node_output = history["outputs"][node_id]
+        images_output = []
+        if "images" in node_output:
+            for image in node_output["images"]:
+                image_data = get_image(
+                    image["filename"], image["subfolder"], image["type"]
+                )
+                images_output.append(image_data)
+        output_images[node_id] = images_output
+    return output_images
+
+
+if __name__ == "__main__":
+    # 此处省略完整工作流 JSON，请参考方法一的示例
+    # prompt = json.loads(prompt_text)
+    # prompt["3"]["inputs"]["seed"] = 5
+    # prompt["6"]["inputs"]["text"] = "masterpiece best quality man"
+
+    # ws = websocket.WebSocket()
+    # ws.connect(f"ws://{SERVER_ADDRESS}/ws?clientId={client_id}")
+    # images = get_images(ws, prompt)
+    # ws.close()
+    pass
+```
+
+<Tip>
+  WebSocket 二进制帧中的生成过程预览图片可以解码用于实时预览（二进制格式参见[服务器消息](/zh/development/comfyui-server/comms_messages)页面）。
+</Tip>
+
+---
+
+## 方法三：WebSocket 配合 SaveImageWebsocket（实时获取图片）
+
+源码：[`websockets_api_example_ws_images.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example_ws_images.py)
+
+如果不想将图片保存到磁盘，可以使用 `SaveImageWebsocket` 节点。图片会通过 WebSocket 二进制帧直接传送。
+
+```python
+"""websockets_api_example_ws_images.py — 通过 WebSocket 直接接收图片。"""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt, "client_id": client_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    return json.loads(urllib.request.urlopen(req).read())
+
+
+def get_images(ws, prompt):
+    prompt_id = queue_prompt(prompt)["prompt_id"]
+    output_images = {}
+    current_node = ""
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["prompt_id"] == prompt_id:
+                    if data["node"] is None:
+                        break  # 执行完成
+                    current_node = data["node"]
+        else:
+            # 二进制帧 — SaveImageWebsocket 的图片数据
+            if current_node == "save_image_websocket_node":
+                images_output = output_images.get(current_node, [])
+                # 前 8 字节是类型/元数据，剩余是图片数据
+                images_output.append(out[8:])
+                output_images[current_node] = images_output
+
+    return output_images
+
+
+if __name__ == "__main__":
+    # prompt = json.loads(prompt_text)
+    # prompt["3"]["inputs"]["seed"] = 5
+
+    # ws = websocket.WebSocket()
+    # ws.connect(f"ws://{SERVER_ADDRESS}/ws?clientId={client_id}")
+    # images = get_images(ws, prompt)
+    # ws.close()
+    pass
+```
+
+<Info>
+  工作流必须使用 `class_type: "SaveImageWebsocket"`（内置节点）代替普通的 `SaveImage` 节点。
+</Info>
+
+---
+
+## 应该用哪种方法？
+
+<CardGroup cols={3}>
+  <Card title="方法一：仅 HTTP" icon="paper-plane">
+    **发送即忘。** 适用于不需要立即获取输出的场景。
+  </Card>
+  <Card title="方法二：WebSocket + History" icon="chart-line" href="#方法二websocket--history监控执行完成">
+    **推荐。** 等待完成，然后下载结果。简单性和可靠性之间最佳平衡。
+  </Card>
+  <Card title="方法三：SaveImageWebsocket" icon="images" href="#方法三websocket-配合-saveimagewebsocket实时获取图片">
+    **实时图片。** 适用于需要图片不写磁盘直接送达的交互式应用。
+  </Card>
+</CardGroup>
+
+完整的 API 参考（端点、负载格式、错误处理）请参阅[服务器路由](/zh/development/comfyui-server/comms_routes)和[服务器消息](/zh/development/comfyui-server/comms_messages)页面。
