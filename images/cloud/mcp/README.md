@@ -1,7 +1,9 @@
 # Screenshots — Connect to Claude (MCP)
 
-Placeholder directory for the `cloud/mcp.mdx` Claude Desktop walkthrough. Drop the
-final PNGs here using these exact filenames (referenced by the doc):
+The `cloud/mcp.mdx` Claude Desktop walkthrough references the PNGs below. The
+files currently here are **auto-generated labeled placeholders** so the page
+renders and CI passes — overwrite each in place with a real capture (keep the
+same filename):
 
 | Filename | Should show |
 | --- | --- |
@@ -11,4 +13,4 @@ final PNGs here using these exact filenames (referenced by the doc):
 | `desktop-signin.png` | The OAuth sign-in completing through Claude Desktop |
 
 Match the cropping/style of the existing cloud screenshots under
-`images/cloud/import_model/`. Delete this README once the assets land.
+`images/cloud/import_model/`. Delete this README once the real assets land.
