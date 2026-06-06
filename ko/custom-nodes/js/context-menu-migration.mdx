@@ -1,0 +1,321 @@
+---
+title: "컨텍스트 메뉴 마이그레이션 가이드"
+translationSourceHash: 1e00432c
+translationFrom: custom-nodes/js/context-menu-migration.mdx
+---
+
+이 가이드는 더 이상 사용되지 않는 몽키 패칭 방식에서 새로운 컨텍스트 메뉴 확장 API로의 마이그레이션을 도와줍니다.
+
+`LGraphCanvas.prototype.getCanvasMenuOptions`와 `nodeType.prototype.getExtraMenuOptions`를 몽키 패칭하는 기존 방식은 더 이상 사용되지 않습니다:
+
+<Tip>브라우저 콘솔에 Deprecation 경고가 표시된다면, 해당 확장 프로그램이 이전 API를 사용하고 있으므로 마이그레이션해야 합니다.</Tip>
+
+## 캔버스 메뉴 마이그레이션
+
+### 기존 방식 (사용 중단)
+
+기존 방식은 확장 프로그램 설정 시 프로토타입을 수정했습니다:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    // ❌ OLD: 프로토타입 몽키 패칭
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+
+      options.push(null) // 구분선
+      options.push({
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      })
+
+      return options
+    }
+  }
+})
+```
+
+### 새 방식 (권장)
+
+새 방식은 전용 확장 프로그램 훅을 사용합니다:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ NEW: getCanvasMenuItems 훅 사용
+  getCanvasMenuItems(canvas) {
+    return [
+      null, // 구분선
+      {
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      }
+    ]
+  }
+})
+```
+
+### 주요 차이점
+
+| 기존 방식 | 새 방식 |
+|--------------|-------------|
+| setup()에서 수정 | getCanvasMenuItems() 훅 사용 |
+| 기존 함수를 래핑 | 메뉴 항목을 직접 반환 |
+| options 배열을 수정 | 새로운 배열 반환 |
+| 캔버스는 this를 통해 접근 | 캔버스는 매개변수로 전달 |
+
+## 노드 메뉴 마이그레이션
+
+### 기존 방식 (사용 중단)
+
+기존 방식은 노드 유형 프로토타입을 수정했습니다:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeType.comfyClass === "KSampler") {
+      // ❌ OLD: 노드 프로토타입 몽키 패칭
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
+        original?.apply(this, arguments)
+
+        options.push({
+          content: "Randomize Seed",
+          callback: () => {
+            const seedWidget = this.widgets.find(w => w.name === "seed")
+            if (seedWidget) {
+              seedWidget.value = Math.floor(Math.random() * 1000000)
+            }
+          }
+        })
+      }
+    }
+  }
+})
+```
+
+### 새 방식 (권장)
+
+새 방식은 전용 확장 프로그램 훅을 사용합니다:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ NEW: getNodeMenuItems 훅 사용
+  getNodeMenuItems(node) {
+    const items = []
+
+    // 특정 노드 유형에만 항목 추가
+    if (node.comfyClass === "KSampler") {
+      items.push({
+        content: "Randomize Seed",
+        callback: () => {
+          const seedWidget = node.widgets.find(w => w.name === "seed")
+          if (seedWidget) {
+            seedWidget.value = Math.floor(Math.random() * 1000000)
+          }
+        }
+      })
+    }
+
+    return items
+  }
+})
+```
+
+### 주요 차이점
+
+| 기존 방식 | 새 방식 |
+|--------------|-------------|
+| beforeRegisterNodeDef()에서 수정 | getNodeMenuItems() 훅 사용 |
+| 타입별 조건부 처리 (if 문) | 훅 내 조건부 처리 |
+| options 배열을 수정 | 새로운 배열 반환 |
+| 노드는 this를 통해 접근 | 노드는 매개변수로 전달 |
+
+## 공통 패턴
+
+### 조건부 메뉴 항목
+
+두 방식 모두 조건부 항목을 지원하지만, 새 API가 더 깔끔합니다:
+
+```javascript
+// ✅ NEW: 깔끔한 조건부 로직
+getCanvasMenuItems(canvas) {
+  const items = []
+
+  if (canvas.selectedItems.size > 0) {
+    items.push({
+      content: `Selected Nodes ${canvas.selectedItems.size}개 처리`,
+      callback: () => {
+        // 노드 처리
+      }
+    })
+  }
+
+  return items
+}
+```
+
+### 구분선 추가
+
+구분선은 두 방식 모두 동일하게 추가됩니다:
+
+```javascript
+getCanvasMenuItems(canvas) {
+  return [
+    null, // 구분선 (수평선)
+    {
+      content: "My Action",
+      callback: () => {}
+    }
+  ]
+}
+```
+
+### 하위 메뉴 생성
+
+하위 메뉴를 생성하는 권장 방법은 선언적 `submenu` 속성을 사용하는 것입니다:
+
+```javascript
+getNodeMenuItems(node) {
+  return [
+    {
+      content: "Advanced Options",
+      submenu: {
+        options: [
+          { content: "Option 1", callback: () => {} },
+          { content: "Option 2", callback: () => {} }
+        ]
+      }
+    }
+  ]
+}
+```
+
+이 선언적 방식은 더 깔끔하며 ComfyUI 코드베이스 전체에서 사용되는 패턴과 일치합니다.
+
+<Tip>has_submenu: true와 new LiteGraph.ContextMenu()를 사용한 콜백 방식도 지원되지만, 유지보수성을 위해 선언적 `submenu` 속성을 사용하는 것이 좋습니다.</Tip>
+
+### 상태 접근
+
+```javascript
+// ✅ NEW: 상태 접근이 더 명확해졌습니다
+getCanvasMenuItems(canvas) {
+  // 캔버스 속성 접근
+  const selectedCount = canvas.selectedItems.size
+  const graphMousePos = canvas.graph_mouse
+
+  return [/* 메뉴 항목 */]
+}
+
+getNodeMenuItems(node) {
+  // 노드 속성 접근
+  const nodeType = node.comfyClass
+  const isDisabled = node.mode === 2
+  const widgets = node.widgets
+
+  return [/* 메뉴 항목 */]
+}
+```
+
+## 문제 해결
+
+### 기존 API 사용 여부 확인 방법
+
+코드에서 다음과 같은 패턴을 찾아보세요:
+
+```javascript
+// ❌ 기존 API의 징후:
+LGraphCanvas.prototype.getCanvasMenuOptions = function() { /* ... */ }
+nodeType.prototype.getExtraMenuOptions = function() { /* ... */ }
+```
+
+### Deprecation 경고 이해하기
+
+콘솔에 다음과 같은 경고가 표시된다면:
+
+```
+[DEPRECATED] Monkey-patching getCanvasMenuOptions is deprecated. (Extension: "MyExtension")
+Please use the new context menu API instead.
+See: https://docs.comfy.org/custom-nodes/js/context-menu-migration
+```
+
+이 확장 프로그램이 기존 방식을 사용하고 있으므로 마이그레이션해야 합니다.
+
+### 마이그레이션 성공 확인
+
+마이그레이션 후:
+
+1. setup() 및 beforeRegisterNodeDef()에서 모든 프로토타입 수정 제거
+2. getCanvasMenuItems() 및/또는 getNodeMenuItems() 훅 추가
+3. 메뉴 항목이 여전히 올바르게 표시되는지 테스트
+4. 콘솔에 Deprecation 경고가 나타나지 않는지 확인
+
+### 완전한 마이그레이션 예제
+
+**이전:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+      options.push({ content: "Action", callback: () => {} })
+      return options
+    }
+  },
+  async beforeRegisterNodeDef(nodeType) {
+    if (nodeType.comfyClass === "KSampler") {
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(_, options) {
+        original?.apply(this, arguments)
+        options.push({ content: "Node Action", callback: () => {} })
+      }
+    }
+  }
+})
+```
+
+**이후:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  getCanvasMenuItems(canvas) {
+    return [
+      { content: "Action", callback: () => {} }
+    ]
+  },
+  getNodeMenuItems(node) {
+    if (node.comfyClass === "KSampler") {
+      return [
+        { content: "Node Action", callback: () => {} }
+      ]
+    }
+    return []
+  }
+})
+```
+
+## 추가 자료
+
+- [주석이 달린 예제](./javascript_examples) - 새 API를 사용한 더 많은 예제
+- [확장 프로그램 훅](./javascript_hooks) - 사용 가능한 확장 프로그램 훅의 전체 목록
+- [명령어 및 키바인딩](./javascript_commands_keybindings) - 메뉴 액션에 키보드 단축키 추가

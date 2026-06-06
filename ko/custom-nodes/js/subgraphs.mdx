@@ -1,0 +1,219 @@
+---
+title: "부그래프"
+description: ComfyUI 확장 프로그램에서 부그래프 사용하기: 노드 ID, 그래프 탐색, 이벤트, 위젯 승격 및 정리.
+translationSourceHash: 66a72faa
+translationFrom: custom-nodes/js/subgraphs.mdx
+---
+
+## 개요
+
+부그래프는 사용자가 노드를 재사용 가능한 중첩 가능한 구성 요소로 그룹화할 수 있게 해줍니다. 각 부그래프는 고유한 UUID를 가진 `LGraph`입니다. 사용자 친화적인 안내서는 [부그래프](/interface/features/subgraph)를 참조하세요.
+
+## 노드 식별자
+
+ComfyUI는 세 가지 서로 다른 노드 식별자 유형을 사용합니다. 잘못된 유형을 사용하면 조용히 실패하게 됩니다.
+
+| 유형 | 형식 | 사용 |
+|------|--------|----------|
+| `node.id` | `42` (숫자) | 바로 위의 그래프 레벨에 국한됨. `graph.getNodeById(id)` |
+| 실행 ID | `"1:2:3"` (콜론으로 구분된 문자열) | 백엔드 진행 메시지, `UNIQUE_ID` |
+| 로케이터 ID | `"<uuid>:<localId>"` 또는 `"<localId>"` | UI 상태: 배지, 오류, 이미지 |
+
+확장 프로그램 내에서 노드의 로케이터 ID를 생성하려면:
+
+```javascript
+function getLocatorId(node) {
+  const graphId = node.graph?.id
+  return graphId ? `${graphId}:${node.id}` : String(node.id)
+}
+```
+
+## 노드 탐색
+
+### 현재 레이어만
+
+```javascript
+for (const node of app.graph.nodes) {
+  console.log(node.id, node.type)
+}
+```
+
+### 모든 노드 재귀적으로
+
+중첩된 부그래프까지 탐색하려면 모든 노드에서 콜백을 호출하는 재귀적 도우미를 사용하세요:
+
+```javascript
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+```
+
+전체 예제:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.SubgraphWalker",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node, graph) => {
+      console.log(`[${graph.id ?? "root"}] node ${node.id}: ${node.type}`)
+    })
+  }
+})
+```
+
+## 루트 vs 활성 그래프
+
+| 원하는 것 | 사용 |
+|-----------------|-----|
+| 워크플로우의 모든 노드에서 작업하기 | `app.graph` (루트) |
+| 보이는 레이어에서만 작업하기 | `app.canvas?.graph` |
+| 특정 부그래프에 접근하기 | `someNode.subgraph` |
+
+```javascript
+// 모든 노드 (중첩된 부그래프 포함)
+walkGraph(app.graph, (node) => { /* ... */ })
+
+// 사용자가 현재 보고 있는 노드만
+for (const node of app.canvas?.graph?.nodes ?? []) { /* ... */ }
+```
+
+## 이벤트
+
+### 부그래프 수준 이벤트
+
+`subgraph.events`에서 발행됩니다:
+
+| 이벤트 | 페이로드 | 발생 시기 |
+|-------|---------|------|
+| `widget-promoted` | `{ widget, subgraphNode }` | 위젯이 상위 노드로 승격될 때 |
+| `widget-demoted` | `{ widget, subgraphNode }` | 위젯이 상위 노드에서 제거될 때 |
+| `input-added` | `{ input }` | 입력 슬롯 추가될 때 |
+| `removing-input` | `{ input, index }` | 입력 슬롯이 제거될 때 |
+| `output-added` | `{ output }` | 출력 슬롯 추가될 때 |
+| `removing-output` | `{ output, index }` | 출력 슬롯이 제거될 때 |
+| `renaming-input` | `{ input, index, oldName, newName }` | 입력 슬롯 이름이 변경될 때 |
+| `renaming-output` | `{ output, index, oldName, newName }` | 출력 슬롯 이름이 변경될 때 |
+
+### 캔버스 수준 이벤트
+
+`app.canvas.canvas` (HTML 캔버스 요소)에서 발행됩니다:
+
+| 이벤트 | 페이로드 | 발생 시기 |
+|-------|---------|------|
+| `subgraph-opened` | `{ subgraph, closingGraph, fromNode }` | 사용자가 부그래프로 이동할 때 |
+| `subgraph-converted` | `{ subgraphNode }` | 선택이 부그래프로 변환될 때 |
+
+### 리스닝 패턴
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.SubgraphEvents",
+  async setup() {
+    app.canvas.canvas.addEventListener("subgraph-opened", (e) => {
+      const { subgraph, fromNode } = e.detail
+      console.log(`노드 ${fromNode.id}에서 부그래프 열림`)
+    })
+  }
+})
+```
+
+## 위젯 승격
+
+`SubgraphInput`가 부그래프 내 위젯과 연결되면 해당 위젯의 복사본이 상위 부그래프 노드에 나타납니다. 이때 `widget-promoted` 이벤트가 발생합니다. 연결을 제거하면 `widget-demoted` 이벤트가 발생합니다.
+
+<Warning>
+위젯 승격 동작은 아직 개발 중이며, 향후 릴리스에서 변경될 수 있습니다.
+</Warning>
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.WidgetPromotion",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node) => {
+      if (!node.subgraph) return
+      if (node._promCleanup) node._promCleanup.abort()
+      const controller = new AbortController()
+      node._promCleanup = controller
+      const { signal } = controller
+
+      node.subgraph.events.addEventListener("widget-promoted", (e) => {
+        console.log(`위젯 "${e.detail.widget.name}" 승격됨`)
+      }, { signal })
+
+      node.subgraph.events.addEventListener("widget-demoted", (e) => {
+        console.log(`위젯 "${e.detail.widget.name}" 제거됨`)
+      }, { signal })
+
+      const origRemoved = node.onRemoved
+      node.onRemoved = function () {
+        controller.abort()
+        origRemoved?.apply(this, arguments)
+      }
+    })
+  }
+})
+```
+
+## 정리
+
+노드가 제거될 때 모든 이벤트 리스너를 정리하려면 `AbortController`를 사용하세요.
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.Cleanup",
+  async nodeCreated(node) {
+    if (!node.subgraph) return
+
+    const controller = new AbortController()
+    const { signal } = controller
+
+    node.subgraph.events.addEventListener("input-added", (e) => {
+      console.log(`입력 추가: ${e.detail.input.name}`)
+    }, { signal })
+
+    node.subgraph.events.addEventListener("removing-input", (e) => {
+      console.log(`입력 제거: ${e.detail.input.name}`)
+    }, { signal })
+
+    const origRemoved = node.onRemoved
+    node.onRemoved = function () {
+      controller.abort()
+      origRemoved?.apply(this, arguments)
+    }
+  }
+})
+```
+
+<Tip>
+`onRemoved`은 삭제뿐만 아니라 부그래프 변환 중에도 발생할 수 있습니다. 재구조화 과정에서도 상태를 유지해야 한다면 정리 로직을 보호하세요.
+</Tip>
+
+## 참고
+
+- [부그래프 (사용자 가이드)](/interface/features/subgraph)
+- [확장 프로그램 후크](/custom-nodes/js/javascript_hooks)

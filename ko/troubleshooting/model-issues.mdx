@@ -1,0 +1,149 @@
+---
+title: "ComfyUI 모델 문제 해결 및 디버깅 방법"
+description: 아키텍처 불일치, 누락된 모델, 로딩 오류 등 모델 관련 문제를 해결하는 방법
+icon: "cube"
+sidebarTitle: "모델 문제"
+translationSourceHash: 6cdb3b79
+translationFrom: troubleshooting/model-issues.mdx
+---
+
+## 모델 아키텍처 불일치
+
+**증상:** 생성 중 텐서 차원 오류, 특히 VAE 디코딩 단계에서 발생
+
+**흔한 오류 메시지:**
+- `주어진 그룹 수=1, 크기 [64, 4, 3, 3]의 가중치, 예상 입력[1, 16, 128, 128]은 4채널이어야 하지만 16채널을 받았습니다`
+- `주어진 그룹 수=1, 크기 [4, 4, 1, 1]의 가중치, 예상 입력[1, 16, 144, 112]은 4채널이어야 하지만 16채널을 받았습니다`
+- `주어진 그룹 수=1, 크기 [320, 4, 3, 3]의 가중치, 예상 입력[2, 16, 192, 128]은 4채널이어야 하지만 16채널을 받았습니다`
+- `텐서 a의 크기(49)는 비싱글턴 차원 1에서 텐서 b의 크기(16)와 일치해야 합니다`
+- `텐서는 동일한 차원 수를 가져야 합니다: 2와 3을 받았습니다`
+- `mat1과 mat2의 형태는 곱할 수 없습니다 (154x2048과 768x320)`
+
+**근본 원인:** 서로 다른 아키텍처 계열의 모델을 함께 사용하는 것
+
+### 해결책
+
+1. **모델 계열 호환성 확인:**
+   - **Flux 모델**은 16채널 잠재 공간과 이중 텍스트 인코더 조건부(CLIP-L + T5-XXL)를 사용합니다.
+   - **SD1.5 모델**은 4채널 잠재 공간과 단일 CLIP ViT-L/14 텍스트 인코더를 사용합니다.
+   - **SDXL 모델**은 4채널 잠재 공간과 이중 텍스트 인코더(CLIP ViT-L/14 + OpenCLIP ViT-bigG/14)를 사용합니다.
+   - **SD3 모델**은 16채널 잠재 공간과 삼중 텍스트 인코더 조건부(CLIP-L + OpenCLIP bigG + T5-XXL)를 사용합니다.
+   - **ControlNet 모델**은 기본 체크포인트의 아키텍처와 일치해야 합니다 (SD1.5 ControlNet은 SD1.5 체크포인트와만 작동하며, SDXL ControlNet은 SDXL 체크포인트와만 작동합니다).
+
+2. **공통 불일치 시나리오와 수정 방법:**
+
+   **Flux + 잘못된 VAE:**
+   ```
+   문제: Flux 체크포인트에 taesd 또는 sdxl_vae.safetensors 사용
+   수정: Hugging Face Flux 릴리스에서 ae.safetensors (Flux VAE) 사용
+   ```
+
+   **Flux + 잘못된 CLIP 구성:**
+   ```
+   문제: DualClipLoader의 두 CLIP 슬롯 모두 t5xxl_fp8_e4m3fn.safetensors 사용
+   수정: 한 슬롯에는 t5xxl_fp8_e4m3fn.safetensors를, 다른 슬롯에는 clip_l.safetensors를 사용
+   ```
+
+   **ControlNet 아키텍처 불일치:**
+   ```
+   문제: SD1.5 ControlNet을 SDXL 체크포인트와 함께 사용 (또는 그 반대)
+   오류: "mat1과 mat2의 형태는 곱할 수 없습니다 (154x2048과 768x320)"
+   수정: 체크포인트 아키텍처에 맞게 설계된 ControlNet 모델 사용
+        - SD1.5 체크포인트에는 SD1.5 ControlNet 필요
+        - SDXL 체크포인트에는 SDXL ControlNet 필요
+   ```
+
+3. **빠른 진단:**
+   ```bash
+   # VAE 디코딩 단계에서 오류가 발생하는지 확인
+   # "예상 입력[X, Y, Z]은 N채널이어야 하지만 M채널을 받았습니다"를 찾으세요
+   # Y 값은 채널 수를 나타냅니다: 4 = SD 모델, 16 = Flux 모델
+   ```
+
+4. **예방 전략:**
+   - 모든 워크플로우 모델을 같은 아키텍처 계열 내에 유지하세요
+   - 같은 출처/릴리스에서 전체 모델 패키지를 다운로드하세요 (종종 Hugging Face 리포지토리에 모두 포함됨)
+   - 새로운 모델을 시도할 때는 커스터마이징하기 전에 템플릿 워크플로우나 공식 ComfyUI 워크플로우 예제부터 시작하세요
+
+## 누락된 모델 오류
+
+**예시 오류 메시지:**
+```
+프롬프트 실행 실패
+프롬프트 출력 검증 실패:
+CheckpointLoaderSimple:
+- 목록에 없는 값: ckpt_name: 'model-name.safetensors' not in []
+```
+
+### 해결책
+
+1. **필요한 모델 다운로드:**
+   - ComfyUI Manager를 사용해 모델을 자동으로 다운로드하세요
+   - 모델이 올바른 하위 폴더에 있는지 확인하세요
+
+2. **모델 경로 확인:**
+   - **체크포인트**: `models/checkpoints/`
+   - **VAE**: `models/vae/`
+   - **LoRA**: `models/loras/`
+   - **ControlNet**: `models/controlnet/`
+   - **임베딩**: `models/embeddings/`
+
+3. **UI 간 모델 공유 또는 사용자 지정 경로 사용:**
+   - [ComfyUI 모델 공유 및 사용자 지정 모델 디렉토리 구성](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration)을 참조해 상세한 지침을 확인하세요
+   - `extra_model_paths.yaml` 파일을 편집해 사용자 지정 모델 디렉토리를 추가하세요
+
+### 모델 검색 경로 구성
+
+사용자 지정 위치에 모델이 있다면, [ComfyUI 모델 공유 및 사용자 지정 모델 디렉토리 구성](/installation/comfyui_portable_windows#2-comfyui-model-sharing-and-custom-model-directory-configuration)의 상세 가이드를 참고해 ComfyUI가 이를 찾도록 설정하세요.
+
+## 모델 로딩 오류
+
+**오류 메시지:** "헤더 역직렬화 중 오류"
+
+### 해결책
+
+1. **모델 다시 다운로드** - 다운로드 중 파일이 손상되었을 수 있습니다
+2. **사용 가능한 디스크 공간 확인** - 모델 로딩에 충분한 공간이 있는지 확인하세요 (모델은 2~15GB 이상일 수 있음)
+3. **파일 권한 확인** - ComfyUI가 모델 파일을 읽을 수 있는지 확인하세요
+4. **다른 모델로 테스트** - 문제가 모델 특정인지 시스템 전반적인 문제인지 확인하세요
+
+## 모델 성능 문제
+
+### 느린 모델 로딩
+
+**증상:** 모델을 바꾸거나 생성을 시작할 때 긴 지연
+
+**해결책:**
+1. **더 빠른 저장장치 사용:**
+   - HDD를 사용한다면 모델을 SSD로 이동하세요
+   - 최고 성능을 위해 NVMe SSD를 사용하세요
+
+2. **캐싱 설정 조정:**
+   ```bash
+   python main.py --cache-classic       # 구식(적극적) 캐싱 사용
+   python main.py --cache-lru 10         # LRU 캐시 크기 늘리기
+   ```
+
+### 대형 모델의 메모리 문제
+
+**"RuntimeError: CUDA 메모리 부족":**
+
+```bash
+# 점진적 메모리 감소
+python main.py --lowvram          # 우선 시도
+python main.py --novram           # lowvram이 부족할 경우
+python main.py --cpu              # 마지막 수단
+```
+
+**모델별 메모리 최적화:**
+```bash
+# 낮은 정밀도 강제 적용
+python main.py --force-fp16
+
+# 주의 메모리 사용량 줄이기
+python main.py --use-pytorch-cross-attention
+```
+
+<Note>
+추가적인 모델 구성 및 설정 정보는 [모델 문서](/development/core-concepts/models)를 참조하세요.
+</Note>

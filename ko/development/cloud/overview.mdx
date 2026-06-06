@@ -1,0 +1,338 @@
+---
+title: "클라우드 API 개요"
+description: "워크플로우 실행, 파일 관리 및 실행 모니터링을 위한 Comfy Cloud에 대한 프로그래밍 방식 접근"
+translationSourceHash: 623c0359
+translationFrom: development/cloud/overview.mdx
+---
+
+import PollJobCompletion from '/snippets/cloud/poll-job-completion.mdx'
+import WebSocketProgress from '/snippets/cloud/websocket-progress.mdx'
+import DownloadOutputs from '/snippets/cloud/download-outputs.mdx'
+import CompleteExample from '/snippets/cloud/complete-example.mdx'
+import GetApiKey from '/snippets/get-api-key.mdx'
+
+<Warning>
+  **실험적 API:** 이 API는 실험적인 것으로, 변경될 수 있습니다. 엔드포인트, 요청/응답 형식 및 동작은 사전 통지 없이 수정될 수 있습니다.
+</Warning>
+
+# Comfy Cloud API
+
+Comfy Cloud API는 Comfy Cloud 인프라에서 워크플로우를 실행하기 위한 프로그래밍 방식 접근을 제공합니다. 이 API는 로컬 ComfyUI의 API와 호환되므로 기존 통합을 쉽게 마이그레이션할 수 있습니다.
+
+<Note>
+  **크리에이터 또는 프로 구독 필요:** API 접근은 **크리에이터** 및 **프로** 계층에서만 가능합니다. 무료 및 스탠다드 계층에서는 API 접근이 포함되지 않습니다. 자세한 내용은 [가격 정책](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)을 참조하십시오.
+</Note>
+
+## 크레딧 및 사용법
+
+API 요청은 Comfy Cloud 웹 UI와 동일한 월별 크레딧 할당량을 사용합니다 — 별도의 API 크레딧 풀은 없습니다. 각 계층에 포함된 크레딧, 추가 옵션 및 워크플로우당 런타임 제한은 UI 작업과 정확히 동일하게 API 작업에도 적용됩니다. [가격 페이지](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)에서 크리에이터 및 프로 계층의 월별 크레딧 수치를 확인하십시오. 한 달 중간에 크레딧이 부족해지면 계정 대시보드에서 추가 구매가 가능합니다.
+
+## 기본 URL
+
+```
+https://cloud.comfy.org
+```
+
+## 인증
+
+모든 API 요청에는 `X-API-Key` 헤더를 통해 전달되는 API 키가 필요합니다.
+
+### API 키 얻기
+
+<GetApiKey />
+
+<Warning>
+  API 키를 안전하게 보관하십시오. 절대 버전 관리에 커밋하거나 공개적으로 공유하지 마십시오.
+</Warning>
+
+### API 키 사용하기
+
+모든 요청 시 `X-API-Key` 헤더에 API 키를 전달하십시오:
+
+<CodeGroup>
+```bash curl
+curl -X GET "https://cloud.comfy.org/api/user" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+const response = await fetch("https://cloud.comfy.org/api/user", {
+  headers: { "X-API-Key": API_KEY },
+});
+const user = await response.json();
+```
+
+```python Python
+import os
+import requests
+
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+headers = {"X-API-Key": API_KEY}
+
+response = requests.get(
+    "https://cloud.comfy.org/api/user",
+    headers=headers
+)
+```
+</CodeGroup>
+
+## 핵심 개념
+
+### 워크플로우
+
+ComfyUI 워크플로우는 노드 그래프를 설명하는 JSON 객체입니다. API는 ComfyUI 프론트엔드의 "저장(API 형식)" 옵션으로 생성된 "API 형식"(노드 ID를 키로 하며 class_type, inputs 등이 포함된) 워크플로우를 수락합니다.
+
+### 작업
+
+워크플로우를 제출하면 **작업**이 생성됩니다. 작업은 비동기적으로 실행됩니다:
+1. `POST /api/prompt`을 통해 워크플로우 제출
+2. `prompt_id`(작업 ID) 받기
+3. WebSocket을 통해 진행 상태 모니터링 또는 상태 조회
+4. 완료 시 출력물 가져오기
+
+### 병렬 실행(동시 작업)
+
+API 사용자는 이전 작업이 완료될 때까지 기다릴 필요 없이 여러 워크플로우를 동시에 제출할 수 있습니다. 단순히 여러 `POST /api/prompt` 요청을 보내기만 하면 되며, 특별한 헤더나 매개변수는 필요하지 않습니다. 디스패처는 구독 계층의 제한 내에서 병렬로 실행합니다.
+
+| 구독 계층 | 동시 작업 |
+|-------------------|-----------------|
+| 크리에이터           | 3               |
+| 프로               | 5               |
+
+동시 작업 제한을 초과하여 제출된 작업은 일반대로 대기하며, 슬롯이 비워질 때 자동으로 실행됩니다.
+
+<Info>
+  현재 병렬 실행은 API를 통해서만 이용 가능합니다. 구독 상세 정보는 [가격 정책](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api)을 참조하십시오.
+</Info>
+
+#### 예제: 병렬로 여러 작업 제출하기
+
+<CodeGroup>
+```python Python
+import os
+import json
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+async def submit_workflow(session, workflow):
+    """단일 워크플로우를 제출하고 prompt_id 반환"""
+    async with session.post(
+        f"{BASE_URL}/api/prompt",
+        headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
+        json={"prompt": workflow},
+    ) as response:
+        result = await response.json()
+        return result["prompt_id"]
+
+async def main():
+    with open("workflow_api.json") as f:
+        base_workflow = json.load(f)
+
+    # 시드를 변경해 변형 생성
+    workflows = []
+    for seed in [42, 123, 456]:
+        workflow = json.loads(json.dumps(base_workflow))
+        workflow["3"]["inputs"]["seed"] = seed
+        workflows.append(workflow)
+
+    # 모든 워크플로우를 동시에 제출
+    async with aiohttp.ClientSession() as session:
+        prompt_ids = await asyncio.gather(
+            *[submit_workflow(session, wf) for wf in workflows]
+        )
+
+    for pid in prompt_ids:
+        print(f"작업 제출됨: {pid}")
+
+    # 각 작업 모니터링을 위해 polling 또는 WebSocket 사용...
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+async function submitWorkflow(
+  workflow: Record<string, any>
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function main() {
+  const base = JSON.parse(
+    await Deno.readTextFile("workflow_api.json")
+  );
+
+  // 시드를 변경해 변형 생성
+  const seeds = [42, 123, 456];
+  const workflows = seeds.map((seed) => {
+    const wf = structuredClone(base);
+    wf["3"].inputs.seed = seed;
+    return wf;
+  });
+
+  // 모든 워크플로우를 동시에 제출
+  const promptIds = await Promise.all(
+    workflows.map((wf) => submitWorkflow(wf))
+  );
+
+  for (const pid of promptIds) {
+    console.log(`작업 제출됨: ${pid}`);
+  }
+
+  // 각 작업 모니터링을 위해 polling 또는 WebSocket 사용...
+}
+
+main();
+```
+</CodeGroup>
+
+### 출력물
+
+생성된 콘텐츠(이미지, 동영상, 오디오)는 클라우드 스토리지에 저장됩니다. 출력 파일은 `/api/view` 엔드포인트를 통해 다운로드할 수 있으며, 이 엔드포인트는 임시 서명된 URL로 302 리다이렉트를 반환합니다.
+
+## 빠른 시작
+
+워크플로우를 제출하고 진행 상태를 모니터링하며 출력물을 가져오는 방법을 보여주는 전체 예제입니다:
+
+### 1단계: 워크플로우 제출
+
+<CodeGroup>
+```bash curl
+curl -X POST "https://cloud.comfy.org/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "$(cat workflow_api.json)"}'
+```
+
+```typescript TypeScript
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+// ComfyUI에서 API 형식으로 내보낸 워크플로우 로드
+const workflow = JSON.parse(await Deno.readTextFile("workflow_api.json"));
+
+// 워크플로우 제출
+const response = await fetch(`${BASE_URL}/api/prompt`, {
+  method: "POST",
+  headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+  body: JSON.stringify({ prompt: workflow }),
+});
+const result = await response.json();
+const promptId = result.prompt_id;
+console.log(`작업 제출됨: ${promptId}`);
+```
+
+```python Python
+import os
+import requests
+import json
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+# ComfyUI에서 API 형식으로 내보낸 워크플로우 로드
+with open("workflow_api.json") as f:
+    workflow = json.load(f)
+
+# 워크플로우 제출
+response = requests.post(
+    f"{BASE_URL}/api/prompt",
+    headers=get_headers(),
+    json={"prompt": workflow}
+)
+result = response.json()
+prompt_id = result["prompt_id"]
+print(f"작업 제출됨: {prompt_id}")
+```
+</CodeGroup>
+
+### 2단계: 작업 진행 상태 모니터링
+
+폴링 또는 WebSocket을 사용해 작업 완료 여부를 모니터링할 수 있습니다.
+
+#### 옵션 A: 폴링(간단함)
+
+<PollJobCompletion />
+
+#### 옵션 B: WebSocket(실시간 진행 상태)
+
+실시간 진행 상태 업데이트 및 출력 메타데이터 수집을 위해:
+
+<WebSocketProgress />
+
+<Note>
+  [WebSocket 참조](/development/cloud/api-reference#websocket-for-real-time-progress)를 참조해 세부 메시지 유형 및 바이너리 미리보기 이미지 처리 방법을 확인하십시오.
+</Note>
+
+### 3단계: 출력물 다운로드
+
+작업이 완료되면 생성된 파일을 다운로드하세요. WebSocket에서 반환되거나 역사 엔드포인트를 통해 이용 가능한 `outputs` 객체는 노드 ID별로 정리된 출력 데이터를 포함합니다. 각 노드의 출력에는 `images`, `video` 또는 `audio` 배열과 파일 메타데이터가 포함될 수 있습니다.
+
+**출력물 구조 예시:**
+```json
+{
+  "9": {
+    "images": [
+      {
+        "filename": "ComfyUI_00001_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ]
+  }
+}
+```
+
+노드 ID(`"9"` 예시)는 워크플로우의 SaveImage 또는 기타 출력 노드에 해당합니다. 워크플로우 JSON 파일을 열어 `class_type`이 `SaveImage`, `VHS_VideoCombine` 등의 노드를 찾으면 이 ID를 확인할 수 있습니다.
+
+<DownloadOutputs />
+
+<Info>
+  `/api/view` 엔드포인트는 임시 서명된 URL로 302 리다이렉트를 반환합니다. HTTP 클라이언트는 리다이렉트를 따라야만 파일을 다운로드할 수 있습니다.
+</Info>
+
+### 전체 예제
+
+세 단계를 모두 결합한 전체 엔드투엔드 예제입니다:
+
+<CompleteExample />
+
+## 사용 가능한 엔드포인트
+
+| 카테고리 | 설명 |
+|----------|-------------|
+| [워크플로우](/development/cloud/api-reference#running-workflows) | 워크플로우 제출, 상태 확인 |
+| [작업](/development/cloud/api-reference#checking-job-status) | 작업 상태 및 대기열 모니터링 |
+| [입력](/development/cloud/api-reference#uploading-inputs) | 이미지, 마스크 및 기타 입력 업로드 |
+| [출력](/development/cloud/api-reference#downloading-outputs) | 생성된 콘텐츠 다운로드 |
+| [WebSocket](/development/cloud/api-reference#websocket-for-real-time-progress) | 실시간 진행 상태 업데이트 |
+| [객체 정보](/development/cloud/api-reference#object-info) | 사용 가능한 노드 및 그 정의 |
+
+## 다음 단계
+
+위의 빠른 시작은 워크플로우 제출과 결과 가져오기에 대한 기본 사항을 다룹니다. 더 고급 사용 사례를 위해서는 [클라우드 API 참조](/development/cloud/api-reference)를 참고하십시오:
+
+- **[입력 파일 업로드](/development/cloud/api-reference#uploading-inputs)** - 워크플로우에 외부 입력이 필요한 경우 이미지, 마스크 또는 기타 사용자 제공 콘텐츠 업로드
+- **[워크플로우 입력 수정](/development/cloud/api-reference#modify-workflow-inputs)** - 제출 전에 프롬프트, 시드 또는 노드 설정과 같은 워크플로우 파라미터를 동적으로 변경
+- **[파트너 노드 사용](/development/cloud/api-reference#using-partner-nodes)** - 추가 API 키 구성이 필요한 외부 AI 서비스(Flux Pro, Ideogram 등) 호출
+- **[대기열 관리](/development/cloud/api-reference#queue-management)** - 대기열 상태 모니터링, 작업 취소 또는 실행 중인 작업 중단
+- **[오류 처리](/development/cloud/api-reference#error-handling)** - HTTP 오류, 실행 실패 처리 및 예외 유형 이해
+
+추가 자료:
+- [OpenAPI 규격](/development/cloud/openapi) - 코드 생성을 위한 기계 판독 가능한 API 규격

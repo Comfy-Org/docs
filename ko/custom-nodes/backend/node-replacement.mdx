@@ -1,0 +1,227 @@
+---
+title: "노드 교체"
+description: "사용자가 더 이상 사용되지 않는 노드에서 마이그레이션하도록 노드 교체를 등록하세요"
+translationSourceHash: 2f5ad97d
+translationFrom: custom-nodes/backend/node-replacement.mdx
+---
+
+노드 교체 API를 통해 맞춤형 노드 개발자는 더 이상 사용되지 않는 노드에서 최신 equivalent로의 마이그레이션 경로를 정의할 수 있습니다. 노드를 업데이트하거나 이름을 변경하면 사용자가 워크플로우를 자동으로 업그레이드할 수 있습니다.
+
+## 언제 사용하나요
+
+- **노드 클래스 이름 변경**: 노드의 클래스 이름을 변경한 경우 (표시 이름 변경에는 `DISPLAY_NAME`을 사용하세요)
+- **노드 병합**: 여러 노드를 하나로 통합한 경우 (예: `Load3DAnimation`을 `Load3D`로 병합)
+- **입력 리팩토링**: 입력 이름이나 유형이 버전 간에 변경된 경우
+- **타이포 수정**: 기존 워크플로우를 깨지 않으면서 노드 이름을 수정하는 경우
+
+## 교체를 어디에 등록하나요
+
+확장 프로그램의 `on_load` 라이프사이클 훅 동안 교체를 등록하세요. 맞춤형 노드 패키지에 전용 파일(예: `node_replacements.py`)을 생성하세요:
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # 여기에 교체를 등록하세요
+```
+
+## 전체 예제
+
+다음은 맞춤형 노드 패키지에서 노드 교체를 구성하는 방법을 보여주는 전체 예제입니다:
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """이 패키지의 모든 노드 교체를 등록하세요."""
+    
+    # 간단한 이름 변경 - 입력 변경 필요 없음
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # 입력 매핑이 포함된 복잡한 교체
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # 기본값을 가진 새 입력
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # 여기에는 노드를 정의하지 않고 교체만 정의합니다
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## 핵심 예제
+
+ComfyUI 코어는 내장 노드 마이그레이션을 위해 노드 교체를 사용합니다. 다음은 [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_replacements.py)에서 가져온 실제 예제입니다:
+
+### 간단한 노드 병합
+
+`Load3DAnimation`이 `Load3D`로 병합되었을 때:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### 타이포 수정
+
+`SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning`의 타이포 수정:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### 기본값을 가진 입력 이름 변경
+
+`ImageScaleBy`를 `ResizeImageMaskNode`로 교체:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Autogrow 입력 매핑
+
+Autogrow(동적 입력)을 사용하는 노드의 경우 점 표기법을 사용하세요:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## NodeReplace 매개변수
+
+| 매개변수 | 유형 | 설명 |
+|-----------|------|-------------|
+| `new_node_id` | str | 교체 노드의 클래스 이름 |
+| `old_node_id` | str | 더 이상 사용되지 않는 노드의 클래스 이름 |
+| `old_widget_ids` | list[str] \| None | 위젯 ID를 상대 인덱스와 바인딩한 순서 리스트 |
+| `input_mapping` | list \| None | 이전 노드에서 새 노드로의 입력 매핑 방법 |
+| `output_mapping` | list \| None | 이전 노드에서 새 노드로의 출력 매핑 방법 |
+
+## 입력 매핑
+
+각 입력 매핑 항목은 이전 노드에서 새 노드로 입력이 어떻게 전달되는지를 정의합니다.
+
+**이전 입력에서 매핑:**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**고정 값 설정:**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**동적/autogrow 입력 매핑(점 표기법 사용):**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## 출력 매핑
+
+출력 매핑은 인덱스 기반 참조를 사용합니다:
+
+```python
+{"new_idx": 0, "old_idx": 0}  # 첫 번째 출력 매핑
+{"new_idx": 1, "old_idx": 0}  # 이전 출력 0 -> 새 출력 1
+```
+
+## 위젯 ID 바인딩
+
+`old_widget_ids` 필드는 위젯 ID를 위치 인덱스와 매핑합니다. 이는 워크플로우 JSON이 위젯 값을 ID가 아닌 위치별로 저장하기 때문에 필요합니다.
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# 위치 0의 위젯 = "steps"
+# 위치 1의 위젯 = "cfg"
+# 위치 2의 위젯 = "sampler"
+```
+
+## REST API
+
+등록된 모든 교체 조회:
+
+```
+GET /api/node_replacements
+```
+
+**응답:**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## 프론트엔드 동작
+
+워크플로우에 더 이상 사용되지 않는 노드가 포함되어 있으면 프론트엔드는 다음과 같이 작동합니다:
+
+1. `GET /api/node_replacements`에서 교체 정보를 가져옵니다.
+2. `old_node_id`와 일치하는 노드를 감지합니다.
+3. 사용자에게 업그레이드를 요청합니다.
+4. 입력/출력 매핑을 자동으로 적용합니다.
+5. 연결과 위젯 값을 유지합니다.
+
+프론트엔드 구현 참고:
+- [비즈니스 로직 PR #8364](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [추가 로직 PR #8483](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [UI 뷰 PR #8604](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)

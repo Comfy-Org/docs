@@ -1,0 +1,197 @@
+---
+title: "시작하기"
+translationSourceHash: 1a78fd9e
+translationFrom: custom-nodes/walkthrough.mdx
+---
+
+이 페이지에서는 사용자 정의 노드를 만드는 과정을 단계별로 안내합니다.
+
+예제에서는 이미지 한 묶음을 받아서 그중 하나의 이미지를 반환합니다. 처음에는 평균적으로 가장 밝은 색상의 이미지를 반환하는 노드를 만들고, 이후 선택 기준의 범위를 확장한 뒤 클라이언트 측 코드를 추가할 것입니다.
+
+이 페이지에서는 Python이나 JavaScript에 대한 지식이 거의 필요하지 않습니다.
+
+이 안내를 마친 후 [백엔드 코드](./backend/server_overview)와 [프론트엔드 코드](./backend/server_overview)의 세부 사항으로 들어가세요.
+
+## 기본 노드 작성하기
+
+### 사전 요구사항
+
+- 작동 중인 ComfyUI [설치](/installation/manual_install). 개발을 위해 ComfyUI를 수동으로 설치하는 것을 권장합니다.
+- 작동 중인 comfy-cli [설치](/comfy-cli/getting-started).
+
+### 설정하기
+
+```bash
+cd ComfyUI/custom_nodes
+comfy node scaffold
+```
+
+몇 가지 질문에 답하면 새로운 디렉토리가 생성됩니다.
+
+```bash
+ ~  % comfy node scaffold
+이미 .cookiecutters/cookiecutter-comfy-extension을 다운로드한 적이 있습니다. 삭제하고 다시 다운로드해도 괜찮나요? [y/n] (y): y
+  [1/9] full_name (): Comfy
+  [2/9] email (you@gmail.com): me@comfy.org
+  [3/9] github_username (your_github_username): comfy
+  [4/9] project_name (My Custom Nodepack): FirstComfyNode
+  [5/9] project_slug (firstcomfynode): 
+  [6/9] project_short_description (A collection of custom nodes for ComfyUI): 
+  [7/9] version (0.0.1): 
+  [8/9] Select open_source_license
+    1 - GNU General Public License v3
+    2 - MIT license
+    3 - BSD license
+    4 - ISC license
+    5 - Apache Software License 2.0
+    6 - Not open source
+    Choose from [1/2/3/4/5/6] (1): 1
+  [9/9] include_web_directory_for_custom_javascript [y/n] (n): y
+Initialized empty Git repository in firstcomfynode/.git/
+✓ Custom node project created successfully!
+```
+
+### 노드 정의하기
+
+`src/nodes.py`의 끝에 다음 코드를 추가하세요:
+
+```Python src/nodes.py
+class ImageSelector:
+    CATEGORY = "example"
+    @classmethod    
+    def INPUT_TYPES(s):
+        return { "required":  { "images": ("IMAGE",), } }
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "choose_image"
+```
+
+<Info>사용자 정의 노드의 기본 구조는 [여기](/custom-nodes/backend/server_overview)에서 자세히 설명되어 있습니다.</Info>
+
+사용자 정의 노드는 Python 클래스를 사용해 정의하며, 여기에는 `CATEGORY`, 노드를 새 노드 메뉴 어디에 배치할지 지정하는 항목, `INPUT_TYPES`, 노드가 어떤 입력을 받을지 정의하는 클래스 메서드(자세한 내용은 [뒤에](/custom-nodes/backend/server_overview#input-types) 참조), `RETURN_TYPES`, 노드가 어떤 출력을 내놓을지 정의하는 항목, 그리고 `FUNCTION`, 노드가 실행될 때 호출될 함수 이름이 포함되어야 합니다.
+
+<Tip>입력과 출력의 데이터 타입이 `IMAGE`(단수형)임에도 불구하고, 우리는 이미지 묶음을 받고 하나만 반환한다고 예상합니다. Comfy에서 `IMAGE`는 이미지 묶음을 의미하며, 단일 이미지는 크기가 1인 묶음으로 취급됩니다.</Tip>
+
+### 메인 함수
+
+메인 함수인 `choose_image`는 `INPUT_TYPES`에서 정의한 명명된 인자를 받으며, `RETURN_TYPES`에서 정의한 대로 `튜플`을 반환합니다. 이미지를 다루므로 내부적으로 `torch.Tensor`로 저장되며,
+
+```Python
+import torch
+```
+
+그런 다음 클래스에 함수를 추가하세요. 이미지의 데이터 타입은 `[B,H,W,C]` 형태의 `torch.Tensor`이며, 여기서 `B`는 배치 크기이고 `C`는 채널 수입니다—RGB의 경우 3입니다. 이러한 텐서를 반복하면 `[H,W,C]` 형태의 `B`개의 텐서를 얻게 됩니다. `.flatten()` 메서드는 이를 1차원 텐서로 바꾸며 길이는 `H*W*C`가 됩니다. `torch.mean()`는 평균값을 계산하고 `.item()`은 단일 값 텐서를 파이썬의 float로 변환합니다.
+
+```Python
+def choose_image(self, images):
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    brightest = brightness.index(max(brightness))
+    result = images[brightest].unsqueeze(0)
+    return (result,)
+```
+
+마지막 두 줄에 대한 참고사항:
+
+- `images[brightest]`는 `[H,W,C]` 형태의 텐서를 반환합니다. `unsqueeze`는 이 경우 0번째 차원에 길이 1의 차원을 삽입해 `[B,H,W,C]` 형태로 만들어줍니다—여기서 `B=1`: 단일 이미지입니다.
+- `return (result,)`에서 뒤에 오는 쉼표는 튜플을 반환하도록 하기 위해 필수적입니다.
+
+### 노드 등록하기
+
+Comfy가 새 노드를 인식하려면 패키지 수준에서 접근 가능해야 합니다. `src/nodes.py`의 끝에 있는 `NODE_CLASS_MAPPINGS` 변수를 수정하세요. 변경 사항을 보려면 ComfyUI를 다시 시작해야 합니다.
+
+```Python src/nodes.py
+
+NODE_CLASS_MAPPINGS = {
+    "Example" : Example,
+    "Image Selector" : ImageSelector,
+}
+
+# 선택적으로, `NODE_DISPLAY_NAME_MAPPINGS` 딕셔너리에서 노드 이름을 바꿀 수 있습니다.
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node",
+    "Image Selector": "Image Selector",
+}
+```
+
+<Info>ComfyUI가 사용자 정의 노드를 어떻게 발견하고 로드하는지 자세한 설명은 [노드 라이프사이클 문서](/custom-nodes/backend/lifecycle)를 참조하세요.</Info>
+
+## 옵션 추가하기
+
+그 노드는 조금 지루할 수 있으니 몇 가지 옵션을 추가해볼까요? 가장 밝은 이미지나 가장 붉은, 가장 푸른, 가장 녹색 이미지를 선택할 수 있는 위젯을 추가해보겠습니다. `INPUT_TYPES`를 다음과 같이 수정하세요:
+
+```Python
+@classmethod    
+def INPUT_TYPES(s):
+    return { "required":  { "images": ("IMAGE",), 
+                            "mode": (["brightest", "reddest", "greenest", "bluest"],)} }
+```
+
+그런 다음 메인 함수를 업데이트하세요. '가장 붉은'을 정의하는 방법은 픽셀의 평균 `R` 값을 모든 세 색상의 평균값으로 나눈 것으로 비교적 단순하게 정의하겠습니다. 따라서:
+
+```Python
+def choose_image(self, images, mode):
+    batch_size = images.shape[0]
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    if (mode=="brightest"):
+        scores = brightness
+    else:
+        channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
+        absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
+        scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
+    best = scores.index(max(scores))
+    result = images[best].unsqueeze(0)
+    return (result,)
+```
+
+## UI 조정하기
+
+시각적 피드백을 좀 더 주고 싶다면 작은 텍스트 메시지를 보내 표시해보겠습니다.
+
+### 서버에서 메시지 전송하기
+
+이를 위해서는 Python 코드에 두 줄을 추가해야 합니다:
+
+```Python
+from server import PromptServer
+```
+
+그리고 `choose_image` 메서드의 끝에 프론트엔드로 메시지를 보내는 코드를 추가하세요(`send_sync`는 고유한 메시지 유형과 딕셔너리를 필요로 합니다):
+
+```Python
+PromptServer.instance.send_sync("example.imageselector.textmessage", {"message":f"Picked image {best+1}"})
+return (result,)
+```
+
+### 클라이언트 확장 작성하기
+
+클라이언트에 Javascript를 추가하려면 사용자 정의 노드 디렉토리에 `web/js` 하위 디렉토리를 만들고, `__init__.py`의 끝을 수정해 Comfy에 이를 알리도록 `WEB_DIRECTORY`를 내보내세요:
+
+```Python
+WEB_DIRECTORY = "./web/js"
+__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+```
+
+클라이언트 확장은 `web/js` 하위 디렉토리에 `.js` 파일로 저장되므로, `image_selector/web/js/imageSelector.js`를 아래 코드로 생성하세요. (자세한 내용은 [클라이언트 측 코딩](./js/javascript_overview)을 참조하세요.)
+
+```Javascript
+import { app } from "../../scripts/app.js";
+app.registerExtension({
+	name: "example.imageselector",
+    async setup() {
+        function messageHandler(event) { alert(event.detail.message); }
+        app.api.addEventListener("example.imageselector.textmessage", messageHandler);
+    },
+})
+```
+
+우리가 한 것은 확장을 등록하고 `setup()` 메서드에서 전송하는 메시지 유형에 대한 리스너를 추가한 것입니다. 이는 우리가 보낸 딕셔너리를 읽습니다(이 딕셔너리는 `event.detail`에 저장됩니다).
+
+Comfy 서버를 중지했다가 다시 시작하고 웹페이지를 새로고침한 뒤 워크플로우를 실행하세요.
+
+
+### 완성된 예제
+
+완성된 예제는 [여기](https://gist.github.com/robinjhuang/fbf54b7715091c7b478724fc4dffbd03)에서 확인할 수 있습니다. 예제 워크플로우 [JSON 파일](https://github.com/Comfy-Org/docs/blob/main/public/workflow.json)을 다운로드하거나 아래에서 볼 수 있습니다:
+
+<div align="center">
+  <img src="/images/firstnodeworkflow.png" alt="Image Selector Workflow" width="100%" />
+</div>

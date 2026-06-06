@@ -1,0 +1,170 @@
+---
+title: "Kling 텍스트를 동영상으로 - ComfyUI 내장 노드"
+description: "Kling의 AI 기술을 사용해 텍스트 설명을 동영상으로 변환하는 노드"
+sidebarTitle: "Kling 텍스트를 동영상으로"
+icon: "circle"
+translationSourceHash: 825c2e11
+translationFrom: built-in-nodes/partner-node/video/kwai_vgi/kling-text-to-video.mdx
+---
+
+![ComfyUI 내장 Kling 텍스트를 동영상으로 노드](/images/built-in-nodes/api_nodes/kwai_vgi/kling-text-to-video.jpg)
+
+Kling 텍스트를 동영상으로 노드는 Kling의 API 서비스에 연결하여 텍스트 설명을 기반으로 동영상을 생성합니다. 사용자는 간단히 설명적인 텍스트를 제공하면 해당하는 동영상 콘텐츠를 만들 수 있습니다.
+
+## 매개변수
+
+### 필수 매개변수
+
+| 매개변수       | 유형   | 기본값           | 설명                                  |
+| --------------- | ------ | ----------------- | -------------------------------------------- |
+| 프롬프트          | 문자열 | ""                | 원하는 동영상 콘텐츠를 설명하는 텍스트 프롬프트 |
+| 네거티브 프롬프트 | 문자열 | ""                | 동영상에서 피하고 싶은 요소들               |
+| cfg 스케일       | 부동소수점 | 7.0               | 프롬프트를 얼마나 정확하게 따르는지 제어    |
+| 모델 이름      | 선택   | "kling-v2-master" | 사용할 동영상 생성 모델                |
+| 종횡비            | 선택   | AspectRatio 열거형  | 출력 동영상의 종횡비                    |
+| 지속시간        | 선택   | 지속시간 열거형     | 생성된 동영상의 길이                    |
+| 모드              | 선택   | 모드 열거형         | 동영상 생성 모드                        |
+
+### 출력
+
+| 출력         | 유형   | 설명             |
+| -------------- | ------ | ----------------------- |
+| VIDEO          | 동영상  | 생성된 동영상         |
+| Kling ID       | 문자열 | 작업 식별자         |
+| 지속시간 (초) | 문자열 | 동영상 길이(초) |
+
+## 작동 방식
+
+노드는 텍스트 프롬프트를 Kling의 API 서버로 전송하며, 서버는 이를 처리한 후 생성된 동영상을 반환합니다. 이 과정에는 초기 요청과 상태 폴링이 포함됩니다. 완료되면 노드는 동영상을 다운로드해 출력합니다.
+
+사용자는 네거티브 프롬프트, 구성 스케일, 동영상 속성 등의 매개변수를 조정해 생성 과정을 제어할 수 있습니다. 시스템은 프롬프트 길이를 검증해 API 준수성을 보장합니다.
+
+## 소스 코드
+
+[노드 소스 코드 (2025-05-03 업데이트)]
+
+```python
+
+class KlingTextToVideoNode(KlingNodeBase):
+    """Kling 텍스트를 동영상으로 노드"""
+
+    @staticmethod
+    def poll_for_task_status(task_id: str, auth_token: str) -> KlingText2VideoResponse:
+        """Kling API 엔드포인트를 폴링해 작업이 종료 상태에 도달할 때까지 기다립니다."""
+        polling_operation = PollingOperation(
+            poll_endpoint=ApiEndpoint(
+                path=f"{PATH_TEXT_TO_VIDEO}/{task_id}",
+                method=HttpMethod.GET,
+                request_model=EmptyRequest,
+                response_model=KlingText2VideoResponse,
+            ),
+            completed_statuses=[
+                TaskStatus.succeed.value,
+            ],
+            failed_statuses=[TaskStatus.failed.value],
+            status_extractor=lambda response: (
+                response.data.task_status.value
+                if response.data and response.data.task_status
+                else None
+            ),
+            auth_token=auth_token,
+        )
+        return polling_operation.execute()
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "prompt": model_field_to_node_input(
+                    IO.STRING, KlingText2VideoRequest, "prompt", multiline=True
+                ),
+                "negative_prompt": model_field_to_node_input(
+                    IO.STRING, KlingText2VideoRequest, "negative_prompt", multiline=True
+                ),
+                "model_name": model_field_to_node_input(
+                    IO.COMBO,
+                    KlingText2VideoRequest,
+                    "model_name",
+                    enum_type=ModelName,
+                    default="kling-v2-master",
+                ),
+                "cfg_scale": model_field_to_node_input(
+                    IO.FLOAT, KlingText2VideoRequest, "cfg_scale"
+                ),
+                "mode": model_field_to_node_input(
+                    IO.COMBO, KlingText2VideoRequest, "mode", enum_type=Mode
+                ),
+                "duration": model_field_to_node_input(
+                    IO.COMBO, KlingText2VideoRequest, "duration", enum_type=Duration
+                ),
+                "aspect_ratio": model_field_to_node_input(
+                    IO.COMBO,
+                    KlingText2VideoRequest,
+                    "aspect_ratio",
+                    enum_type=AspectRatio,
+                ),
+            },
+            "hidden": {"auth_token": "AUTH_TOKEN_COMFY_ORG"},
+        }
+
+    RETURN_TYPES = ("VIDEO", "STRING", "STRING")
+    RETURN_NAMES = ("VIDEO", "Kling ID", "Duration (sec)")
+    DESCRIPTION = "Kling 텍스트를 동영상으로 노드"
+
+    def api_call(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        model_name: str,
+        cfg_scale: float,
+        mode: str,
+        duration: int,
+        aspect_ratio: str,
+        camera_control: Optional[CameraControl] = None,
+        auth_token: Optional[str] = None,
+    ) -> tuple[VideoFromFile, str, str]:
+        validate_prompts(prompt, negative_prompt, MAX_PROMPT_LENGTH_T2V)
+        initial_operation = SynchronousOperation(
+            endpoint=ApiEndpoint(
+                path=PATH_TEXT_TO_VIDEO,
+                method=HttpMethod.POST,
+                request_model=KlingText2VideoRequest,
+                response_model=KlingText2VideoResponse,
+            ),
+            request=KlingText2VideoRequest(
+                prompt=prompt if prompt else None,
+                negative_prompt=negative_prompt if negative_prompt else None,
+                duration=Duration(duration),
+                mode=Mode(mode),
+                model_name=ModelName(model_name),
+                cfg_scale=cfg_scale,
+                aspect_ratio=AspectRatio(aspect_ratio),
+                camera_control=camera_control,
+            ),
+            auth_token=auth_token,
+        )
+
+        initial_response = initial_operation.execute()
+        if not is_valid_initial_response(initial_response):
+            error_msg = f"Kling 초기 요청 실패. 코드: {initial_response.code}, 메시지: {initial_response.message}, 데이터: {initial_response.data}"
+            logging.error(error_msg)
+            raise KlingApiError(error_msg)
+
+        task_id = initial_response.data.task_id
+        final_response = self.poll_for_task_status(task_id, auth_token)
+        if not is_valid_video_response(final_response):
+            error_msg = (
+                f"Kling 작업 {task_id} 성공했으나 응답에서 동영상 데이터를 찾을 수 없음."
+            )
+            logging.error(error_msg)
+            raise KlingApiError(error_msg)
+
+        video = final_response.data.task_result.videos[0]
+        logging.debug("Kling 작업 %s 성공. 동영상 URL: %s", task_id, video.url)
+        return (
+            download_url_to_video_output(video.url),
+            str(video.id),
+            str(video.duration),
+        )
+
+```

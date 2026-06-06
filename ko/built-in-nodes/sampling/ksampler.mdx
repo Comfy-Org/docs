@@ -1,0 +1,102 @@
+---
+title: "Ksampler - ComfyUI 내장 노드 문서"
+description: "Ksampler 노드는 ComfyUI에서 흔히 사용되는 샘플링 노드입니다."
+sidebarTitle: "Ksampler"
+icon: "circle"
+translationSourceHash: 618e2bf1
+translationFrom: built-in-nodes/sampling/ksampler.mdx
+---
+
+![Ksampler](/images/built-in-nodes/sampling/ksampler.jpg)
+
+KSampler 노드는 잠재 이미지에 다단계 노이즈 제거 샘플링을 수행합니다. 이 노드는 긍정적 및 부정적 조건(프롬프트)을 결합하고, 지정된 샘플링 알고리즘과 스케줄러를 사용해 고품질의 잠재 이미지를 생성합니다. 텍스트-이미지 및 이미지-이미지와 같은 AI 이미지 생성 워크플로우에서 일반적으로 사용됩니다.
+
+## 매개변수 설명
+
+### 입력 매개변수
+| 매개변수    | 유형         | 필수 | 기본값 | 설명                                                                                                        |
+| ------------ | ------------ | -------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| 모델        | MODEL        | 예     | 없음    | 노이즈 제거에 사용되는 모델 (예: Stable Diffusion 모델)                                                             |
+| 시드         | INT          | 예     | 0       | 재현 가능한 결과를 보장하기 위한 난수 시드                                                                   |
+| 단계        | INT          | 예     | 20      | 노이즈 제거 단계 수 - 단계가 많을수록 세밀한 디테일을 얻을 수 있지만 생성 속도는 느려짐                          |
+| cfg          | FLOAT        | 예     | 8.0     | 분류기 없는 가이던스 스케일 - 값이 높을수록 프롬프트와 더 잘 일치하지만 너무 높으면 품질에 악영향 줌            |
+| 샘플러 이름 | Enum         | 예     | 없음    | 샘플링 알고리즘의 이름으로, 생성 속도, 스타일 및 품질에 영향을 줌                                            |
+| 스케줄러    | Enum         | 예     | 없음    | 노이즈 제거 과정을 제어하는 스케줄러                                                                          |
+| 긍정        | CONDITIONING | 예     | 없음    | 원하는 이미지 내용을 설명하는 긍정적 조건                                                                    |
+| 부정        | CONDITIONING | 예     | 없음    | 배제할 내용을 설명하는 부정적 조건                                                                            |
+| 잠재 이미지 | LATENT       | 예     | 없음    | 노이즈 제거할 잠재 이미지, 보통 노이즈 또는 이전 단계의 출력임                                                |
+| 노이즈 제거  | FLOAT        | 예     | 1.0     | 노이즈 제거 강도 - 1.0은 완전한 노이즈 제거, 낮은 값은 원래 구조를 유지하며 이미지-이미지에 적합함              |
+
+### 출력 매개변수
+| 출력  | 유형   | 설명                                              |
+| ------- | ------ | -------------------------------------------------------- |
+| 샘플    | LATENT | 노이즈 제거된 잠재 이미지로 최종 이미지로 디코딩 가능 |
+
+## 사용 예시
+
+<Card title="Stable diffusion 1.5 텍스트-이미지 워크플로우 예시" icon="book" href="/ko/tutorials/basic/text-to-image">
+Stable diffusion 1.5 텍스트-이미지 워크플로우 예시
+</Card>
+<Card title="Stable diffusion 1.5 이미지-이미지 워크플로우 예시" icon="book" href="/ko/tutorials/basic/image-to-image">
+Stable diffusion 1.5 이미지-이미지 워크플로우 예시
+</Card>
+
+## 소스 코드
+
+[2025년 5월 15일 업데이트]
+
+```Python
+
+def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+    latent_image = latent["samples"]
+    latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
+
+    if disable_noise:
+        noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
+    else:
+        batch_inds = latent["batch_index"] if "batch_index" in latent else None
+        noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
+
+    noise_mask = None
+    if "noise_mask" in latent:
+        noise_mask = latent["noise_mask"]
+
+    callback = latent_preview.prepare_callback(model, steps)
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = comfy.sample.sample(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent_image,
+                                  denoise=denoise, disable_noise=disable_noise, start_step=start_step, last_step=last_step,
+                                  force_full_denoise=force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=seed)
+    out = latent.copy()
+    out["samples"] = samples
+    return (out, )
+
+
+class KSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "모델": ("MODEL", {"tooltip": "입력 잠재 이미지를 노이즈 제거하는 데 사용되는 모델."}),
+                "시드": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "노이즈 생성에 사용되는 난수 시드."}),
+                "단계": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "노이즈 제거 과정에 사용되는 단계 수."}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "분류기 없는 가이던스 스케일은 창의성과 프롬프트 준수 사이의 균형을 맞춥니다. 값이 높을수록 프롬프트와 더 잘 일치하는 이미지를 생성하지만 너무 높으면 품질에 악영향을 줍니다."}),
+                "샘플러 이름": (comfy.samplers.KSampler.SAMPLERS, {"tooltip": "샘플링 시 사용하는 알고리즘으로, 생성된 출력의 품질, 속도 및 스타일에 영향을 줄 수 있습니다."}),
+                "스케줄러": (comfy.samplers.KSampler.SCHEDULERS, {"tooltip": "스케줄러는 노이즈가 점진적으로 제거되어 이미지를 형성하는 방식을 제어합니다."}),
+                "긍정": ("CONDITIONING", {"tooltip": "이미지에 포함하고자 하는 속성을 설명하는 조건."}),
+                "부정": ("CONDITIONING", {"tooltip": "이미지에서 제외하고자 하는 속성을 설명하는 조건."}),
+                "잠재 이미지": ("LATENT", {"tooltip": "노이즈 제거할 잠재 이미지."}),
+                "노이즈 제거": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "적용되는 노이즈 제거량으로, 낮은 값은 초기 이미지의 구조를 유지하여 이미지-이미지 샘플링에 적합합니다."}),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("노이즈 제거된 잠재 이미지.",)
+    FUNCTION = "sample"
+
+    CATEGORY = "sampling"
+    DESCRIPTION = "제공된 모델, 긍정 및 부정 조건을 사용해 잠재 이미지를 노이즈 제거합니다."
+
+    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0):
+        return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+
+```

@@ -1,0 +1,89 @@
+---
+title: "메시지"
+translationSourceHash: 1ec1d442
+translationFrom: development/comfyui-server/comms_messages.mdx
+---
+
+## 메시지
+
+실행 중(또는 큐의 상태가 변경될 때) `PromptExecutor`는 `PromptServer`의 `send_sync` 메서드를 통해 클라이언트로 메시지를 보냅니다.
+
+이 메시지는 `api.js`에 정의된 소켓 이벤트 리스너가 수신하며(작성 시점 기준 90줄 부근, 또는 `this.socket.addEventListener`을 검색), 알려진 모든 메시지 유형에 대해 `CustomEvent` 객체를 생성하고 등록된 모든 리스너에게 전달합니다.
+
+확장 프로그램은 표준 JavaScript 방식에 따라 이벤트를 수신하도록 등록할 수 있습니다:
+
+```Javascript
+api.addEventListener(message_type, messageHandler);
+```
+
+만약 `message_type`이 기본 제공되는 유형이 아니라면, 자동으로 알려진 메시지 유형 목록에 추가됩니다. 메시지 `messageHandler`는 소켓에서 발생한 이벤트를 확장해 `.detail` 속성을 추가한 `CustomEvent` 객체와 함께 호출됩니다. 이 `.detail` 속성은 서버가 전송한 데이터의 사전 형태입니다. 따라서 일반적인 사용법은 다음과 같습니다:
+
+```Javascript
+function messageHandler(event) {
+    if (event.detail.node == aNodeIdThatIsInteresting) {
+        // event.detail.other_things를 이용해 무언가를 처리하세요
+    }
+}
+```
+
+### 기본 제공 메시지 유형
+
+실행 중(또는 큐의 상태가 변경될 때) `PromptExecutor`는 `PromptServer`의 `send_sync` 메서드를 통해 클라이언트로 다음 메시지를 보냅니다. 확장 프로그램은 이들 중 어떤 메시지에도 리스너로 등록할 수 있습니다.
+
+| 이벤트                   | 언제                                                                       | 데이터                                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `execution_start`       | 프롬프트가 실행되기 직전                                              | `prompt_id`                                                                                             |
+| `execution_error`       | 실행 도중 오류가 발생했을 때                                      | `prompt_id`, 추가 정보 포함                                                                |
+| `execution_interrupted` | 노드가 `InterruptProcessingException`을 던져 실행이 중단되었을 때 | `prompt_id`, `node_id`, `node_type` 및 `executed` (실행된 노드 목록)                           |
+| `execution_cached`      | 실행 시작 시                                                  | `prompt_id`, `nodes` (캐시된 출력을 사용할 수 있어 건너뛰는 노드 목록)                       |
+| `execution_success`     | 프롬프트의 모든 노드가 성공적으로 실행되었을 때             | `prompt_id`, `timestamp`                                                                                |
+| `executing`             | 새로운 노드가 실행되기 직전                                    | `node` (노드 ID 또는 완료를 나타내는 `None`), `prompt_id`                                          |
+| `executed`              | 노드가 UI 요소를 반환했을 때                                           | `node` (노드 ID), `prompt_id`, `output`                                                                 |
+| `progress`              | 필요한 훅을 구현한 노드의 실행 중                                                | `node` (노드 ID), `prompt_id`, `value`, `max`                                                           |
+| `status`                | 큐의 상태가 변경되었을 때                                        | `exec_info`, `queue_remaining`을 포함한 사전, 즉 큐에 남아 있는 항목 수                 |
+
+### executed 사용하기
+
+이름과 달리, `executed` 메시지는 노드가 실행을 완료할 때마다 보내지는 것이 아닙니다(예를 들어 `executing`과는 다릅니다). 노드가 UI 업데이트를 반환할 때만 보내집니다.
+
+이를 위해 메인 함수는 튜플 대신 사전을 반환해야 합니다:
+
+```python
+# 내 메인 메서드 끝부분에서
+        return { "ui":a_new_dictionary, "result": the_tuple_of_output_values }
+```
+
+이때 `a_new_dictionary`는 `executed` 메시지의 `output` 값으로 전송됩니다. 노드에 출력이 없는 경우 `result` 키는 생략해도 됩니다(예를 들어 `nodes.py`의 `SaveImage` 코드 참조).
+
+### 맞춤형 메시지 유형
+
+위에서 설명한 바와 같이, 클라이언트 측에서는 고유한 메시지 유형 이름에 리스너로 등록하는 것만으로 맞춤형 메시지 유형을 추가할 수 있습니다.
+
+```Javascript
+api.addEventListener("my.custom.message", messageHandler);
+```
+
+서버 측에서도 동일하게 간단합니다:
+
+```Python
+from server import PromptServer
+# 이후 주 실행 함수에서(보통)
+        PromptServer.instance.send_sync("my.custom.message", a_dictionary)
+```
+
+#### node_id 얻기
+
+대부분의 기본 제공 메시지에는 `node` 값에 현재 노드 ID가 포함되어 있습니다. 여러분도 같은 방식을 원할 가능성이 높습니다.
+
+노드 ID는 서버 측에서 숨겨진 입력을 통해 사용할 수 있으며, 이는 `INPUT_TYPES` 사전의 `hidden` 키를 통해 얻을 수 있습니다:
+
+```Python
+    @classmethod    
+    def INPUT_TYPES(s):
+        return {"required" : { }, # 필요 입력이 무엇이든 상관없음 
+                "hidden": { "node_id": "UNIQUE_ID" } } # hidden 키 추가
+
+    def my_main_function(self, required_inputs, node_id):
+        # 몇 가지 작업 수행
+        PromptServer.instance.send_sync("my.custom.message", {"node": node_id, "other_things": etc})
+```

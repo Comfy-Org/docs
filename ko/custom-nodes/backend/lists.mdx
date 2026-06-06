@@ -1,0 +1,69 @@
+---
+title: "데이터 목록"
+translationSourceHash: f93052c0
+translationFrom: custom-nodes/backend/lists.mdx
+---
+
+## 길이가 1인 처리
+
+내부적으로 Comfy 서버는 한 노드에서 다음 노드로 흐르는 데이터를 관련 데이터 유형의 파이썬 `list`로 표현하며, 일반적으로 길이는 1입니다.
+일반적인 작동 방식에서는 노드가 출력을 반환할 때 출력 `tuple`의 각 요소가 개별적으로 리스트(길이 1)로 둘러싸입니다. 이후 다음 노드가 호출되면 데이터가 다시 풀려 메인 함수로 전달됩니다.
+
+<Tip>일반적으로 이 부분을 신경 쓸 필요가 없습니다. Comfy가 이미 둘러싸고 풀어주는 작업을 해주기 때문입니다.</Tip>
+
+<Tip>이는 배치와 관련된 것이 아닙니다. 예를 들어 잠재값이나 이미지의 배치는 리스트의 *단일 항목*입니다([텐서 데이터 유형](./images_and_masks) 참조)</Tip>
+
+## 리스트 처리
+
+특정 상황에서는 여러 데이터 인스턴스를 하나의 워크플로우에서 처리하게 되며, 이 경우 내부 데이터는 데이터 인스턴스를 포함한 리스트가 됩니다. 이를테면 VRAM 부족을 피하기 위해 이미지 시리즈를 한 번에 하나씩 처리하거나, 서로 다른 크기의 이미지를 처리하는 경우가 여기에 해당합니다.
+
+기본적으로 Comfy는 리스트의 값을 순차적으로 처리합니다:
+- 입력이 서로 다른 길이의 리스트라면, 짧은 리스트는 마지막 값의 반복으로 채워집니다.
+- 메인 메서드는 입력 리스트의 각 값에 대해 한 번씩 호출됩니다.
+- 출력은 리스트이며, 각 리스트의 길이는 가장 긴 입력과 동일합니다.
+
+관련 코드는 `execution.py`의 `map_node_over_list` 메서드에서 확인할 수 있습니다.
+
+그러나 Comfy가 노드 출력을 길이 1의 리스트로 둘러싸기 때문에, 사용자 정의 노드가 반환하는 `tuple`에 `list`가 포함되어 있으면 해당 `list`도 둘러싸여 하나의 데이터로 취급됩니다. Comfy에게 반환되는 리스트를 둘러싸지 않고 순차적 처리를 위한 데이터 시리즈로 취급하도록 알려주려면, 노드가 클래스 속성 `OUTPUT_IS_LIST`를 제공해야 합니다. 이 속성은 `RETURN_TYPES`와 같은 길이의 `tuple[bool]`이며, 어떤 출력을 그러한 방식으로 처리할지 지정합니다.
+
+노드는 기본 입력 동작을 재정의해 전체 리스트를 한 번의 호출로 받을 수도 있습니다. 이를 위해서는 클래스 속성 `INPUT_IS_LIST`를 `True`로 설정하면 됩니다.
+
+다음은 내장 노드의 예시입니다 - `ImageRebatch`는 하나 이상의 이미지 배치(리스트로 받으므로 `INPUT_IS_LIST - True`)를 받아 요청된 크기의 배치로 재배치합니다.
+
+<Tip>`INPUT_IS_LIST`는 노드 단위입니다. 모든 입력이 동일한 처리를 받습니다. 따라서 `batch_size` 위젯의 값은 `batch_size[0]`로 가져옵니다.</Tip>
+
+```Python
+
+class ImageRebatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "images": ("IMAGE",),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}) }}
+    RETURN_TYPES = ("IMAGE",)
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (True, )
+    FUNCTION = "rebatch"
+    CATEGORY = "image/batch"
+
+    def rebatch(self, images, batch_size):
+        batch_size = batch_size[0]    # 모든 입력이 리스트로 오기 때문에 batch_size는 list[int]
+
+        output_list = []
+        all_images = []
+        for img in images:                    # 각 img는 이미지 배치입니다
+            for i in range(img.shape[0]):     # 각 i는 단일 이미지입니다
+                all_images.append(img[i:i+1])
+
+        for i in range(0, len(all_images), batch_size): # batch_size만큼의 조각을 떼어 각각 새로운 배치로 만듭니다
+            output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # 이미지 배치의 너비나 높이가 다르면 심각한 오류 발생!
+
+        return (output_list,)
+```
+
+
+
+
+
+
+
+#### INPUT_IS_LIST
