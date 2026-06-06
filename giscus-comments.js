@@ -594,6 +594,13 @@
           suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
           discussionLink: '関連ディスカッションを検索',
           newDiscussionLink: '新しいディスカッションを開始'
+        },
+        ko: {
+          title: '💬 토론에 참여하기',
+          message: '접속량이 많아 댓글 기능을 일시적으로 사용할 수 없습니다.',
+          suggestion: '먼저 이 페이지에 대한 관련 토론이 있는지 확인해 주세요. 관련 토론이 없으면 새 토론을 시작해 댓글을 이 페이지와 연결할 수 있습니다.',
+          discussionLink: '관련 토론 찾기',
+          newDiscussionLink: '새 토론 시작'
         }
       },
       network: {
@@ -617,13 +624,21 @@
           suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
           discussionLink: '関連ディスカッションを検索',
           newDiscussionLink: '新しいディスカッションを開始'
+        },
+        ko: {
+          title: '💬 토론에 참여하기',
+          message: '지금은 댓글을 불러올 수 없습니다.',
+          suggestion: '먼저 이 페이지에 대한 관련 토론이 있는지 확인해 주세요. 관련 토론이 없으면 새 토론을 시작해 댓글을 이 페이지와 연결할 수 있습니다.',
+          discussionLink: '관련 토론 찾기',
+          newDiscussionLink: '새 토론 시작'
         }
       }
     };
 
     const isChinesePage = window.location.pathname.includes('/zh/') || window.location.pathname.includes('/cn/');
     const isJapanesePage = window.location.pathname.includes('/ja/');
-    const lang = isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
+    const isKoreanPage = window.location.pathname.includes('/ko/');
+    const lang = isKoreanPage ? 'ko' : isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
     const notice = noticeMessages[noticeType][lang];
     
     const noticeDiv = document.createElement('div');
@@ -774,7 +789,8 @@
     // Set language based on path
     const isChinesePage = newPath.includes('/zh/') || newPath.includes('/cn/');
     const isJapanesePage = newPath.includes('/ja/');
-    const giscusLang = isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
+    const isKoreanPage = newPath.includes('/ko/');
+    const giscusLang = isKoreanPage ? 'ko' : isJapanesePage ? 'ja' : isChinesePage ? 'zh' : 'en';
     script.setAttribute('data-lang', giscusLang);
     
     // Debug logging
