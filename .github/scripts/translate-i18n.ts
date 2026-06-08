@@ -124,8 +124,10 @@ function sourceHash(en: string): string {
 function getExistingHash(content: string): string | null {
   const fmMatch = content.match(/translationSourceHash:\s*"?([a-f0-9]{8})"?/);
   if (fmMatch) return fmMatch[1] ?? null;
-  const commentMatch = content.match(/<!--\s*translationSourceHash:\s*([a-f0-9]{8})\s*-->/);
-  return commentMatch?.[1] ?? null;
+  const mdxComment = content.match(/\{\/\*\s*translationSourceHash:\s*([a-f0-9]{8})\s*\*\/\}/);
+  if (mdxComment) return mdxComment[1] ?? null;
+  const htmlComment = content.match(/<!--\s*translationSourceHash:\s*([a-f0-9]{8})\s*-->/);
+  return htmlComment?.[1] ?? null;
 }
 
 function stripTranslationMetaFromFrontmatter(body: string): string {
@@ -157,8 +159,10 @@ function setTranslationMeta(content: string, hash: string, enPath: string): stri
 
 /** Set hash on snippet files (no frontmatter) via HTML comment */
 function setSnippetHash(content: string, hash: string): string {
-  const stripped = content.replace(/<!--\s*translationSourceHash:\s*[a-f0-9]{8}\s*-->\n?/, "");
-  return `<!-- translationSourceHash: ${hash} -->\n${stripped}`;
+  const stripped = content
+    .replace(/\{\/\*\s*translationSourceHash:\s*[a-f0-9]{8}\s*\*\/\}\n?/, "")
+    .replace(/<!--\s*translationSourceHash:\s*[a-f0-9]{8}\s*-->\n?/, "");
+  return `{/* translationSourceHash: ${hash} */}\n${stripped}`;
 }
 
 async function readFileOr(path: string, fallback = ""): Promise<string> {
