@@ -12,11 +12,12 @@
  * Skips paths listed in translation-config.json skip_paths (e.g. built-in-nodes).
  *
  * Usage:
- *   npm run translate                              # all configured languages
+ *   npm run translate                              # pages + snippets (default)
  *   npm run translate:dry-run                      # preview pending files
  *   npm run translate -- --lang zh,ja              # specific languages
  *   npm run translate:force                        # re-translate everything
  *   npm run translate:snippets                     # snippets only
+ *   npm run translate -- --pages-only              # pages only, skip snippets
  *   npm run translate -- installation/foo.mdx      # specific files
  *   npm run translate:check-truncation             # scan for truncated translations
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
@@ -833,94 +834,77 @@ async function runDocsJsonSync(
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Translate phases (pages + snippets)
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const args = process.argv.slice(2);
-  const dryRun = args.includes("--dry-run");
-  const checkTruncation = args.includes("--check-truncation");
-  const repairTruncated = args.includes("--repair-truncated");
-  const syncDocsJsonOnly = args.includes("--sync-docs-json");
-  const skipDocsJsonSync = args.includes("--no-sync-docs-json");
-  const force = args.includes("--force") || repairTruncated;
-  const snippetsMode = args.includes("--snippets");
-  const selectedLangs = parseLangArg(args);
-  let fileArgs = args.filter(
-    (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
-  );
+type TranslateJob = { relPath: string; lang: LangConfig };
 
-  if (syncDocsJsonOnly) {
-    if (!API_KEY) {
-      console.warn(
-        "No API key — syncing page paths only; nav labels that still match English will not be translated."
-      );
-      console.warn("Set TRANSLATE_API_KEY in .env.local to translate group/tab titles.");
-    }
-    await runDocsJsonSync(selectedLangs, dryRun, {
-      translateLabels: Boolean(API_KEY),
-    });
-    return;
-  }
+interface TranslatePhasePlan {
+  snippetsMode: boolean;
+  fileArgs: string[];
+  label: string;
+}
 
-  if (checkTruncation) {
-    const issues = await scanTruncationIssues({
-      langs: selectedLangs,
-      snippetsMode,
-      fileArgs,
-    });
-    await writeTruncationReport(issues, {
-      replaceLangs:
-        selectedLangs.length < config.languages.length
-          ? selectedLangs.map((l) => l.code)
-          : undefined,
-    });
-    console.log(`Truncation scan: ${issues.length} issue(s) → ${TRANSLATE_LOG_REL}/truncation-issues.txt`);
-    if (issues.length > 0) {
-      console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
-    }
-    return;
-  }
-
-  if (!API_KEY) {
-    console.error(
-      "No API key. Set TRANSLATE_API_KEY or DEEPSEEK_API_KEY in .env.local"
+function filterFileArgsForPhase(fileArgs: string[], snippetsMode: boolean): string[] {
+  return fileArgs
+    .map((f) => stripLangPrefix(f, config.languages))
+    .filter((f) =>
+      snippetsMode
+        ? isEnglishSnippetPath(f.replace(/^snippets\//, ""), pathFilterOpts)
+        : isEnglishPagePath(f, pathFilterOpts)
     );
-    process.exit(1);
-  }
+}
 
-  if (repairTruncated) {
-    const repairFiles = await readTruncationRepairList(
-      selectedLangs.map((l) => l.code)
-    );
-    if (repairFiles.length === 0) {
-      console.error(
-        `No truncation issues in ${TRANSLATE_LOG_REL}/truncation-issues.json for selected language(s).`
-      );
-      console.error("Run: npm run translate:check-truncation -- --lang <code>");
-      process.exit(1);
+function resolveTranslatePhases(
+  snippetsOnly: boolean,
+  pagesOnly: boolean,
+  fileArgs: string[]
+): TranslatePhasePlan[] {
+  if (snippetsOnly) {
+    return [{ snippetsMode: true, fileArgs, label: "snippets" }];
+  }
+  if (pagesOnly) {
+    return [{ snippetsMode: false, fileArgs, label: "pages" }];
+  }
+  if (fileArgs.length > 0) {
+    const plans: TranslatePhasePlan[] = [];
+    const pageArgs = filterFileArgsForPhase(fileArgs, false);
+    const snippetArgs = filterFileArgsForPhase(fileArgs, true);
+    if (pageArgs.length > 0) {
+      plans.push({ snippetsMode: false, fileArgs: pageArgs, label: "pages" });
     }
-    fileArgs = repairFiles;
-    console.log(`Repair-truncated: ${repairFiles.length} file(s) from truncation log`);
+    if (snippetArgs.length > 0) {
+      plans.push({ snippetsMode: true, fileArgs: snippetArgs, label: "snippets" });
+    }
+    return plans.length > 0 ? plans : [{ snippetsMode: false, fileArgs, label: "pages" }];
   }
+  return [
+    { snippetsMode: false, fileArgs: [], label: "pages" },
+    { snippetsMode: true, fileArgs: [], label: "snippets" },
+  ];
+}
 
-  console.log(
-    `Config: model=${MODEL} concurrency=${CONCURRENCY} mode=${IS_QWEN_MT ? "qwen-mt" : "llm"}` +
-      ` languages=${selectedLangs.map((l) => l.code).join(",")}` +
-      `${snippetsMode ? " [snippets]" : ""}` +
-      `${repairTruncated ? " [repair-truncated]" : ""}` +
-      ` skip=[${SKIP_PATHS.join(", ")}]`
-  );
+async function runTranslatePhase(options: {
+  snippetsMode: boolean;
+  fileArgs: string[];
+  phaseLabel: string;
+  selectedLangs: LangConfig[];
+  dryRun: boolean;
+  force: boolean;
+  repairTruncated: boolean;
+}): Promise<{ translatedJobs: TranslateJob[]; failed: number }> {
+  const { snippetsMode, fileArgs, phaseLabel, selectedLangs, dryRun, force } = options;
+
+  console.log(`\n=== ${phaseLabel} ===`);
 
   const files = await collectEnglishFiles(snippetsMode, fileArgs);
   if (files.length === 0) {
-    console.log("No files to process.");
-    return;
+    console.log(`No ${phaseLabel} files to process.`);
+    return { translatedJobs: [], failed: 0 };
   }
 
-  type Job = { relPath: string; lang: LangConfig };
-  const pending: Job[] = [];
-  const upToDate: Job[] = [];
+  const pending: TranslateJob[] = [];
+  const upToDate: TranslateJob[] = [];
 
   for (const lang of selectedLangs) {
     for (const relPath of files) {
@@ -938,34 +922,24 @@ async function main() {
 
       if (!snippetsMode && isChunkedFile(relPath)) {
         const chunkedStatus = getChunkedSyncStatus(enContent, existing, false);
-        if (chunkedStatus.upToDate) {
-          upToDate.push(job);
-        } else {
-          pending.push(job);
-        }
+        if (chunkedStatus.upToDate) upToDate.push(job);
+        else pending.push(job);
         continue;
       }
 
       const hash = sourceHash(enContent);
-      if (existing && getExistingHash(existing) === hash) {
-        upToDate.push(job);
-      } else {
-        pending.push(job);
-      }
+      if (existing && getExistingHash(existing) === hash) upToDate.push(job);
+      else pending.push(job);
     }
   }
 
   console.log(
-    `Files: ${files.length} EN sources × ${selectedLangs.length} lang(s) = ${files.length * selectedLangs.length} pairs; ` +
+    `${phaseLabel}: ${files.length} EN sources × ${selectedLangs.length} lang(s) = ${files.length * selectedLangs.length} pairs; ` +
       `${upToDate.length} up-to-date, ${pending.length} pending`
   );
 
   if (dryRun) {
-    console.log("\nWould translate:");
-    if (!snippetsMode && !skipDocsJsonSync) {
-      console.log("");
-      await runDocsJsonSync(selectedLangs, true);
-    }
+    console.log(`Would translate (${phaseLabel}):`);
     for (const { relPath, lang } of pending.slice(0, 40)) {
       if (!snippetsMode && isChunkedFile(relPath)) {
         const enContent = await readFileOr(makeMapping(lang, relPath, false).enPath);
@@ -978,26 +952,17 @@ async function main() {
         }
         const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
         console.log(`  [${lang.code}] ${relPath}${detail}`);
-        if (cs.pendingBlocks.length > 0 && cs.pendingBlocks.length <= 5) {
-          for (const label of cs.pendingBlocks) {
-            console.log(`      - ${label}`);
-          }
-        }
       } else {
         console.log(`  [${lang.code}] ${relPath}`);
       }
     }
     if (pending.length > 40) console.log(`  ... and ${pending.length - 40} more`);
-    return;
+    return { translatedJobs: [], failed: 0 };
   }
 
   if (pending.length === 0) {
-    console.log("Everything up-to-date. Use --force to re-translate.");
-    if (!snippetsMode && !skipDocsJsonSync) {
-      console.log("");
-      await runDocsJsonSync(selectedLangs, false);
-    }
-    return;
+    console.log(`${phaseLabel}: everything up-to-date.`);
+    return { translatedJobs: [], failed: 0 };
   }
 
   await mkdir(TRANSLATE_LOG_DIR, { recursive: true });
@@ -1005,11 +970,11 @@ async function main() {
   let translated = 0;
   let skipped = 0;
   let failed = 0;
-  const translatedJobs: Job[] = [];
+  const translatedJobs: TranslateJob[] = [];
   const startTime = Date.now();
 
   await pool(pending, CONCURRENCY, async ({ relPath, lang }, idx) => {
-    const tag = `[${idx + 1}/${pending.length}]`;
+    const tag = `[${phaseLabel} ${idx + 1}/${pending.length}]`;
     try {
       const result = await translateFile(relPath, lang, force, snippetsMode);
       const label = `[${lang.code}] ${relPath}`;
@@ -1038,7 +1003,9 @@ async function main() {
   });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`\nDone in ${elapsed}s: ${translated} translated, ${skipped} skipped, ${failed} failed`);
+  console.log(
+    `${phaseLabel} done in ${elapsed}s: ${translated} translated, ${skipped} skipped, ${failed} failed`
+  );
   if (failed > 0) console.log("Re-run to retry failed files.");
 
   if (translatedJobs.length > 0) {
@@ -1051,10 +1018,8 @@ async function main() {
     await writeMismatchReport(runMismatches, scannedPairs);
     if (runMismatches.length > 0) {
       console.log(
-        `\nMismatch notes: ${runMismatches.length} file(s) this run → ${TRANSLATE_LOG_REL}/mismatches.txt`
+        `Mismatch notes (${phaseLabel}): ${runMismatches.length} file(s) → ${TRANSLATE_LOG_REL}/mismatches.txt`
       );
-    } else {
-      console.log(`\nMismatch notes: none this run (log: ${TRANSLATE_LOG_REL}/mismatches.txt)`);
     }
 
     const issues = await scanTruncationIssues({
@@ -1068,15 +1033,138 @@ async function main() {
     );
     if (newIssues.length > 0) {
       console.log(
-        `\nTruncation check: ${newIssues.length} issue(s) in this run → ${TRANSLATE_LOG_REL}/truncation-issues.txt`
+        `Truncation check (${phaseLabel}): ${newIssues.length} issue(s) → ${TRANSLATE_LOG_REL}/truncation-issues.txt`
       );
-      console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
-    } else if (repairTruncated) {
-      console.log("\nTruncation check: repaired files look OK.");
     }
   }
 
-  if (!snippetsMode && !skipDocsJsonSync) {
+  return { translatedJobs, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const args = process.argv.slice(2);
+  const dryRun = args.includes("--dry-run");
+  const checkTruncation = args.includes("--check-truncation");
+  const repairTruncated = args.includes("--repair-truncated");
+  const syncDocsJsonOnly = args.includes("--sync-docs-json");
+  const skipDocsJsonSync = args.includes("--no-sync-docs-json");
+  const force = args.includes("--force") || repairTruncated;
+  const snippetsOnly = args.includes("--snippets") || args.includes("--snippets-only");
+  const pagesOnly = args.includes("--pages-only") || args.includes("--no-snippets");
+  const selectedLangs = parseLangArg(args);
+  let fileArgs = args.filter(
+    (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
+  );
+  const phases = resolveTranslatePhases(snippetsOnly, pagesOnly, fileArgs);
+  const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync;
+
+  if (syncDocsJsonOnly) {
+    if (!API_KEY) {
+      console.warn(
+        "No API key — syncing page paths only; nav labels that still match English will not be translated."
+      );
+      console.warn("Set TRANSLATE_API_KEY in .env.local to translate group/tab titles.");
+    }
+    await runDocsJsonSync(selectedLangs, dryRun, {
+      translateLabels: Boolean(API_KEY),
+    });
+    return;
+  }
+
+  if (checkTruncation) {
+    const scanPhases = snippetsOnly
+      ? [{ snippetsMode: true, fileArgs, label: "snippets" }]
+      : pagesOnly
+        ? [{ snippetsMode: false, fileArgs, label: "pages" }]
+        : [
+            { snippetsMode: false, fileArgs, label: "pages" },
+            { snippetsMode: true, fileArgs, label: "snippets" },
+          ];
+    let allIssues: Awaited<ReturnType<typeof scanTruncationIssues>> = [];
+    for (const phase of scanPhases) {
+      const phaseFiles = filterFileArgsForPhase(fileArgs, phase.snippetsMode);
+      const issues = await scanTruncationIssues({
+        langs: selectedLangs,
+        snippetsMode: phase.snippetsMode,
+        fileArgs: phaseFiles.length > 0 ? phaseFiles : fileArgs,
+      });
+      allIssues = [...allIssues, ...issues];
+    }
+    await writeTruncationReport(allIssues, {
+      replaceLangs:
+        selectedLangs.length < config.languages.length
+          ? selectedLangs.map((l) => l.code)
+          : undefined,
+    });
+    console.log(`Truncation scan: ${allIssues.length} issue(s) → ${TRANSLATE_LOG_REL}/truncation-issues.txt`);
+    if (allIssues.length > 0) {
+      console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
+    }
+    return;
+  }
+
+  if (!API_KEY) {
+    console.error(
+      "No API key. Set TRANSLATE_API_KEY or DEEPSEEK_API_KEY in .env.local"
+    );
+    process.exit(1);
+  }
+
+  if (repairTruncated) {
+    const repairFiles = await readTruncationRepairList(
+      selectedLangs.map((l) => l.code)
+    );
+    if (repairFiles.length === 0) {
+      console.error(
+        `No truncation issues in ${TRANSLATE_LOG_REL}/truncation-issues.json for selected language(s).`
+      );
+      console.error("Run: npm run translate:check-truncation -- --lang <code>");
+      process.exit(1);
+    }
+    fileArgs = repairFiles;
+    console.log(`Repair-truncated: ${repairFiles.length} file(s) from truncation log`);
+  }
+
+  const phaseSummary = phases.map((p) => p.label).join(" → ");
+  console.log(
+    `Config: model=${MODEL} concurrency=${CONCURRENCY} mode=${IS_QWEN_MT ? "qwen-mt" : "llm"}` +
+      ` languages=${selectedLangs.map((l) => l.code).join(",")}` +
+      ` phases=${phaseSummary}` +
+      `${repairTruncated ? " [repair-truncated]" : ""}` +
+      ` skip=[${SKIP_PATHS.join(", ")}]`
+  );
+
+  let totalFailed = 0;
+  for (const phase of phases) {
+    const result = await runTranslatePhase({
+      snippetsMode: phase.snippetsMode,
+      fileArgs: phase.fileArgs,
+      phaseLabel: phase.label,
+      selectedLangs,
+      dryRun,
+      force,
+      repairTruncated,
+    });
+    totalFailed += result.failed;
+  }
+
+  if (dryRun) {
+    if (runDocsJsonAfter) {
+      console.log("");
+      await runDocsJsonSync(selectedLangs, true);
+    }
+    return;
+  }
+
+  if (repairTruncated && totalFailed === 0) {
+    console.log("\nTruncation repair: all targeted files look OK.");
+  }
+
+  if (runDocsJsonAfter) {
     console.log("");
     await runDocsJsonSync(selectedLangs, false);
   }
