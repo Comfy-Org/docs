@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Detect likely truncated translations (unclosed code fences, short body, etc.)
- * and write a repair list to tmp/translate/ (gitignored).
+ * and write a repair list to .github/i18n-logs/translate/ (gitignored).
  *
  * Usage:
  *   npm run translate:check-truncation
@@ -19,12 +19,16 @@ import {
   isEnglishSnippetPath,
   parseLangArg as parseLangArgFromConfig,
   targetRelFromEn,
+  TRANSLATE_LOG_DIR,
+  TRANSLATE_LOG_REL,
+  TRUNCATION_ISSUES_JSON,
+  TRUNCATION_ISSUES_TXT,
 } from "./i18n-config.mjs";
 
 const ROOT = REPO_ROOT;
-const LOG_DIR = join(ROOT, "tmp/translate");
-const JSON_PATH = join(LOG_DIR, "truncation-issues.json");
-const MD_PATH = join(LOG_DIR, "truncation-issues.md");
+const LOG_DIR = TRANSLATE_LOG_DIR;
+const JSON_PATH = TRUNCATION_ISSUES_JSON;
+const TXT_PATH = TRUNCATION_ISSUES_TXT;
 
 interface LangConfig {
   code: string;
@@ -329,7 +333,7 @@ export async function writeTruncationReport(
     "Repair:",
     "  npm run translate:repair-truncated -- --lang ko",
     "",
-    "Note: semantic AI review notes (mismatch) are separate — see tmp/translate/mismatches.md",
+    `Note: semantic AI review notes (mismatch) are separate — see ${TRANSLATE_LOG_REL}/mismatches.txt`,
     "      (only written when `npm run translate` runs and the model reports issues).",
     "",
     "---",
@@ -344,7 +348,7 @@ export async function writeTruncationReport(
     lines.push("");
   }
 
-  await writeFile(MD_PATH, lines.join("\n"));
+  await writeFile(TXT_PATH, lines.join("\n"));
 }
 
 export async function readTruncationRepairList(langFilter?: string[]): Promise<string[]> {
@@ -386,7 +390,7 @@ async function main() {
   }
   if (issues.length > 20) console.log(`  ... and ${issues.length - 20} more`);
 
-  console.log(`\nLog: ${MD_PATH}`);
+  console.log(`\nLog: ${TXT_PATH}`);
   console.log(`JSON: ${JSON_PATH}`);
   if (issues.length > 0) {
     console.log("\nRepair: npm run translate:repair-truncated -- --lang <code>");

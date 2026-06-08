@@ -14,6 +14,17 @@ export const REPO_ROOT = join(SCRIPT_DIR, "../../..");
 
 export const CONFIG_PATH = join(SCRIPT_DIR, "translation-config.json");
 
+/**
+ * Gitignored translation run logs. Lives under `.github/` so Mintlify does not
+ * parse human-readable summaries as MDX (unlike repo-root `tmp/*.md`).
+ */
+export const TRANSLATE_LOG_REL = ".github/i18n-logs/translate";
+export const TRANSLATE_LOG_DIR = join(REPO_ROOT, TRANSLATE_LOG_REL);
+export const TRUNCATION_ISSUES_JSON = join(TRANSLATE_LOG_DIR, "truncation-issues.json");
+export const TRUNCATION_ISSUES_TXT = join(TRANSLATE_LOG_DIR, "truncation-issues.txt");
+export const MISMATCHES_JSON = join(TRANSLATE_LOG_DIR, "mismatches.json");
+export const MISMATCHES_TXT = join(TRANSLATE_LOG_DIR, "mismatches.txt");
+
 /** Repo roots that are never English MDX sources (pages). */
 export const REPO_META_PREFIXES = [
   "snippets/",

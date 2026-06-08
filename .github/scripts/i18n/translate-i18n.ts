@@ -20,6 +20,7 @@
  *   npm run translate -- installation/foo.mdx      # specific files
  *   npm run translate:check-truncation             # scan for truncated translations
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
+ *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths + translate nav labels
  *
  * Requires Bun: https://bun.sh
  *
@@ -51,7 +52,15 @@ import {
   isEnglishSnippetPath,
   localizeMdxPaths,
   parseLangArg as parseLangArgFromConfig,
+  TRANSLATE_LOG_DIR,
+  TRANSLATE_LOG_REL,
+  MISMATCHES_JSON,
+  MISMATCHES_TXT,
 } from "./i18n-config.mjs";
+import {
+  syncDocsJsonFile,
+  formatNavSyncReport,
+} from "./sync-docs-json.mjs";
 
 // ---------------------------------------------------------------------------
 // Load .env.local
@@ -121,9 +130,8 @@ const CONCURRENCY = Number(
     "5"
 );
 const IS_QWEN_MT = MODEL.startsWith("qwen-mt");
-const TRANSLATE_LOG_DIR = join(ROOT, "tmp/translate");
-const MISMATCHES_LOG_PATH = join(TRANSLATE_LOG_DIR, "mismatches.md");
-const MISMATCHES_JSON_PATH = join(TRANSLATE_LOG_DIR, "mismatches.json");
+const MISMATCHES_LOG_PATH = MISMATCHES_TXT;
+const MISMATCHES_JSON_PATH = MISMATCHES_JSON;
 
 interface MismatchEntry {
   lang: string;
@@ -180,7 +188,7 @@ async function writeMismatchReport(
     "Only written when the model appends `=== MISMATCHES ===` to its output.",
     "Path localization (/zh/, /ja/, /ko/, snippets) may appear here but is often expected.",
     "",
-    "See also: `truncation-issues.md` (structural cuts — unclosed fences, short body).",
+    `See also: \`${TRANSLATE_LOG_REL}/truncation-issues.txt\` (structural cuts — unclosed fences, short body).`,
     "",
     "---",
     "",
@@ -233,7 +241,7 @@ function stripTranslationMetaFromFrontmatter(body: string): string {
     .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "");
 }
 
-/** Inject or update translation metadata in frontmatter (hash only — mismatches go to tmp/translate/) */
+/** Inject or update translation metadata in frontmatter (hash only — mismatches go to .github/i18n-logs/translate/) */
 function setTranslationMeta(content: string, hash: string, enPath: string): string {
   const metaBlock = [`translationSourceHash: ${hash}`, `translationFrom: ${enPath}`].join("\n");
 
@@ -802,6 +810,29 @@ async function collectEnglishFiles(snippetsMode: boolean, fileArgs: string[]): P
 }
 
 // ---------------------------------------------------------------------------
+// docs.json navigation sync
+// ---------------------------------------------------------------------------
+
+async function runDocsJsonSync(
+  selectedLangs: LangConfig[],
+  dryRun: boolean,
+  options: { translateLabels?: boolean } = {}
+): Promise<boolean> {
+  const result = await syncDocsJsonFile({
+    selectedCodes: selectedLangs.map((l) => l.code),
+    dryRun,
+    translateLabels: options.translateLabels,
+  });
+  console.log(formatNavSyncReport(result.changes));
+  if (result.changed && dryRun) {
+    console.log("(dry-run: docs.json not written)");
+  } else if (result.changed) {
+    console.log(`Updated ${result.docsJsonPath}`);
+  }
+  return result.changed;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -810,12 +841,27 @@ async function main() {
   const dryRun = args.includes("--dry-run");
   const checkTruncation = args.includes("--check-truncation");
   const repairTruncated = args.includes("--repair-truncated");
+  const syncDocsJsonOnly = args.includes("--sync-docs-json");
+  const skipDocsJsonSync = args.includes("--no-sync-docs-json");
   const force = args.includes("--force") || repairTruncated;
   const snippetsMode = args.includes("--snippets");
   const selectedLangs = parseLangArg(args);
   let fileArgs = args.filter(
     (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
   );
+
+  if (syncDocsJsonOnly) {
+    if (!API_KEY) {
+      console.warn(
+        "No API key — syncing page paths only; nav labels that still match English will not be translated."
+      );
+      console.warn("Set TRANSLATE_API_KEY in .env.local to translate group/tab titles.");
+    }
+    await runDocsJsonSync(selectedLangs, dryRun, {
+      translateLabels: Boolean(API_KEY),
+    });
+    return;
+  }
 
   if (checkTruncation) {
     const issues = await scanTruncationIssues({
@@ -829,7 +875,7 @@ async function main() {
           ? selectedLangs.map((l) => l.code)
           : undefined,
     });
-    console.log(`Truncation scan: ${issues.length} issue(s) → tmp/translate/truncation-issues.md`);
+    console.log(`Truncation scan: ${issues.length} issue(s) → ${TRANSLATE_LOG_REL}/truncation-issues.txt`);
     if (issues.length > 0) {
       console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
     }
@@ -849,7 +895,7 @@ async function main() {
     );
     if (repairFiles.length === 0) {
       console.error(
-        "No truncation issues in tmp/translate/truncation-issues.json for selected language(s)."
+        `No truncation issues in ${TRANSLATE_LOG_REL}/truncation-issues.json for selected language(s).`
       );
       console.error("Run: npm run translate:check-truncation -- --lang <code>");
       process.exit(1);
@@ -916,6 +962,10 @@ async function main() {
 
   if (dryRun) {
     console.log("\nWould translate:");
+    if (!snippetsMode && !skipDocsJsonSync) {
+      console.log("");
+      await runDocsJsonSync(selectedLangs, true);
+    }
     for (const { relPath, lang } of pending.slice(0, 40)) {
       if (!snippetsMode && isChunkedFile(relPath)) {
         const enContent = await readFileOr(makeMapping(lang, relPath, false).enPath);
@@ -943,6 +993,10 @@ async function main() {
 
   if (pending.length === 0) {
     console.log("Everything up-to-date. Use --force to re-translate.");
+    if (!snippetsMode && !skipDocsJsonSync) {
+      console.log("");
+      await runDocsJsonSync(selectedLangs, false);
+    }
     return;
   }
 
@@ -997,10 +1051,10 @@ async function main() {
     await writeMismatchReport(runMismatches, scannedPairs);
     if (runMismatches.length > 0) {
       console.log(
-        `\nMismatch notes: ${runMismatches.length} file(s) this run → tmp/translate/mismatches.md`
+        `\nMismatch notes: ${runMismatches.length} file(s) this run → ${TRANSLATE_LOG_REL}/mismatches.txt`
       );
     } else {
-      console.log(`\nMismatch notes: none this run (log: tmp/translate/mismatches.md)`);
+      console.log(`\nMismatch notes: none this run (log: ${TRANSLATE_LOG_REL}/mismatches.txt)`);
     }
 
     const issues = await scanTruncationIssues({
@@ -1014,12 +1068,17 @@ async function main() {
     );
     if (newIssues.length > 0) {
       console.log(
-        `\nTruncation check: ${newIssues.length} issue(s) in this run → tmp/translate/truncation-issues.md`
+        `\nTruncation check: ${newIssues.length} issue(s) in this run → ${TRANSLATE_LOG_REL}/truncation-issues.txt`
       );
       console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
     } else if (repairTruncated) {
       console.log("\nTruncation check: repaired files look OK.");
     }
+  }
+
+  if (!snippetsMode && !skipDocsJsonSync) {
+    console.log("");
+    await runDocsJsonSync(selectedLangs, false);
   }
 }
 
