@@ -117,7 +117,9 @@ npm run translate -- installation/manual_install.mdx
 
 - **Input**: English MDX (primary) + existing target-language file as context (if present)
 - **Output**: Updated files under `zh/`, `ja/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
+- **Review notes**: AI-reported translation issues are written to `tmp/translate/mismatches.md` (gitignored), not into MDX frontmatter
 - **Skipped paths**: `built-in-nodes/` (configured in `translation-config.json` → `skip_paths`)
+- **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand
 
 Script location: `.github/scripts/translate-i18n.ts`

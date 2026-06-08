@@ -117,7 +117,9 @@ npm run translate -- installation/manual_install.mdx
 
 - **入力**: 英語 MDX（主ソース）+ 既存の訳文（コンテキスト、あれば）
 - **出力**: `zh/`、`ja/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
+- **レビューメモ**: モデルが報告した翻訳上の問題は `tmp/translate/mismatches.md`（gitignore）に書き込み、MDX frontmatter には入れません
 - **スキップ**: `built-in-nodes/`（`translation-config.json` の `skip_paths`）
+- **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して EN と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
 - **ディレクトリ**: ファイル書き込み時にサブディレクトリを自動作成（手動の `mkdir` は不要）
 
 スクリプト：`.github/scripts/translate-i18n.ts`

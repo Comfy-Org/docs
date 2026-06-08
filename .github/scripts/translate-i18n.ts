@@ -71,8 +71,14 @@ interface LangConfig {
   snippets_dir: string;
 }
 
+interface ChunkedFileConfig {
+  path: string;
+  strategy: "update_blocks";
+}
+
 interface TranslationConfig {
   skip_paths: string[];
+  chunked_files?: ChunkedFileConfig[];
   languages: LangConfig[];
   preserve_terms: string[];
 }
@@ -99,8 +105,10 @@ const CONCURRENCY = Number(
     "5"
 );
 const IS_QWEN_MT = MODEL.startsWith("qwen-mt");
-const ERRORS_PATH = join(ROOT, "tmp/ERRORS.md");
+const TRANSLATE_LOG_DIR = join(ROOT, "tmp/translate");
+const MISMATCHES_LOG_PATH = join(TRANSLATE_LOG_DIR, "mismatches.md");
 const SKIP_PATHS: string[] = config.skip_paths ?? ["built-in-nodes"];
+const CHUNKED_FILES: ChunkedFileConfig[] = config.chunked_files ?? [];
 const PRESERVE_TERMS: string[] = config.preserve_terms ?? [];
 
 // ---------------------------------------------------------------------------
@@ -120,21 +128,21 @@ function getExistingHash(content: string): string | null {
   return commentMatch?.[1] ?? null;
 }
 
-/** Inject or update translation metadata in frontmatter */
-function setTranslationMeta(
-  content: string,
-  hash: string,
-  enPath: string,
-  mismatches: string[]
-): string {
-  const metaLines = [`translationSourceHash: ${hash}`, `translationFrom: ${enPath}`];
-  if (mismatches.length > 0) {
-    metaLines.push(`translationMismatches:`);
-    for (const m of mismatches) {
-      metaLines.push(`  - "${m.replace(/"/g, '\\"')}"`);
-    }
-  }
-  const metaBlock = metaLines.join("\n");
+function stripTranslationMetaFromFrontmatter(body: string): string {
+  return body
+    .replace(/\ntranslationSourceHash:.*/, "")
+    .replace(/\ntranslationFrom:.*/, "")
+    .replace(/\ntranslationBlockHashes:[\s\S]*?(?=\n[A-Za-z_][\w-]*:|\s*$)/, "")
+    .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
+    .replace(/^translationSourceHash:.*\n?/, "")
+    .replace(/^translationFrom:.*\n?/, "")
+    .replace(/^translationBlockHashes:[\s\S]*?(?=^[A-Za-z_][\w-]*:|\s*$)/m, "")
+    .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "");
+}
+
+/** Inject or update translation metadata in frontmatter (hash only — mismatches go to tmp/translate/) */
+function setTranslationMeta(content: string, hash: string, enPath: string): string {
+  const metaBlock = [`translationSourceHash: ${hash}`, `translationFrom: ${enPath}`].join("\n");
 
   const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/);
   if (!fmMatch) {
@@ -142,14 +150,7 @@ function setTranslationMeta(
   }
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
-
-  let cleaned = body
-    .replace(/\ntranslationSourceHash:.*/, "")
-    .replace(/\ntranslationFrom:.*/, "")
-    .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
-    .replace(/^translationSourceHash:.*\n?/, "")
-    .replace(/^translationFrom:.*\n?/, "")
-    .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "");
+  const cleaned = stripTranslationMetaFromFrontmatter(body);
 
   return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
 }
@@ -277,7 +278,8 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "DO translate: title, description, sidebarTitle in frontmatter; all prose; Card title/children text; table content; list items.",
     "Do NOT translate: component tag names, code inside ``` blocks, code identifiers in backticks, URLs, file paths, image paths.",
     preserveStr ? `Do NOT translate these technical terms: ${preserveStr}` : "",
-    "If you notice issues in the existing translation relative to the English (wrong meaning, missing section), note them AFTER the MDX content, separated by a line containing only '=== MISMATCHES ===' followed by one issue per line.",
+    "If you notice semantic issues in the existing translation relative to the English (wrong meaning, missing section, untranslated prose), note them AFTER the MDX content, separated by a line containing only '=== MISMATCHES ===' followed by one issue per line.",
+    "Do NOT report expected localization as issues: /{lang}/ internal links, translated snippet import paths, or other path prefix changes applied for the target locale.",
     "If no issues, output only the translated MDX with no separator.",
     "NEVER use HTML comments in the MDX output.",
   ]
@@ -410,6 +412,181 @@ function cleanModelOutput(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Chunked translation (<Update> blocks — changelog/index.mdx)
+// ---------------------------------------------------------------------------
+
+interface UpdateBlock {
+  label: string;
+  content: string;
+}
+
+interface ParsedUpdateDocument {
+  frontmatter: string;
+  blocks: UpdateBlock[];
+}
+
+function isChunkedFile(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, "/");
+  return CHUNKED_FILES.some(
+    (c) => c.strategy === "update_blocks" && normalized === c.path.replace(/\\/g, "/")
+  );
+}
+
+function parseFrontmatterAndBody(content: string): { frontmatter: string; body: string } {
+  const match = content.match(/^(---\n[\s\S]*?\n---)\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: "", body: content };
+  return { frontmatter: `${match[1]}\n`, body: match[2] };
+}
+
+function parseUpdateBlocks(body: string): UpdateBlock[] {
+  const blocks: UpdateBlock[] = [];
+  const re = /<Update\s+label="([^"]+)"[^>]*>[\s\S]*?<\/Update>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) {
+    blocks.push({ label: match[1], content: match[0] });
+  }
+  return blocks;
+}
+
+function parseUpdateDocument(content: string): ParsedUpdateDocument {
+  const { frontmatter, body } = parseFrontmatterAndBody(content);
+  return { frontmatter, blocks: parseUpdateBlocks(body) };
+}
+
+/** Changelog sync key: ordered version labels only (content edits to old blocks are ignored). */
+function changelogLabelHash(enDoc: ParsedUpdateDocument): string {
+  return sourceHash(enDoc.blocks.map((b) => b.label).join("|"));
+}
+
+interface ChunkedSyncStatus {
+  upToDate: boolean;
+  pendingBlocks: string[];
+  needsFrontmatter: boolean;
+}
+
+function getChunkedSyncStatus(
+  enContent: string,
+  existingContent: string,
+  force: boolean
+): ChunkedSyncStatus {
+  const enDoc = parseUpdateDocument(enContent);
+  const existingDoc = existingContent ? parseUpdateDocument(existingContent) : null;
+  const existingLabels = new Set((existingDoc?.blocks ?? []).map((b) => b.label));
+
+  if (force) {
+    return {
+      upToDate: false,
+      pendingBlocks: enDoc.blocks.map((b) => b.label),
+      needsFrontmatter: true,
+    };
+  }
+
+  const pendingBlocks = enDoc.blocks
+    .filter((b) => !existingLabels.has(b.label))
+    .map((b) => b.label);
+
+  return {
+    upToDate: pendingBlocks.length === 0 && Boolean(existingDoc),
+    pendingBlocks,
+    needsFrontmatter: !existingDoc,
+  };
+}
+
+async function translateUpdateChunkedFile(
+  relPath: string,
+  lang: LangConfig,
+  force: boolean,
+  enContent: string,
+  existingContent: string,
+  enRel: string
+): Promise<{
+  mismatches: string[];
+  status: "translated" | "skipped" | "up-to-date";
+  blocksTranslated: number;
+  output: string | null;
+}> {
+  const status = getChunkedSyncStatus(enContent, existingContent, force);
+  if (status.upToDate) {
+    return { mismatches: [], status: "up-to-date", blocksTranslated: 0, output: null };
+  }
+
+  const enDoc = parseUpdateDocument(enContent);
+  const existingDoc = existingContent ? parseUpdateDocument(existingContent) : null;
+  const existingByLabel = new Map(
+    (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
+  );
+
+  const allMismatches: string[] = [];
+  const outputBlocks: string[] = [];
+  let blocksTranslated = 0;
+
+  let translatedFrontmatter = existingDoc?.frontmatter ?? "";
+  if (force || status.needsFrontmatter) {
+    console.log(`    Translating frontmatter...`);
+    const fmResult = IS_QWEN_MT
+      ? await translateWithQwenMT(enDoc.frontmatter, existingDoc?.frontmatter ?? "", lang)
+      : await translateWithLLM(
+          enDoc.frontmatter,
+          existingDoc?.frontmatter ?? "",
+          lang,
+          `${relPath}#frontmatter`
+        );
+    translatedFrontmatter = cleanModelOutput(fmResult.content);
+    if (!translatedFrontmatter.trim().startsWith("---")) {
+      translatedFrontmatter = enDoc.frontmatter;
+    }
+    allMismatches.push(...fmResult.mismatches);
+  } else {
+    translatedFrontmatter = existingDoc!.frontmatter;
+  }
+
+  for (const enBlock of enDoc.blocks) {
+    const existingBlock = existingByLabel.get(enBlock.label);
+
+    if (!force && existingBlock) {
+      outputBlocks.push(existingBlock);
+      continue;
+    }
+
+    console.log(`    Translating block: ${enBlock.label}...`);
+    const blockResult = IS_QWEN_MT
+      ? await translateWithQwenMT(enBlock.content, existingBlock ?? "", lang)
+      : await translateWithLLM(
+          enBlock.content,
+          existingBlock ?? "",
+          lang,
+          `${relPath}#${enBlock.label}`
+        );
+
+    let translatedBlock = cleanModelOutput(blockResult.content);
+    translatedBlock = localizePaths(translatedBlock, lang.code, lang.snippets_dir);
+
+    if (!translatedBlock.includes("<Update")) {
+      console.log(`    [WARN] Block ${enBlock.label}: invalid output, keeping existing`);
+      translatedBlock = existingBlock ?? enBlock.content;
+    } else {
+      blocksTranslated++;
+    }
+
+    outputBlocks.push(translatedBlock);
+    allMismatches.push(...blockResult.mismatches);
+  }
+
+  const fileHash = changelogLabelHash(enDoc);
+  const body = `${outputBlocks.join("\n\n")}\n`;
+  const output = setTranslationMeta(`${translatedFrontmatter}\n${body}`, fileHash, enRel);
+
+  const didWork = blocksTranslated > 0 || status.needsFrontmatter;
+
+  return {
+    mismatches: allMismatches,
+    status: didWork ? "translated" : "up-to-date",
+    blocksTranslated,
+    output,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Translate a single file for one language
 // ---------------------------------------------------------------------------
 
@@ -418,7 +595,7 @@ async function translateFile(
   lang: LangConfig,
   force: boolean,
   snippetsMode: boolean
-): Promise<{ mismatches: string[]; status: "translated" | "skipped" | "up-to-date" }> {
+): Promise<{ mismatches: string[]; status: "translated" | "skipped" | "up-to-date"; blocksTranslated?: number }> {
   const { enPath, targetPath, enRel } = makeMapping(lang, relPath, snippetsMode);
 
   const enContent = await readFileOr(enPath);
@@ -432,8 +609,35 @@ async function translateFile(
     return { mismatches: [], status: "skipped" };
   }
 
-  const hash = sourceHash(enContent);
   const existingContent = await readFileOr(targetPath);
+
+  if (!snippetsMode && isChunkedFile(relPath)) {
+    console.log(`  → [CHUNKED] ${lang.code}/${relPath}`);
+    const chunked = await translateUpdateChunkedFile(
+      relPath,
+      lang,
+      force,
+      enContent,
+      existingContent,
+      enRel
+    );
+    if (chunked.status === "up-to-date" || !chunked.output) {
+      return {
+        mismatches: [],
+        status: "up-to-date",
+        blocksTranslated: 0,
+      };
+    }
+    await mkdir(dirname(targetPath), { recursive: true });
+    await writeFile(targetPath, chunked.output);
+    return {
+      mismatches: chunked.mismatches,
+      status: "translated",
+      blocksTranslated: chunked.blocksTranslated,
+    };
+  }
+
+  const hash = sourceHash(enContent);
 
   if (!force && existingContent && getExistingHash(existingContent) === hash) {
     return { mismatches: [], status: "up-to-date" };
@@ -449,7 +653,7 @@ async function translateFile(
   if (snippetsMode) {
     output = setSnippetHash(output, hash);
   } else {
-    output = setTranslationMeta(output, hash, enRel, result.mismatches);
+    output = setTranslationMeta(output, hash, enRel);
   }
 
   await mkdir(dirname(targetPath), { recursive: true });
@@ -561,8 +765,19 @@ async function main() {
         continue;
       }
 
-      const hash = sourceHash(enContent);
       const existing = await readFileOr(targetPath);
+
+      if (!snippetsMode && isChunkedFile(relPath)) {
+        const chunkedStatus = getChunkedSyncStatus(enContent, existing, false);
+        if (chunkedStatus.upToDate) {
+          upToDate.push(job);
+        } else {
+          pending.push(job);
+        }
+        continue;
+      }
+
+      const hash = sourceHash(enContent);
       if (existing && getExistingHash(existing) === hash) {
         upToDate.push(job);
       } else {
@@ -579,7 +794,25 @@ async function main() {
   if (dryRun) {
     console.log("\nWould translate:");
     for (const { relPath, lang } of pending.slice(0, 40)) {
-      console.log(`  [${lang.code}] ${relPath}`);
+      if (!snippetsMode && isChunkedFile(relPath)) {
+        const enContent = await readFileOr(makeMapping(lang, relPath, false).enPath);
+        const existing = await readFileOr(makeMapping(lang, relPath, false).targetPath);
+        const cs = getChunkedSyncStatus(enContent, existing, false);
+        const parts: string[] = [];
+        if (cs.needsFrontmatter) parts.push("frontmatter");
+        if (cs.pendingBlocks.length > 0) {
+          parts.push(`${cs.pendingBlocks.length} missing version(s)`);
+        }
+        const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+        console.log(`  [${lang.code}] ${relPath}${detail}`);
+        if (cs.pendingBlocks.length > 0 && cs.pendingBlocks.length <= 5) {
+          for (const label of cs.pendingBlocks) {
+            console.log(`      - ${label}`);
+          }
+        }
+      } else {
+        console.log(`  [${lang.code}] ${relPath}`);
+      }
     }
     if (pending.length > 40) console.log(`  ... and ${pending.length - 40} more`);
     return;
@@ -590,7 +823,7 @@ async function main() {
     return;
   }
 
-  await mkdir(join(ROOT, "tmp"), { recursive: true });
+  await mkdir(TRANSLATE_LOG_DIR, { recursive: true });
   const allMismatches: { file: string; lang: string; issues: string[] }[] = [];
   let translated = 0;
   let skipped = 0;
@@ -604,8 +837,13 @@ async function main() {
       const label = `[${lang.code}] ${relPath}`;
       if (result.status === "translated") {
         translated++;
-        const note = result.mismatches.length > 0 ? ` (${result.mismatches.length} mismatches)` : "";
-        console.log(`${tag} OK   ${label}${note}`);
+        const blockNote =
+          result.blocksTranslated != null && result.blocksTranslated > 0
+            ? ` (${result.blocksTranslated} block(s))`
+            : "";
+        const mismatchNote =
+          result.mismatches.length > 0 ? ` (${result.mismatches.length} mismatches)` : "";
+        console.log(`${tag} OK   ${label}${blockNote}${mismatchNote}`);
         if (result.mismatches.length > 0) {
           allMismatches.push({ file: relPath, lang: lang.code, issues: result.mismatches });
         }
@@ -622,10 +860,14 @@ async function main() {
 
   if (allMismatches.length > 0) {
     const lines = [
-      "# Translation Mismatch Report",
+      "# Translation review notes (not committed to git)",
       "",
       `Generated: ${new Date().toISOString()}`,
-      `Files with mismatches: ${allMismatches.length}`,
+      `Model: ${MODEL}`,
+      `Files with notes: ${allMismatches.length}`,
+      "",
+      "These are AI-reported differences between English and the translation.",
+      "Path localization (/zh/, /ja/, snippets) may appear here but is expected.",
       "",
       "---",
       "",
@@ -635,8 +877,8 @@ async function main() {
       for (const issue of issues) lines.push(`- ${issue}`);
       lines.push("");
     }
-    await writeFile(ERRORS_PATH, lines.join("\n"));
-    console.log(`\nMismatch report: ${ERRORS_PATH}`);
+    await writeFile(MISMATCHES_LOG_PATH, lines.join("\n"));
+    console.log(`\nReview notes written to: ${MISMATCHES_LOG_PATH} (gitignored)`);
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

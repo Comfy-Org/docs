@@ -117,7 +117,9 @@ npm run translate -- installation/manual_install.mdx
 
 - **输入**：英文 MDX（主源）+ 目标语言现有译文（作上下文，若有）
 - **输出**：写入 `zh/`、`ja/` 等目录，并更新 frontmatter 中的 `translationSourceHash`（snippet 使用 HTML 注释保存 hash）
+- **审阅备注**：模型报告的翻译问题写入 `tmp/translate/mismatches.md`（已 gitignore），不会写入 MDX frontmatter
 - **跳过路径**：`built-in-nodes/`（在 `translation-config.json` 的 `skip_paths` 中配置）
+- **分块文件**：`changelog/index.mdx` 按 `<Update label="v0.x.x">` 版本号对比，只翻译**缺失**的版本并插入到对应位置；旧版本不会重译（除非 `--force`）
 - **目录**：写入文件时会自动创建子目录，无需手动 `mkdir`
 
 脚本路径：`.github/scripts/translate-i18n.ts`
