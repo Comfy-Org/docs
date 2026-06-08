@@ -11,6 +11,8 @@ npm i
 npm run dev
 ```
 
+英語ドキュメント編集後の翻訳同期は、下記 [自動翻訳](#自動翻訳)（`npm run translate`）を参照してください。
+
 ### PR を作成する
 
 PR を作成してください。承認されると、Vercel が変更を https://docs.comfy.org/ にデプロイします。
@@ -73,88 +75,89 @@ PR を作成していただければ、数日以内にレビューします。
 
 ### i18n への貢献
 
-Mintlify はバージョニングを使用して他の言語を追加します。ページの翻訳を追加するには、次の手順に従ってください：
+リポジトリルートの英語 MDX が**唯一のソース**です。他言語は同じ相対パスでミラーします（例：`zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`）。再利用フラグメントは `snippets/` にあり、各言語のコピーは `snippets/zh/`、`snippets/ja/` などに置きます。
 
-1. 元の英語のファイル名とまったく同じファイル名で、言語コードの下にファイルを作成します。
+MDX の編集仕様は [Mintlify](https://mintlify.com/docs/page) の Writing Content を参照してください。
 
-たとえば、`introduction.mdx` を中国語に翻訳する場合、`zh/get_started/introduction.mdx` の下にファイルを作成します。
+> **注**: `built-in-nodes/` は [embedded-docs](https://github.com/Comfy-Org/embedded-docs) で管理されており、翻訳スクリプトはこのディレクトリを**自動的にスキップ**します。
 
-ファイル編集の仕様については、[Mintlify](https://mintlify.com/docs/page) ドキュメントの Writing Content セクションに記載されています。
+#### 自動翻訳
 
-> **重要**: 英語のドキュメントで既存の MDX ファイルを変更する場合は、`zh` ディレクトリ内の対応するファイルも更新する必要があります。GitHub Action がこれを自動的にチェックし、対応する中国語の翻訳が更新されていない場合は PR を失敗させます。
+本リポジトリには hash ベースの翻訳スクリプトがあります。英語ソースと訳文の `translationSourceHash` を比較し、英語が変わったファイルは**全文を再翻訳**します。
 
-2. `docs.json` のナビゲーションを更新する
+**準備**
 
-設定の詳細については、[Mintlify ローカリゼーション](https://mintlify.com/docs/navigation/localization) を参照してください。
+1. [Bun](https://bun.sh) をインストール
+2. 環境変数テンプレートをコピーして API キーを設定：
 
-単一のページを翻訳した場合は、新しく翻訳されたページのパスを対応する言語のナビゲーショングループに追加するだけで、その言語バージョンで表示されます。
-
-`introduction.mdx` の場合:
-
-```
-  "navigation": {
-    "languages": [
-      {
-        "language": "en",
-        "groups": [
-              {
-                "group": "Get Started",
-                "pages": [
-                  "get_started/introduction",
-                ...
-                ]
-              },
-            ...
-        ]
-      },
-      {
-        "language": "cn",
-         "groups": [
-              {
-                "group": "开始行动",
-                "pages": [
-                  "zh/get_started/introduction",
-                  ...
-                ]
-              }
-            ]
-      }
-    ]
-    ...
-  }
+```bash
+cp .env.local.example .env.local
+# TRANSLATE_API_KEY を設定（OpenAI 互換 API：DashScope Qwen-MT、OpenRouter、DeepSeek など）
 ```
 
-Mintlify は、`language` 設定に基づいて、異なる言語バージョンで表示するページを自動的に決定します。
+**npm コマンド**
 
-現在、Mintlify は英語 (en)、中国語 (cn)、スペイン語 (es)、フランス語 (fr)、日本語 (jp)、ポルトガル語 (pt)、ブラジルポルトガル語 (pt-BR)、ドイツ語 (de) のローカリゼーションをサポートしています。
+| コマンド | 説明 |
+|---------|------|
+| `npm run translate` | `translation-config.json` に登録された全言語を翻訳 |
+| `npm run translate:dry-run` | API を呼ばず、未翻訳ファイルを一覧表示 |
+| `npm run translate:force` | hash を無視して強制再翻訳 |
+| `npm run translate:snippets` | `snippets/` のみ翻訳 |
+| `npm run translate:snippets:dry-run` | snippet の未翻訳一覧を表示 |
 
-詳細については、[Mintlify ローカリゼーション](https://mintlify.com/docs/navigation/localization) に関する Mintlify のドキュメントを参照してください。
+`--` の後にオプションを渡せます：
+
+```bash
+npm run translate -- --lang zh,ja
+npm run translate:dry-run -- --lang ja
+npm run translate -- installation/manual_install.mdx
+```
+
+**動作概要**
+
+- **入力**: 英語 MDX（主ソース）+ 既存の訳文（コンテキスト、あれば）
+- **出力**: `zh/`、`ja/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
+- **レビューメモ**: モデルが報告した翻訳上の問題は `tmp/translate/mismatches.md`（gitignore）に書き込み、MDX frontmatter には入れません
+- **スキップ**: `built-in-nodes/`（`translation-config.json` の `skip_paths`）
+- **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して EN と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
+- **ディレクトリ**: ファイル書き込み時にサブディレクトリを自動作成（手動の `mkdir` は不要）
+
+スクリプト：`.github/scripts/translate-i18n.ts`
 
 #### 新しい言語の追加
 
-まだ言語が存在しない場合、たとえば `introduction.mdx` のフランス語翻訳を追加したい場合は、ルートディレクトリに新しい `fr-FR` フォルダを作成し、翻訳を完了してから、`docs.json` の `languages` の下に次のコンテンツを追加します：
+1. `.github/scripts/translation-config.json` の `languages` に登録：
 
-```
+```json
 {
-  "languages": [
-    ...
-    {
-        "language": "fr",
-        "groups": [
-              {
-                "group": "Get Started",
-                "pages": [
-                  "fr-FR/get_started/introduction",
-                  ...
-                ]
-              }
-          ]
-      }
-  ]
+  "code": "fr",
+  "name": "French",
+  "dir": "fr",
+  "snippets_dir": "snippets/fr"
 }
 ```
 
-ロケールは Mintlify のデフォルト UI コンポーネントのテキストを翻訳します。これはオプションです。ロケールの完全なリストは[こちら](https://mintlify.com/docs/settings/global#param-locale)です。
+2. `docs.json` の `navigation.languages` にナビゲーションを追加（英語ツリーをコピーし、パスに `fr/` プレフィックスを付ける）。[Mintlify ローカリゼーション](https://mintlify.com/docs/navigation/localization) を参照。
+
+3. 翻訳を実行：
+
+```bash
+npm run translate:dry-run -- --lang fr
+npm run translate -- --lang fr
+npm run translate:snippets -- --lang fr
+```
+
+`docs.json` の `language` は [Mintlify の言語コード](https://mintlify.com/docs/navigation/localization) と一致させてください。フォルダ名（`fr/`、`zh/`、`ja/`）は `translation-config.json` の `dir` と揃えます。
+
+#### 手動翻訳
+
+スクリプトを使わず手動で翻訳することもできます：
+
+1. 言語ディレクトリに、英語と**同じパス・ファイル名**の MDX を作成。
+2. `import`（`/snippets/...` → `/snippets/ja/...`）と内部リンク（`/path` → `/ja/path`）をローカライズ。
+3. `docs.json` の該当言語ナビにページパスを追加。
+
+英語 MDX を変更した PR では、`i18n-sync-check` が訳文の未更新を**警告**し、PR に [@comfyui-wiki](https://github.com/comfyui-wiki) へリマインドコメントを投稿します。手動で直すか、`npm run translate` を再実行してください。
 
 #### 貢献ワークフローの例
 
