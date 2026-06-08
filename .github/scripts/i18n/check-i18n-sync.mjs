@@ -5,20 +5,18 @@
  * missing redirects for moved files fail the check.
  *
  * Usage (CI):
- *   node .github/scripts/check-i18n-sync.mjs <base_sha> <head_sha>
+ *   node .github/scripts/i18n/check-i18n-sync.mjs <base_sha> <head_sha>
  *
  * Writes JSON summary to path in CHECK_I18N_OUTPUT env (optional).
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { execSync } from "child_process";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
+import { loadI18nConfig, REPO_ROOT, isEnglishMdxPath, targetRelFromEn } from "./i18n-config.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const CONFIG = JSON.parse(
-  readFileSync(join(ROOT, ".github/scripts/translation-config.json"), "utf-8")
-);
+const ROOT = REPO_ROOT;
+const CONFIG = loadI18nConfig();
 
 const [baseSha, headSha] = process.argv.slice(2);
 if (!baseSha || !headSha) {
@@ -26,8 +24,9 @@ if (!baseSha || !headSha) {
   process.exit(1);
 }
 
-const languages = CONFIG.languages ?? [];
-const skipPaths = CONFIG.skip_paths ?? ["built-in-nodes"];
+const languages = CONFIG.languages;
+const skipPaths = CONFIG.skip_paths;
+const pathFilterOpts = { languages, skip_paths: skipPaths };
 
 function git(cmd) {
   return execSync(cmd, { cwd: ROOT, encoding: "utf-8" }).trim();
@@ -39,30 +38,7 @@ function gitLines(cmd) {
 }
 
 function shouldSkipEnglishPath(file) {
-  const normalized = file.replace(/\\/g, "/");
-  if (!normalized.endsWith(".mdx")) return true;
-
-  for (const lang of languages) {
-    if (normalized.startsWith(`${lang.dir}/`)) return true;
-    if (normalized.startsWith(`${lang.snippets_dir}/`)) return true;
-  }
-  for (const lang of languages) {
-    if (normalized.startsWith(`${lang.snippets_dir}/`)) return true;
-  }
-
-  return skipPaths.some(
-    (skip) =>
-      normalized === skip ||
-      normalized.startsWith(`${skip}/`) ||
-      normalized.includes(`/${skip}/`)
-  );
-}
-
-function targetPath(enFile, lang) {
-  if (enFile.startsWith("snippets/")) {
-    return enFile.replace(/^snippets\//, `${lang.snippets_dir}/`);
-  }
-  return `${lang.dir}/${enFile}`;
+  return !isEnglishMdxPath(file, pathFilterOpts);
 }
 
 function matchesPattern(filePath, pattern) {
@@ -155,7 +131,7 @@ for (const lang of languages) {
   const missing = [];
 
   for (const file of changedFiles) {
-    const langFile = targetPath(file, lang);
+    const langFile = targetRelFromEn(file, lang);
     if (acmrtNames.includes(langFile)) {
       console.log(`✅ [${lang.code}] Found corresponding change: ${langFile}`);
       continue;
@@ -169,7 +145,7 @@ for (const lang of languages) {
   }
 
   for (const file of addedFiles) {
-    const langFile = targetPath(file, lang);
+    const langFile = targetRelFromEn(file, lang);
     if (arNames.includes(langFile) || renamedDestinations.includes(langFile)) {
       console.log(`✅ [${lang.code}] Found corresponding added/renamed file: ${langFile}`);
       continue;

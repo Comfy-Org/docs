@@ -1,6 +1,6 @@
 # ComfyUI ドキュメンテーション
 
-| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) | [日本語](https://github.com/Comfy-Org/docs/blob/main/README.ja-JP.md) |
+| [English](../README.md) | [中文](zh-CN.md) | [日本語](ja-JP.md) | [한국어](ko-KR.md) |
 
 ## 開発
 
@@ -44,7 +44,7 @@ GitHub Action がリダイレクトをチェックし、不足している場合
 >   }
 > ]
 > ```
-> `zh` ディレクトリに対応する中国語翻訳ファイルを含めることも忘れないでください！
+> `zh/`、`ja/`、`ko/` などの言語ディレクトリに対応する翻訳ファイルを含めることも忘れないでください！
 
 ワイルドカードパスの追加と一致については、[Mintlify ドキュメント](https://www.mintlify.com/docs/create/redirects) を参照してください。
 
@@ -59,6 +59,7 @@ ComfyUI には、ビルトインノードとカスタムノードの両方に対
 ### ノードドキュメントファイルの構成
 
 ノードドキュメントについては、以下の理由から `built-in-node` フォルダの下に単一レベルのディレクトリ構造を使用します：
+
 - ComfyUI はアップデート中にノードのカテゴリやディレクトリを調整する可能性があり、多階層のディレクトリ構造を使用するとノードドキュメントの頻繁な調整が必要になります
 - これらの頻繁な調整は、リダイレクトやチェックを頻繁に追加する必要があることを意味します
 - Mintlify は `docs.json` ファイルでドキュメント階層を設定することをサポートしているため、そのファイルで統一的な変更を行うことができます
@@ -75,7 +76,11 @@ PR を作成していただければ、数日以内にレビューします。
 
 ### i18n への貢献
 
-リポジトリルートの英語 MDX が**唯一のソース**です。他言語は同じ相対パスでミラーします（例：`zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`）。再利用フラグメントは `snippets/` にあり、各言語のコピーは `snippets/zh/`、`snippets/ja/` などに置きます。
+リポジトリルートの英語 MDX が**唯一のソース**です。他言語は同じ相対パスでミラーします（例：`zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`、`ko/get_started/introduction.mdx`）。再利用フラグメントは `snippets/` にあり、各言語のコピーは `snippets/zh/`、`snippets/ja/`、`snippets/ko/` などに置きます。
+
+**翻訳方針**：対応言語（`zh`、`ja`、`ko` など）は英語からの**自動翻訳**で維持します。英語ドキュメント更新後、メンテナーが `npm run translate` で一括同期します。全ページを手翻訳する必要はありません。
+
+**新しい言語のリクエスト**：[Issue を作成](https://github.com/Comfy-Org/docs/issues/new) して希望の言語（例：フランス語、ドイツ語）をお知らせください。メンテナーが `translation-config.json` と `docs.json` を設定し、**全コンテンツの一括翻訳**を行います。リクエストを送るだけで大丈夫です。訳文 MDX の PR は不要です。
 
 MDX の編集仕様は [Mintlify](https://mintlify.com/docs/page) の Writing Content を参照してください。
 
@@ -104,50 +109,45 @@ cp .env.local.example .env.local
 | `npm run translate:force` | hash を無視して強制再翻訳 |
 | `npm run translate:snippets` | `snippets/` のみ翻訳 |
 | `npm run translate:snippets:dry-run` | snippet の未翻訳一覧を表示 |
+| `npm run translate:check-truncation` | 途中で切れた翻訳をスキャン |
+| `npm run translate:repair-truncated` | ログに記録されたファイルを再翻訳 |
 
 `--` の後にオプションを渡せます：
 
 ```bash
-npm run translate -- --lang zh,ja
-npm run translate:dry-run -- --lang ja
+npm run translate -- --lang zh,ja,ko
+npm run translate:dry-run -- --lang ko
 npm run translate -- installation/manual_install.mdx
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
 ```
+
+**途中切れ翻訳の修復**
+
+長いファイルは翻訳が途中で切れることがあります（コードフェンス未閉じなど）。一括翻訳後は新規翻訳ファイルを自動スキャンし、`tmp/translate/truncation-issues.json` と `truncation-issues.md`（gitignore）に修復リストを書き出します。
+
+```bash
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
+```
+
+`repair-truncated` は JSON ログのファイルのみを強制再翻訳します。
 
 **動作概要**
 
 - **入力**: 英語 MDX（主ソース）+ 既存の訳文（コンテキスト、あれば）
-- **出力**: `zh/`、`ja/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
-- **レビューメモ**: モデルが報告した翻訳上の問題は `tmp/translate/mismatches.md`（gitignore）に書き込み、MDX frontmatter には入れません
+- **出力**: `zh/`、`ja/`、`ko/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
+- **レビューメモ（mismatch）**: モデルが `=== MISMATCHES ===` で報告した意味上の問題は `tmp/translate/mismatches.json` と `mismatches.md`（gitignore）に書き込み、MDX には入れません。`npm run translate` 実行時のみ。截断スキャンでは出ません。
+- **截断ログ**: 構造的な問題は `tmp/translate/truncation-issues.json`（上記「途中切れ翻訳の修復」参照）
 - **スキップ**: `built-in-nodes/`（`translation-config.json` の `skip_paths`）
 - **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して EN と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
 - **ディレクトリ**: ファイル書き込み時にサブディレクトリを自動作成（手動の `mkdir` は不要）
 
-スクリプト：`.github/scripts/translate-i18n.ts`
+スクリプト：`.github/scripts/i18n/`
 
 #### 新しい言語の追加
 
-1. `.github/scripts/translation-config.json` の `languages` に登録：
-
-```json
-{
-  "code": "fr",
-  "name": "French",
-  "dir": "fr",
-  "snippets_dir": "snippets/fr"
-}
-```
-
-2. `docs.json` の `navigation.languages` にナビゲーションを追加（英語ツリーをコピーし、パスに `fr/` プレフィックスを付ける）。[Mintlify ローカリゼーション](https://mintlify.com/docs/navigation/localization) を参照。
-
-3. 翻訳を実行：
-
-```bash
-npm run translate:dry-run -- --lang fr
-npm run translate -- --lang fr
-npm run translate:snippets -- --lang fr
-```
-
-`docs.json` の `language` は [Mintlify の言語コード](https://mintlify.com/docs/navigation/localization) と一致させてください。フォルダ名（`fr/`、`zh/`、`ja/`）は `translation-config.json` の `dir` と揃えます。
+上記「**新しい言語のリクエスト**」を参照 — Issue で申請してください。PR で言語を追加する必要はありません。
 
 #### 手動翻訳
 

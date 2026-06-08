@@ -18,6 +18,8 @@
  *   npm run translate:force                        # re-translate everything
  *   npm run translate:snippets                     # snippets only
  *   npm run translate -- installation/foo.mdx      # specific files
+ *   npm run translate:check-truncation             # scan for truncated translations
+ *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
  *
  * Requires Bun: https://bun.sh
  *
@@ -36,13 +38,26 @@
 import { readdir, readFile, writeFile, mkdir } from "fs/promises";
 import { createHash } from "crypto";
 import { join, dirname, relative } from "path";
+import {
+  readTruncationRepairList,
+  scanTruncationIssues,
+  writeTruncationReport,
+} from "./check-translation-truncation.ts";
+import {
+  loadI18nConfig,
+  REPO_ROOT,
+  stripLangPrefix,
+  isEnglishPagePath,
+  isEnglishSnippetPath,
+  localizeMdxPaths,
+  parseLangArg as parseLangArgFromConfig,
+} from "./i18n-config.mjs";
 
 // ---------------------------------------------------------------------------
 // Load .env.local
 // ---------------------------------------------------------------------------
 
-const ROOT = join(import.meta.dir, "../..");
-const CONFIG_PATH = join(import.meta.dir, "translation-config.json");
+const ROOT = REPO_ROOT;
 
 async function loadEnvLocal() {
   try {
@@ -83,7 +98,8 @@ interface TranslationConfig {
   preserve_terms: string[];
 }
 
-const config: TranslationConfig = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+const config = loadI18nConfig() as TranslationConfig;
+const pathFilterOpts = { languages: config.languages, skip_paths: config.skip_paths };
 
 const BASE_URL =
   process.env.TRANSLATE_API_BASE_URL ??
@@ -107,6 +123,81 @@ const CONCURRENCY = Number(
 const IS_QWEN_MT = MODEL.startsWith("qwen-mt");
 const TRANSLATE_LOG_DIR = join(ROOT, "tmp/translate");
 const MISMATCHES_LOG_PATH = join(TRANSLATE_LOG_DIR, "mismatches.md");
+const MISMATCHES_JSON_PATH = join(TRANSLATE_LOG_DIR, "mismatches.json");
+
+interface MismatchEntry {
+  lang: string;
+  enRel: string;
+  issues: string[];
+}
+
+interface MismatchReport {
+  generated: string;
+  model: string;
+  issueCount: number;
+  entries: MismatchEntry[];
+}
+
+async function readExistingMismatches(): Promise<MismatchEntry[]> {
+  try {
+    const raw = await readFile(MISMATCHES_JSON_PATH, "utf-8");
+    return (JSON.parse(raw) as MismatchReport).entries;
+  } catch {
+    return [];
+  }
+}
+
+/** Merge AI-reported mismatches; drop prior entries for files re-translated in this run. */
+async function writeMismatchReport(
+  newEntries: MismatchEntry[],
+  scannedPairs: { lang: string; enRel: string }[]
+): Promise<void> {
+  await mkdir(TRANSLATE_LOG_DIR, { recursive: true });
+
+  const pairSet = new Set(scannedPairs.map((p) => `${p.lang}:${p.enRel}`));
+  const kept = (await readExistingMismatches()).filter(
+    (e) => !pairSet.has(`${e.lang}:${e.enRel}`)
+  );
+  const merged = [...kept, ...newEntries.filter((e) => e.issues.length > 0)];
+
+  const report: MismatchReport = {
+    generated: new Date().toISOString(),
+    model: MODEL,
+    issueCount: merged.length,
+    entries: merged,
+  };
+
+  await writeFile(MISMATCHES_JSON_PATH, `${JSON.stringify(report, null, 2)}\n`);
+
+  const lines = [
+    "# Translation review notes (not committed to git)",
+    "",
+    `Generated: ${report.generated}`,
+    `Model: ${MODEL}`,
+    `Files with notes: ${merged.length}`,
+    "",
+    "AI-reported semantic issues from `npm run translate` (not from truncation scan).",
+    "Only written when the model appends `=== MISMATCHES ===` to its output.",
+    "Path localization (/zh/, /ja/, /ko/, snippets) may appear here but is often expected.",
+    "",
+    "See also: `truncation-issues.md` (structural cuts — unclosed fences, short body).",
+    "",
+    "---",
+    "",
+  ];
+
+  if (merged.length === 0) {
+    lines.push("_No mismatch notes on record._", "");
+  } else {
+    for (const { enRel, lang, issues } of merged) {
+      lines.push(`## [${lang}] ${enRel}`);
+      for (const issue of issues) lines.push(`- ${issue}`);
+      lines.push("");
+    }
+  }
+
+  await writeFile(MISMATCHES_LOG_PATH, lines.join("\n"));
+}
 const SKIP_PATHS: string[] = config.skip_paths ?? ["built-in-nodes"];
 const CHUNKED_FILES: ChunkedFileConfig[] = config.chunked_files ?? [];
 const PRESERVE_TERMS: string[] = config.preserve_terms ?? [];
@@ -173,16 +264,6 @@ async function readFileOr(path: string, fallback = ""): Promise<string> {
   }
 }
 
-function shouldSkipPath(relPath: string): boolean {
-  const normalized = relPath.replace(/\\/g, "/");
-  return SKIP_PATHS.some(
-    (skip) =>
-      normalized === skip ||
-      normalized.startsWith(`${skip}/`) ||
-      normalized.includes(`/${skip}/`)
-  );
-}
-
 async function collectMdx(dir: string): Promise<string[]> {
   const results: string[] = [];
   const entries = await readdir(dir, { withFileTypes: true });
@@ -198,24 +279,12 @@ async function collectMdx(dir: string): Promise<string[]> {
 }
 
 function parseLangArg(args: string[]): LangConfig[] {
-  const langIdx = args.indexOf("--lang");
-  if (langIdx === -1) return config.languages;
-
-  const value = args[langIdx + 1];
-  if (!value) {
-    console.error("--lang requires a comma-separated list, e.g. --lang zh,ja");
+  try {
+    return parseLangArgFromConfig(args, config.languages) as LangConfig[];
+  } catch (err: unknown) {
+    console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
-
-  const codes = value.split(",").map((c) => c.trim()).filter(Boolean);
-  const selected = config.languages.filter((l) => codes.includes(l.code));
-  const unknown = codes.filter((c) => !selected.some((l) => l.code === c));
-  if (unknown.length > 0) {
-    console.error(`Unknown language code(s): ${unknown.join(", ")}`);
-    console.error(`Available: ${config.languages.map((l) => l.code).join(", ")}`);
-    process.exit(1);
-  }
-  return selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,47 +434,21 @@ interface PathMapping {
 }
 
 function makeMapping(lang: LangConfig, relPath: string, snippetsMode: boolean): PathMapping {
+  const enRel = stripLangPrefix(relPath, config.languages);
   if (snippetsMode) {
     return {
-      enPath: join(ROOT, "snippets", relPath),
-      targetPath: join(ROOT, lang.snippets_dir, relPath),
-      enRel: `snippets/${relPath}`,
-      targetRel: `${lang.snippets_dir}/${relPath}`,
+      enPath: join(ROOT, "snippets", enRel),
+      targetPath: join(ROOT, lang.snippets_dir, enRel),
+      enRel: `snippets/${enRel}`,
+      targetRel: `${lang.snippets_dir}/${enRel}`,
     };
   }
   return {
-    enPath: join(ROOT, relPath),
-    targetPath: join(ROOT, lang.dir, relPath),
-    enRel: relPath,
-    targetRel: `${lang.dir}/${relPath}`,
+    enPath: join(ROOT, enRel),
+    targetPath: join(ROOT, lang.dir, enRel),
+    enRel,
+    targetRel: `${lang.dir}/${enRel}`,
   };
-}
-
-function localizePaths(content: string, langCode: string, snippetsDir: string): string {
-  const langPrefix = langCode;
-  const otherLangs = config.languages.map((l) => l.code).filter((c) => c !== langCode);
-
-  // href="/path" → href="/{lang}/path"
-  const hrefExclude = [langPrefix, ...otherLangs, "logo", "images", "snippets", "http"].join("|");
-  let output = content.replace(
-    new RegExp(`href="\\/(?!${hrefExclude}\\/)([^"]*?)"`, "g"),
-    `href="/${langPrefix}/$1"`
-  );
-
-  // import from "/snippets/..." → "/snippets/{lang}/..."
-  output = output.replace(
-    /from\s+["']\/snippets\/(?!zh\/|ja\/)([^"']+)["']/g,
-    `from "/${snippetsDir}/$1"`
-  );
-
-  // Markdown links ](/path) → ](/{lang}/path)
-  const mdExclude = [langPrefix, ...otherLangs, "logo", "images", "snippets", "http", "#"].join("|");
-  output = output.replace(
-    new RegExp(`\\]\\(\\/(?!${mdExclude})([^)]*?)\\)`, "g"),
-    `](/${langPrefix}/$1)`
-  );
-
-  return output;
 }
 
 function cleanModelOutput(text: string): string {
@@ -652,7 +695,7 @@ async function translateFile(
     : await translateWithLLM(enContent, existingContent, lang, relPath);
 
   let output = cleanModelOutput(result.content);
-  output = localizePaths(output, lang.code, lang.snippets_dir);
+  output = localizeMdxPaths(output, lang, config.languages);
 
   if (snippetsMode) {
     output = setSnippetHash(output, hash);
@@ -692,31 +735,25 @@ async function pool<T>(
 async function collectEnglishFiles(snippetsMode: boolean, fileArgs: string[]): Promise<string[]> {
   if (fileArgs.length > 0) {
     return fileArgs
-      .map((f) => f.replace(/^(ja\/|zh\/|snippets\/(ja|zh)\/)/, ""))
-      .filter((f) => !shouldSkipPath(f));
+      .map((f) => stripLangPrefix(f, config.languages))
+      .filter((f) =>
+        snippetsMode
+          ? isEnglishSnippetPath(f, pathFilterOpts)
+          : isEnglishPagePath(f, pathFilterOpts)
+      );
   }
 
   if (snippetsMode) {
     const all = await collectMdx(join(ROOT, "snippets"));
     return all
       .map((f) => relative(join(ROOT, "snippets"), f))
-      .filter((f) => !f.startsWith("zh/") && !f.startsWith("ja/"))
-      .filter((f) => !shouldSkipPath(f));
+      .filter((f) => isEnglishSnippetPath(f, pathFilterOpts));
   }
 
   const all = await collectMdx(ROOT);
   return all
     .map((f) => relative(ROOT, f))
-    .filter(
-      (f) =>
-        !f.startsWith("zh/") &&
-        !f.startsWith("ja/") &&
-        !f.startsWith("snippets/") &&
-        !f.startsWith("node_modules/") &&
-        !f.startsWith(".github/") &&
-        !f.startsWith("tmp/")
-    )
-    .filter((f) => !shouldSkipPath(f));
+    .filter((f) => isEnglishPagePath(f, pathFilterOpts));
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +761,36 @@ async function collectEnglishFiles(snippetsMode: boolean, fileArgs: string[]): P
 // ---------------------------------------------------------------------------
 
 async function main() {
+  const args = process.argv.slice(2);
+  const dryRun = args.includes("--dry-run");
+  const checkTruncation = args.includes("--check-truncation");
+  const repairTruncated = args.includes("--repair-truncated");
+  const force = args.includes("--force") || repairTruncated;
+  const snippetsMode = args.includes("--snippets");
+  const selectedLangs = parseLangArg(args);
+  let fileArgs = args.filter(
+    (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
+  );
+
+  if (checkTruncation) {
+    const issues = await scanTruncationIssues({
+      langs: selectedLangs,
+      snippetsMode,
+      fileArgs,
+    });
+    await writeTruncationReport(issues, {
+      replaceLangs:
+        selectedLangs.length < config.languages.length
+          ? selectedLangs.map((l) => l.code)
+          : undefined,
+    });
+    console.log(`Truncation scan: ${issues.length} issue(s) → tmp/translate/truncation-issues.md`);
+    if (issues.length > 0) {
+      console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
+    }
+    return;
+  }
+
   if (!API_KEY) {
     console.error(
       "No API key. Set TRANSLATE_API_KEY or DEEPSEEK_API_KEY in .env.local"
@@ -731,19 +798,26 @@ async function main() {
     process.exit(1);
   }
 
-  const args = process.argv.slice(2);
-  const dryRun = args.includes("--dry-run");
-  const force = args.includes("--force");
-  const snippetsMode = args.includes("--snippets");
-  const selectedLangs = parseLangArg(args);
-  const fileArgs = args.filter(
-    (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
-  );
+  if (repairTruncated) {
+    const repairFiles = await readTruncationRepairList(
+      selectedLangs.map((l) => l.code)
+    );
+    if (repairFiles.length === 0) {
+      console.error(
+        "No truncation issues in tmp/translate/truncation-issues.json for selected language(s)."
+      );
+      console.error("Run: npm run translate:check-truncation -- --lang <code>");
+      process.exit(1);
+    }
+    fileArgs = repairFiles;
+    console.log(`Repair-truncated: ${repairFiles.length} file(s) from truncation log`);
+  }
 
   console.log(
     `Config: model=${MODEL} concurrency=${CONCURRENCY} mode=${IS_QWEN_MT ? "qwen-mt" : "llm"}` +
       ` languages=${selectedLangs.map((l) => l.code).join(",")}` +
       `${snippetsMode ? " [snippets]" : ""}` +
+      `${repairTruncated ? " [repair-truncated]" : ""}` +
       ` skip=[${SKIP_PATHS.join(", ")}]`
   );
 
@@ -828,10 +902,11 @@ async function main() {
   }
 
   await mkdir(TRANSLATE_LOG_DIR, { recursive: true });
-  const allMismatches: { file: string; lang: string; issues: string[] }[] = [];
+  const runMismatches: MismatchEntry[] = [];
   let translated = 0;
   let skipped = 0;
   let failed = 0;
+  const translatedJobs: Job[] = [];
   const startTime = Date.now();
 
   await pool(pending, CONCURRENCY, async ({ relPath, lang }, idx) => {
@@ -841,6 +916,7 @@ async function main() {
       const label = `[${lang.code}] ${relPath}`;
       if (result.status === "translated") {
         translated++;
+        translatedJobs.push({ relPath, lang });
         const blockNote =
           result.blocksTranslated != null && result.blocksTranslated > 0
             ? ` (${result.blocksTranslated} block(s))`
@@ -849,7 +925,7 @@ async function main() {
           result.mismatches.length > 0 ? ` (${result.mismatches.length} mismatches)` : "";
         console.log(`${tag} OK   ${label}${blockNote}${mismatchNote}`);
         if (result.mismatches.length > 0) {
-          allMismatches.push({ file: relPath, lang: lang.code, issues: result.mismatches });
+          runMismatches.push({ enRel: relPath, lang: lang.code, issues: result.mismatches });
         }
       } else {
         skipped++;
@@ -862,32 +938,44 @@ async function main() {
     }
   });
 
-  if (allMismatches.length > 0) {
-    const lines = [
-      "# Translation review notes (not committed to git)",
-      "",
-      `Generated: ${new Date().toISOString()}`,
-      `Model: ${MODEL}`,
-      `Files with notes: ${allMismatches.length}`,
-      "",
-      "These are AI-reported differences between English and the translation.",
-      "Path localization (/zh/, /ja/, snippets) may appear here but is expected.",
-      "",
-      "---",
-      "",
-    ];
-    for (const { file, lang, issues } of allMismatches) {
-      lines.push(`## [${lang}] ${file}`);
-      for (const issue of issues) lines.push(`- ${issue}`);
-      lines.push("");
-    }
-    await writeFile(MISMATCHES_LOG_PATH, lines.join("\n"));
-    console.log(`\nReview notes written to: ${MISMATCHES_LOG_PATH} (gitignored)`);
-  }
-
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`\nDone in ${elapsed}s: ${translated} translated, ${skipped} skipped, ${failed} failed`);
   if (failed > 0) console.log("Re-run to retry failed files.");
+
+  if (translatedJobs.length > 0) {
+    const pairs = translatedJobs.map((j) => ({
+      langCode: j.lang.code,
+      enRel: j.relPath,
+    }));
+    const scannedPairs = pairs.map((p) => ({ lang: p.langCode, enRel: p.enRel }));
+
+    await writeMismatchReport(runMismatches, scannedPairs);
+    if (runMismatches.length > 0) {
+      console.log(
+        `\nMismatch notes: ${runMismatches.length} file(s) this run → tmp/translate/mismatches.md`
+      );
+    } else {
+      console.log(`\nMismatch notes: none this run (log: tmp/translate/mismatches.md)`);
+    }
+
+    const issues = await scanTruncationIssues({
+      langs: selectedLangs,
+      snippetsMode,
+      pairs,
+    });
+    await writeTruncationReport(issues, { replacePairs: pairs });
+    const newIssues = issues.filter((i) =>
+      pairs.some((p) => p.langCode === i.lang && p.enRel === i.enRel)
+    );
+    if (newIssues.length > 0) {
+      console.log(
+        `\nTruncation check: ${newIssues.length} issue(s) in this run → tmp/translate/truncation-issues.md`
+      );
+      console.log("Repair: npm run translate:repair-truncated -- --lang <code>");
+    } else if (repairTruncated) {
+      console.log("\nTruncation check: repaired files look OK.");
+    }
+  }
 }
 
 main().catch((err) => {

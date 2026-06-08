@@ -7,11 +7,11 @@
  *   2. --llm     Use a cheap LLM to detect & fix unknown Chinese leaks
  *
  * Usage:
- *   bun .github/scripts/fix-zh-leaks.ts --dict                    # dict-only, all files
- *   bun .github/scripts/fix-zh-leaks.ts --llm                     # LLM scan, all files
- *   bun .github/scripts/fix-zh-leaks.ts --dict --llm              # both
- *   bun .github/scripts/fix-zh-leaks.ts --dict file1.mdx          # specific files
- *   bun .github/scripts/fix-zh-leaks.ts --dry-run --dict          # show what would change
+ *   bun .github/scripts/i18n/fix-zh-leaks.ts --dict                    # dict-only, all files
+ *   bun .github/scripts/i18n/fix-zh-leaks.ts --llm                     # LLM scan, all files
+ *   bun .github/scripts/i18n/fix-zh-leaks.ts --dict --llm              # both
+ *   bun .github/scripts/i18n/fix-zh-leaks.ts --dict file1.mdx          # specific files
+ *   bun .github/scripts/i18n/fix-zh-leaks.ts --dry-run --dict          # show what would change
  *
  * LLM env (uses TRANSLATE_CJK_* or falls back to a cheap model):
  *   FIX_ZH_MODEL    - model for scanning (default: qwen-plus, or use a cheap one like qwen-turbo)
@@ -23,7 +23,7 @@ import { readdir, readFile, writeFile, mkdir } from "fs/promises";
 import { join, relative } from "path";
 import { getActiveDict } from "./zh-ja-dict";
 
-const ROOT = join(import.meta.dir, "../..");
+const ROOT = join(import.meta.dir, "../../..");
 
 // Load .env.local
 async function loadEnvLocal() {

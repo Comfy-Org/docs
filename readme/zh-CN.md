@@ -1,6 +1,6 @@
 # ComfyUI 文档
 
-| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) | [日本語](https://github.com/Comfy-Org/docs/blob/main/README.ja-JP.md) |
+| [English](../README.md) | [中文](zh-CN.md) | [日本語](ja-JP.md) | [한국어](ko-KR.md) |
 
 ## 开发
 
@@ -44,7 +44,7 @@ GitHub Action 将检查重定向规则，如果缺少重定向规则，PR 将无
 >   }
 > ]
 > ```
-> 同时不要忘记在 `zh` 目录中包含相应的中文翻译文件！
+> 同时不要忘记在 `zh/`、`ja/`、`ko/` 等语言目录中包含相应的翻译文件！
 
 你也可以参考 [Mintlify 文档](https://www.mintlify.com/docs/create/redirects) 了解如何添加和匹配通配符路径。
 
@@ -59,6 +59,7 @@ ComfyUI 现在为内置节点和自定义节点都增加了内置的节点帮助
 ### 节点文档文件组织
 
 对于节点文档，我们将采用在 `built-in-node` 文件夹下使用一级目录的形式，以下是对应的原因：
+
 - ComfyUI 可能会在更新过程中调整对应的节点分类和目录，使用多级目录层级意味着要对对应节点文档进行频繁调整
 - 对应的频繁调整意味着我们需要频繁添加重定向和检查
 - Mintlify 支持在 `docs.json` 文件设置文档层级，我们可以统一在这里进行修改
@@ -75,7 +76,11 @@ ComfyUI 现在为内置节点和自定义节点都增加了内置的节点帮助
 
 ### 国际化贡献
 
-仓库根目录的英文 MDX 是**唯一源文件**。其它语言在对应目录下镜像相同路径（例如 `zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`）。可复用片段在 `snippets/` 下，各语言副本位于 `snippets/zh/`、`snippets/ja/` 等。
+仓库根目录的英文 MDX 是**唯一源文件**。其它语言在对应目录下镜像相同路径（例如 `zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`、`ko/get_started/introduction.mdx`）。可复用片段在 `snippets/` 下，各语言副本位于 `snippets/zh/`、`snippets/ja/`、`snippets/ko/` 等。
+
+**翻译方式**：已支持的多语言（如 `zh`、`ja`、`ko`）均通过**自动翻译**维护。英文文档更新后，由维护者批量运行 `npm run translate` 同步译文，无需贡献者逐页手工翻译。
+
+**申请新增语言**：如需其它语言版本，请 [提交 Issue](https://github.com/Comfy-Org/docs/issues/new) 说明所需语言（例如法语、德语）。维护者会完成 `translation-config.json`、`docs.json` 配置，并**批量翻译全部内容**。你只需发起请求，无需自行提交完整译文的 PR。
 
 文件编辑规范见 [Mintlify](https://mintlify.com/docs/page) 文档 Writing Content 部分。
 
@@ -104,50 +109,45 @@ cp .env.local.example .env.local
 | `npm run translate:force` | 忽略 hash，强制全量重译 |
 | `npm run translate:snippets` | 仅翻译 `snippets/` |
 | `npm run translate:snippets:dry-run` | 预览待翻译的 snippet |
+| `npm run translate:check-truncation` | 扫描可能被截断的译文 |
+| `npm run translate:repair-truncated` | 根据截断日志批量重译 |
 
 通过 `--` 传递额外参数：
 
 ```bash
-npm run translate -- --lang zh,ja
-npm run translate:dry-run -- --lang ja
+npm run translate -- --lang zh,ja,ko
+npm run translate:dry-run -- --lang ko
 npm run translate -- installation/manual_install.mdx
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
 ```
+
+**截断译文修复**
+
+长文件偶尔会在翻译中途被截断（例如代码块未闭合）。批量翻译后，脚本会自动扫描本次新翻译的文件，并将修复列表写入 `tmp/translate/truncation-issues.json` 和 `truncation-issues.md`（已 gitignore）。也可手动全量扫描或修复：
+
+```bash
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
+```
+
+`repair-truncated` 读取 JSON 日志，仅对标记的文件强制重译。
 
 **工作原理**
 
 - **输入**：英文 MDX（主源）+ 目标语言现有译文（作上下文，若有）
-- **输出**：写入 `zh/`、`ja/` 等目录，并更新 frontmatter 中的 `translationSourceHash`（snippet 使用 HTML 注释保存 hash）
-- **审阅备注**：模型报告的翻译问题写入 `tmp/translate/mismatches.md`（已 gitignore），不会写入 MDX frontmatter
+- **输出**：写入 `zh/`、`ja/`、`ko/` 等目录，并更新 frontmatter 中的 `translationSourceHash`（snippet 使用 HTML 注释保存 hash）
+- **审阅备注（mismatch）**：模型通过 `=== MISMATCHES ===` 报告的语义问题写入 `tmp/translate/mismatches.json` 和 `mismatches.md`（已 gitignore），不会写入 MDX。仅在 `npm run translate` 时产生，截断扫描不会产生。
+- **截断日志**：结构性问题（未闭合代码块、正文过短等）写入 `tmp/translate/truncation-issues.json`，见上文「截断译文修复」。
 - **跳过路径**：`built-in-nodes/`（在 `translation-config.json` 的 `skip_paths` 中配置）
 - **分块文件**：`changelog/index.mdx` 按 `<Update label="v0.x.x">` 版本号对比，只翻译**缺失**的版本并插入到对应位置；旧版本不会重译（除非 `--force`）
 - **目录**：写入文件时会自动创建子目录，无需手动 `mkdir`
 
-脚本路径：`.github/scripts/translate-i18n.ts`
+脚本路径：`.github/scripts/i18n/`
 
 #### 添加新语言
 
-1. 在 `.github/scripts/translation-config.json` 的 `languages` 中注册：
-
-```json
-{
-  "code": "fr",
-  "name": "French",
-  "dir": "fr",
-  "snippets_dir": "snippets/fr"
-}
-```
-
-2. 在 `docs.json` 的 `navigation.languages` 中添加导航（复制英文结构，路径前缀改为 `fr/`）。参见 [Mintlify 本地化](https://mintlify.com/docs/navigation/localization)。
-
-3. 执行翻译：
-
-```bash
-npm run translate:dry-run -- --lang fr
-npm run translate -- --lang fr
-npm run translate:snippets -- --lang fr
-```
-
-`docs.json` 中的 `language` 须与 [Mintlify 支持的语言代码](https://mintlify.com/docs/navigation/localization) 一致；文件夹名（`fr/`、`zh/`、`ja/`）应与 `translation-config.json` 里的 `dir` 字段一致。
+见上文「**申请新增语言**」——请通过 Issue 申请，无需自行在 PR 中添加语言配置。
 
 #### 手动翻译
 

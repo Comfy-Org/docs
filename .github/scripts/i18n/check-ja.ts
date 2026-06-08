@@ -3,15 +3,15 @@
  * Quality check for Japanese translation files.
  *
  * Usage:
- *   bun .github/scripts/check-ja.ts              # check all ja/ files
- *   bun .github/scripts/check-ja.ts --verbose     # show per-file details
- *   bun .github/scripts/check-ja.ts foo.mdx       # check specific file(s)
+ *   bun .github/scripts/i18n/check-ja.ts              # check all ja/ files
+ *   bun .github/scripts/i18n/check-ja.ts --verbose     # show per-file details
+ *   bun .github/scripts/i18n/check-ja.ts foo.mdx       # check specific file(s)
  */
 
 import { readdir, readFile } from "fs/promises";
 import { join, relative } from "path";
 
-const ROOT = join(import.meta.dir, "../..");
+const ROOT = join(import.meta.dir, "../../..");
 
 // ---------------------------------------------------------------------------
 // Helpers
