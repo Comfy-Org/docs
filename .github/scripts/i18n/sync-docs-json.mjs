@@ -7,7 +7,7 @@
  * remaining English labels via the translation API.
  */
 
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { REPO_ROOT, loadI18nConfig } from "./i18n-config.mjs";
 import {
@@ -64,6 +64,66 @@ function isAlreadyLocalized(existingMap, enLabel) {
 }
 
 export const DOCS_JSON_PATH = join(REPO_ROOT, "docs.json");
+
+/**
+ * Resolve a nav page path to the on-disk path (case-correct). Returns null if missing.
+ * @param {string} pagePath
+ */
+export function resolvePagePathOnDisk(pagePath) {
+  const parts = pagePath.split("/");
+  let dir = REPO_ROOT;
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
+    const isLast = i === parts.length - 1;
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return null;
+    }
+    const want = isLast ? `${seg}.mdx` : seg;
+    const match = entries.find((e) => e.toLowerCase() === want.toLowerCase());
+    if (!match) return null;
+    if (isLast) {
+      return join(...parts.slice(0, -1), match.replace(/\.mdx$/i, ""))
+        .replace(/\\/g, "/")
+        .replace(/^\.\//, "");
+    }
+    dir = join(dir, match);
+  }
+  return pagePath;
+}
+
+/**
+ * Fix page path casing and optionally drop paths with no MDX on disk.
+ * Removes groups that become empty after pruning.
+ * @param {unknown} nodes
+ * @param {{ pruneMissing?: boolean }} [options]
+ */
+export function normalizeNavTree(nodes, options = {}) {
+  const { pruneMissing = false } = options;
+  if (!Array.isArray(nodes)) return [];
+
+  /** @type {unknown[]} */
+  const out = [];
+  for (const node of nodes) {
+    if (typeof node === "string") {
+      const resolved = resolvePagePathOnDisk(node);
+      if (!resolved) {
+        if (!pruneMissing) out.push(node);
+        continue;
+      }
+      out.push(resolved);
+      continue;
+    }
+    if (node && typeof node === "object" && Array.isArray(node.pages)) {
+      const pages = normalizeNavTree(node.pages, options);
+      if (pages.length === 0 && pruneMissing) continue;
+      out.push({ ...node, pages });
+    }
+  }
+  return out;
+}
 
 /** @param {string} path @param {string[]} langDirs */
 export function hasLangDirPrefix(path, langDirs) {
@@ -289,10 +349,13 @@ export function syncTab(enTab, existingTab, lang, langDirs) {
     existingTab?.pages ?? [],
     langDirs
   );
+  const normalizedPages = normalizeNavTree(mergedPages, {
+    pruneMissing: lang.code !== "en",
+  });
 
   return {
     tab: existingTab?.tab ?? enTab.tab,
-    pages: mergedPages,
+    pages: normalizedPages,
   };
 }
 
@@ -393,6 +456,15 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
   const enEntry = nav.languages.find((l) => l.language === "en");
   if (!enEntry) {
     throw new Error("docs.json missing English (en) navigation entry");
+  }
+
+  // Fix EN path casing to match on-disk MDX filenames (case-sensitive hosts / Mintlify).
+  const normalizedEnTabs = (enEntry.tabs ?? []).map((tab) => {
+    if (tab?.openapi != null || !tab?.pages) return tab;
+    return { ...tab, pages: normalizeNavTree(tab.pages, { pruneMissing: false }) };
+  });
+  if (JSON.stringify(normalizedEnTabs) !== JSON.stringify(enEntry.tabs)) {
+    enEntry.tabs = normalizedEnTabs;
   }
 
   /** @type {Array<{ lang: string, added: string[], removed: string[], translatedLabels: string[], pendingLabels?: string[] }>} */

@@ -866,7 +866,7 @@
     const newPath = window.location.pathname;
     
     // Exclude paths that should not have comments
-    const excludedPaths = ['/', '/zh', '/zh/'];
+    const excludedPaths = ['/', '/zh', '/ja', '/ko'];
 
     // Skip if current path is in excluded list or contains API/search paths
     if (excludedPaths.includes(newPath) || newPath.includes('/api/') || newPath.includes('/search')) {

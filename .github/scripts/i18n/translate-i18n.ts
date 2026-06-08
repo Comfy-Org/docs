@@ -230,16 +230,47 @@ function getExistingHash(content: string): string | null {
   return htmlComment?.[1] ?? null;
 }
 
+/** Remove AI mismatch notes that leaked into YAML (orphan list items, field suffixes). */
+function sanitizeFrontmatterBody(body: string): string {
+  const lines = body.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "translationMismatches:") {
+      while (i + 1 < lines.length && /^  - /.test(lines[i + 1])) i++;
+      continue;
+    }
+    if (/^  - "/.test(line)) continue;
+    if (/^[^:]+:\s*.+\s+"description"\s*$/.test(line) && !line.startsWith("description:")) {
+      out.push(line.replace(/\s+"description"\s*$/, ""));
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+function sanitizeMdxFrontmatter(content: string): string {
+  const fmMatch = content.match(/^(---\n)([\s\S]*?)(\n---)/);
+  if (!fmMatch) return content;
+  const [, open, body, close] = fmMatch;
+  const sanitized = sanitizeFrontmatterBody(body);
+  if (sanitized === body) return content;
+  return `${open}${sanitized}${close}${content.slice(fmMatch[0].length)}`;
+}
+
 function stripTranslationMetaFromFrontmatter(body: string): string {
-  return body
-    .replace(/\ntranslationSourceHash:.*/, "")
-    .replace(/\ntranslationFrom:.*/, "")
-    .replace(/\ntranslationBlockHashes:[\s\S]*?(?=\n[A-Za-z_][\w-]*:|\s*$)/, "")
-    .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
-    .replace(/^translationSourceHash:.*\n?/, "")
-    .replace(/^translationFrom:.*\n?/, "")
-    .replace(/^translationBlockHashes:[\s\S]*?(?=^[A-Za-z_][\w-]*:|\s*$)/m, "")
-    .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "");
+  return sanitizeFrontmatterBody(
+    body
+      .replace(/\ntranslationSourceHash:.*/, "")
+      .replace(/\ntranslationFrom:.*/, "")
+      .replace(/\ntranslationBlockHashes:[\s\S]*?(?=\n[A-Za-z_][\w-]*:|\s*$)/, "")
+      .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
+      .replace(/^translationSourceHash:.*\n?/, "")
+      .replace(/^translationFrom:.*\n?/, "")
+      .replace(/^translationBlockHashes:[\s\S]*?(?=^[A-Za-z_][\w-]*:|\s*$)/m, "")
+      .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "")
+  );
 }
 
 /** Inject or update translation metadata in frontmatter (hash only — mismatches go to .github/i18n-logs/translate/) */
@@ -628,7 +659,7 @@ async function translateUpdateChunkedFile(
           lang,
           `${relPath}#frontmatter`
         );
-    translatedFrontmatter = cleanModelOutput(fmResult.content);
+    translatedFrontmatter = sanitizeMdxFrontmatter(cleanModelOutput(fmResult.content));
     if (!translatedFrontmatter.trim().startsWith("---")) {
       translatedFrontmatter = enDoc.frontmatter;
     }
@@ -748,7 +779,7 @@ async function translateFile(
     ? await translateWithQwenMT(enContent, existingContent, lang)
     : await translateWithLLM(enContent, existingContent, lang, relPath);
 
-  let output = cleanModelOutput(result.content);
+  let output = sanitizeMdxFrontmatter(cleanModelOutput(result.content));
   output = localizeMdxPaths(output, lang, config.languages);
 
   if (snippetsMode) {
