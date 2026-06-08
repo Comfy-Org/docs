@@ -155,7 +155,7 @@ npm run translate:snippets -- --lang fr
 2. 本地化 `import`（`/snippets/...` → `/snippets/zh/...`）和内部链接（`/path` → `/zh/path`）。
 3. 在 `docs.json` 对应语言的导航中注册页面路径。
 
-英文 MDX 变更时，CI（`zh-cn-sync-check`、`ja-sync-check`）会在 PR 中**警告**未同步更新的 `zh/` 或 `ja/` 文件。可手工修改译文，或重新运行 `npm run translate`。
+英文 MDX 变更时，`i18n-sync-check` 工作流会**警告**未同步的译文，并在 PR 中留言提醒 [@comfyui-wiki](https://github.com/comfyui-wiki)。可手工修改译文，或重新运行 `npm run translate`。
 
 #### 贡献工作流示例
 

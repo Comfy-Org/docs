@@ -155,7 +155,7 @@ npm run translate:snippets -- --lang fr
 2. `import`（`/snippets/...` → `/snippets/ja/...`）と内部リンク（`/path` → `/ja/path`）をローカライズ。
 3. `docs.json` の該当言語ナビにページパスを追加。
 
-英語 MDX を変更した PR では、CI（`zh-cn-sync-check`、`ja-sync-check`）が `zh/` または `ja/` の未更新を**警告**します。手動で直すか、`npm run translate` を再実行してください。
+英語 MDX を変更した PR では、`i18n-sync-check` が訳文の未更新を**警告**し、PR に [@comfyui-wiki](https://github.com/comfyui-wiki) へリマインドコメントを投稿します。手動で直すか、`npm run translate` を再実行してください。
 
 #### 貢献ワークフローの例
 

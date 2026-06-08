@@ -170,7 +170,7 @@ You can still translate by hand instead of using the script:
 2. Localize `import` paths (`/snippets/...` → `/snippets/zh/...`) and internal links (`/path` → `/zh/path`).
 3. Add the page path to the correct language group in `docs.json`.
 
-When English MDX changes, CI workflows (`zh-cn-sync-check`, `ja-sync-check`) emit **warnings** if matching `zh/` or `ja/` files were not updated in the same PR. Update translations manually or re-run `npm run translate`.
+When English MDX changes, the `i18n-sync-check` workflow warns if matching translation files were not updated in the same PR, and posts a reminder comment tagging [@comfyui-wiki](https://github.com/comfyui-wiki). Update translations manually or re-run `npm run translate`.
 
 #### Contributing Workflow Examples
 
