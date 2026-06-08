@@ -124,7 +124,7 @@ npm run translate:repair-truncated -- --lang ko
 
 **잘린 번역 복구**
 
-긴 파일은 번역 중간에 잘릴 수 있습니다（예: 코드 펜스 미닫힘）. 일괄 번역 후 스크립트가 새로 번역된 파일을 자동 스캔하고, 복구 목록을 `tmp/translate/truncation-issues.json`과 `truncation-issues.md`（gitignore）에 기록합니다.
+긴 파일은 번역 중간에 잘릴 수 있습니다（예: 코드 펜스 미닫힘）. 일괄 번역 후 스크립트가 새로 번역된 파일을 자동 스캔하고, 복구 목록을 `.github/i18n-logs/translate/truncation-issues.json`과 `truncation-issues.txt`（gitignore）에 기록합니다.
 
 ```bash
 npm run translate:check-truncation -- --lang ko
@@ -137,8 +137,8 @@ npm run translate:repair-truncated -- --lang ko
 
 - **입력**: 영문 MDX（주 소스）+ 기존 번역문（컨텍스트, 있는 경우）
 - **출력**: `zh/`, `ja/`, `ko/` 등에 쓰고 frontmatter의 `translationSourceHash` 갱신（snippet은 HTML 주석으로 hash 저장）
-- **검토 메모（mismatch）**: 모델이 `=== MISMATCHES ===`로 보고한 의미상 이슈는 `tmp/translate/mismatches.json`과 `mismatches.md`（gitignore）에 기록되며 MDX에는 넣지 않습니다. `npm run translate` 실행 시에만 생성되며, 잘림 스캔에서는 나오지 않습니다.
-- **잘림 로그**: 구조적 문제（미닫힌 코드 펜스, 본문 과소 등）는 `tmp/translate/truncation-issues.json`에 기록 — 위 「잘린 번역 복구」 참고.
+- **검토 메모（mismatch）**: 모델이 `=== MISMATCHES ===`로 보고한 의미상 이슈는 `.github/i18n-logs/translate/mismatches.json`과 `mismatches.txt`（gitignore）에 기록되며 MDX에는 넣지 않습니다. `npm run translate` 실행 시에만 생성되며, 잘림 스캔에서는 나오지 않습니다.
+- **잘림 로그**: 구조적 문제（미닫힌 코드 펜스, 본문 과소 등）는 `.github/i18n-logs/translate/truncation-issues.json`에 기록 — 위 「잘린 번역 복구」 참고.
 - **건너뛰기**: `built-in-nodes/`（`translation-config.json` → `skip_paths`）
 - **청크 파일**: `changelog/index.mdx`는 `<Update label="v0.x.x">` 버전 라벨을 비교해 **누락된** 버전만 번역하고 EN 순서로 삽입합니다. 기존 블록은 `--force` 없이는 재번역하지 않습니다.
 - **디렉터리**: 파일 쓰기 시 하위 디렉터리 자동 생성（수동 `mkdir` 불필요）

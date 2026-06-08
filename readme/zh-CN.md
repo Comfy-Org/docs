@@ -124,7 +124,7 @@ npm run translate:repair-truncated -- --lang ko
 
 **截断译文修复**
 
-长文件偶尔会在翻译中途被截断（例如代码块未闭合）。批量翻译后，脚本会自动扫描本次新翻译的文件，并将修复列表写入 `tmp/translate/truncation-issues.json` 和 `truncation-issues.md`（已 gitignore）。也可手动全量扫描或修复：
+长文件偶尔会在翻译中途被截断（例如代码块未闭合）。批量翻译后，脚本会自动扫描本次新翻译的文件，并将修复列表写入 `.github/i18n-logs/translate/truncation-issues.json` 和 `truncation-issues.txt`（已 gitignore）。也可手动全量扫描或修复：
 
 ```bash
 npm run translate:check-truncation -- --lang ko
@@ -137,8 +137,8 @@ npm run translate:repair-truncated -- --lang ko
 
 - **输入**：英文 MDX（主源）+ 目标语言现有译文（作上下文，若有）
 - **输出**：写入 `zh/`、`ja/`、`ko/` 等目录，并更新 frontmatter 中的 `translationSourceHash`（snippet 使用 HTML 注释保存 hash）
-- **审阅备注（mismatch）**：模型通过 `=== MISMATCHES ===` 报告的语义问题写入 `tmp/translate/mismatches.json` 和 `mismatches.md`（已 gitignore），不会写入 MDX。仅在 `npm run translate` 时产生，截断扫描不会产生。
-- **截断日志**：结构性问题（未闭合代码块、正文过短等）写入 `tmp/translate/truncation-issues.json`，见上文「截断译文修复」。
+- **审阅备注（mismatch）**：模型通过 `=== MISMATCHES ===` 报告的语义问题写入 `.github/i18n-logs/translate/mismatches.json` 和 `mismatches.txt`（已 gitignore），不会写入 MDX。仅在 `npm run translate` 时产生，截断扫描不会产生。
+- **截断日志**：结构性问题（未闭合代码块、正文过短等）写入 `.github/i18n-logs/translate/truncation-issues.json`，见上文「截断译文修复」。
 - **跳过路径**：`built-in-nodes/`（在 `translation-config.json` 的 `skip_paths` 中配置）
 - **分块文件**：`changelog/index.mdx` 按 `<Update label="v0.x.x">` 版本号对比，只翻译**缺失**的版本并插入到对应位置；旧版本不会重译（除非 `--force`）
 - **目录**：写入文件时会自动创建子目录，无需手动 `mkdir`

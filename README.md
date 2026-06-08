@@ -129,7 +129,7 @@ npm run translate:repair-truncated -- --lang ko
 
 **Truncated translations**
 
-Long files can occasionally be cut off mid-translation (e.g. unclosed code fences). After a batch run, the script scans newly translated files and writes a repair list to `tmp/translate/truncation-issues.json` and `truncation-issues.md` (gitignored). To scan everything for a language, or to repair:
+Long files can occasionally be cut off mid-translation (e.g. unclosed code fences). After a batch run, the script scans newly translated files and writes a repair list to `.github/i18n-logs/translate/truncation-issues.json` and `truncation-issues.txt` (gitignored). To scan everything for a language, or to repair:
 
 ```bash
 npm run translate:check-truncation -- --lang ko
@@ -142,8 +142,8 @@ npm run translate:repair-truncated -- --lang ko
 
 - **Input**: English MDX (primary) + existing target-language file as context (if present)
 - **Output**: Updated files under `zh/`, `ja/`, `ko/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
-- **Review notes (mismatch)**: When the model reports semantic issues via `=== MISMATCHES ===`, they go to `tmp/translate/mismatches.json` and `mismatches.md` (gitignored), not into MDX. Only produced during `npm run translate`, not by the truncation scanner.
-- **Truncation log**: Structural issues (unclosed code fences, short body) go to `tmp/translate/truncation-issues.json` — see [Truncated translations](#truncated-translations) above.
+- **Review notes (mismatch)**: When the model reports semantic issues via `=== MISMATCHES ===`, they go to `.github/i18n-logs/translate/mismatches.json` and `mismatches.txt` (gitignored), not into MDX. Only produced during `npm run translate`, not by the truncation scanner.
+- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#truncated-translations) above.
 - **Skipped paths**: `built-in-nodes/` (configured in `translation-config.json` → `skip_paths`)
 - **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand

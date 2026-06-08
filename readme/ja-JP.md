@@ -124,7 +124,7 @@ npm run translate:repair-truncated -- --lang ko
 
 **途中切れ翻訳の修復**
 
-長いファイルは翻訳が途中で切れることがあります（コードフェンス未閉じなど）。一括翻訳後は新規翻訳ファイルを自動スキャンし、`tmp/translate/truncation-issues.json` と `truncation-issues.md`（gitignore）に修復リストを書き出します。
+長いファイルは翻訳が途中で切れることがあります（コードフェンス未閉じなど）。一括翻訳後は新規翻訳ファイルを自動スキャンし、`.github/i18n-logs/translate/truncation-issues.json` と `truncation-issues.txt`（gitignore）に修復リストを書き出します。
 
 ```bash
 npm run translate:check-truncation -- --lang ko
@@ -137,8 +137,8 @@ npm run translate:repair-truncated -- --lang ko
 
 - **入力**: 英語 MDX（主ソース）+ 既存の訳文（コンテキスト、あれば）
 - **出力**: `zh/`、`ja/`、`ko/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
-- **レビューメモ（mismatch）**: モデルが `=== MISMATCHES ===` で報告した意味上の問題は `tmp/translate/mismatches.json` と `mismatches.md`（gitignore）に書き込み、MDX には入れません。`npm run translate` 実行時のみ。截断スキャンでは出ません。
-- **截断ログ**: 構造的な問題は `tmp/translate/truncation-issues.json`（上記「途中切れ翻訳の修復」参照）
+- **レビューメモ（mismatch）**: モデルが `=== MISMATCHES ===` で報告した意味上の問題は `.github/i18n-logs/translate/mismatches.json` と `mismatches.txt`（gitignore）に書き込み、MDX には入れません。`npm run translate` 実行時のみ。截断スキャンでは出ません。
+- **截断ログ**: 構造的な問題は `.github/i18n-logs/translate/truncation-issues.json`（上記「途中切れ翻訳の修復」参照）
 - **スキップ**: `built-in-nodes/`（`translation-config.json` の `skip_paths`）
 - **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して EN と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
 - **ディレクトリ**: ファイル書き込み時にサブディレクトリを自動作成（手動の `mkdir` は不要）
