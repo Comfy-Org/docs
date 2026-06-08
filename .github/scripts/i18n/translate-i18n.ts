@@ -539,13 +539,48 @@ function getChunkedSyncStatus(
   };
 }
 
+interface ChunkedBlockSlot {
+  label: string;
+  content: string | null;
+}
+
+function serializeChunkedDocument(
+  frontmatter: string,
+  slots: ChunkedBlockSlot[],
+  fileHash: string,
+  enRel: string
+): string {
+  const body = slots
+    .map((s) => s.content)
+    .filter((c): c is string => c !== null)
+    .join("\n\n");
+  return setTranslationMeta(`${frontmatter}\n${body}\n`, fileHash, enRel);
+}
+
+async function writeChunkedCheckpoint(
+  targetPath: string,
+  frontmatter: string,
+  slots: ChunkedBlockSlot[],
+  fileHash: string,
+  enRel: string,
+  label?: string
+): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, serializeChunkedDocument(frontmatter, slots, fileHash, enRel));
+  if (label) {
+    const done = slots.filter((s) => s.content !== null).length;
+    console.log(`    Saved ${label} → disk (${done}/${slots.length} blocks)`);
+  }
+}
+
 async function translateUpdateChunkedFile(
   relPath: string,
   lang: LangConfig,
   force: boolean,
   enContent: string,
   existingContent: string,
-  enRel: string
+  enRel: string,
+  targetPath: string
 ): Promise<{
   mismatches: string[];
   status: "translated" | "skipped" | "up-to-date";
@@ -562,10 +597,16 @@ async function translateUpdateChunkedFile(
   const existingByLabel = new Map(
     (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
   );
+  const fileHash = changelogLabelHash(enDoc);
+
+  const slots: ChunkedBlockSlot[] = enDoc.blocks.map((b) => ({
+    label: b.label,
+    content: !force && existingByLabel.has(b.label) ? existingByLabel.get(b.label)! : null,
+  }));
 
   const allMismatches: string[] = [];
-  const outputBlocks: string[] = [];
   let blocksTranslated = 0;
+  let frontmatterDirty = false;
 
   let translatedFrontmatter = existingDoc?.frontmatter ?? "";
   if (force || status.needsFrontmatter) {
@@ -583,47 +624,52 @@ async function translateUpdateChunkedFile(
       translatedFrontmatter = enDoc.frontmatter;
     }
     allMismatches.push(...fmResult.mismatches);
+    frontmatterDirty = true;
+    await writeChunkedCheckpoint(targetPath, translatedFrontmatter, slots, fileHash, enRel);
   } else {
     translatedFrontmatter = existingDoc!.frontmatter;
   }
 
-  for (const enBlock of enDoc.blocks) {
-    const existingBlock = existingByLabel.get(enBlock.label);
+  for (const slot of slots) {
+    if (slot.content !== null) continue;
 
-    if (!force && existingBlock) {
-      outputBlocks.push(existingBlock);
-      continue;
-    }
+    const enBlock = enDoc.blocks.find((b) => b.label === slot.label)!;
+    const existingBlock = existingByLabel.get(slot.label);
 
-    console.log(`    Translating block: ${enBlock.label}...`);
+    console.log(`    Translating block: ${slot.label}...`);
     const blockResult = IS_QWEN_MT
       ? await translateWithQwenMT(enBlock.content, existingBlock ?? "", lang)
       : await translateWithLLM(
           enBlock.content,
           existingBlock ?? "",
           lang,
-          `${relPath}#${enBlock.label}`
+          `${relPath}#${slot.label}`
         );
 
     let translatedBlock = cleanModelOutput(blockResult.content);
-    translatedBlock = localizePaths(translatedBlock, lang.code, lang.snippets_dir);
+    translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
 
     if (!translatedBlock.includes("<Update")) {
-      console.log(`    [WARN] Block ${enBlock.label}: invalid output, keeping existing`);
+      console.log(`    [WARN] Block ${slot.label}: invalid output, keeping existing`);
       translatedBlock = existingBlock ?? enBlock.content;
     } else {
       blocksTranslated++;
     }
 
-    outputBlocks.push(translatedBlock);
+    slot.content = translatedBlock;
     allMismatches.push(...blockResult.mismatches);
+    await writeChunkedCheckpoint(
+      targetPath,
+      translatedFrontmatter,
+      slots,
+      fileHash,
+      enRel,
+      slot.label
+    );
   }
 
-  const fileHash = changelogLabelHash(enDoc);
-  const body = `${outputBlocks.join("\n\n")}\n`;
-  const output = setTranslationMeta(`${translatedFrontmatter}\n${body}`, fileHash, enRel);
-
-  const didWork = blocksTranslated > 0 || status.needsFrontmatter;
+  const output = serializeChunkedDocument(translatedFrontmatter, slots, fileHash, enRel);
+  const didWork = blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter;
 
   return {
     mismatches: allMismatches,
@@ -666,7 +712,8 @@ async function translateFile(
       force,
       enContent,
       existingContent,
-      enRel
+      enRel,
+      targetPath
     );
     if (chunked.status === "up-to-date" || !chunked.output) {
       return {
@@ -675,8 +722,6 @@ async function translateFile(
         blocksTranslated: 0,
       };
     }
-    await mkdir(dirname(targetPath), { recursive: true });
-    await writeFile(targetPath, chunked.output);
     return {
       mismatches: chunked.mismatches,
       status: "translated",
