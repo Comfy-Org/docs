@@ -1,0 +1,138 @@
+---
+title: "컴피 후크"
+translationSourceHash: 90ff0478
+translationFrom: custom-nodes/js/javascript_hooks.mdx
+---
+
+## 확장 후크
+
+Comfy 실행 중 여러 시점에서 애플리케이션은 후크의 이름과 함께 `#invokeExtensionsAsync` 또는 `#invokeExtensions`를 호출합니다. 이는 등록된 모든 확장 프로그램에서 적절한 이름의 메서드(존재하는 경우)를 호출하며, 위 예시에서는 `setup`과 같은 메서드가 해당됩니다.
+
+Comfy는 사용자 정의 확장 코드가 클라이언트 동작을 수정하는 데 사용할 수 있는 다양한 후크를 제공합니다.
+
+<Tip>이 후크들은 Comfy 클라이언트 측 요소의 생성 및 수정 과정에서 호출됩니다.
+<br/>워크플로우 실행 중 이벤트는 `apiUpdateHandlers`에 의해 처리됩니다</Tip> {/* TODO 작성 완료 시 링크 추가 */}
+
+몇 가지 가장 중요한 후크는 아래에 설명되어 있습니다. Comfy가 활발히 개발되고 있는 만큼, 때때로 추가적인 후크가 더해질 수 있으므로 `app.js`에서 `#invokeExtensions`를 검색하여 사용 가능한 모든 후크를 확인하세요.
+
+또한 후크가 호출되는 [순서](#call-sequences)도 참고하세요.
+
+### 일반적으로 사용되는 후크
+
+먼저 대부분의 확장 프로그램에서 사용되며, 종종 유일하게 필요한 `beforeRegisterNodeDef`부터 시작해 보세요.
+
+#### beforeRegisterNodeDef()
+
+노드 유형별로 한 번씩 호출되며(‘AddNode’ 메뉴에 표시된 노드 목록), 이를 통해 노드의 동작을 수정할 수 있습니다.
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app)
+```
+`nodeType` 매개변수로 전달되는 객체는 기본적으로 해당 유형으로 생성될 모든 노드의 템플릿 역할을 하므로, `nodeType.prototype`에 가한 수정사항은 해당 유형의 모든 노드에 적용됩니다. `nodeData`는 파이썬 코드에서 정의된 노드의 카테고리, 입력, 출력 등과 같은 요소들을 캡슐화한 것입니다. `app`은 주요 Comfy 앱 객체에 대한 참조입니다(어차피 이미 가져왔겠죠!).
+
+<Tip>이 메서드는 등록된 각 확장 프로그램에서 _모든_ 노드 유형에 대해 호출되며, 해당 확장 프로그램에서 추가한 노드만이 아니라 다른 노드에도 적용됩니다.</Tip>
+
+일반적인 관용구는 `nodeType.ComfyClass`를 확인하는 것입니다. 이는 해당 노드에 대응하는 파이썬 클래스 이름을 담고 있으며, 노드를 수정해야 하는지 여부를 판단하는 데 사용됩니다. 종종 이는 추가한 맞춤 노드를 수정하는 것을 의미하지만, 때로는 다른 노드의 동작을 수정해야 할 수도 있고(또는 다른 맞춤 노드가 당신의 노드를 수정할 수도 있음!), 이 경우 상호 운용성을 보장하기 위해 신중을 기해야 합니다.
+
+<Tip>다른 확장 프로그램에서도 노드를 수정할 수 있으므로 최대한 적은 가정을 바탕으로 코드를 작성하도록 노력하세요. 그리고 서로 잘 협력하도록 하세요—가능한 한 변경 사항을 격리하세요.</Tip>
+
+`beforeRegisterNodeDef`에서 매우 흔히 사용되는 관용구는 기존 메서드를 '하이잭'하는 것입니다:
+
+<Note>
+**사용 중단됨:** 아래에 보이는 프로토타입 하이잭 패턴은 사용 중단되었으며 가까운 미래에 언제든지 변경될 수 있습니다. 컨텍스트 메뉴의 경우 공식 [컨텍스트 메뉴 API](/custom-nodes/js/context-menu-migration)를 사용하세요. 기타 사용 사례에서는 가능하다면 공식 [확장 후크](/custom-nodes/js/javascript_hooks)를 사용하는 것이 좋습니다.
+</Note>
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) {
+	if (nodeType.comfyClass=="MyNodeClass") { 
+		const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+		nodeType.prototype.onConnectionsChange = function (side,slot,connect,link_info,output) {     
+			const r = onConnectionsChange?.apply(this, arguments);   
+			console.log("누군가 내 연결을 변경했어요!");
+			return r;
+		}
+	}
+}
+```
+이 관용구에서는 기존 프로토타입 메서드를 저장한 다음 교체합니다. 교체된 메서드는 원래 메서드를 호출하고(`.apply`를 사용해 만약 없었다면 안전하게 처리함) 이후 추가 작업을 수행합니다. 코드 로직에 따라 `apply`를 교체 코드의 다른 위치에 배치하거나, 심지어 조건부로 호출하도록 설정할 수도 있습니다.
+
+이런 방식으로 메서드를 하이잭할 때는 핵심 컴피 코드를 살펴보고(브레이크포인트가 도움이 됩니다) 메서드 시그니처와 일치하도록 확인해야 합니다.
+
+<Warning>이 접근법은 취약하며 향후 ComfyUI 업데이트와 함께 깨질 수 있습니다. 가능하면 공식 API를 사용하세요.</Warning>
+
+#### nodeCreated()
+
+```Javascript
+async nodeCreated(node)
+```
+특정 노드 인스턴스가 생성될 때 호출됩니다(즉, `nodeType`의 `ComfyNode()` 함수가 생성자로 작동하는 바로 마지막 단계). 이 후크에서는 노드의 개별 인스턴스에 대한 수정을 수행할 수 있습니다.
+
+<Tip>모든 인스턴스에 적용되는 변경사항은 위에서 설명한 대로 `beforeRegisterNodeDef`의 프로토타입에 추가하는 것이 더 낫습니다.</Tip>
+
+#### init()
+
+```Javascript
+async init()
+```
+Comfy 웹페이지가 로드될 때(또는 다시 로드될 때) 호출됩니다. 이 호출은 그래프 객체가 생성된 후, 하지만 아직 노드가 등록되거나 생성되기 전에 이루어집니다. 앱이나 그래프(LiteGraph 객체)의 메서드를 하이잭해 핵심 Comfy 동작을 수정하는 데 사용할 수 있습니다. 이 내용은 [Comfy 객체](./javascript_objects_and_hijacking)에서 더 자세히 다룹니다.
+
+<Warning>큰 권한을 가진 만큼 큰 책임이 따릅니다. 핵심 동작을 하이잭하면 다른 맞춤 노드나 향후 Comfy 업데이트와 호환되지 않을 가능성이 높아집니다</Warning>
+
+#### setup()
+
+```Javascript
+async setup()
+```
+시작 과정의 마지막에 호출됩니다. 이곳은 이벤트 리스너를 추가하거나(Comfy 이벤트 또는 DOM 이벤트 모두 가능), 글로벌 메뉴에 추가하는 데 좋은 위치이며, 두 가지 모두 다른 곳에서 다루었습니다. {/* TODO 작성 완료 시 링크 추가 */}
+
+<Tip>워크플로우가 로드되었을 때 특정 작업을 수행하려면 `setup`이 아닌 `afterConfigureGraph`를 사용하세요</Tip>
+
+
+### 호출 순서
+
+이 순서들은 Comfy `app.js` 파일에 로깅 코드를 삽입해 얻은 것입니다. 실행 흐름을 이해하는 데 유사한 코드를 참고해도 도움이 될 수 있습니다.
+```Javascript
+/* 작성 시점 기준 220번째 줄 근처: */
+	#invokeExtensions(method, ...args) {
+		console.log(`invokeExtensions      ${method}`) // 이 줄 추가
+		// ...
+	}
+/* 작성 시점 기준 250번째 줄 근처: */
+	async #invokeExtensionsAsync(method, ...args) {
+		console.log(`invokeExtensionsAsync ${method}`) // 이 줄 추가
+		// ...
+	}
+```
+
+#### 웹페이지 로드
+
+```
+invokeExtensionsAsync init
+invokeExtensionsAsync addCustomNodeDefs
+invokeExtensionsAsync getCustomWidgets
+invokeExtensionsAsync beforeRegisterNodeDef    [여러 번 반복]
+invokeExtensionsAsync registerCustomNodes
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync nodeCreated
+invokeExtensions      loadedGraphNode
+invokeExtensionsAsync afterConfigureGraph
+invokeExtensionsAsync setup
+```
+
+#### 워크플로우 로딩
+
+```
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync beforeRegisterNodeDef   [0회, 1회, 또는 여러 번]
+invokeExtensionsAsync nodeCreated             [여러 번 반복]
+invokeExtensions      loadedGraphNode         [여러 번 반복]
+invokeExtensionsAsync afterConfigureGraph
+```
+
+{/* TODO why does beforeRegisterNodeDef get called again? */}
+
+#### 새 노드 추가
+
+```
+invokeExtensionsAsync nodeCreated
+```

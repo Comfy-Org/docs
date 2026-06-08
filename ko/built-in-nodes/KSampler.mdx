@@ -1,0 +1,91 @@
+---
+title: "KSampler - ComfyUI Built-in Node Documentation"
+description: "Complete documentation for the KSampler node in ComfyUI. Learn its inputs, outputs, parameters and usage."
+sidebarTitle: "KSampler"
+icon: "circle"
+mode: wide
+---
+KSampler는 다음과 같이 작동합니다: 특정 모델과 긍정 및 부정 조건을 기반으로 제공된 원본 잠재 이미지 정보를 수정합니다.
+먼저 설정된 **시드(seed)** 및 **디노이즈 강도(denoise strength)**에 따라 원본 이미지 데이터에 노이즈를 추가한 후, 사전 설정된 **모델(Model)**과 **긍정(positive)** 및 **부정(negative)** 안내 조건을 결합하여 이미지를 생성합니다.
+
+## 입력
+
+| 매개변수 이름 | 설명 | 데이터 타입 | 필수 | 기본값 | 범위/옵션 |
+| --- | --- | --- | --- | --- | --- |
+| Model | 디노이징 과정에 사용되는 입력 모델입니다. | checkpoint | 예 | 없음 | - |
+| seed | 무작위 노이즈를 생성하는 데 사용됩니다. 동일한 "시드"를 사용하면 동일한 이미지가 생성됩니다. | Int | 예 | 0 | 0 ~ 18446744073709551615 |
+| steps | 디노이징 과정에 사용할 단계 수입니다. 단계가 많을수록 더 정확한 결과를 얻을 수 있습니다. | Int | 예 | 20 | 1 ~ 10000 |
+| cfg | 생성된 이미지가 입력 조건과 얼마나 일치하는지 제어합니다. 6-8을 권장합니다. | float | 예 | 8.0 | 0.0 ~ 100.0 |
+| sampler_name | 디노이징에 사용할 샘플러를 선택합니다. 생성 속도와 스타일에 영향을 줍니다. | UI 옵션 | 예 | 없음 | 여러 알고리즘 |
+| scheduler | 노이즈가 제거되는 방식을 제어합니다. 생성 과정에 영향을 줍니다. | UI 옵션 | 예 | 없음 | 여러 스케줄러 |
+| Positive | 디노이징을 안내하는 긍정 조건입니다. 이미지에 나타나길 원하는 내용입니다. | conditioning | 예 | 없음 | - |
+| Negative | 디노이징을 안내하는 부정 조건입니다. 이미지에 나타나지 않길 원하는 내용입니다. | conditioning | 예 | 없음 | - |
+| Latent_Image | 디노이징에 사용되는 잠재 이미지입니다. | Latent | 예 | 없음 | - |
+| denoise | 노이즈 제거 비율을 결정합니다. 값이 낮을수록 입력 이미지와의 연관성이 줄어듭니다. | float | 아니요 | 1.0 | 0.0 ~ 1.0 |
+| control_after_generate | 각 프롬프트 후에 시드를 변경할 수 있는 기능을 제공합니다. | UI 옵션 | 아니요 | 없음 | Random/Inc/Dec/Keep |
+
+## 출력
+
+| 매개변수 | 기능                               |
+| --------- | ---------------------------------- |
+| Latent    | 샘플러 디노이징 후 잠재 이미지를 출력합니다. |
+
+## 소스 코드
+
+[2025년 5월 15일 업데이트됨]
+
+```Python
+
+def common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=1.0, disable_noise=False, start_step=None, last_step=None, force_full_denoise=False):
+    latent_image = latent["samples"]
+    latent_image = comfy.sample.fix_empty_latent_channels(model, latent_image)
+
+    if disable_noise:
+        noise = torch.zeros(latent_image.size(), dtype=latent_image.dtype, layout=latent_image.layout, device="cpu")
+    else:
+        batch_inds = latent["batch_index"] if "batch_index" in latent else None
+        noise = comfy.sample.prepare_noise(latent_image, seed, batch_inds)
+
+    noise_mask = None
+    if "noise_mask" in latent:
+        noise_mask = latent["noise_mask"]
+
+    callback = latent_preview.prepare_callback(model, steps)
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = comfy.sample.sample(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent_image,
+                                  denoise=denoise, disable_noise=disable_noise, start_step=start_step, last_step=last_step,
+                                  force_full_denoise=force_full_denoise, noise_mask=noise_mask, callback=callback, disable_pbar=disable_pbar, seed=seed)
+    out = latent.copy()
+    out["samples"] = samples
+    return (out, )
+class KSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL", {"tooltip": "입력 잠재 이미지를 디노이징하는 데 사용되는 모델입니다."}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "노이즈 생성에 사용되는 무작위 시드입니다."}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "디노이징 과정에 사용되는 단계 수입니다."}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "CFG(Classifier-Free Guidance) 척도는 창의성과 프롬프트 준수 사이의 균형을 조절합니다. 값이 높을수록 프롬프트와 더 일치하는 이미지를 생성하지만 너무 높으면 품질에 부정적인 영향을 미칩니다."}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS, {"tooltip": "샘플링 시 사용되는 알고리즘입니다. 생성된 출력의 품질, 속도 및 스타일에 영향을 줄 수 있습니다."}),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS, {"tooltip": "스케줄러는 이미지를 형성하기 위해 노이즈가 점진적으로 제거되는 방식을 제어합니다."}),
+                "positive": ("CONDITIONING", {"tooltip": "이미지에 포함하려는 속성을 설명하는 조건입니다."}),
+                "negative": ("CONDITIONING", {"tooltip": "이미지에서 제외하려는 속성을 설명하는 조건입니다."}),
+                "latent_image": ("LATENT", {"tooltip": "디노이징할 잠재 이미지입니다."}),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "적용되는 디노이징의 양입니다. 값이 낮을수록 초기 이미지의 구조를 유지하여 이미지 간 샘플링(image to image sampling)이 가능합니다."}),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    OUTPUT_TOOLTIPS = ("디노이징된 잠재 이미지입니다.",)
+    FUNCTION = "sample"
+
+    CATEGORY = "sampling"
+    DESCRIPTION = "제공된 모델, 긍정 및 부정 조건을 사용하여 잠재 이미지를 디노이징합니다."
+
+    def sample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=1.0):
+        return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, denoise=denoise)
+
+```
+
+> 이 문서는 AI에 의해 생성되었습니다. 오류를 발견하거나 개선 제안이 있으시면 기여해 주세요! [GitHub에서 편집](https://github.com/Comfy-Org/embedded-docs/blob/main/comfyui_embedded_docs/docs/KSampler/ko.md)

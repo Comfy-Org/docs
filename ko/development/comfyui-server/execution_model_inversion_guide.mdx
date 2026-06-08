@@ -1,0 +1,112 @@
+---
+title: "실행 모델 반전 가이드"
+icon: "code-branch"
+translationSourceHash: 9b968a87
+translationFrom: development/comfyui-server/execution_model_inversion_guide.mdx
+---
+
+[PR #2666](https://github.com/Comfy-Org/ComfyUI/pull/2666)는 실행 모델을 뒤에서부터 앞쪽으로 진행하는 재귀적 모델에서 앞에서부터 뒤로 진행하는 위상 정렬 방식으로 반전시킵니다. 대부분의 맞춤형 노드는 기존처럼 "그냥 작동"할 것으로 예상되지만, 이 페이지는 맞춤형 노드 제작자들이 *고장날 수 있는* 부분들을 안내하기 위한 것입니다.
+
+## 중단되는 변경사항
+### 몽키 패치
+
+실행 모델을 몽키 패치한 코드는 더 이상 작동하지 않을 가능성이 높습니다. 이번 PR을 통한 실행 성능은 가장 인기 있는 몽키 패치를 사용했을 때보다 뛰어나므로 많은 몽키 패치가 불필요해질 것입니다.
+
+### 선택적 입력 검증
+
+이 PR 이전에는, 일련의 `"required"` 입력을 통해서만 출력에 연결된 노드만 실제로 검증되었습니다. 만약 맞춤형 노드가 오직 `"optional"` 입력에만 연결되어 있었다면, 이전에는 검증 실패를 확인하지 못했을 것입니다.
+
+<Tip>노드의 출력이 이미 `"required"` 입력에 연결될 수 있다면, 이 섹션의 내용이 적용될 가능성은 낮습니다. 주로 맞춤형 타입을 사용하고 오직 `"optional"` 입력만 사용하는 맞춤형 노드 제작자들에게 해당됩니다.</Tip>
+
+다음과 같은 사항들이 검증 실패를 일으킬 수 있으며, 권장 해결 방법도 함께 제공합니다:
+
+- 비교할 수 없는 타입(예: 딕셔너리)에 `min` 및 `max`와 같은 예약된 [추가 매개변수](/ko/custom-nodes/backend/datatypes#additional-parameters)를 사용하여 맞춤 위젯을 구성하는 경우.
+    - 사용하는 추가 매개변수를 `uiMin` 및 `uiMax`와 같은 비예약 키로 변경하세요. *(권장 해결 방법)*
+        ```python
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "my_size": ("VEC2", {"uiMin": 0.0, "uiMax": 1.0}),
+                }
+            }
+        ```
+
+    - 이 입력을 포함한 맞춤 [VALIDATE_INPUTS](/ko/custom-nodes/backend/server_overview#validate-inputs) 함수를 정의하여 검증을 건너뛰세요. *(빠른 해결 방법)* 
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, my_size):
+            return True
+        ```
+
+- 복합 타입(예: `CUSTOM_A,CUSTOM_B`) 사용 시
+    - (출력으로 사용될 때) `MakeSmartType`과 같은 래퍼를 정의하고 사용하세요. [PR의 단위 테스트에서 확인할 수 있음](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R2)
+        ```python
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": (MakeSmartType("FOO,BAR"), {}),
+                    }
+                }
+
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+    - (입력으로 사용될 때) `input_types` 인자를 받는 맞춤 [VALIDATE_INPUTS](/ko/custom-nodes/backend/server_overview#validate-inputs) 함수를 정의하여 타입 검증을 건너뛰세요.
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, input_types):
+            return True
+        ```
+    - (입출력 모두 지원, 편리) `@VariantSupport` 데코레이터를 정의하고 사용하세요. [PR의 단위 테스트에서 확인할 수 있음](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R15)
+        ```python
+        @VariantSupport
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": ("FOO,BAR", {}),
+                    }
+                }
+            
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+
+- 그래프 정의에서 리스트(예: `[1, 2, 3]`)를 상수로 사용하는 경우(예: const `VEC3` 입력을 표현하기 위해). 이전에는 프론트엔드 확장이 필요했습니다. 이전에는 크기가 정확히 `2`인 리스트는 어쨌든 실패했으며, 링크가 깨진 것으로 처리되었습니다.
+    - 리스트를 `{ "value": [1, 2, 3] }`와 같은 딕셔너리로 감싸세요.
+
+### 실행 순서
+
+실행 순서는 항상 어떤 노드가 어떤 ID를 갖느냐에 따라 달라졌지만, 이제는 캐시된 값에 따라서도 변경될 수 있습니다. 일반적으로 실행 순서는 비결정적이고 그래프 구조가 강제하는 것 외에도 변경될 수 있다고 간주해야 합니다.
+
+실행 순서에 의존하지 마세요.
+
+*HIC SUNT DRACONES*
+
+## 새로운 기능
+
+### 검증 변경사항
+
+위에서 언급한 [선택적 입력 검증](#optional-input-validation)의 영향을 줄이기 위해 `VALIDATE_INPUTS` 함수에 여러 기능이 추가되었습니다.
+
+- 기본 검증은 이제 `VALIDATE_INPUTS` 함수에서 전달받은 입력에 대해 건너뛰어집니다.
+- `VALIDATE_INPUTS` 함수는 이제 `**kwargs`를 받을 수 있어 모든 입력이 노드 제작자에 의해 검증된 것으로 처리됩니다.
+- `VALIDATE_INPUTS` 함수는 `input_types`라는 이름의 입력을 받을 수 있습니다. 이 입력은 각 입력(링크를 통해 연결된)을 연결된 출력의 타입으로 매핑한 딕셔너리입니다. 이 인자가 존재하면 노드의 입력에 대한 타입 검증은 건너뜁니다.
+
+자세한 내용은 [VALIDATE_INPUTS](/ko/custom-nodes/backend/server_overview#validate-inputs)에서 확인할 수 있습니다.
+
+### 지연 평가
+
+입력을 지연해서 평가할 수 있습니다(즉, 연결된 노드와 그 모든 상위 노드를 평가하기 전에 필요한지 여부를 기다릴 수 있음). 자세한 정보는 [지연 평가](/ko/custom-nodes/backend/lazy_evaluation)를 참고하세요.
+
+### 노드 확장
+
+런타임에 노드는 하위 그래프로 확장될 수 있습니다. 이는 꼬리 재귀를 통해 루프를 구현할 수 있게 해줍니다. 자세한 정보는 [노드 확장](/ko/custom-nodes/backend/expansion)을 참고하세요.

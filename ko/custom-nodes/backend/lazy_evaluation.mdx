@@ -1,0 +1,142 @@
+---
+title: "지연 평가"
+translationSourceHash: 5067d169
+translationFrom: custom-nodes/backend/lazy_evaluation.mdx
+---
+
+## 지연 평가
+
+기본적으로 모든 `required` 및 `optional` 입력은 노드를 실행하기 전에 평가됩니다. 그러나 때로는 특정 입력이 반드시 사용되지 않을 수 있으며, 이를 평가하는 것은 불필요한 처리를 초래할 수 있습니다. 다음은 지연 평가가 유익할 수 있는 노드의 몇 가지 예시입니다:
+1. `ModelMergeSimple` 노드에서 비율이 `0.0`(첫 번째 모델을 로드할 필요가 없는 경우) 또는 `1.0`(두 번째 모델을 로드할 필요가 없는 경우)인 경우.
+2. 두 이미지 간의 보간에서 비율(또는 마스크)이 전부 `0.0`이거나 전부 `1.0`인 경우.
+3. 스위치 노드에서 하나의 입력이 다른 입력 중 어떤 것을 통과시킬지를 결정하는 경우.
+
+<Tip>입력을 지연 처리하는 데 드는 비용은 매우 적습니다. 가능하다면 일반적으로 그렇게 하는 것이 좋습니다.</Tip>
+
+### 지연 입력 생성하기
+
+입력을 '지연' 입력으로 만드는 데는 두 단계가 있습니다. 바로:
+
+1. `INPUT_TYPES`에서 반환되는 딕셔너리에서 해당 입력을 지연 처리로 표시하기
+2. 평가 전에 호출되어 추가 입력이 필요한지 판단하는 `check_lazy_status`라는 메서드 정의하기 (참고: 클래스 메서드가 아님)
+
+이를 시연하기 위해 마스크에 따라 두 이미지 간에 보간하는 `MixImages` 노드를 만들어보겠습니다. 마스크 전체가 `0.0`이면 두 번째 이미지까지 이르는 트리의 어느 부분도 평가할 필요가 없습니다. 마스크 전체가 `1.0`이면 첫 번째 이미지는 평가하지 않아도 됩니다.
+
+#### `INPUT_TYPES` 정의하기
+
+입력이 지연 처리임을 선언하는 것은 입력 옵션 딕셔너리에 `lazy: True` 키-값 쌍을 추가하는 것만으로 충분합니다.
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+이 예시에서는 `image1`과 `image2`가 모두 지연 처리 입력으로 표시되었지만, `mask`는 항상 평가됩니다.
+
+#### `check_lazy_status` 정의하기
+
+`check_lazy_status` 메서드는 아직 사용 가능한 지연 처리 입력이 하나 이상 있을 경우 호출됩니다. 이 메서드는 표준 실행 함수와 동일한 인수를 받습니다. 사용 가능한 모든 입력은 최종 값으로 전달되며, 사용 불가능한 지연 처리 입력은 `None` 값을 가집니다.
+
+`check_lazy_status` 함수의 책임은 진행에 필요한 지연 처리 입력의 이름 목록을 반환하는 것입니다. 모든 지연 처리 입력이 사용 가능하면 함수는 빈 리스트를 반환해야 합니다.
+
+참고로 `check_lazy_status`는 여러 번 호출될 수 있습니다. (예를 들어, 한 지연 처리 입력을 평가한 후 다른 입력을 평가해야 할 수도 있습니다.)
+
+<Tip>함수가 실제 입력 값을 사용하므로, 이 메서드는 클래스 메서드가 아닙니다.</Tip>
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### 전체 예시
+
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # 여기서는 서로 다른 배치 크기를 처리하려 하지 않습니다. 단순히 데모를 간단하게 유지하기 위해서입니다.
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        result = image1 * (1. - mask) + image2 * mask,
+        return (result[0],)
+```
+
+## 실행 차단
+
+지연 평가는 그래프의 일부를 '비활성화'하는 권장 방법이지만, 직접 구현한 `OUTPUT` 노드 자체가 지연 평가를 지원하지 않는 경우를 비활성화하고 싶을 때가 있습니다. 만약 자신이 개발한 출력 노드라면 다음과 같이 지연 평가를 추가하면 됩니다:
+
+1. `enabled`를 위한 필수(새로운 노드인 경우) 또는 선택적(백ward 호환성을 고려하는 경우) 입력을 추가하고 기본값을 `True`로 설정하기
+2. 다른 모든 입력을 지연 처리 입력으로 만들기
+3. `enabled`가 `True`인 경우에만 다른 입력을 평가하기
+
+만약 제어할 수 없는 노드라면 `comfy_execution.graph.ExecutionBlocker`를 활용할 수 있습니다. 이 특별한 객체는 어떤 소켓에서도 출력으로 반환될 수 있습니다. `ExecutionBlocker`를 입력으로 받는 모든 노드는 실행을 건너뛰고 해당 `ExecutionBlocker`를 출력으로 반환합니다.
+
+<Tip>**특정 이유로 ExecutionBlocker가 앞으로 전파되는 것을 막을 방법은 의도적으로 없습니다.** 만약 이런 방식을 원한다면 실제로는 지연 평가를 사용해야 합니다.</Tip>
+
+### 사용법
+
+`ExecutionBlocker`를 생성하고 사용하는 방법은 두 가지가 있습니다.
+
+1. 생성자에 `None`을 전달하여 조용히 실행을 차단하기. 이는 성공적인 실행의 일부로 실행을 차단하는 경우에 유용합니다—예를 들어 출력을 비활성화하는 경우.
+```python
+def silent_passthrough(self, passthrough, blocked):
+    if blocked:
+        return (ExecutionBlocker(None),)
+    else:
+        return (passthrough,)
+```
+
+2. 문자열을 생성자에 전달하여 노드가 해당 객체를 받았을 때 오류 메시지를 표시하도록 하기. 이는 누군가 무의미한 출력을 사용할 경우 의미 있는 오류 메시지를 표시하고 싶을 때 유용합니다—예를 들어, VAE가 포함되지 않은 모델을 로드할 때 `VAE` 출력을 사용하는 경우.
+
+```python
+def load_checkpoint(self, ckpt_name):
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # 이 오류는 이후 노드에서 'NoneType'에 속성이 없다는 오류보다 더 유용합니다.
+        vae = ExecutionBlocker(f"No VAE contained in the loaded model {ckpt_name}")
+    return (model, clip, vae)
+```

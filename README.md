@@ -1,6 +1,6 @@
 # ComfyUI Documentation
 
-| [English](https://github.com/Comfy-Org/docs/blob/main/README.md) | [中文](https://github.com/Comfy-Org/docs/blob/main/README.zh-CN.md) | [日本語](https://github.com/Comfy-Org/docs/blob/main/README.ja-JP.md) |
+| [English](README.md) | [中文](readme/zh-CN.md) | [日本語](readme/ja-JP.md) | [한국어](readme/ko-KR.md) |
 
 ## Development
 
@@ -44,7 +44,7 @@ A GitHub Action will check for redirects and fail the PR if they are missing. Re
 >   }
 > ]
 > ```
-> Don't forget to include the corresponding Chinese translation file in the `zh` directory as well!
+> Don't forget to include the corresponding translation files under `zh/`, `ja/`, `ko/`, etc.!
 
 You can also refer to the [Mintlify doc](https://www.mintlify.com/docs/create/redirects) to learn how to add and match a wildcard path.
 
@@ -75,7 +75,17 @@ The documentation is built with Mintlify, please refer to [Mintlify documentatio
 
 ### i18n Contributions
 
-English MDX at the repo root is the **source of truth**. Translations mirror the same relative paths under language directories (for example `zh/get_started/introduction.mdx`, `ja/get_started/introduction.mdx`). Reusable fragments live in `snippets/` with per-language copies under `snippets/zh/`, `snippets/ja/`, and so on.
+English MDX at the repo root is the **source of truth**. Translations mirror the same relative paths under language directories (for example `zh/get_started/introduction.mdx`, `ja/get_started/introduction.mdx`, `ko/get_started/introduction.mdx`). Reusable fragments live in `snippets/` with per-language copies under `snippets/zh/`, `snippets/ja/`, `snippets/ko/`, and so on.
+
+Contributing guides in other languages: [readme/](readme/) (中文, 日本語, 한국어).
+
+**Translation policy**
+
+Supported locales are maintained through **automated translation** from English. When English docs change, translations are updated in batch via `npm run translate` — contributors do not need to hand-translate every page.
+
+**Request a new language**
+
+Want docs in another language? [Open an issue](https://github.com/Comfy-Org/docs/issues/new) with the locale you need (for example French, German, or Brazilian Portuguese). A maintainer will add the language to `translation-config.json` and `docs.json`, then run a **full batch translation** of all content. You only need to submit the request; no translated MDX PR is required to get started.
 
 Specifications for editing MDX can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document.
 
@@ -104,6 +114,8 @@ cp .env.local.example .env.local
 | `npm run translate:force` | Re-translate everything, ignoring stored hashes |
 | `npm run translate:snippets` | Translate `snippets/` only |
 | `npm run translate:snippets:dry-run` | Preview pending snippet translations |
+| `npm run translate:check-truncation` | Scan for likely truncated translations |
+| `npm run translate:repair-truncated` | Re-translate files listed in the truncation log |
 
 Pass extra flags after `--`:
 
@@ -111,58 +123,44 @@ Pass extra flags after `--`:
 npm run translate -- --lang zh,ja
 npm run translate:dry-run -- --lang ja
 npm run translate -- installation/manual_install.mdx
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
 ```
+
+**Truncated translations**
+
+Long files can occasionally be cut off mid-translation (e.g. unclosed code fences). After a batch run, the script scans newly translated files and writes a repair list to `.github/i18n-logs/translate/truncation-issues.json` and `truncation-issues.txt` (gitignored). To scan everything for a language, or to repair:
+
+```bash
+npm run translate:check-truncation -- --lang ko
+npm run translate:repair-truncated -- --lang ko
+```
+
+`repair-truncated` reads the JSON log and force re-translates only the flagged files.
 
 **How it works**
 
 - **Input**: English MDX (primary) + existing target-language file as context (if present)
-- **Output**: Updated files under `zh/`, `ja/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
-- **Review notes**: AI-reported translation issues are written to `tmp/translate/mismatches.md` (gitignored), not into MDX frontmatter
+- **Output**: Updated files under `zh/`, `ja/`, `ko/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
+- **Review notes (mismatch)**: When the model reports semantic issues via `=== MISMATCHES ===`, they go to `.github/i18n-logs/translate/mismatches.json` and `mismatches.txt` (gitignored), not into MDX. Only produced during `npm run translate`, not by the truncation scanner.
+- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#truncated-translations) above.
 - **Skipped paths**: `built-in-nodes/` (configured in `translation-config.json` → `skip_paths`)
 - **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand
 
-Script location: `.github/scripts/translate-i18n.ts`
+Script location: `.github/scripts/i18n/` (see `translate-i18n.ts`, `translation-config.json`)
 
 #### Adding a new language
 
-1. **Register the language** in `.github/scripts/translation-config.json`:
+See [Request a new language](#request-a-new-language) above — please open an issue rather than adding a language in a PR yourself.
 
-```json
-{
-  "code": "fr",
-  "name": "French",
-  "dir": "fr",
-  "snippets_dir": "snippets/fr"
-}
-```
-
-2. **Add navigation** in `docs.json` under `navigation.languages` (copy the English tree and prefix page paths with `fr/`). See [Mintlify Localization](https://mintlify.com/docs/navigation/localization).
-
-```json
-{
-  "language": "fr",
-  "tabs": [
-    {
-      "tab": "Commencer",
-      "pages": [
-        "fr/index",
-        "fr/get_started/introduction"
-      ]
-    }
-  ]
-}
-```
-
-3. **Run translation**:
+Maintainers: add one entry under `languages` in `.github/scripts/i18n/translation-config.json` (`code`, `name`, `dir`, `snippets_dir`). Path exclusion, link localization, and English-file scanning are derived automatically by `i18n-config.mjs` in the same folder — no per-language edits in translate scripts when adding a locale. Then add navigation in `docs.json` (see [Mintlify Localization](https://mintlify.com/docs/navigation/localization)), and batch-translate:
 
 ```bash
 npm run translate:dry-run -- --lang fr
 npm run translate -- --lang fr
 npm run translate:snippets -- --lang fr
 ```
-
-Mintlify supports many locale codes (for example `zh`, `ja`, `fr`, `de`). The `language` value in `docs.json` must match [Mintlify's localization settings](https://mintlify.com/docs/navigation/localization); the folder name (`fr/`, `zh/`, `ja/`) should stay consistent with your `translation-config.json` `dir` field.
 
 #### Manual translation
 

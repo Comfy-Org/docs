@@ -1,0 +1,101 @@
+---
+title: "V3 마이그레이션"
+description: "기존 V1 노드를 새 V3 스키마로 마이그레이션하는 방법."
+translationSourceHash: c74419d4
+translationFrom: custom-nodes/v3_migration.mdx
+---
+
+## 개요
+
+ComfyUI V3 스키마는 노드를 정의하는 방식을 보다 체계적으로 개선했으며, 향후 노드 기능 확장은 오직 V3 스키마에만 추가됩니다. 이 가이드를 사용해 기존 V1 노드를 새 V3 스키마로 마이그레이션할 수 있습니다.
+
+## 핵심 개념
+
+V3 스키마는 새로운 버전화된 Comfy API에 유지되며, 이는 스키마의 향후 수정사항이 하위 호환성을 보장한다는 것을 의미합니다. ```comfy_api.latest```는 여전히 개발 중인 최신 번호의 API를 가리키며, 최신 버전 바로 전 버전이 '안정적'이라고 볼 수 있습니다. 현재(첫 번째) API 버전은 ```v0_0_2```이며, 이 버전에는 경고 없이 더 많은 변경이 이루어질 것입니다. 안정적인 버전으로 간주되면, ```latest```가 가리키는 버전이 새롭게 ```v0_0_3```으로 변경됩니다.
+
+```python
+# 최신 ComfyUI API 사용
+from comfy_api.latest import ComfyExtension, io, ui
+
+# 특정 버전의 ComfyUI API 사용
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### V1 vs V3 아키텍처
+
+V3 스키마에서 가장 큰 변화는 다음과 같습니다:
+- 입력과 출력이 사전 대신 객체로 정의됨.
+- 실행 방식이 'execute'라는 이름으로 고정되고 클래스 메서드임.
+- ```def comfy_entrypoint()``` 함수는 ComfyExtension 객체를 반환하며, 노출되는 노드를 NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS 대신 정의함.
+- 노드 객체는 '상태'를 노출하지 않음 - ```def __init__(self)```는 노드의 함수에서 노출되는 내용에 아무런 영향을 미치지 않으며, 모든 함수는 클래스 메서드임. 또한 노드 클래스는 실행 전에 정제됨.
+
+#### V1 (레거시)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (현대)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## 마이그레이션 단계
+
+대부분의 경우 V1에서 V3으로의 이동은 간단하며, 단순한 문법 변경에 불과합니다.
+
+### 단계 1: 기본 클래스 변경
+
+모든 V3 스키마 노드는 ```ComfyNode```를 상속해야 합니다. 여러 계층의 상속도 괜찮으며, 체인의 맨 위에 ```ComfyNode``` 부모가 있으면 됩니다.
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # __init__ 필요 없음
+```
+
+### 단계 2: INPUT_TYPES를 define_schema로 변환
+
+노드 ID, 표시 이름, 카테고리 등 코드 내 다양한 위치에서 할당되었던 노드 속성들은 이제 ```Schema``` 클래스를 통해 함께 관리됩니다.

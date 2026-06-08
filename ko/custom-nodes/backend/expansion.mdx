@@ -1,0 +1,54 @@
+---
+title: "노드 확장"
+translationSourceHash: 594d2ce1
+translationFrom: custom-nodes/backend/expansion.mdx
+---
+
+## 노드 확장
+
+일반적으로 노드가 실행되면 해당 실행 함수는 즉시 그 노드의 출력 결과를 반환합니다. "노드 확장"은 노드가 그래프 내에서 대신 자리 잡아야 할 새로운 하위 그래프를 반환하도록 하는 비교적 고급 기법입니다. 이 기법 덕분에 맞춤형 노드들이 루프를 구현할 수 있습니다.
+
+### 간단한 예제
+
+먼저, 노드 확장이 어떤 모습인지 간단한 예제를 살펴보겠습니다:
+
+<Tip>하위 그래프를 생성할 때는 `GraphBuilder` 클래스를 사용하는 것을 적극 권장합니다. 필수는 아니지만, 많은 쉬운 실수를 방지해줍니다.</Tip>
+```python
+def load_and_merge_checkpoints(self, checkpoint_path1, checkpoint_path2, ratio):
+    from comfy_execution.graph_utils import GraphBuilder # 보통 파일 상단에 위치
+    graph = GraphBuilder()
+    checkpoint_node1 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path1)
+    checkpoint_node2 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path2)
+    merge_model_node = graph.node("ModelMergeSimple", model1=checkpoint_node1.out(0), model2=checkpoint_node2.out(0), ratio=ratio)
+    merge_clip_node = graph.node("ClipMergeSimple", clip1=checkpoint_node1.out(1), clip2=checkpoint_node2.out(1), ratio=ratio)
+    return {
+        # (MODEL, CLIP, VAE) 출력 반환
+        "result": (merge_model_node.out(0), merge_clip_node.out(0), checkpoint_node1.out(2)),
+        "expand": graph.finalize(),
+    }
+```
+
+이전에는 같은 노드를 직접 ComfyUI 내부로 호출하여 구현할 수도 있었지만, 확장을 사용하면 각 하위 노드가 별도로 캐싱됩니다(따라서 `model2`를 변경하더라도 `model1`을 다시 로드할 필요가 없습니다).
+
+### 요구 사항
+
+노드 확장을 수행하려면 노드가 다음 키를 포함한 딕셔너리를 반환해야 합니다:
+1. `result`: 노드의 출력값 튜플입니다. 여기에는 일반 노드에서 반환하는 것과 같은 최종 값과 노드 출력이 혼합될 수 있습니다.
+2. `expand`: 확장을 수행할 최종화된 그래프입니다. `GraphBuilder`를 사용하지 않는 경우 아래를 참조하세요.
+
+#### GraphBuilder를 사용하지 않는 경우 추가 요구 사항
+
+`expand` 키에서 기대하는 형식은 ComfyUI API 형식과 동일합니다. 다음 요구 사항들은 `GraphBuilder`가 처리하지만, 이를 생략하기로 선택한 경우 수동으로 처리해야 합니다:
+
+1. 노드 ID는 전체 그래프 내에서 유일해야 합니다. (리스트를 사용하기 때문에 같은 노드의 여러 실행 간에도 포함됩니다.)
+2. 노드 ID는 그래프의 여러 실행 간에 결정적이며 일관되어야 합니다(캐싱으로 인한 부분 실행 포함).
+
+실제로 그래프를 구성하는 데 `GraphBuilder`를 사용하고 싶지 않더라도(예를 들어, 그래프의 원시 JSON을 파일에서 불러오는 경우), `GraphBuilder.alloc_prefix()` 함수를 사용해 접두사를 생성하고, `comfy.graph_utils.add_graph_prefix`를 사용해 기존 그래프를 이러한 요구 사항에 맞게 수정할 수 있습니다.
+
+### 효율적인 하위 그래프 캐싱
+
+하위 그래프 내의 노드에 비리터럴 입력을 전달할 수 있지만, 이는 하위 그래프 내의 캐싱을 저해할 수 있습니다. 가능하다면 노드 자체가 아닌 하위 그래프 객체에 대한 링크를 전달해야 합니다. (입력의 [추가 매개변수](./datatypes#additional-parameters)에서 입력을 `rawLink`로 선언하면 쉽게 수행할 수 있습니다.)
+
+## 참고사항
+
+- [하위 그래프(개발자 가이드)](/custom-nodes/js/subgraphs) — 확장 개발자를 위한 프론트엔드 가이드

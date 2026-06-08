@@ -1,0 +1,92 @@
+---
+title: "torch.Tensor와 함께 작업하기"
+translationSourceHash: 69d86d62
+translationFrom: custom-nodes/backend/tensors.mdx
+---
+
+## 파이토치, 텐서, 그리고 torch.Tensor
+
+Comfy의 핵심적인 수치 계산은 모두 [파이토치](https://pytorch.org/)에서 수행됩니다. 사용자 정의 노드를 통해 안정적인 확산의 내부로 들어가려면 이 라이브러리에 익숙해져야 하며, 이는 이번 소개의 범위를 훨씬 넘어서는 내용입니다.
+
+그러나 많은 사용자 정의 노드에서는 이미지, 잠재 변수 및 마스크를 조작해야 하며, 이들 각각은 내부적으로 `torch.Tensor`로 표현됩니다. 따라서 [torch.Tensor의 문서](https://pytorch.org/docs/stable/tensors.html)를 즐겨찾기 해두시는 것이 좋습니다.
+
+### 텐서란 무엇인가요?
+
+`torch.Tensor`는 텐서를 나타내며, 이는 벡터나 행렬을 임의의 차원으로 일반화한 수학적 개념입니다. 텐서의 _랭크_는 가진 차원의 개수를 의미하며(벡터는 _랭크_ 1, 행렬은 _랭크_ 2), _셰이프_는 각 차원의 크기를 설명합니다.
+
+예를 들어 RGB 이미지(H 높이, W 너비)는 각 색상 채널별로 H×W 크기의 배열 세 개로 생각할 수 있으며, 이를 _셰이프_ `[H,W,3]`의 텐서로 표현할 수 있습니다. Comfy에서 이미지는 거의 항상 배치 형태로 제공됩니다(단일 이미지만 포함하는 배치도 포함). torch는 항상 배치 차원을 맨 앞에 두므로 Comfy 이미지는 _셰이프_ `[B,H,W,3]`를 가지며, 일반적으로 `[B,H,W,C]`로 표기되며 여기서 C는 채널을 의미합니다.
+
+### squeeze, unsqueeze, 그리고 reshape
+
+텐서의 차원 중 하나가 크기가 1인 경우(축소된 차원이라 함), 이는 해당 차원을 제거한 것과 동등합니다(1개의 이미지를 가진 배치는 단순히 이미지임). 이러한 축소된 차원을 제거하는 것을 스queeze라고 하며, 추가하는 것을 unsqueeze라고 합니다.
+
+<Warning> 일부 torch 코드와 일부 사용자 정의 노드 작성자는 차원이 축소되면 스queeze된 텐서를 반환합니다—예를 들어 배치에 구성원이 하나만 있을 때 그렇습니다. 이는 버그의 흔한 원인이 됩니다!</Warning>
+
+같은 데이터를 다른 형태로 표현하는 것을 reshaping이라고 합니다. 이 과정에서는 종종 기본 데이터 구조를 알아야 하므로 주의해서 다루세요!
+
+### 중요한 표기법
+
+`torch.Tensor`는 대부분의 파이썬 슬라이스 표기법, 반복문, 기타 일반적인 리스트와 유사한 연산을 지원합니다. 또한 텐서에는 `.shape` 속성이 있어 크기를 `torch.Size`로 반환하며, 이는 `tuple`의 하위 클래스이며 그대로 취급할 수 있습니다.
+
+다른 몇 가지 중요한 표기법도 자주 보게 될 것입니다(이 중 일부는 덜 일반적인 표준 파이썬 표기법이며, 텐서를 다룰 때 훨씬 더 자주 볼 수 있습니다).
+
+- `torch.Tensor`는 슬라이스 표기법에서 `None`을 사용해 크기가 1인 차원을 삽입하는 것을 지원합니다.
+
+- `:`는 텐서를 슬라이싱할 때 자주 사용되며, 이는 단순히 '전체 차원을 유지'한다는 의미입니다. 파이썬에서 `a[start:end]`를 사용하는 것과 같으나 시작점과 끝점을 생략한 것입니다.
+
+- `...`는 '미지정된 차원 전체'를 나타냅니다. 따라서 `a[0, ...]`는 차원의 개수에 관계없이 배치의 첫 번째 항목을 추출합니다.
+
+- 모양을 전달해야 하는 메서드에서는 종종 차원들의 `tuple`로 전달되며, 여기서 단일 차원에 `-1`을 지정하면 해당 차원의 크기가 데이터 전체 크기에 기반해 계산됨을 나타냅니다.
+
+```python
+>>> a = torch.Tensor((1,2))
+>>> a.shape
+torch.Size([2])
+>>> a[:,None].shape 
+torch.Size([2, 1])
+>>> a.reshape((1,-1)).shape
+torch.Size([1, 2])
+```
+
+### 요소별 연산
+
+`torch.Tensor`에서의 많은 이항 연산(예: '+', '-', '*', '/', '==')은 요소별로 적용됩니다(각 요소에 독립적으로 적용됨). 피연산자는 _둘 다_ 같은 형태의 텐서이거나, 텐서와 스칼라여야 합니다. 예를 들면:
+
+```python
+>>> import torch
+>>> a = torch.Tensor((1,2))
+>>> b = torch.Tensor((3,2))
+>>> a*b
+tensor([3., 4.])
+>>> a/b
+tensor([0.3333, 1.0000])
+>>> a==b
+tensor([False,  True])
+>>> a==1
+tensor([ True, False])
+>>> c = torch.Tensor((3,2,1)) 
+>>> a==c
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+RuntimeError: The size of tensor a (2) must match the size of tensor b (3) at non-singleton dimension 0
+```
+
+### 텐서의 참/거짓 값
+
+<Warning> 텐서의 '참/거짓 값'은 파이썬 리스트의 그것과 같지 않습니다.</Warning>
+
+파이썬 리스트의 참/거짓 값은 비어 있지 않은 리스트라면 `True`, `None`이나 `[]`라면 `False`인 것에 익숙하실 겁니다. 반면에 `torch.Tensor`(하나 이상의 요소를 가진)는 정의된 참/거짓 값을 가지지 않습니다. 대신 `.all()`이나 `.any()`를 사용해 요소별 참/거짓 값을 결합해야 합니다:
+
+```python
+>>> a = torch.Tensor((1,2))
+>>> print("yes" if a else "no")
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+RuntimeError: Boolean value of Tensor with more than one value is ambiguous
+>>> a.all()
+tensor(False)
+>>> a.any()
+tensor(True)
+```
+
+이는 또한 텐서 변수가 설정되었는지 확인하려면 `if a:`가 아니라 `if a is not None:`을 사용해야 한다는 것을 의미합니다.
