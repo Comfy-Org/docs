@@ -1,0 +1,99 @@
+name: i18n Translation Sync Check
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.mdx'
+      - 'docs.json'
+
+jobs:
+  check-i18n-translations:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run i18n sync check
+        id: check
+        continue-on-error: true
+        env:
+          CHECK_I18N_OUTPUT: /tmp/i18n-check.json
+        run: node .github/scripts/check-i18n-sync.mjs \
+          "${{ github.event.pull_request.base.sha }}" \
+          "${{ github.event.pull_request.head.sha }}"
+
+      - name: Notify translator on PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHECK_I18N_OUTPUT: /tmp/i18n-check.json
+        run: |
+          if [ ! -f "$CHECK_I18N_OUTPUT" ]; then
+            echo "No check output; skipping comment."
+            exit 0
+          fi
+
+          MISSING=$(node -e "
+            const data = require('$CHECK_I18N_OUTPUT');
+            if (data.skipped) process.exit(2);
+            const n = Object.values(data.missingByLang || {}).reduce((s, v) => s + v.files.length, 0);
+            if (n === 0) process.exit(2);
+            process.stdout.write(String(n));
+          " 2>/dev/null) || true
+
+          if [ -z "$MISSING" ]; then
+            echo "No missing translations; skipping PR comment."
+            exit 0
+          fi
+
+          BODY_FILE=/tmp/i18n-comment.md
+          node -e "
+            const data = require(process.env.CHECK_I18N_OUTPUT);
+            const lines = [
+              '## 🌐 i18n translation sync reminder',
+              '',
+              '@comfyui-wiki English documentation was updated in this PR. Please complete or schedule translation updates for the following files:',
+              '',
+            ];
+            for (const [code, { name, files }] of Object.entries(data.missingByLang)) {
+              lines.push('### ' + name + ' (\`' + code + '\`)');
+              for (const f of files) lines.push('- \`' + f + '\`');
+              lines.push('');
+            }
+            lines.push('---');
+            lines.push('');
+            lines.push('**Local sync:** \`npm run translate\` (see [README — Automated translation](https://github.com/${{ github.repository }}/blob/main/README.md#automated-translation))');
+            lines.push('');
+            lines.push('<!-- i18n-sync-check -->');
+            require('fs').writeFileSync(process.env.BODY_FILE, lines.join('\n'));
+          " BODY_FILE="$BODY_FILE"
+
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+          MARKER="<!-- i18n-sync-check -->"
+
+          EXISTING_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.body | contains("'"$MARKER"'")) | .id' | head -1)
+
+          if [ -n "$EXISTING_ID" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${EXISTING_ID}" \
+              -f body="$(cat "$BODY_FILE")"
+            echo "Updated existing i18n reminder comment."
+          else
+            gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
+            echo "Posted new i18n reminder comment."
+          fi
+
+      - name: Fail on redirect errors
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "i18n sync check failed — missing docs.json redirects for moved files."
+          exit 1
