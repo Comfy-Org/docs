@@ -17,6 +17,52 @@ import {
   shouldPreserveNavLabel,
 } from "./nav-label-translate.mjs";
 
+/**
+ * Walk EN + synced nav in parallel; collect en label → existing locale title.
+ * @param {object} enEntry
+ * @param {object} syncedEntry
+ * @returns {Map<string, string>}
+ */
+export function collectExistingNavLabelMap(enEntry, syncedEntry) {
+  /** @type {Map<string, string>} */
+  const map = new Map();
+  const enTabs = enEntry.tabs ?? [];
+  const syncedTabs = syncedEntry.tabs ?? [];
+  for (let i = 0; i < enTabs.length; i++) {
+    collectExistingTabLabels(enTabs[i], syncedTabs[i], map);
+  }
+  return map;
+}
+
+/** @param {object | undefined} enTab @param {object | undefined} syncedTab @param {Map<string, string>} map */
+function collectExistingTabLabels(enTab, syncedTab, map) {
+  if (!enTab || !syncedTab) return;
+  if (enTab.tab && syncedTab.tab) map.set(enTab.tab, syncedTab.tab);
+  if (enTab.pages && syncedTab.pages) {
+    collectExistingPageLabels(enTab.pages, syncedTab.pages, map);
+  }
+}
+
+/** @param {unknown[]} enPages @param {unknown[]} syncedPages @param {Map<string, string>} map */
+function collectExistingPageLabels(enPages, syncedPages, map) {
+  if (!Array.isArray(enPages) || !Array.isArray(syncedPages)) return;
+  for (let i = 0; i < enPages.length; i++) {
+    const en = enPages[i];
+    const synced = syncedPages[i];
+    if (typeof en === "string" || typeof synced === "string") continue;
+    if (en?.group && synced?.group) map.set(en.group, synced.group);
+    if (en?.pages && synced?.pages) {
+      collectExistingPageLabels(en.pages, synced.pages, map);
+    }
+  }
+}
+
+/** @param {Map<string, string>} existingMap @param {string} enLabel */
+function isAlreadyLocalized(existingMap, enLabel) {
+  const existing = existingMap.get(enLabel);
+  return Boolean(existing && existing !== enLabel);
+}
+
 export const DOCS_JSON_PATH = join(REPO_ROOT, "docs.json");
 
 /** @param {string} path @param {string[]} langDirs */
@@ -276,25 +322,41 @@ export function syncLanguageEntry(enEntry, langEntry, lang, langDirs) {
  */
 async function translateNavLabelsForEntry(enEntry, syncedEntry, lang, options) {
   const allLabels = collectAllNavLabelsFromEn(enEntry);
-  const toTranslate = allLabels.filter((l) => !shouldPreserveNavLabel(l));
+  const existingMap = collectExistingNavLabelMap(enEntry, syncedEntry);
+  const kept = allLabels.filter(
+    (l) => shouldPreserveNavLabel(l) || isAlreadyLocalized(existingMap, l)
+  );
+  const needsTranslation = allLabels.filter(
+    (l) => !shouldPreserveNavLabel(l) && !isAlreadyLocalized(existingMap, l)
+  );
 
-  if (toTranslate.length === 0) {
-    return { entry: syncedEntry, translatedLabels: [] };
+  if (needsTranslation.length === 0) {
+    const labelMap = new Map(
+      allLabels.map((l) => [l, lookupNavLabel(l, existingMap)])
+    );
+    return {
+      entry: applyLabelMapToEntry(syncedEntry, enEntry, labelMap),
+      translatedLabels: [],
+      keptLabels: kept.length,
+    };
   }
 
   if (options.dryRun || options.translateLabels === false) {
     return {
       entry: syncedEntry,
-      translatedLabels: toTranslate,
+      translatedLabels: needsTranslation,
+      keptLabels: kept.length,
       pendingOnly: true,
     };
   }
 
   console.log(
-    `[${lang.code}] Translating ${toTranslate.length} nav label(s) in batch...`
+    `[${lang.code}] Nav labels: ${kept.length} kept, ${needsTranslation.length} to translate` +
+      (kept.length > 0 ? ` (${kept.length} existing as reference)` : "")
   );
 
-  const labelMap = await translateNavLabels(allLabels, lang, {
+  const labelMap = await translateNavLabels(needsTranslation, lang, {
+    existingMap,
     onBatch: ({ batch, total, count }) => {
       if (total > 1) {
         console.log(`  [${lang.code}] Nav labels batch ${batch}/${total} (${count} labels)`);
@@ -302,9 +364,16 @@ async function translateNavLabelsForEntry(enEntry, syncedEntry, lang, options) {
     },
   });
 
+  for (const l of allLabels) {
+    if (!labelMap.has(l)) {
+      labelMap.set(l, lookupNavLabel(l, existingMap));
+    }
+  }
+
   return {
     entry: applyLabelMapToEntry(syncedEntry, enEntry, labelMap),
-    translatedLabels: toTranslate.map((l) => `${l} → ${labelMap.get(l)}`),
+    translatedLabels: needsTranslation.map((l) => `${l} → ${labelMap.get(l)}`),
+    keptLabels: kept.length,
   };
 }
 
@@ -440,7 +509,7 @@ export function formatNavSyncReport(changes) {
         lines.push(`      ... +${pendingLabels.length - 8} more`);
       }
     } else if (translatedLabels?.length) {
-      lines.push(`    nav labels batch applied (${translatedLabels.length}):`);
+      lines.push(`    nav labels translated (${translatedLabels.length} new):`);
       for (const label of translatedLabels.slice(0, 8)) {
         lines.push(`      · ${label}`);
       }

@@ -113,8 +113,9 @@ function getTranslateConfig() {
  * @param {string[]} batch
  * @param {{ name: string }} lang
  * @param {string[]} preserveTerms
+ * @param {Record<string, string>} [existingReference]
  */
-async function translateNavLabelBatch(batch, lang, preserveTerms) {
+async function translateNavLabelBatch(batch, lang, preserveTerms, existingReference = {}) {
   const { apiKey, baseUrl, model } = getTranslateConfig();
   if (!apiKey) {
     throw new Error(
@@ -123,15 +124,26 @@ async function translateNavLabelBatch(batch, lang, preserveTerms) {
   }
 
   const numbered = batch.map((l, i) => `${i + 1}. ${l}`).join("\n");
-  const prompt = [
+  const referenceEntries = Object.entries(existingReference).filter(
+    ([en, localized]) => localized && localized !== en
+  );
+  const promptParts = [
     `Translate these Mintlify documentation sidebar labels from English into ${lang.name}.`,
     "They are short navigation tab or group titles (not full sentences).",
     `Keep these terms in English when they appear: ${[...new Set(preserveTerms)].join(", ")}.`,
-    "Return ONLY a JSON object: keys = exact English labels, values = translations.",
-    "Include every key from the numbered list. No markdown fences.",
-    "",
-    numbered,
-  ].join("\n");
+    "Return ONLY a JSON object: keys = exact English labels from the numbered list below, values = translations.",
+    "Match terminology and tone of any existing translations provided for consistency.",
+    "Include every numbered key. No markdown fences.",
+  ];
+  if (referenceEntries.length > 0) {
+    promptParts.push(
+      "",
+      "Existing translations in this locale (reference only — keep style consistent; do not repeat these in output unless the same English key appears below):",
+      JSON.stringify(Object.fromEntries(referenceEntries), null, 0)
+    );
+  }
+  promptParts.push("", "Translate these English labels:", numbered);
+  const prompt = promptParts.join("\n");
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -184,10 +196,11 @@ async function translateNavLabelBatch(batch, lang, preserveTerms) {
 }
 
 /**
- * Pack all nav labels into batch API call(s), return en → target map.
- * @param {string[]} labels
+ * Pack nav labels into batch API call(s), return en → target map.
+ * Skips labels that already have a localized value in existingMap.
+ * @param {string[]} labels English labels that may still need translation
  * @param {{ name: string, code?: string }} lang
- * @param {{ preserveTerms?: string[], onBatch?: (info: { batch: number, total: number, count: number }) => void }} [options]
+ * @param {{ preserveTerms?: string[], existingMap?: Map<string, string>, onBatch?: (info: { batch: number, total: number, count: number }) => void }} [options]
  * @returns {Promise<Map<string, string>>}
  */
 export async function translateNavLabels(labels, lang, options = {}) {
@@ -197,15 +210,34 @@ export async function translateNavLabels(labels, lang, options = {}) {
     ...(loadI18nConfig().preserve_terms ?? []),
   ];
 
+  const existingMap = options.existingMap ?? new Map();
   const unique = [...new Set(labels)].filter(Boolean);
+
   /** @type {Map<string, string>} */
   const result = new Map();
+
   for (const label of unique) {
-    if (shouldPreserveNavLabel(label)) result.set(label, label);
+    if (shouldPreserveNavLabel(label)) {
+      result.set(label, label);
+      continue;
+    }
+    const existing = existingMap.get(label);
+    if (existing && existing !== label) {
+      result.set(label, existing);
+    }
   }
 
-  const toTranslate = unique.filter((l) => !shouldPreserveNavLabel(l));
+  const toTranslate = unique.filter((l) => {
+    if (shouldPreserveNavLabel(l)) return false;
+    const existing = existingMap.get(l);
+    return !existing || existing === l;
+  });
+
   if (toTranslate.length === 0) return result;
+
+  const existingReference = Object.fromEntries(
+    [...existingMap.entries()].filter(([, localized]) => localized)
+  );
 
   const batches = [];
   for (let i = 0; i < toTranslate.length; i += LABEL_BATCH_SIZE) {
@@ -219,7 +251,12 @@ export async function translateNavLabels(labels, lang, options = {}) {
       total: batches.length,
       count: batch.length,
     });
-    const batchMap = await translateNavLabelBatch(batch, lang, preserveTerms);
+    const batchMap = await translateNavLabelBatch(
+      batch,
+      lang,
+      preserveTerms,
+      existingReference
+    );
     for (const [key, val] of batchMap) result.set(key, val);
   }
 
