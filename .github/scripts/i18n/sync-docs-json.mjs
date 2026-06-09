@@ -3,8 +3,8 @@
  *
  * Mirrors EN tab structure and page paths for each configured language,
  * prefixing paths with the language directory (e.g. ko/installation/foo).
- * Preserves localized tab/group labels when subtrees overlap; translates
- * remaining English labels via the translation API.
+ * Preserves localized tab/group labels when subtrees overlap.
+ * Nav label translation is opt-in (translateLabels: true); default is path-only sync.
  */
 
 import { readFileSync, readdirSync, writeFileSync } from "fs";
@@ -263,7 +263,20 @@ export function mergeNavPages(newPages, existingPages, langDirs) {
 }
 
 /**
+ * Prefer an already-localized sidebar label over EN or API output.
+ * @param {string | undefined} syncedLabel
+ * @param {string | undefined} enLabel
+ * @param {Map<string, string>} labelMap
+ */
+function resolveNavLabel(syncedLabel, enLabel, labelMap) {
+  if (!enLabel) return syncedLabel ?? enLabel;
+  if (syncedLabel && syncedLabel !== enLabel) return syncedLabel;
+  return lookupNavLabel(enLabel, labelMap);
+}
+
+/**
  * Apply a full English → locale label map by walking the EN tree in parallel.
+ * Never overwrites labels that already differ from English (manual or prior translations).
  * @param {unknown[]} syncedPages
  * @param {unknown[]} enPages
  * @param {Map<string, string>} labelMap
@@ -274,7 +287,7 @@ function applyLabelMapToPages(syncedPages, enPages, labelMap) {
     if (typeof synced === "string") return synced;
     const en = enPages[i];
     const next = { ...synced };
-    if (en?.group) next.group = lookupNavLabel(en.group, labelMap);
+    if (en?.group) next.group = resolveNavLabel(synced.group, en.group, labelMap);
     if (synced.pages && en?.pages) {
       next.pages = applyLabelMapToPages(synced.pages, en.pages, labelMap);
     }
@@ -287,7 +300,7 @@ function applyLabelMapToTab(syncedTab, enTab, labelMap) {
   if (!enTab) return syncedTab;
   if (enTab.openapi != null) return syncedTab;
   const next = { ...syncedTab };
-  if (enTab.tab) next.tab = lookupNavLabel(enTab.tab, labelMap);
+  if (enTab.tab) next.tab = resolveNavLabel(syncedTab.tab, enTab.tab, labelMap);
   if (syncedTab.pages && enTab.pages) {
     next.pages = applyLabelMapToPages(syncedTab.pages, enTab.pages, labelMap);
   }
@@ -384,6 +397,7 @@ export function syncLanguageEntry(enEntry, langEntry, lang, langDirs) {
  * @param {{ dryRun?: boolean, translateLabels?: boolean }} options
  */
 async function translateNavLabelsForEntry(enEntry, syncedEntry, lang, options) {
+  const translateLabels = options.translateLabels === true;
   const allLabels = collectAllNavLabelsFromEn(enEntry);
   const existingMap = collectExistingNavLabelMap(enEntry, syncedEntry);
   const kept = allLabels.filter(
@@ -393,18 +407,25 @@ async function translateNavLabelsForEntry(enEntry, syncedEntry, lang, options) {
     (l) => !shouldPreserveNavLabel(l) && !isAlreadyLocalized(existingMap, l)
   );
 
-  if (needsTranslation.length === 0) {
-    const labelMap = new Map(
-      allLabels.map((l) => [l, lookupNavLabel(l, existingMap)])
-    );
+  // Default: path-only sync — mergeNavPages/syncTab already kept existing tab/group titles.
+  if (!translateLabels) {
     return {
-      entry: applyLabelMapToEntry(syncedEntry, enEntry, labelMap),
+      entry: syncedEntry,
+      translatedLabels: [],
+      pendingLabels: needsTranslation.length > 0 ? needsTranslation : undefined,
+      keptLabels: kept.length,
+    };
+  }
+
+  if (needsTranslation.length === 0) {
+    return {
+      entry: syncedEntry,
       translatedLabels: [],
       keptLabels: kept.length,
     };
   }
 
-  if (options.dryRun || options.translateLabels === false) {
+  if (options.dryRun) {
     return {
       entry: syncedEntry,
       translatedLabels: needsTranslation,
@@ -506,7 +527,9 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
     const removed = [...oldPaths].filter((p) => !newPaths.has(p)).sort();
     const structureChanged = JSON.stringify(existing?.tabs) !== JSON.stringify(synced.tabs);
     const labelsChanged =
-      labelResult.translatedLabels.length > 0 && !labelResult.pendingOnly;
+      options.translateLabels === true &&
+      labelResult.translatedLabels.length > 0 &&
+      !labelResult.pendingOnly;
 
     if (structureChanged || labelsChanged) {
       changes.push({
@@ -516,7 +539,7 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
         translatedLabels: labelResult.translatedLabels,
         pendingLabels: labelResult.pendingOnly
           ? labelResult.translatedLabels
-          : undefined,
+          : labelResult.pendingLabels,
       });
       if (idx >= 0) {
         nav.languages[idx] = synced;
@@ -573,7 +596,9 @@ export function formatNavSyncReport(changes) {
     }
     if (removed.length > 8) lines.push(`    ... -${removed.length - 8} more`);
     if (pendingLabels?.length) {
-      lines.push(`    nav labels batch (${pendingLabels.length} total, dry-run):`);
+      lines.push(
+        `    nav labels still English (${pendingLabels.length} total, not auto-translated):`
+      );
       for (const label of pendingLabels.slice(0, 8)) {
         lines.push(`      · ${label}`);
       }

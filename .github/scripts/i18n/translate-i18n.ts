@@ -21,7 +21,8 @@
  *   npm run translate -- installation/foo.mdx      # specific files
  *   npm run translate:check-truncation             # scan for truncated translations
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
- *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths + translate nav labels
+ *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths only (labels preserved)
+ *   npm run translate:sync-docs-json -- --translate-nav-labels  # also translate new English nav labels
  *
  * Requires Bun: https://bun.sh
  *
@@ -850,10 +851,16 @@ async function runDocsJsonSync(
   dryRun: boolean,
   options: { translateLabels?: boolean } = {}
 ): Promise<boolean> {
+  const translateLabels = options.translateLabels === true;
+  if (!translateLabels) {
+    console.log(
+      "docs.json: syncing navigation paths only (existing tab/group labels are preserved)."
+    );
+  }
   const result = await syncDocsJsonFile({
     selectedCodes: selectedLangs.map((l) => l.code),
     dryRun,
-    translateLabels: options.translateLabels,
+    translateLabels,
   });
   console.log(formatNavSyncReport(result.changes));
   if (result.changed && dryRun) {
@@ -1083,6 +1090,7 @@ async function main() {
   const repairTruncated = args.includes("--repair-truncated");
   const syncDocsJsonOnly = args.includes("--sync-docs-json");
   const skipDocsJsonSync = args.includes("--no-sync-docs-json");
+  const translateNavLabels = args.includes("--translate-nav-labels");
   const force = args.includes("--force") || repairTruncated;
   const snippetsOnly = args.includes("--snippets") || args.includes("--snippets-only");
   const pagesOnly = args.includes("--pages-only") || args.includes("--no-snippets");
@@ -1094,14 +1102,13 @@ async function main() {
   const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync;
 
   if (syncDocsJsonOnly) {
-    if (!API_KEY) {
+    if (translateNavLabels && !API_KEY) {
       console.warn(
-        "No API key — syncing page paths only; nav labels that still match English will not be translated."
+        "--translate-nav-labels requires TRANSLATE_API_KEY in .env.local; syncing paths only."
       );
-      console.warn("Set TRANSLATE_API_KEY in .env.local to translate group/tab titles.");
     }
     await runDocsJsonSync(selectedLangs, dryRun, {
-      translateLabels: Boolean(API_KEY),
+      translateLabels: translateNavLabels && Boolean(API_KEY),
     });
     return;
   }
@@ -1186,7 +1193,9 @@ async function main() {
   if (dryRun) {
     if (runDocsJsonAfter) {
       console.log("");
-      await runDocsJsonSync(selectedLangs, true);
+      await runDocsJsonSync(selectedLangs, true, {
+        translateLabels: translateNavLabels && Boolean(API_KEY),
+      });
     }
     return;
   }
@@ -1197,7 +1206,9 @@ async function main() {
 
   if (runDocsJsonAfter) {
     console.log("");
-    await runDocsJsonSync(selectedLangs, false);
+    await runDocsJsonSync(selectedLangs, false, {
+      translateLabels: translateNavLabels && Boolean(API_KEY),
+    });
   }
 }
 
