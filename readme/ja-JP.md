@@ -78,9 +78,15 @@ PR を作成していただければ、数日以内にレビューします。
 
 リポジトリルートの英語 MDX が**唯一のソース**です。他言語は同じ相対パスでミラーします（例：`zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`、`ko/get_started/introduction.mdx`）。再利用フラグメントは `snippets/` にあり、各言語のコピーは `snippets/zh/`、`snippets/ja/`、`snippets/ko/` などに置きます。
 
-**翻訳方針**：対応言語（`zh`、`ja`、`ko` など）は英語からの**自動翻訳**で維持します。英語ドキュメント更新後、メンテナーが `npm run translate` で一括同期します。全ページを手翻訳する必要はありません。
+他言語の貢献ガイド：[readme/](.)（[English](../README.md)、[中文](zh-CN.md)、[한국어](ko-KR.md)）。
 
-**新しい言語のリクエスト**：[Issue を作成](https://github.com/Comfy-Org/docs/issues/new) して希望の言語（例：フランス語、ドイツ語）をお知らせください。メンテナーが `translation-config.json` と `docs.json` を設定し、**全コンテンツの一括翻訳**を行います。リクエストを送るだけで大丈夫です。訳文 MDX の PR は不要です。
+**翻訳方針**
+
+対応言語は英語からの**自動翻訳**で維持します。英語ドキュメントが更新されると、`npm run translate` で一括同期されます。貢献者が全ページを手翻訳する必要はありません。
+
+**新しい言語のリクエスト**
+
+他の言語が必要ですか？[Issue を作成](https://github.com/Comfy-Org/docs/issues/new) して希望の言語（例：フランス語、ドイツ語、ブラジルポルトガル語）をお知らせください。メンテナーが `translation-config.json` と `docs.json` に追加し、**全コンテンツの一括翻訳**を行います。リクエストを送るだけで大丈夫です。訳文 MDX の PR は不要です。
 
 MDX の編集仕様は [Mintlify](https://mintlify.com/docs/page) の Writing Content を参照してください。
 
@@ -111,6 +117,7 @@ cp .env.local.example .env.local
 | `npm run translate:snippets:dry-run` | snippet の未翻訳一覧を表示 |
 | `npm run translate:check-truncation` | 途中で切れた翻訳をスキャン |
 | `npm run translate:repair-truncated` | ログに記録されたファイルを再翻訳 |
+| `npm run glossary:sync` | ComfyUI フロントエンドから用語集を再構築（[用語の一貫性](#用語の一貫性) 参照） |
 
 `--` の後にオプションを渡せます：
 
@@ -124,7 +131,7 @@ npm run translate:repair-truncated -- --lang ko
 
 **途中切れ翻訳の修復**
 
-長いファイルは翻訳が途中で切れることがあります（コードフェンス未閉じなど）。一括翻訳後は新規翻訳ファイルを自動スキャンし、`.github/i18n-logs/translate/truncation-issues.json` と `truncation-issues.txt`（gitignore）に修復リストを書き出します。
+長いファイルは翻訳が途中で切れることがあります（コードフェンス未閉じなど）。一括翻訳後は新規翻訳ファイルを自動スキャンし、`.github/i18n-logs/translate/truncation-issues.json` と `truncation-issues.txt`（gitignore）に修復リストを書き出します。言語全体をスキャンする場合や修復する場合：
 
 ```bash
 npm run translate:check-truncation -- --lang ko
@@ -137,17 +144,55 @@ npm run translate:repair-truncated -- --lang ko
 
 - **入力**: 英語 MDX（主ソース）+ 既存の訳文（コンテキスト、あれば）
 - **出力**: `zh/`、`ja/`、`ko/` などに書き込み、frontmatter の `translationSourceHash` を更新（snippet は HTML コメントで hash を保存）
-- **レビューメモ（mismatch）**: モデルが `=== MISMATCHES ===` で報告した意味上の問題は `.github/i18n-logs/translate/mismatches.json` と `mismatches.txt`（gitignore）に書き込み、MDX には入れません。`npm run translate` 実行時のみ。截断スキャンでは出ません。
-- **截断ログ**: 構造的な問題は `.github/i18n-logs/translate/truncation-issues.json`（上記「途中切れ翻訳の修復」参照）
+- **レビューメモ（mismatch）**: モデルが `=== MISMATCHES ===` で報告した意味上の問題は `.github/i18n-logs/translate/mismatches.json` と `mismatches.txt`（gitignore）に書き込み、MDX には入れません。`npm run translate` 実行時のみ。途中切れスキャンでは出ません。
+- **途中切れログ**: 構造的な問題は `.github/i18n-logs/translate/truncation-issues.json`（上記「途中切れ翻訳の修復」参照）
 - **スキップ**: `built-in-nodes/`（`translation-config.json` の `skip_paths`）
-- **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して EN と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
+- **チャンク翻訳**: `changelog/index.mdx` は `<Update label="v0.x.x">` のバージョンラベルを比較し、**不足している**バージョンのみ翻訳して英語と同じ順序で挿入します。既存ブロックは `--force` 以外では再翻訳しません
 - **ディレクトリ**: ファイル書き込み時にサブディレクトリを自動作成（手動の `mkdir` は不要）
 
-スクリプト：`.github/scripts/i18n/`
+スクリプト：`.github/scripts/i18n/`（`translate-i18n.ts`、`translation-config.json`、および [i18n README](../.github/scripts/i18n/README.md) を参照）
+
+#### 用語の一貫性
+
+同じ英語用語がページごとに異なる訳にならないよう（例：「custom node」が韓国語で二通りに訳されるのを防ぐ）、翻訳器には三つの補完的な仕組みがあります。それぞれ異なる種類の用語を扱います：
+
+| 仕組み | 効果 | 例 | 保守 |
+|--------|------|-----|------|
+| `preserve_terms`（`translation-config.json` 内） | 用語を**英語のまま**保持 | `checkpoint`、`LoRA`、`scheduler` | 手動 |
+| `glossary/frontend/{lang}.json` | フロントエンドの**既存訳**を使用 | `workflow → 워크플로` | 機械同期 |
+| `glossary/overrides/{lang}.json` | フロントエンドを**修正 / 拡張** | `custom node → 커스텀 노드` | 手動、優先 |
+
+**ComfyUI フロントエンド**（[`ComfyUI_frontend/src/locales`](https://github.com/Comfy-Org/ComfyUI_frontend/tree/main/src/locales)）が用語訳の権威ソースです。`npm run glossary:sync` はその locale 用語を `glossary/frontend/{lang}.json` にミラーします（実行のたびに全量再構築 — 手編集しないでください）。手動の修正は `glossary/overrides/{lang}.json` に書き、ミラーより優先されます。用語の決定を記録したり、ノイズの多いフロントエンド用語を除外する場所です：
+
+```jsonc
+// glossary/overrides/ko.json
+{
+  "terms":  { "custom node": "커스텀 노드" },   // 再マップまたは追加（frontend より優先）
+  "ignore": ["title", "additional", "work"]      // ノイズの多いフロントエンド用語を除外
+}
+```
+
+翻訳時は、ドキュメントに実際に現れる用語だけを選び、**推奨**（必須ではない）ヒントとして注入します。直訳が不自然になる場合は自然な表現を保てます。定訳のない ComfyUI 固有名詞（モデル名、`checkpoint` など）は `preserve_terms` に入れて英語のままにします。設計と保守の詳細は [i18n README](../.github/scripts/i18n/README.md) を参照してください。
+
+```bash
+npm run glossary:sync                 # フロントエンドミラーを全言語で再構築
+npm run glossary:sync -- --lang ko    # 単一言語
+npm run glossary:sync:dry-run         # 件数のみ報告、書き込みなし
+```
+
+フロントエンド locale のパスは次の順で解決されます：`--frontend <path>` → `FRONTEND_LOCALES_PATH` 環境変数 → `translation-config.json` の `frontend_locales_path` → `../ComfyUI_frontend/src/locales`。
 
 #### 新しい言語の追加
 
-上記「**新しい言語のリクエスト**」を参照 — Issue で申請してください。PR で言語を追加する必要はありません。
+上記 [新しい言語のリクエスト](#新しい言語のリクエスト) を参照 — Issue で申請してください。PR で言語を自分で追加しないでください。
+
+メンテナー：`.github/scripts/i18n/translation-config.json` の `languages` にエントリを追加（`code`、`name`、`dir`、`snippets_dir`）。パス除外、リンクのローカライズ、英語ファイルのスキャンは同フォルダの `i18n-config.mjs` から自動導出されるため、ロケール追加時に翻訳スクリプトを言語ごとに編集する必要はありません。次に `docs.json` にナビゲーションを追加（[Mintlify ローカライゼーション](https://mintlify.com/docs/navigation/localization) 参照）し、一括翻訳を実行：
+
+```bash
+npm run translate:dry-run -- --lang fr
+npm run translate -- --lang fr
+npm run translate:snippets -- --lang fr
+```
 
 #### 手動翻訳
 
