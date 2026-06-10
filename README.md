@@ -117,6 +117,7 @@ cp .env.local.example .env.local
 | `npm run translate:check-truncation` | Scan for likely truncated translations |
 | `npm run translate:repair-truncated` | Re-translate files listed in the truncation log |
 | `npm run glossary:sync` | Rebuild the terminology glossary from the ComfyUI frontend (see [Terminology consistency](#terminology-consistency)) |
+| `npm run translate:review` | Score existing translations with an AI judge (see [Quality review](#quality-review)) |
 
 Pass extra flags after `--`:
 
@@ -180,6 +181,22 @@ npm run glossary:sync:dry-run         # report counts without writing
 ```
 
 The frontend locales path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH` env → `frontend_locales_path` in `translation-config.json` → `../ComfyUI_frontend/src/locales`.
+
+#### Quality review
+
+`npm run translate:review` scores existing translations with an **independent** (and typically cheaper) AI model — an LLM-as-a-judge — on four axes: accuracy, completeness, terminology (checked against the glossary), and fluency. It is separate from the translation model's own `=== MISMATCHES ===` self-notes; here a different model acts as judge.
+
+Results are **advisory**: written to `.github/i18n-logs/review/` (`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking a PR. By default only translations that are up to date with English and not yet reviewed at that hash are checked.
+
+```bash
+npm run translate:review                     # pending reviews, all languages
+npm run translate:review -- --lang ko        # one language
+npm run translate:review -- --all            # re-review everything
+npm run translate:review -- --sample 20      # N pending files per language
+npm run translate:review -- --min-score 4    # report files scoring below 4/5
+```
+
+Configure a dedicated cheap judge model via `REVIEW_API_KEY` / `REVIEW_API_BASE_URL` / `REVIEW_API_MODEL` in `.env.local` (falls back to the `TRANSLATE_*` model when unset). Use a fast model — evaluation is lighter than translation; reasoning-heavy models are slow under concurrency, so lower `REVIEW_CONCURRENCY` if you see connection errors.
 
 #### Adding a new language
 

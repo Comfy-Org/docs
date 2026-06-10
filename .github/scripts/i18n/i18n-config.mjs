@@ -25,6 +25,13 @@ export const TRUNCATION_ISSUES_TXT = join(TRANSLATE_LOG_DIR, "truncation-issues.
 export const MISMATCHES_JSON = join(TRANSLATE_LOG_DIR, "mismatches.json");
 export const MISMATCHES_TXT = join(TRANSLATE_LOG_DIR, "mismatches.txt");
 
+/** Gitignored AI quality-review logs (review-i18n.ts). */
+export const REVIEW_LOG_REL = ".github/i18n-logs/review";
+export const REVIEW_LOG_DIR = join(REPO_ROOT, REVIEW_LOG_REL);
+export const REVIEW_REPORT_JSON = join(REVIEW_LOG_DIR, "quality-report.json");
+export const REVIEW_REPORT_TXT = join(REVIEW_LOG_DIR, "quality-report.txt");
+export const REVIEW_STATE_JSON = join(REVIEW_LOG_DIR, "reviewed.json");
+
 /** Repo roots that are never English MDX sources (pages). */
 export const REPO_META_PREFIXES = [
   "snippets/",

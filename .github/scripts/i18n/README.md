@@ -28,6 +28,35 @@ Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan
 (`check-translation-truncation.ts`).
 
+## Quality review (LLM-as-a-judge)
+
+`review-i18n.ts` scores existing translations with an **independent** (and
+typically cheaper) model on four axes — accuracy, completeness, terminology
+(checked against the glossary), and fluency — and lists concrete issues. This is
+separate from the translation model's own `=== MISMATCHES ===` notes: here a
+different model acts as judge.
+
+Results are **advisory**: written to `.github/i18n-logs/review/`
+(`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking.
+By default only translations that are up to date with English and not yet
+reviewed at that hash are checked (review state lives in a side `reviewed.json`,
+not in frontmatter).
+
+```bash
+pnpm translate:review                     # pending reviews, all languages
+pnpm translate:review -- --lang ko        # one language
+pnpm translate:review -- installation/x.mdx
+pnpm translate:review -- --all            # re-review everything
+pnpm translate:review -- --sample 20      # N pending files per language
+pnpm translate:review -- --min-score 4    # report files scoring below 4/5
+```
+
+Configure a dedicated (cheap) judge model via `REVIEW_API_KEY` /
+`REVIEW_API_BASE_URL` / `REVIEW_API_MODEL` in `.env.local`; falls back to the
+`TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
+translation, and reasoning-heavy models are slow and can drop connections under
+concurrency (lower `REVIEW_CONCURRENCY` if you see socket errors).
+
 ## Terminology consistency
 
 The same English term must render the same way across pages. Three complementary
