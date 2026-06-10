@@ -1,0 +1,148 @@
+# Docs i18n
+
+Tooling that translates the English MDX docs into the languages listed in
+[`translation-config.json`](./translation-config.json) (currently ja / zh / ko).
+English is the single source of truth; every other language is generated.
+
+## How translation works
+
+`translate-i18n.ts` is the entry point. It is **incremental**: each translated
+file records a `translationSourceHash` (SHA-256 of its English source) in
+frontmatter, and a re-run skips files whose English source is unchanged. The
+English source is the primary input; the existing target file is passed as
+context so unchanged sections are preserved.
+
+```bash
+pnpm translate                       # translate pending pages + snippets, all languages
+pnpm translate:dry-run               # list what would be translated
+pnpm translate:force                 # re-translate everything
+pnpm translate -- --lang zh,ja       # specific languages
+pnpm translate -- installation/x.mdx # specific files
+pnpm translate:snippets              # snippets only
+pnpm translate:check-truncation      # scan for truncated output
+pnpm translate:repair-truncated -- --lang ko
+pnpm translate:sync-docs-json        # sync docs.json navigation paths
+```
+
+Quality controls during/after a run write to `.github/i18n-logs/translate/`
+(gitignored): semantic mismatches reported by the model, and a truncation scan
+(`check-translation-truncation.ts`).
+
+## Quality review (LLM-as-a-judge)
+
+`review-i18n.ts` scores existing translations with an **independent** (and
+typically cheaper) model on four axes — accuracy, completeness, terminology
+(checked against the glossary), and fluency — and lists concrete issues. This is
+separate from the translation model's own `=== MISMATCHES ===` notes: here a
+different model acts as judge.
+
+Results are **advisory**: written to `.github/i18n-logs/review/`
+(`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking.
+By default only translations that are up to date with English and not yet
+reviewed at that hash are checked. The reviewed hash is stored as
+`reviewSourceHash` in the translated file's frontmatter (snippets: an MDX
+comment) and committed to git — so review state is shared across the team and
+visible per file, mirroring `translationSourceHash`. Only the hash goes in
+frontmatter; scores and the issue list stay in the gitignored report.
+
+```bash
+pnpm translate:review                     # pending reviews, all languages
+pnpm translate:review -- --lang ko        # one language
+pnpm translate:review -- installation/x.mdx
+pnpm translate:review -- --all            # re-review everything
+pnpm translate:review -- --sample 20      # N pending files per language
+pnpm translate:review -- --min-score 4    # report files scoring below 4/5
+```
+
+Configure a dedicated (cheap) judge model via `REVIEW_API_KEY` /
+`REVIEW_API_BASE_URL` / `REVIEW_API_MODEL` in `.env.local`; falls back to the
+`TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
+translation, and reasoning-heavy models are slow and can drop connections under
+concurrency (lower `REVIEW_CONCURRENCY` if you see socket errors).
+
+## Terminology consistency
+
+The same English term must render the same way across pages. Three complementary
+mechanisms handle this, each for a different category of term:
+
+| Mechanism | Effect | Example | Maintained |
+|-----------|--------|---------|------------|
+| `preserve_terms` (in `translation-config.json`) | keep the term **in English** | `checkpoint`, `LoRA`, `scheduler` | by hand |
+| glossary `frontend/{lang}.json` | use the frontend's **translation** | `workflow → 워크플로` | machine-synced |
+| glossary `overrides/{lang}.json` | **correct / extend** the frontend | `custom node → 커스텀 노드` | by hand, wins |
+
+**Why three.** ComfyUI proper nouns with no settled translation (model names,
+`checkpoint`, `embedding`, …) should stay in English → `preserve_terms`. Terms
+the ComfyUI frontend already translates well → mirror them. Terms the frontend
+gets wrong, lacks, or that a language community wants to pin → overrides.
+
+### The glossary (`glossary/`)
+
+```
+glossary/
+  frontend/{lang}.json   machine mirror of ComfyUI frontend locale terms
+  overrides/{lang}.json   hand-maintained corrections; win over the mirror
+```
+
+**`frontend/`** is rebuilt wholesale by `pnpm glossary:sync` from the ComfyUI
+frontend locales (the authoritative source). Never hand-edit it. Shape:
+
+```jsonc
+{ "custom nodes": "커스텀 노드", "workflow": "워크플로" }
+```
+
+**`overrides/{lang}.json`** is the place to record a term decision (issue #1124).
+It both remaps terms and drops noisy frontend terms:
+
+```jsonc
+{
+  "terms":  { "custom node": "커스텀 노드" },   // remap or add (wins over frontend)
+  "ignore": ["title", "additional", "work"]      // drop a noisy frontend term
+}
+```
+
+Resolution at translation time: frontend mirror → remove `ignore` → apply
+`terms`. For each document, only terms that literally appear are selected
+(whole-word, case-insensitive, longest-first, capped) and injected as
+**preferred** (not mandatory) hints — so the model keeps natural phrasing when a
+literal substitution would read awkwardly.
+
+```bash
+pnpm glossary:sync                 # rebuild the frontend mirror, all languages
+pnpm glossary:sync -- --lang ko    # one language
+pnpm glossary:sync:dry-run         # report counts without writing
+```
+
+Frontend path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH`
+env → `frontend_locales_path` in `translation-config.json` →
+`../ComfyUI_frontend/src/locales`.
+
+### Design notes
+
+- **Why not auto-extract everything from the frontend?** Its UI locale strings
+  are low signal as a glossary — full of button/toast text (`Download image`) and
+  function words whose UI rendering is wrong in prose (`of → 중`, `work → 업무용`).
+- **Why a curated word blocklist, not a length filter?** Gold short terms
+  (`node`, `model`, `latent`) and harmful ones (`work`, `mode`, `here`) are the
+  same length; length can't separate them. `sync-glossary.mjs` uses an explicit
+  common-word blocklist; the long tail that slips through goes in override
+  `ignore`.
+
+### Curating
+
+- A frontend term reads badly in prose → add it to the override `ignore` list.
+- A term needs a different / agreed translation → add it to override `terms`.
+- A term should stay in English everywhere → add it to `preserve_terms`.
+
+## Files
+
+| File | Role |
+|------|------|
+| `translate-i18n.ts` | translation entry point |
+| `sync-glossary.mjs` | rebuild the glossary frontend mirror |
+| `glossary.mjs` | load glossary layers, select + inject terms |
+| `i18n-config.mjs` | shared path rules from `translation-config.json` |
+| `sync-docs-json.mjs` / `nav-label-translate.mjs` | docs.json navigation sync |
+| `check-translation-truncation.ts` | detect truncated output |
+| `check-i18n-sync.mjs` | PR check: English changes have matching translations |
+| `translation-config.json` | languages, skip paths, `preserve_terms`, frontend path |

@@ -116,6 +116,8 @@ cp .env.local.example .env.local
 | `npm run translate:snippets:dry-run` | Preview pending snippet translations |
 | `npm run translate:check-truncation` | Scan for likely truncated translations |
 | `npm run translate:repair-truncated` | Re-translate files listed in the truncation log |
+| `npm run glossary:sync` | Rebuild the terminology glossary from the ComfyUI frontend (see [Terminology consistency](#terminology-consistency)) |
+| `npm run translate:review` | Score existing translations with an AI judge (see [Quality review](#quality-review)) |
 
 Pass extra flags after `--`:
 
@@ -148,7 +150,53 @@ npm run translate:repair-truncated -- --lang ko
 - **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand
 
-Script location: `.github/scripts/i18n/` (see `translate-i18n.ts`, `translation-config.json`)
+Script location: `.github/scripts/i18n/` (see `translate-i18n.ts`, `translation-config.json`, and the [i18n README](.github/scripts/i18n/README.md) for full details)
+
+#### Terminology consistency
+
+To keep the same English term rendered the same way across pages (e.g. avoid "custom node" drifting between two different Korean translations), three complementary mechanisms feed the translator. Each handles a different kind of term:
+
+| Mechanism | Effect | Example | Maintained |
+|-----------|--------|---------|------------|
+| `preserve_terms` (in `translation-config.json`) | keep the term **in English** | `checkpoint`, `LoRA`, `scheduler` | by hand |
+| `glossary/frontend/{lang}.json` | use the frontend's **translation** | `workflow → 워크플로` | machine-synced |
+| `glossary/overrides/{lang}.json` | **correct / extend** the frontend | `custom node → 커스텀 노드` | by hand, wins |
+
+The **ComfyUI frontend** ([`ComfyUI_frontend/src/locales`](https://github.com/Comfy-Org/ComfyUI_frontend/tree/main/src/locales)) is the authoritative source of term translations. `npm run glossary:sync` mirrors its locale terms into `glossary/frontend/{lang}.json` (rebuilt wholesale each run — never hand-edit). Hand-maintained corrections live in `glossary/overrides/{lang}.json`, which wins over the mirror and is the place to record a term decision or drop a noisy frontend term:
+
+```jsonc
+// glossary/overrides/ko.json
+{
+  "terms":  { "custom node": "커스텀 노드" },   // remap or add (wins over frontend)
+  "ignore": ["title", "additional", "work"]      // drop a noisy frontend term
+}
+```
+
+At translation time, only terms that actually appear in a document are selected and injected as **preferred** (not mandatory) hints, so the model keeps natural phrasing when a literal substitution would read awkwardly. ComfyUI proper nouns with no settled translation (model names, `checkpoint`, …) instead go in `preserve_terms` to stay in English. See the [i18n README](.github/scripts/i18n/README.md) for the full design and curation guidance.
+
+```bash
+npm run glossary:sync                 # rebuild the frontend mirror, all languages
+npm run glossary:sync -- --lang ko    # one language
+npm run glossary:sync:dry-run         # report counts without writing
+```
+
+The frontend locales path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH` env → `frontend_locales_path` in `translation-config.json` → `../ComfyUI_frontend/src/locales`.
+
+#### Quality review
+
+`npm run translate:review` scores existing translations with an **independent** (and typically cheaper) AI model — an LLM-as-a-judge — on four axes: accuracy, completeness, terminology (checked against the glossary), and fluency. It is separate from the translation model's own `=== MISMATCHES ===` self-notes; here a different model acts as judge.
+
+Results are **advisory**: the detailed scores and issue list are written to `.github/i18n-logs/review/` (`quality-report.json` / `.txt`, gitignored) and never block a PR. The reviewed hash is recorded as `reviewSourceHash` in the translated file's frontmatter (committed to git), so review state is shared across the team and visible per file — mirroring `translationSourceHash`. By default only translations that are up to date with English and not yet reviewed at that hash are checked.
+
+```bash
+npm run translate:review                     # pending reviews, all languages
+npm run translate:review -- --lang ko        # one language
+npm run translate:review -- --all            # re-review everything
+npm run translate:review -- --sample 20      # N pending files per language
+npm run translate:review -- --min-score 4    # report files scoring below 4/5
+```
+
+Configure a dedicated cheap judge model via `REVIEW_API_KEY` / `REVIEW_API_BASE_URL` / `REVIEW_API_MODEL` in `.env.local` (falls back to the `TRANSLATE_*` model when unset). Use a fast model — evaluation is lighter than translation; reasoning-heavy models are slow under concurrency, so lower `REVIEW_CONCURRENCY` if you see connection errors.
 
 #### Adding a new language
 
@@ -157,10 +205,13 @@ See [Request a new language](#request-a-new-language) above — please open an i
 Maintainers: add one entry under `languages` in `.github/scripts/i18n/translation-config.json` (`code`, `name`, `dir`, `snippets_dir`). Path exclusion, link localization, and English-file scanning are derived automatically by `i18n-config.mjs` in the same folder — no per-language edits in translate scripts when adding a locale. Then add navigation in `docs.json` (see [Mintlify Localization](https://mintlify.com/docs/navigation/localization)), and batch-translate:
 
 ```bash
+npm run glossary:sync -- --lang fr        # build the terminology glossary for the new locale
 npm run translate:dry-run -- --lang fr
 npm run translate -- --lang fr
 npm run translate:snippets -- --lang fr
 ```
+
+The glossary is extended automatically: once the language is in `translation-config.json`, `npm run glossary:sync` generates `glossary/frontend/{lang}.json` from the ComfyUI frontend locale (provided the frontend ships that locale). An `glossary/overrides/{lang}.json` file is optional — add it later only to correct or pin specific terms. See [Terminology consistency](#terminology-consistency).
 
 #### Manual translation
 

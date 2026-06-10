@@ -78,9 +78,15 @@ ComfyUI 现在为内置节点和自定义节点都增加了内置的节点帮助
 
 仓库根目录的英文 MDX 是**唯一源文件**。其它语言在对应目录下镜像相同路径（例如 `zh/get_started/introduction.mdx`、`ja/get_started/introduction.mdx`、`ko/get_started/introduction.mdx`）。可复用片段在 `snippets/` 下，各语言副本位于 `snippets/zh/`、`snippets/ja/`、`snippets/ko/` 等。
 
-**翻译方式**：已支持的多语言（如 `zh`、`ja`、`ko`）均通过**自动翻译**维护。英文文档更新后，由维护者批量运行 `npm run translate` 同步译文，无需贡献者逐页手工翻译。
+其它语言贡献指南：[readme/](.)（[English](../README.md)、[日本語](ja-JP.md)、[한국어](ko-KR.md)）。
 
-**申请新增语言**：如需其它语言版本，请 [提交 Issue](https://github.com/Comfy-Org/docs/issues/new) 说明所需语言（例如法语、德语）。维护者会完成 `translation-config.json`、`docs.json` 配置，并**批量翻译全部内容**。你只需发起请求，无需自行提交完整译文的 PR。
+**翻译政策**
+
+已支持的多语言通过英文的**自动翻译**维护。英文文档更新后，由 `npm run translate` 批量同步译文，贡献者无需逐页手工翻译。
+
+**申请新增语言**
+
+需要其它语言版本？[提交 Issue](https://github.com/Comfy-Org/docs/issues/new) 说明所需语言（例如法语、德语或巴西葡萄牙语）。维护者会将其加入 `translation-config.json` 和 `docs.json`，并**批量翻译全部内容**。你只需发起请求，无需自行提交完整译文的 PR。
 
 文件编辑规范见 [Mintlify](https://mintlify.com/docs/page) 文档 Writing Content 部分。
 
@@ -111,6 +117,7 @@ cp .env.local.example .env.local
 | `npm run translate:snippets:dry-run` | 预览待翻译的 snippet |
 | `npm run translate:check-truncation` | 扫描可能被截断的译文 |
 | `npm run translate:repair-truncated` | 根据截断日志批量重译 |
+| `npm run glossary:sync` | 从 ComfyUI 前端重建术语表（见 [术语一致性](#术语一致性)） |
 
 通过 `--` 传递额外参数：
 
@@ -140,14 +147,52 @@ npm run translate:repair-truncated -- --lang ko
 - **审阅备注（mismatch）**：模型通过 `=== MISMATCHES ===` 报告的语义问题写入 `.github/i18n-logs/translate/mismatches.json` 和 `mismatches.txt`（已 gitignore），不会写入 MDX。仅在 `npm run translate` 时产生，截断扫描不会产生。
 - **截断日志**：结构性问题（未闭合代码块、正文过短等）写入 `.github/i18n-logs/translate/truncation-issues.json`，见上文「截断译文修复」。
 - **跳过路径**：`built-in-nodes/`（在 `translation-config.json` 的 `skip_paths` 中配置）
-- **分块文件**：`changelog/index.mdx` 按 `<Update label="v0.x.x">` 版本号对比，只翻译**缺失**的版本并插入到对应位置；旧版本不会重译（除非 `--force`）
+- **分块文件**：`changelog/index.mdx` 按 `<Update label="v0.x.x">` 版本号对比，只翻译**缺失**的版本并按英文顺序插入；旧版本不会重译（除非 `--force`）
 - **目录**：写入文件时会自动创建子目录，无需手动 `mkdir`
 
-脚本路径：`.github/scripts/i18n/`
+脚本路径：`.github/scripts/i18n/`（详见 `translate-i18n.ts`、`translation-config.json` 及 [i18n README](../.github/scripts/i18n/README.md)）
+
+#### 术语一致性
+
+为避免同一英文术语在不同页面译法不一致（例如 "custom node" 被译成两种韩语），翻译器使用三种互补机制，分别处理不同类型的术语：
+
+| 机制 | 作用 | 示例 | 维护方式 |
+|------|------|------|----------|
+| `preserve_terms`（在 `translation-config.json` 中） | 保持术语为**英文** | `checkpoint`、`LoRA`、`scheduler` | 手工维护 |
+| `glossary/frontend/{lang}.json` | 使用前端**已有译文** | `workflow → 워크플로` | 机器同步 |
+| `glossary/overrides/{lang}.json` | **修正 / 扩展**前端术语 | `custom node → 커스텀 노드` | 手工维护，优先级最高 |
+
+**ComfyUI 前端**（[`ComfyUI_frontend/src/locales`](https://github.com/Comfy-Org/ComfyUI_frontend/tree/main/src/locales)）是术语译法的权威来源。`npm run glossary:sync` 将其 locale 术语镜像到 `glossary/frontend/{lang}.json`（每次全量重建，请勿手工编辑）。手工修正写在 `glossary/overrides/{lang}.json`，优先级高于镜像，用于记录术语决策或剔除噪声条目：
+
+```jsonc
+// glossary/overrides/ko.json
+{
+  "terms":  { "custom node": "커스텀 노드" },   // 重映射或新增（优先于 frontend）
+  "ignore": ["title", "additional", "work"]      // 剔除噪声前端术语
+}
+```
+
+翻译时，仅选取文档中实际出现的术语，作为**推荐**（非强制）提示注入模型，避免生硬替换。尚无固定译法的 ComfyUI 专有名词（模型名、`checkpoint` 等）应放入 `preserve_terms` 以保持英文。完整设计与维护说明见 [i18n README](../.github/scripts/i18n/README.md)。
+
+```bash
+npm run glossary:sync                 # 重建前端镜像，所有语言
+npm run glossary:sync -- --lang ko    # 单一语言
+npm run glossary:sync:dry-run         # 仅报告数量，不写入
+```
+
+前端 locale 路径按以下顺序解析：`--frontend <path>` → `FRONTEND_LOCALES_PATH` 环境变量 → `translation-config.json` 中的 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`。
 
 #### 添加新语言
 
-见上文「**申请新增语言**」——请通过 Issue 申请，无需自行在 PR 中添加语言配置。
+见上文 [申请新增语言](#申请新增语言) — 请通过 Issue 申请，勿自行在 PR 中添加语言。
+
+维护者：在 `.github/scripts/i18n/translation-config.json` 的 `languages` 下新增一条（`code`、`name`、`dir`、`snippets_dir`）。路径排除、链接本地化与英文文件扫描由同目录的 `i18n-config.mjs` 自动推导，添加新语言时无需修改翻译脚本。随后在 `docs.json` 中添加导航（见 [Mintlify 本地化](https://mintlify.com/docs/navigation/localization)），并批量翻译：
+
+```bash
+npm run translate:dry-run -- --lang fr
+npm run translate -- --lang fr
+npm run translate:snippets -- --lang fr
+```
 
 #### 手动翻译
 
