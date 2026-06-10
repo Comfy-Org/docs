@@ -63,6 +63,11 @@ import {
   syncDocsJsonFile,
   formatNavSyncReport,
 } from "./sync-docs-json.mjs";
+import {
+  loadGlossary,
+  selectGlossaryForText,
+  buildGlossaryPrompt,
+} from "./glossary.mjs";
 
 // ---------------------------------------------------------------------------
 // Load .env.local
@@ -211,6 +216,23 @@ async function writeMismatchReport(
 const SKIP_PATHS: string[] = config.skip_paths ?? ["built-in-nodes"];
 const CHUNKED_FILES: ChunkedFileConfig[] = config.chunked_files ?? [];
 const PRESERVE_TERMS: string[] = config.preserve_terms ?? [];
+
+/** Per-language glossary (en term → preferred target term), loaded once per code. */
+const glossaryCache = new Map<string, ReturnType<typeof loadGlossary>>();
+function getGlossary(langCode: string): ReturnType<typeof loadGlossary> {
+  let g = glossaryCache.get(langCode);
+  if (!g) {
+    g = loadGlossary(langCode);
+    glossaryCache.set(langCode, g);
+  }
+  return g;
+}
+
+/** Build the preferred-terminology prompt block for the terms present in enText. */
+function glossaryBlockFor(enText: string, lang: LangConfig): string {
+  const terms = selectGlossaryForText(enText, getGlossary(lang.code));
+  return buildGlossaryPrompt(terms, lang.name);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -412,6 +434,8 @@ async function translateWithQwenMT(
     "",
     buildTranslationInstructions(lang),
   ];
+  const glossaryBlock = glossaryBlockFor(enText, lang);
+  if (glossaryBlock) parts.push("", glossaryBlock);
   if (existingText.trim()) {
     parts.push(
       "",
@@ -446,6 +470,8 @@ Output ONLY the translated MDX content.`;
     "=== English Source ===",
     enText,
   ];
+  const glossaryBlock = glossaryBlockFor(enText, lang);
+  if (glossaryBlock) userParts.push("", glossaryBlock);
   if (existingText.trim()) {
     userParts.push(
       "",
