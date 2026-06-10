@@ -186,7 +186,7 @@ The frontend locales path resolves in order: `--frontend <path>` → `FRONTEND_L
 
 `npm run translate:review` scores existing translations with an **independent** (and typically cheaper) AI model — an LLM-as-a-judge — on four axes: accuracy, completeness, terminology (checked against the glossary), and fluency. It is separate from the translation model's own `=== MISMATCHES ===` self-notes; here a different model acts as judge.
 
-Results are **advisory**: written to `.github/i18n-logs/review/` (`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking a PR. By default only translations that are up to date with English and not yet reviewed at that hash are checked.
+Results are **advisory**: the detailed scores and issue list are written to `.github/i18n-logs/review/` (`quality-report.json` / `.txt`, gitignored) and never block a PR. The reviewed hash is recorded as `reviewSourceHash` in the translated file's frontmatter (committed to git), so review state is shared across the team and visible per file — mirroring `translationSourceHash`. By default only translations that are up to date with English and not yet reviewed at that hash are checked.
 
 ```bash
 npm run translate:review                     # pending reviews, all languages

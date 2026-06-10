@@ -39,8 +39,11 @@ different model acts as judge.
 Results are **advisory**: written to `.github/i18n-logs/review/`
 (`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking.
 By default only translations that are up to date with English and not yet
-reviewed at that hash are checked (review state lives in a side `reviewed.json`,
-not in frontmatter).
+reviewed at that hash are checked. The reviewed hash is stored as
+`reviewSourceHash` in the translated file's frontmatter (snippets: an MDX
+comment) and committed to git — so review state is shared across the team and
+visible per file, mirroring `translationSourceHash`. Only the hash goes in
+frontmatter; scores and the issue list stay in the gitignored report.
 
 ```bash
 pnpm translate:review                     # pending reviews, all languages

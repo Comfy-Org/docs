@@ -13,8 +13,11 @@
  *
  * Incremental: by default only reviews translations whose English source hash
  * matches the translated file (i.e. up-to-date translations) AND that have not
- * already been reviewed at that hash. Review state lives in a side file
- * (`reviewed.json`), not in MDX frontmatter.
+ * already been reviewed at that hash. The reviewed hash is stored as
+ * `reviewSourceHash` in the translated file's frontmatter (snippets: an MDX
+ * comment) — committed to git, so review state is shared across the team and
+ * visible per file. This mirrors how `translationSourceHash` works.
+ * The detailed issue list / scores go to the gitignored report, not frontmatter.
  *
  * Usage:
  *   bun review-i18n.ts                       # pending reviews, all languages
@@ -49,7 +52,6 @@ import {
   REVIEW_LOG_REL,
   REVIEW_REPORT_JSON,
   REVIEW_REPORT_TXT,
-  REVIEW_STATE_JSON,
 } from "./i18n-config.mjs";
 import { loadGlossary, selectGlossaryForText, buildGlossaryPrompt } from "./glossary.mjs";
 
@@ -130,6 +132,35 @@ function getExistingHash(content: string): string | null {
   if (mdx) return mdx[1] ?? null;
   const html = content.match(/<!--\s*translationSourceHash:\s*([a-f0-9]{8})\s*-->/);
   return html?.[1] ?? null;
+}
+
+/** Extract reviewSourceHash (the English hash this file was last reviewed at). */
+function getReviewHash(content: string): string | null {
+  const fm = content.match(/reviewSourceHash:\s*"?([a-f0-9]{8})"?/);
+  if (fm) return fm[1] ?? null;
+  const mdx = content.match(/\{\/\*\s*reviewSourceHash:\s*([a-f0-9]{8})\s*\*\/\}/);
+  return mdx?.[1] ?? null;
+}
+
+/**
+ * Write reviewSourceHash into a page's frontmatter (creating it if absent),
+ * replacing any prior value. Inserted right after translationSourceHash when
+ * present so the two hashes sit together.
+ */
+function setReviewHashPage(content: string, hash: string): string {
+  const cleaned = content.replace(/\nreviewSourceHash:\s*"?[a-f0-9]{8}"?/g, "");
+  const fmMatch = cleaned.match(/^(---\n)([\s\S]*?)(\n---)/);
+  const metaLine = `reviewSourceHash: ${hash}`;
+  if (!fmMatch) return `---\n${metaLine}\n---\n${cleaned}`;
+  const [, open, body, close] = fmMatch;
+  const rest = cleaned.slice(fmMatch[0].length);
+  return `${open}${body}\n${metaLine}${close}${rest}`;
+}
+
+/** Write reviewSourceHash on a snippet (no frontmatter) via an MDX comment. */
+function setReviewHashSnippet(content: string, hash: string): string {
+  const stripped = content.replace(/\{\/\*\s*reviewSourceHash:\s*[a-f0-9]{8}\s*\*\/\}\n?/, "");
+  return `{/* reviewSourceHash: ${hash} */}\n${stripped}`;
 }
 
 async function readFileOr(path: string, fallback = ""): Promise<string> {
@@ -322,29 +353,6 @@ function parseVerdict(raw: string): ReviewVerdict {
 }
 
 // ---------------------------------------------------------------------------
-// Review state (side file — not in MDX)
-// ---------------------------------------------------------------------------
-
-interface ReviewState {
-  [key: string]: string; // `${lang}:${enRel}` -> reviewed source hash
-}
-
-async function loadState(): Promise<ReviewState> {
-  try {
-    return JSON.parse(await readFile(REVIEW_STATE_JSON, "utf-8")) as ReviewState;
-  } catch {
-    return {};
-  }
-}
-
-async function saveState(state: ReviewState): Promise<void> {
-  await mkdir(REVIEW_LOG_DIR, { recursive: true });
-  const sorted: ReviewState = {};
-  for (const k of Object.keys(state).sort()) sorted[k] = state[k];
-  await writeFile(REVIEW_STATE_JSON, `${JSON.stringify(sorted, null, 2)}\n`);
-}
-
-// ---------------------------------------------------------------------------
 // Collect candidate English source files
 // ---------------------------------------------------------------------------
 
@@ -497,16 +505,15 @@ async function main() {
     return;
   }
 
-  const state = await loadState();
-
   // Build the pending set: translation exists, is up-to-date vs English, and
-  // (unless --all) hasn't been reviewed at this hash yet.
+  // (unless --all) hasn't been reviewed at this hash yet. The reviewed hash is
+  // read from the translated file's own `reviewSourceHash` (committed to git).
   const pending: ReviewJob[] = [];
   let skipStale = 0;
   let skipReviewed = 0;
   for (const lang of selectedLangs) {
     for (const relPath of files) {
-      const { enPath, targetPath, enRel } = makeMapping(lang, relPath, snippetsMode);
+      const { enPath, targetPath } = makeMapping(lang, relPath, snippetsMode);
       const enContent = await readFileOr(enPath);
       if (!enContent || enContent.length < 50) continue;
       const target = await readFileOr(targetPath);
@@ -517,7 +524,7 @@ async function main() {
         skipStale++; // translation out of date — translate first
         continue;
       }
-      if (!all && state[`${lang.code}:${enRel}`] === hash) {
+      if (!all && getReviewHash(target) === hash) {
         skipReviewed++;
         continue;
       }
@@ -577,8 +584,14 @@ async function main() {
       const out = await callApi(buildJudgePrompt(enContent, target, lang, enRel, glossaryBlock));
       const verdict = parseVerdict(out);
 
+      // Record the reviewed hash in the translated file (committed to git).
+      const hash = sourceHash(enContent);
+      const stamped = snippetsMode
+        ? setReviewHashSnippet(target, hash)
+        : setReviewHashPage(target, hash);
+      await writeFile(targetPath, stamped);
+
       reviewed++;
-      state[`${lang.code}:${enRel}`] = sourceHash(enContent);
       entries.push({
         lang: lang.code,
         enRel,
@@ -597,7 +610,6 @@ async function main() {
   });
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  await saveState(state);
   await writeReport(entries, reviewed, minScore);
 
   const flagged = entries.filter((e) => e.overall < minScore).length;
