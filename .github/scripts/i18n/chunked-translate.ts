@@ -130,16 +130,47 @@ export function formatBlockHashesYaml(blockHashes: Record<string, string>): stri
   return lines.join("\n");
 }
 
+function stripFrontmatterLineFieldAfterNewline(body: string, field: string): string {
+  return body.replace(new RegExp(`\\n${field}:.*`, "g"), "");
+}
+
+function stripFrontmatterLineFieldAtStart(body: string, field: string): string {
+  return body.replace(new RegExp(`^${field}:.*\\n?`, "m"), "");
+}
+
+function stripFrontmatterBlockFieldAfterNewline(body: string, field: string): string {
+  return body.replace(
+    new RegExp(`\\n${field}:[\\s\\S]*?(?=\\n[A-Za-z_][\\w-]*:|\\s*$)`),
+    ""
+  );
+}
+
+function stripFrontmatterBlockFieldAtStart(body: string, field: string): string {
+  return body.replace(
+    new RegExp(`^${field}:[\\s\\S]*?(?=^[A-Za-z_][\\w-]*:|\\s*$)`, "m"),
+    ""
+  );
+}
+
+function stripFrontmatterListFieldAfterNewline(body: string, field: string): string {
+  return body.replace(new RegExp(`\\n${field}:(?:\\n\\s+-.*?)*`, "g"), "");
+}
+
+function stripFrontmatterListFieldAtStart(body: string, field: string): string {
+  return body.replace(new RegExp(`^${field}:(?:\\n\\s+-.*?)*`, "g"), "");
+}
+
 export function stripTranslationMetaFromFrontmatter(body: string): string {
-  return body
-    .replace(/\ntranslationSourceHash:.*/g, "")
-    .replace(/\ntranslationFrom:.*/g, "")
-    .replace(/\ntranslationBlockHashes:[\s\S]*?(?=\n[A-Za-z_][\w-]*:|\s*$)/, "")
-    .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
-    .replace(/^translationSourceHash:.*\n?/m, "")
-    .replace(/^translationFrom:.*\n?/m, "")
-    .replace(/^translationBlockHashes:[\s\S]*?(?=^[A-Za-z_][\w-]*:|\s*$)/m, "")
-    .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "");
+  let out = body;
+  out = stripFrontmatterLineFieldAfterNewline(out, "translationSourceHash");
+  out = stripFrontmatterLineFieldAfterNewline(out, "translationFrom");
+  out = stripFrontmatterBlockFieldAfterNewline(out, "translationBlockHashes");
+  out = stripFrontmatterListFieldAfterNewline(out, "translationMismatches");
+  out = stripFrontmatterLineFieldAtStart(out, "translationSourceHash");
+  out = stripFrontmatterLineFieldAtStart(out, "translationFrom");
+  out = stripFrontmatterBlockFieldAtStart(out, "translationBlockHashes");
+  out = stripFrontmatterListFieldAtStart(out, "translationMismatches");
+  return out;
 }
 
 export function setChunkedTranslationMeta(

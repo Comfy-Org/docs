@@ -82,6 +82,7 @@ import {
   parseTargetSectionsByIndex,
   resolveChunkStrategy,
   serializeChunkedDocument,
+  stripTranslationMetaFromFrontmatter,
   validateTranslatedBlock,
 } from "./chunked-translate.ts";
 
@@ -300,18 +301,8 @@ function sanitizeMdxFrontmatter(content: string): string {
   return `${open}${sanitized}${close}${content.slice(fmMatch[0].length)}`;
 }
 
-function stripTranslationMetaFromFrontmatter(body: string): string {
-  return sanitizeFrontmatterBody(
-    body
-      .replace(/\ntranslationSourceHash:.*/, "")
-      .replace(/\ntranslationFrom:.*/, "")
-      .replace(/\ntranslationBlockHashes:[\s\S]*?(?=\n[A-Za-z_][\w-]*:|\s*$)/, "")
-      .replace(/\ntranslationMismatches:(?:\n\s+-.*?)*/g, "")
-      .replace(/^translationSourceHash:.*\n?/, "")
-      .replace(/^translationFrom:.*\n?/, "")
-      .replace(/^translationBlockHashes:[\s\S]*?(?=^[A-Za-z_][\w-]*:|\s*$)/m, "")
-      .replace(/^translationMismatches:(?:\n\s+-.*?)*/g, "")
-  );
+function stripAndSanitizeTranslationMeta(body: string): string {
+  return sanitizeFrontmatterBody(stripTranslationMetaFromFrontmatter(body));
 }
 
 /** Inject or update translation metadata in frontmatter (hash only — mismatches go to .github/i18n-logs/translate/) */
@@ -324,7 +315,7 @@ function setTranslationMeta(content: string, hash: string, enPath: string): stri
   }
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
-  const cleaned = stripTranslationMetaFromFrontmatter(body);
+  const cleaned = stripAndSanitizeTranslationMeta(body);
 
   return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
 }
