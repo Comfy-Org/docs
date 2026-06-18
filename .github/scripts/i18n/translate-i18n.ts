@@ -68,6 +68,22 @@ import {
   selectGlossaryForText,
   buildGlossaryPrompt,
 } from "./glossary.mjs";
+import {
+  type AutoChunkConfig,
+  type BlockSlot,
+  type ChunkedFileConfig,
+  type ChunkStrategy,
+  aggregateDocumentHash,
+  changelogLabelHash,
+  documentBlockHashes,
+  getSectionSyncStatus,
+  parseDocument,
+  parseFrontmatterAndBody,
+  parseTargetSectionsByIndex,
+  resolveChunkStrategy,
+  serializeChunkedDocument,
+  validateTranslatedBlock,
+} from "./chunked-translate.ts";
 
 // ---------------------------------------------------------------------------
 // Load .env.local
@@ -102,14 +118,10 @@ interface LangConfig {
   snippets_dir: string;
 }
 
-interface ChunkedFileConfig {
-  path: string;
-  strategy: "update_blocks";
-}
-
 interface TranslationConfig {
   skip_paths: string[];
   chunked_files?: ChunkedFileConfig[];
+  auto_chunk?: AutoChunkConfig;
   languages: LangConfig[];
   preserve_terms: string[];
 }
@@ -215,7 +227,13 @@ async function writeMismatchReport(
 }
 const SKIP_PATHS: string[] = config.skip_paths ?? ["built-in-nodes"];
 const CHUNKED_FILES: ChunkedFileConfig[] = config.chunked_files ?? [];
+const AUTO_CHUNK: AutoChunkConfig | undefined = config.auto_chunk;
 const PRESERVE_TERMS: string[] = config.preserve_terms ?? [];
+
+function resolveFileChunkStrategy(relPath: string, enContent: string): ChunkStrategy | null {
+  const { body } = parseFrontmatterAndBody(enContent);
+  return resolveChunkStrategy(relPath, body, CHUNKED_FILES, AUTO_CHUNK);
+}
 
 /** Per-language glossary (en term → preferred target term), loaded once per code. */
 const glossaryCache = new Map<string, ReturnType<typeof loadGlossary>>();
@@ -526,123 +544,33 @@ function cleanModelOutput(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Chunked translation (<Update> blocks — changelog/index.mdx)
+// Chunked translation (update_blocks | heading_sections)
 // ---------------------------------------------------------------------------
-
-interface UpdateBlock {
-  label: string;
-  content: string;
-}
-
-interface ParsedUpdateDocument {
-  frontmatter: string;
-  blocks: UpdateBlock[];
-}
-
-function isChunkedFile(relPath: string): boolean {
-  const normalized = relPath.replace(/\\/g, "/");
-  return CHUNKED_FILES.some(
-    (c) => c.strategy === "update_blocks" && normalized === c.path.replace(/\\/g, "/")
-  );
-}
-
-function parseFrontmatterAndBody(content: string): { frontmatter: string; body: string } {
-  const match = content.match(/^(---\n[\s\S]*?\n---)\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: "", body: content };
-  return { frontmatter: `${match[1]}\n`, body: match[2] };
-}
-
-function parseUpdateBlocks(body: string): UpdateBlock[] {
-  const blocks: UpdateBlock[] = [];
-  const re = /<Update\s+label="([^"]+)"[^>]*>[\s\S]*?<\/Update>/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(body)) !== null) {
-    blocks.push({ label: match[1], content: match[0] });
-  }
-  return blocks;
-}
-
-function parseUpdateDocument(content: string): ParsedUpdateDocument {
-  const { frontmatter, body } = parseFrontmatterAndBody(content);
-  return { frontmatter, blocks: parseUpdateBlocks(body) };
-}
-
-/** Changelog sync key: ordered version labels only (content edits to old blocks are ignored). */
-function changelogLabelHash(enDoc: ParsedUpdateDocument): string {
-  return sourceHash(enDoc.blocks.map((b) => b.label).join("|"));
-}
-
-interface ChunkedSyncStatus {
-  upToDate: boolean;
-  pendingBlocks: string[];
-  needsFrontmatter: boolean;
-}
-
-function getChunkedSyncStatus(
-  enContent: string,
-  existingContent: string,
-  force: boolean
-): ChunkedSyncStatus {
-  const enDoc = parseUpdateDocument(enContent);
-  const existingDoc = existingContent ? parseUpdateDocument(existingContent) : null;
-  const existingLabels = new Set((existingDoc?.blocks ?? []).map((b) => b.label));
-
-  if (force) {
-    return {
-      upToDate: false,
-      pendingBlocks: enDoc.blocks.map((b) => b.label),
-      needsFrontmatter: true,
-    };
-  }
-
-  const pendingBlocks = enDoc.blocks
-    .filter((b) => !existingLabels.has(b.label))
-    .map((b) => b.label);
-
-  return {
-    upToDate: pendingBlocks.length === 0 && Boolean(existingDoc),
-    pendingBlocks,
-    needsFrontmatter: !existingDoc,
-  };
-}
-
-interface ChunkedBlockSlot {
-  label: string;
-  content: string | null;
-}
-
-function serializeChunkedDocument(
-  frontmatter: string,
-  slots: ChunkedBlockSlot[],
-  fileHash: string,
-  enRel: string
-): string {
-  const body = slots
-    .map((s) => s.content)
-    .filter((c): c is string => c !== null)
-    .join("\n\n");
-  return setTranslationMeta(`${frontmatter}\n${body}\n`, fileHash, enRel);
-}
 
 async function writeChunkedCheckpoint(
   targetPath: string,
   frontmatter: string,
-  slots: ChunkedBlockSlot[],
+  slots: BlockSlot[],
   fileHash: string,
   enRel: string,
+  blockHashes: Record<string, string>,
   label?: string
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
-  await writeFile(targetPath, serializeChunkedDocument(frontmatter, slots, fileHash, enRel));
+  await writeFile(
+    targetPath,
+    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes)
+  );
   if (label) {
     const done = slots.filter((s) => s.content !== null).length;
     console.log(`    Saved ${label} → disk (${done}/${slots.length} blocks)`);
   }
 }
 
-async function translateUpdateChunkedFile(
+async function translateChunkedFile(
   relPath: string,
   lang: LangConfig,
+  strategy: ChunkStrategy,
   force: boolean,
   enContent: string,
   existingContent: string,
@@ -654,22 +582,37 @@ async function translateUpdateChunkedFile(
   blocksTranslated: number;
   output: string | null;
 }> {
-  const status = getChunkedSyncStatus(enContent, existingContent, force);
+  const status = getSectionSyncStatus(enContent, existingContent, strategy, force);
   if (status.upToDate) {
     return { mismatches: [], status: "up-to-date", blocksTranslated: 0, output: null };
   }
 
-  const enDoc = parseUpdateDocument(enContent);
-  const existingDoc = existingContent ? parseUpdateDocument(existingContent) : null;
+  const enDoc = parseDocument(enContent, strategy);
+  const existingDoc = existingContent ? parseDocument(existingContent, strategy) : null;
+  const enBlockHashes = documentBlockHashes(enDoc.blocks);
+  const fileHash =
+    strategy === "update_blocks"
+      ? changelogLabelHash(enDoc.blocks)
+      : aggregateDocumentHash(enBlockHashes);
+
   const existingByLabel = new Map(
     (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
   );
-  const fileHash = changelogLabelHash(enDoc);
+  const existingByIndex =
+    strategy === "heading_sections" && existingContent
+      ? parseTargetSectionsByIndex(parseFrontmatterAndBody(existingContent).body, enDoc.blocks.length)
+      : [];
 
-  const slots: ChunkedBlockSlot[] = enDoc.blocks.map((b) => ({
-    label: b.label,
-    content: !force && existingByLabel.has(b.label) ? existingByLabel.get(b.label)! : null,
-  }));
+  const slots: BlockSlot[] = enDoc.blocks.map((b, i) => {
+    if (!force && !status.pendingBlocks.includes(b.label)) {
+      const content =
+        strategy === "heading_sections"
+          ? existingByIndex[i] ?? null
+          : existingByLabel.get(b.label) ?? null;
+      return { label: b.label, content: content?.trim() ? content : null };
+    }
+    return { label: b.label, content: null };
+  });
 
   const allMismatches: string[] = [];
   let blocksTranslated = 0;
@@ -692,33 +635,46 @@ async function translateUpdateChunkedFile(
     }
     allMismatches.push(...fmResult.mismatches);
     frontmatterDirty = true;
-    await writeChunkedCheckpoint(targetPath, translatedFrontmatter, slots, fileHash, enRel);
+    await writeChunkedCheckpoint(
+      targetPath,
+      translatedFrontmatter,
+      slots,
+      fileHash,
+      enRel,
+      enBlockHashes,
+    );
   } else {
     translatedFrontmatter = existingDoc!.frontmatter;
   }
 
-  for (const slot of slots) {
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]!;
     if (slot.content !== null) continue;
 
-    const enBlock = enDoc.blocks.find((b) => b.label === slot.label)!;
-    const existingBlock = existingByLabel.get(slot.label);
+    const enBlock = enDoc.blocks[i]!;
+    const existingBlock =
+      strategy === "heading_sections"
+        ? existingByIndex[i] ?? ""
+        : existingByLabel.get(slot.label) ?? "";
 
-    console.log(`    Translating block: ${slot.label}...`);
+    const blockTag =
+      strategy === "heading_sections"
+        ? slot.label === "_intro"
+          ? "intro"
+          : slot.label
+        : slot.label;
+
+    console.log(`    Translating block: ${blockTag}...`);
     const blockResult = IS_QWEN_MT
-      ? await translateWithQwenMT(enBlock.content, existingBlock ?? "", lang)
-      : await translateWithLLM(
-          enBlock.content,
-          existingBlock ?? "",
-          lang,
-          `${relPath}#${slot.label}`
-        );
+      ? await translateWithQwenMT(enBlock.content, existingBlock, lang)
+      : await translateWithLLM(enBlock.content, existingBlock, lang, `${relPath}#${blockTag}`);
 
     let translatedBlock = cleanModelOutput(blockResult.content);
     translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
 
-    if (!translatedBlock.includes("<Update")) {
-      console.log(`    [WARN] Block ${slot.label}: invalid output, keeping existing`);
-      translatedBlock = existingBlock ?? enBlock.content;
+    if (!validateTranslatedBlock(strategy, enBlock, translatedBlock)) {
+      console.log(`    [WARN] Block ${blockTag}: invalid output, keeping existing`);
+      translatedBlock = existingBlock.trim() ? existingBlock : enBlock.content;
     } else {
       blocksTranslated++;
     }
@@ -731,11 +687,18 @@ async function translateUpdateChunkedFile(
       slots,
       fileHash,
       enRel,
-      slot.label
+      enBlockHashes,
+      blockTag
     );
   }
 
-  const output = serializeChunkedDocument(translatedFrontmatter, slots, fileHash, enRel);
+  const output = serializeChunkedDocument(
+    translatedFrontmatter,
+    slots,
+    fileHash,
+    enRel,
+    enBlockHashes
+  );
   const didWork = blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter;
 
   return {
@@ -771,11 +734,15 @@ async function translateFile(
 
   const existingContent = await readFileOr(targetPath);
 
-  if (!snippetsMode && isChunkedFile(relPath)) {
-    console.log(`  → [CHUNKED] ${lang.code}/${relPath}`);
-    const chunked = await translateUpdateChunkedFile(
+  const chunkStrategy = !snippetsMode ? resolveFileChunkStrategy(relPath, enContent) : null;
+  if (chunkStrategy) {
+    const strategyLabel =
+      chunkStrategy === "heading_sections" ? "SECTIONS" : "CHUNKED";
+    console.log(`  → [${strategyLabel}] ${lang.code}/${relPath}`);
+    const chunked = await translateChunkedFile(
       relPath,
       lang,
+      chunkStrategy,
       force,
       enContent,
       existingContent,
@@ -984,8 +951,14 @@ async function runTranslatePhase(options: {
 
       const existing = await readFileOr(targetPath);
 
-      if (!snippetsMode && isChunkedFile(relPath)) {
-        const chunkedStatus = getChunkedSyncStatus(enContent, existing, false);
+      const chunkStrategy = !snippetsMode ? resolveFileChunkStrategy(relPath, enContent) : null;
+      if (chunkStrategy) {
+        const chunkedStatus = getSectionSyncStatus(
+          enContent,
+          existing,
+          chunkStrategy,
+          false
+        );
         if (chunkedStatus.upToDate) upToDate.push(job);
         else pending.push(job);
         continue;
@@ -1005,17 +978,26 @@ async function runTranslatePhase(options: {
   if (dryRun) {
     console.log(`Would translate (${phaseLabel}):`);
     for (const { relPath, lang } of pending.slice(0, 40)) {
-      if (!snippetsMode && isChunkedFile(relPath)) {
+      const chunkStrategy = !snippetsMode
+        ? resolveFileChunkStrategy(
+            relPath,
+            await readFileOr(makeMapping(lang, relPath, false).enPath)
+          )
+        : null;
+      if (chunkStrategy) {
         const enContent = await readFileOr(makeMapping(lang, relPath, false).enPath);
         const existing = await readFileOr(makeMapping(lang, relPath, false).targetPath);
-        const cs = getChunkedSyncStatus(enContent, existing, false);
+        const cs = getSectionSyncStatus(enContent, existing, chunkStrategy, false);
         const parts: string[] = [];
         if (cs.needsFrontmatter) parts.push("frontmatter");
         if (cs.pendingBlocks.length > 0) {
-          parts.push(`${cs.pendingBlocks.length} missing version(s)`);
+          const unit =
+            chunkStrategy === "heading_sections" ? "section(s)" : "version(s)";
+          parts.push(`${cs.pendingBlocks.length} pending ${unit}`);
         }
         const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
-        console.log(`  [${lang.code}] ${relPath}${detail}`);
+        const tag = chunkStrategy === "heading_sections" ? "SECTIONS" : "CHUNKED";
+        console.log(`  [${lang.code}] ${relPath} [${tag}]${detail}`);
       } else {
         console.log(`  [${lang.code}] ${relPath}`);
       }
