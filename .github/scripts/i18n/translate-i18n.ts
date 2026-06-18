@@ -614,6 +614,32 @@ async function translateChunkedFile(
     return { label: b.label, content: null };
   });
 
+  if (status.needsReserialize && status.pendingBlocks.length === 0) {
+    if (slots.every((s) => s.content?.trim())) {
+      const translatedFrontmatter = existingDoc?.frontmatter ?? enDoc.frontmatter;
+      const filledSlots: BlockSlot[] = slots.map((s) => ({
+        label: s.label,
+        content: s.content!,
+      }));
+      const output = serializeChunkedDocument(
+        translatedFrontmatter,
+        filledSlots,
+        fileHash,
+        enRel,
+        enBlockHashes
+      );
+      await mkdir(dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, output);
+      console.log(`    Re-serialized after EN section removal (no re-translation)`);
+      return {
+        mismatches: [],
+        status: "translated",
+        blocksTranslated: 0,
+        output,
+      };
+    }
+  }
+
   const allMismatches: string[] = [];
   let blocksTranslated = 0;
   let frontmatterDirty = false;

@@ -50,6 +50,8 @@ export interface SectionSyncStatus {
   upToDate: boolean;
   pendingBlocks: string[];
   needsFrontmatter: boolean;
+  /** EN section removed — re-serialize target without re-translating unchanged blocks. */
+  needsReserialize?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,11 @@ export function blockHash(content: string): string {
 export function documentBlockHashes(blocks: ContentBlock[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const b of blocks) {
+    if (b.label in out) {
+      throw new Error(
+        `Duplicate block label: "${b.label}". Use unique section headings for sync.`
+      );
+    }
     out[b.label] = blockHash(b.content);
   }
   return out;
@@ -97,9 +104,14 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
       continue;
     }
     if (inMap) {
-      const m = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
-      if (m) {
-        out[m[1]!.trim()] = m[2]!;
+      const quoted = line.match(/^\s{2}("(?:\\.|[^"\\])*"):\s*"?([a-f0-9]{8})"?\s*$/);
+      if (quoted) {
+        out[JSON.parse(quoted[1]!)] = quoted[2]!;
+        continue;
+      }
+      const plain = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
+      if (plain) {
+        out[plain[1]!.trim()] = plain[2]!;
         continue;
       }
       if (/^[A-Za-z_][\w-]*:/.test(line)) {
@@ -113,7 +125,7 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
 export function formatBlockHashesYaml(blockHashes: Record<string, string>): string {
   const lines = ["translationBlockHashes:"];
   for (const label of Object.keys(blockHashes).sort()) {
-    lines.push(`  ${label}: ${blockHashes[label]}`);
+    lines.push(`  ${JSON.stringify(label)}: ${blockHashes[label]}`);
   }
   return lines.join("\n");
 }
@@ -158,15 +170,26 @@ export function setChunkedTranslationMeta(
 // ---------------------------------------------------------------------------
 
 const H2_HEADING_RE = /^## (?![#])/;
+const FENCE_RE = /^(```|~~~)/;
+
+function toggleFence(line: string, inFence: boolean): boolean {
+  return FENCE_RE.test(line.trim()) ? !inFence : inFence;
+}
+
+function isH2SectionLine(line: string, inFence: boolean): boolean {
+  return !inFence && H2_HEADING_RE.test(line);
+}
 
 export function parseHeadingSections(body: string): ContentBlock[] {
   const lines = body.split("\n");
   const blocks: ContentBlock[] = [];
   let introLines: string[] = [];
   let current: ContentBlock | null = null;
+  let inFence = false;
 
   for (const line of lines) {
-    if (H2_HEADING_RE.test(line)) {
+    inFence = toggleFence(line, inFence);
+    if (isH2SectionLine(line, inFence)) {
       if (current) {
         blocks.push({ ...current, content: current.content.trimEnd() });
       } else if (introLines.length > 0) {
@@ -209,10 +232,12 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
   let introLines: string[] = [];
   let currentLines: string[] = [];
   let h2Count = 0;
+  let inFence = false;
   let hasIntro = body.trim().length > 0 && !H2_HEADING_RE.test(lines.find((l) => l.trim()) ?? "");
 
   for (const line of lines) {
-    if (H2_HEADING_RE.test(line)) {
+    inFence = toggleFence(line, inFence);
+    if (isH2SectionLine(line, inFence)) {
       if (h2Count === 0 && introLines.length > 0) {
         sections.push(introLines.join("\n").trimEnd());
         introLines = [];
@@ -246,7 +271,13 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
 }
 
 export function countH2Sections(body: string): number {
-  return body.split("\n").filter((l) => H2_HEADING_RE.test(l)).length;
+  let inFence = false;
+  let count = 0;
+  for (const line of body.split("\n")) {
+    inFence = toggleFence(line, inFence);
+    if (isH2SectionLine(line, inFence)) count++;
+  }
+  return count;
 }
 
 export function shouldAutoChunk(body: string, autoChunk?: AutoChunkConfig): boolean {
@@ -348,10 +379,13 @@ export function getSectionSyncStatus(
     .filter((b) => storedHashes[b.label] !== enHashes[b.label])
     .map((b) => b.label);
 
+  const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
+
   return {
-    upToDate: pendingBlocks.length === 0,
+    upToDate: pendingBlocks.length === 0 && !hasStructureDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
+    needsReserialize: hasStructureDrift && pendingBlocks.length === 0,
   };
 }
 
