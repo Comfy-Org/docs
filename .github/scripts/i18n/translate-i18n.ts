@@ -74,6 +74,7 @@ import {
   type ChunkedFileConfig,
   type ChunkStrategy,
   aggregateDocumentHash,
+  applyChangelogBlockLocalizations,
   changelogLabelHash,
   documentBlockHashes,
   getSectionSyncStatus,
@@ -83,6 +84,7 @@ import {
   resolveChunkStrategy,
   serializeChunkedDocument,
   stripTranslationMetaFromFrontmatter,
+  syncUpdateBlockDescription,
   validateTranslatedBlock,
 } from "./chunked-translate.ts";
 
@@ -545,12 +547,13 @@ async function writeChunkedCheckpoint(
   fileHash: string,
   enRel: string,
   blockHashes: Record<string, string>,
+  strategy: ChunkStrategy,
   label?: string
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(
     targetPath,
-    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes)
+    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes, strategy)
   );
   if (label) {
     const done = slots.filter((s) => s.content !== null).length;
@@ -573,7 +576,7 @@ async function translateChunkedFile(
   blocksTranslated: number;
   output: string | null;
 }> {
-  const status = getSectionSyncStatus(enContent, existingContent, strategy, force);
+  const status = getSectionSyncStatus(enContent, existingContent, strategy, force, lang.code);
   if (status.upToDate) {
     return { mismatches: [], status: "up-to-date", blocksTranslated: 0, output: null };
   }
@@ -608,20 +611,22 @@ async function translateChunkedFile(
   if (status.needsReserialize && status.pendingBlocks.length === 0) {
     if (slots.every((s) => s.content?.trim())) {
       const translatedFrontmatter = existingDoc?.frontmatter ?? enDoc.frontmatter;
-      const filledSlots: BlockSlot[] = slots.map((s) => ({
-        label: s.label,
-        content: s.content!,
-      }));
+      const filledSlots = applyChangelogBlockLocalizations(
+        slots.map((s) => ({ label: s.label, content: s.content! })),
+        enDoc.blocks,
+        lang.code
+      );
       const output = serializeChunkedDocument(
         translatedFrontmatter,
         filledSlots,
         fileHash,
         enRel,
-        enBlockHashes
+        enBlockHashes,
+        strategy
       );
       await mkdir(dirname(targetPath), { recursive: true });
       await writeFile(targetPath, output);
-      console.log(`    Re-serialized after EN section removal (no re-translation)`);
+      console.log(`    Re-serialized (order/date fix, no re-translation)`);
       return {
         mismatches: [],
         status: "translated",
@@ -659,6 +664,7 @@ async function translateChunkedFile(
       fileHash,
       enRel,
       enBlockHashes,
+      strategy,
     );
   } else {
     translatedFrontmatter = existingDoc!.frontmatter;
@@ -688,6 +694,9 @@ async function translateChunkedFile(
 
     let translatedBlock = cleanModelOutput(blockResult.content);
     translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
+    if (strategy === "update_blocks") {
+      translatedBlock = syncUpdateBlockDescription(translatedBlock, enBlock, lang.code);
+    }
 
     if (!validateTranslatedBlock(strategy, enBlock, translatedBlock)) {
       console.log(`    [WARN] Block ${blockTag}: invalid output, keeping existing`);
@@ -705,18 +714,21 @@ async function translateChunkedFile(
       fileHash,
       enRel,
       enBlockHashes,
+      strategy,
       blockTag
     );
   }
 
   const output = serializeChunkedDocument(
     translatedFrontmatter,
-    slots,
+    applyChangelogBlockLocalizations(slots, enDoc.blocks, lang.code),
     fileHash,
     enRel,
-    enBlockHashes
+    enBlockHashes,
+    strategy
   );
-  const didWork = blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter;
+  const didWork =
+    blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter || status.needsReserialize;
 
   return {
     mismatches: allMismatches,
@@ -974,7 +986,8 @@ async function runTranslatePhase(options: {
           enContent,
           existing,
           chunkStrategy,
-          false
+          false,
+          lang.code
         );
         if (chunkedStatus.upToDate) upToDate.push(job);
         else pending.push(job);
@@ -1004,9 +1017,10 @@ async function runTranslatePhase(options: {
       if (chunkStrategy) {
         const enContent = await readFileOr(makeMapping(lang, relPath, false).enPath);
         const existing = await readFileOr(makeMapping(lang, relPath, false).targetPath);
-        const cs = getSectionSyncStatus(enContent, existing, chunkStrategy, false);
+        const cs = getSectionSyncStatus(enContent, existing, chunkStrategy, false, lang.code);
         const parts: string[] = [];
         if (cs.needsFrontmatter) parts.push("frontmatter");
+        if (cs.needsReserialize) parts.push("reserialize");
         if (cs.pendingBlocks.length > 0) {
           const unit =
             chunkStrategy === "heading_sections" ? "section(s)" : "version(s)";

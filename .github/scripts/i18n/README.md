@@ -42,12 +42,21 @@ Configure explicit paths in `translation-config.json` → `chunked_files`, or re
 on `auto_chunk` (default: body ≥ 10k chars and ≥ 4 `##` sections) to auto-enable
 `heading_sections`.
 
+Changelog `<Update description="…">` dates are **derived from English** and
+localized automatically (`ja`/`zh`: `YYYY年M月D日`, `ko`: `YYYY년 M월 D일`) after
+each block is translated or re-serialized — English month names should not
+remain in translated files.
+
 During a chunked run the script:
 
 1. Parses English into blocks (intro + each `##` section).
 2. Compares each block’s hash to `translationBlockHashes` in the target frontmatter.
 3. Translates only pending blocks (plus frontmatter when needed).
 4. Checkpoints after every block so a failed run can resume.
+
+`translationBlockHashes` keys are written in **descending semver order** for
+changelog (`v0.25.1` before `v0.25.0`), matching the canonical `<Update>`
+sequence. Long pages use **English document order** for section hashes.
 
 Example:
 
