@@ -49,6 +49,10 @@ During a chunked run the script:
 3. Translates only pending blocks (plus frontmatter when needed).
 4. Checkpoints after every block so a failed run can resume.
 
+`translationBlockHashes` keys are written in **descending semver order** for
+changelog (`v0.25.1` before `v0.25.0`), matching the canonical `<Update>`
+sequence. Long pages use **English document order** for section hashes.
+
 Example:
 
 ```bash

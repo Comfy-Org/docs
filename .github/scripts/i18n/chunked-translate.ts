@@ -93,6 +93,20 @@ export function parseFrontmatterAndBody(content: string): { frontmatter: string;
   return { frontmatter: `${match[1]}\n`, body: match[2] };
 }
 
+function parseBlockHashEntry(
+  line: string
+): { label: string; hash: string } | null {
+  const quoted = line.match(/^\s{2}("(?:\\.|[^"\\])*"):\s*"?([a-f0-9]{8})"?\s*$/);
+  if (quoted) {
+    return { label: JSON.parse(quoted[1]!) as string, hash: quoted[2]! };
+  }
+  const plain = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
+  if (plain) {
+    return { label: plain[1]!.trim(), hash: plain[2]! };
+  }
+  return null;
+}
+
 /** Parse `translationBlockHashes` YAML map from frontmatter body. */
 export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -104,14 +118,9 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
       continue;
     }
     if (inMap) {
-      const quoted = line.match(/^\s{2}("(?:\\.|[^"\\])*"):\s*"?([a-f0-9]{8})"?\s*$/);
-      if (quoted) {
-        out[JSON.parse(quoted[1]!)] = quoted[2]!;
-        continue;
-      }
-      const plain = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
-      if (plain) {
-        out[plain[1]!.trim()] = plain[2]!;
+      const entry = parseBlockHashEntry(line);
+      if (entry) {
+        out[entry.label] = entry.hash;
         continue;
       }
       if (/^[A-Za-z_][\w-]*:/.test(line)) {
@@ -122,9 +131,51 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
   return out;
 }
 
-export function formatBlockHashesYaml(blockHashes: Record<string, string>): string {
+/** Block labels in frontmatter file order (not sorted). */
+export function parseBlockHashLabelOrderFromFrontmatter(fmBody: string): string[] {
+  const labels: string[] = [];
+  const lines = fmBody.split("\n");
+  let inMap = false;
+  for (const line of lines) {
+    if (/^translationBlockHashes:\s*$/.test(line)) {
+      inMap = true;
+      continue;
+    }
+    if (inMap) {
+      const entry = parseBlockHashEntry(line);
+      if (entry) {
+        labels.push(entry.label);
+        continue;
+      }
+      if (/^[A-Za-z_][\w-]*:/.test(line)) {
+        inMap = false;
+      }
+    }
+  }
+  return labels;
+}
+
+export function blockHashLabelOrderDrifts(
+  enLabels: string[],
+  storedLabels: string[]
+): boolean {
+  if (enLabels.length !== storedLabels.length) return true;
+  return enLabels.some((label, i) => label !== storedLabels[i]);
+}
+
+export function formatBlockHashesYaml(
+  blockHashes: Record<string, string>,
+  labelOrder: string[]
+): string {
   const lines = ["translationBlockHashes:"];
-  for (const label of Object.keys(blockHashes).sort()) {
+  const seen = new Set<string>();
+  for (const label of labelOrder) {
+    if (!(label in blockHashes) || seen.has(label)) continue;
+    lines.push(`  ${JSON.stringify(label)}: ${blockHashes[label]}`);
+    seen.add(label);
+  }
+  for (const label of Object.keys(blockHashes)) {
+    if (seen.has(label)) continue;
     lines.push(`  ${JSON.stringify(label)}: ${blockHashes[label]}`);
   }
   return lines.join("\n");
@@ -177,12 +228,13 @@ export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
   enPath: string,
-  blockHashes: Record<string, string>
+  blockHashes: Record<string, string>,
+  labelOrder: string[]
 ): string {
   const metaLines = [
     `translationSourceHash: ${fileHash}`,
     `translationFrom: ${enPath}`,
-    formatBlockHashesYaml(blockHashes),
+    formatBlockHashesYaml(blockHashes, labelOrder),
   ];
   const metaBlock = metaLines.join("\n");
 
@@ -332,8 +384,49 @@ export function parseUpdateBlocks(body: string): ContentBlock[] {
   return blocks;
 }
 
+/** Parse ComfyUI changelog label like `v0.25.1` into numeric segments. */
+export function parseChangelogVersion(label: string): number[] {
+  const m = label.match(/^v?(\d+(?:\.\d+)*)/i);
+  if (!m) return [];
+  return m[1]!.split(".").map((n) => Number(n));
+}
+
+/** Descending semver compare for changelog `<Update label="…">` values (newest first). */
+export function compareChangelogVersionsDesc(a: string, b: string): number {
+  const pa = parseChangelogVersion(a);
+  const pb = parseChangelogVersion(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return db - da;
+  }
+  return b.localeCompare(a);
+}
+
+export function canonicalChangelogLabelOrder(labels: string[]): string[] {
+  return [...labels].sort(compareChangelogVersionsDesc);
+}
+
+export function sortUpdateBlocksByVersion(blocks: ContentBlock[]): ContentBlock[] {
+  return [...blocks].sort((a, b) => compareChangelogVersionsDesc(a.label, b.label));
+}
+
+export function orderSlotsForStrategy(strategy: ChunkStrategy, slots: BlockSlot[]): BlockSlot[] {
+  if (strategy !== "update_blocks") return slots;
+  return [...slots].sort((a, b) => compareChangelogVersionsDesc(a.label, b.label));
+}
+
+export function canonicalBlockLabelOrder(
+  strategy: ChunkStrategy,
+  labels: string[]
+): string[] {
+  return strategy === "update_blocks" ? canonicalChangelogLabelOrder(labels) : labels;
+}
+
 export function changelogLabelHash(blocks: ContentBlock[]): string {
-  return blockHash(blocks.map((b) => b.label).join("|"));
+  const labels = canonicalChangelogLabelOrder(blocks.map((b) => b.label));
+  return blockHash(labels.join("|"));
 }
 
 // ---------------------------------------------------------------------------
@@ -352,14 +445,28 @@ export function serializeChunkedDocument(
   slots: BlockSlot[],
   fileHash: string,
   enRel: string,
-  blockHashes: Record<string, string>
+  blockHashes: Record<string, string>,
+  strategy: ChunkStrategy
 ): string {
-  const body = slots
+  const ordered = orderSlotsForStrategy(strategy, slots);
+  const body = ordered
     .map((s) => s.content)
     .filter((c): c is string => c !== null)
     .join("\n\n");
+  const labelOrder = ordered.map((s) => s.label);
   const raw = `${frontmatter}\n${body}\n`;
-  return setChunkedTranslationMeta(raw, fileHash, enRel, blockHashes);
+  return setChunkedTranslationMeta(raw, fileHash, enRel, blockHashes, labelOrder);
+}
+
+/** Rebuild changelog body with `<Update>` blocks in descending semver order. */
+export function serializeUpdateBlocksDocument(
+  frontmatter: string,
+  blocks: ContentBlock[]
+): string {
+  const body = sortUpdateBlocksByVersion(blocks)
+    .map((b) => b.content)
+    .join("\n\n");
+  return `${frontmatter}\n${body}\n`;
 }
 
 export function getSectionSyncStatus(
@@ -389,22 +496,30 @@ export function getSectionSyncStatus(
 
   const existingDoc = parseDocument(existingContent, strategy);
 
+  const existingFmBody = parseFrontmatterAndBody(existingContent).frontmatter
+    .replace(/^---\n/, "")
+    .replace(/\n---$/, "");
+  const storedLabels = parseBlockHashLabelOrderFromFrontmatter(existingFmBody);
+  const enLabels = canonicalBlockLabelOrder(
+    strategy,
+    enDoc.blocks.map((b) => b.label)
+  );
+  const hasOrderDrift = blockHashLabelOrderDrifts(enLabels, storedLabels);
+
   if (strategy === "update_blocks") {
     const existingLabels = new Set(existingDoc.blocks.map((b) => b.label));
     const pendingBlocks = enDoc.blocks
       .filter((b) => !existingLabels.has(b.label))
       .map((b) => b.label);
     return {
-      upToDate: pendingBlocks.length === 0,
+      upToDate: pendingBlocks.length === 0 && !hasOrderDrift,
       pendingBlocks,
       needsFrontmatter: existingDoc.blocks.length === 0,
+      needsReserialize: pendingBlocks.length === 0 && hasOrderDrift,
     };
   }
 
-  const existingFm = parseFrontmatterAndBody(existingContent).frontmatter;
-  const storedHashes = parseBlockHashesFromFrontmatter(
-    existingFm.replace(/^---\n/, "").replace(/\n---$/, "")
-  );
+  const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
 
   const pendingBlocks = enDoc.blocks
     .filter((b) => storedHashes[b.label] !== enHashes[b.label])
@@ -413,10 +528,11 @@ export function getSectionSyncStatus(
   const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
 
   return {
-    upToDate: pendingBlocks.length === 0 && !hasStructureDrift,
+    upToDate: pendingBlocks.length === 0 && !hasStructureDrift && !hasOrderDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
-    needsReserialize: hasStructureDrift && pendingBlocks.length === 0,
+    needsReserialize:
+      pendingBlocks.length === 0 && (hasStructureDrift || hasOrderDrift),
   };
 }
 

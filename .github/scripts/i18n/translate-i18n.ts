@@ -545,12 +545,13 @@ async function writeChunkedCheckpoint(
   fileHash: string,
   enRel: string,
   blockHashes: Record<string, string>,
+  strategy: ChunkStrategy,
   label?: string
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(
     targetPath,
-    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes)
+    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes, strategy)
   );
   if (label) {
     const done = slots.filter((s) => s.content !== null).length;
@@ -617,7 +618,8 @@ async function translateChunkedFile(
         filledSlots,
         fileHash,
         enRel,
-        enBlockHashes
+        enBlockHashes,
+        strategy
       );
       await mkdir(dirname(targetPath), { recursive: true });
       await writeFile(targetPath, output);
@@ -659,6 +661,7 @@ async function translateChunkedFile(
       fileHash,
       enRel,
       enBlockHashes,
+      strategy,
     );
   } else {
     translatedFrontmatter = existingDoc!.frontmatter;
@@ -705,6 +708,7 @@ async function translateChunkedFile(
       fileHash,
       enRel,
       enBlockHashes,
+      strategy,
       blockTag
     );
   }
@@ -714,9 +718,11 @@ async function translateChunkedFile(
     slots,
     fileHash,
     enRel,
-    enBlockHashes
+    enBlockHashes,
+    strategy
   );
-  const didWork = blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter;
+  const didWork =
+    blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter || status.needsReserialize;
 
   return {
     mismatches: allMismatches,
