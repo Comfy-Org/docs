@@ -93,6 +93,20 @@ export function parseFrontmatterAndBody(content: string): { frontmatter: string;
   return { frontmatter: `${match[1]}\n`, body: match[2] };
 }
 
+function parseBlockHashEntry(
+  line: string
+): { label: string; hash: string } | null {
+  const quoted = line.match(/^\s{2}("(?:\\.|[^"\\])*"):\s*"?([a-f0-9]{8})"?\s*$/);
+  if (quoted) {
+    return { label: JSON.parse(quoted[1]!) as string, hash: quoted[2]! };
+  }
+  const plain = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
+  if (plain) {
+    return { label: plain[1]!.trim(), hash: plain[2]! };
+  }
+  return null;
+}
+
 /** Parse `translationBlockHashes` YAML map from frontmatter body. */
 export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -104,14 +118,9 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
       continue;
     }
     if (inMap) {
-      const quoted = line.match(/^\s{2}("(?:\\.|[^"\\])*"):\s*"?([a-f0-9]{8})"?\s*$/);
-      if (quoted) {
-        out[JSON.parse(quoted[1]!)] = quoted[2]!;
-        continue;
-      }
-      const plain = line.match(/^\s{2}([^:]+):\s*"?([a-f0-9]{8})"?\s*$/);
-      if (plain) {
-        out[plain[1]!.trim()] = plain[2]!;
+      const entry = parseBlockHashEntry(line);
+      if (entry) {
+        out[entry.label] = entry.hash;
         continue;
       }
       if (/^[A-Za-z_][\w-]*:/.test(line)) {
@@ -122,9 +131,51 @@ export function parseBlockHashesFromFrontmatter(fmBody: string): Record<string, 
   return out;
 }
 
-export function formatBlockHashesYaml(blockHashes: Record<string, string>): string {
+/** Block labels in frontmatter file order (not sorted). */
+export function parseBlockHashLabelOrderFromFrontmatter(fmBody: string): string[] {
+  const labels: string[] = [];
+  const lines = fmBody.split("\n");
+  let inMap = false;
+  for (const line of lines) {
+    if (/^translationBlockHashes:\s*$/.test(line)) {
+      inMap = true;
+      continue;
+    }
+    if (inMap) {
+      const entry = parseBlockHashEntry(line);
+      if (entry) {
+        labels.push(entry.label);
+        continue;
+      }
+      if (/^[A-Za-z_][\w-]*:/.test(line)) {
+        inMap = false;
+      }
+    }
+  }
+  return labels;
+}
+
+export function blockHashLabelOrderDrifts(
+  enLabels: string[],
+  storedLabels: string[]
+): boolean {
+  if (enLabels.length !== storedLabels.length) return true;
+  return enLabels.some((label, i) => label !== storedLabels[i]);
+}
+
+export function formatBlockHashesYaml(
+  blockHashes: Record<string, string>,
+  labelOrder: string[]
+): string {
   const lines = ["translationBlockHashes:"];
-  for (const label of Object.keys(blockHashes).sort()) {
+  const seen = new Set<string>();
+  for (const label of labelOrder) {
+    if (!(label in blockHashes) || seen.has(label)) continue;
+    lines.push(`  ${JSON.stringify(label)}: ${blockHashes[label]}`);
+    seen.add(label);
+  }
+  for (const label of Object.keys(blockHashes)) {
+    if (seen.has(label)) continue;
     lines.push(`  ${JSON.stringify(label)}: ${blockHashes[label]}`);
   }
   return lines.join("\n");
@@ -177,12 +228,13 @@ export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
   enPath: string,
-  blockHashes: Record<string, string>
+  blockHashes: Record<string, string>,
+  labelOrder: string[]
 ): string {
   const metaLines = [
     `translationSourceHash: ${fileHash}`,
     `translationFrom: ${enPath}`,
-    formatBlockHashesYaml(blockHashes),
+    formatBlockHashesYaml(blockHashes, labelOrder),
   ];
   const metaBlock = metaLines.join("\n");
 
@@ -332,8 +384,159 @@ export function parseUpdateBlocks(body: string): ContentBlock[] {
   return blocks;
 }
 
+/** Parse ComfyUI changelog label like `v0.25.1` into numeric segments. */
+export function parseChangelogVersion(label: string): number[] {
+  const m = label.match(/^v?(\d+(?:\.\d+)*)/i);
+  if (!m) return [];
+  return m[1]!.split(".").map((n) => Number(n));
+}
+
+/** Descending semver compare for changelog `<Update label="…">` values (newest first). */
+export function compareChangelogVersionsDesc(a: string, b: string): number {
+  const pa = parseChangelogVersion(a);
+  const pb = parseChangelogVersion(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return db - da;
+  }
+  return b.localeCompare(a);
+}
+
+export function canonicalChangelogLabelOrder(labels: string[]): string[] {
+  return [...labels].sort(compareChangelogVersionsDesc);
+}
+
+export function sortUpdateBlocksByVersion(blocks: ContentBlock[]): ContentBlock[] {
+  return [...blocks].sort((a, b) => compareChangelogVersionsDesc(a.label, b.label));
+}
+
+export function orderSlotsForStrategy(strategy: ChunkStrategy, slots: BlockSlot[]): BlockSlot[] {
+  if (strategy !== "update_blocks") return slots;
+  return [...slots].sort((a, b) => compareChangelogVersionsDesc(a.label, b.label));
+}
+
+export function canonicalBlockLabelOrder(
+  strategy: ChunkStrategy,
+  labels: string[]
+): string[] {
+  return strategy === "update_blocks" ? canonicalChangelogLabelOrder(labels) : labels;
+}
+
 export function changelogLabelHash(blocks: ContentBlock[]): string {
-  return blockHash(blocks.map((b) => b.label).join("|"));
+  const labels = canonicalChangelogLabelOrder(blocks.map((b) => b.label));
+  return blockHash(labels.join("|"));
+}
+
+const EN_MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const EN_DATE_DESC_RE =
+  /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})$/;
+
+export function parseEnglishChangelogDate(
+  date: string
+): { year: number; month: number; day: number } | null {
+  const m = date.trim().match(EN_DATE_DESC_RE);
+  if (!m) return null;
+  const month = EN_MONTH_NAMES.indexOf(m[1] as (typeof EN_MONTH_NAMES)[number]) + 1;
+  if (month <= 0) return null;
+  return { year: Number(m[3]), month, day: Number(m[2]) };
+}
+
+/** Localized `<Update description="…">` date for ja / ko / zh. */
+export function formatChangelogDateForLang(
+  year: number,
+  month: number,
+  day: number,
+  lang: string
+): string {
+  switch (lang) {
+    case "ja":
+    case "zh":
+      return `${year}年${month}月${day}日`;
+    case "ko":
+      return `${year}년 ${month}월 ${day}일`;
+    default:
+      return `${EN_MONTH_NAMES[month - 1]} ${day}, ${year}`;
+  }
+}
+
+export function localizeEnglishChangelogDate(date: string, lang: string): string {
+  const parsed = parseEnglishChangelogDate(date);
+  if (!parsed || lang === "en") return date;
+  return formatChangelogDateForLang(parsed.year, parsed.month, parsed.day, lang);
+}
+
+export function extractUpdateDescription(updateBlock: string): string | null {
+  return updateBlock.match(/<Update\s+[^>]*description="([^"]+)"/)?.[1] ?? null;
+}
+
+/** Replace description with locale date derived from the English source block. */
+export function syncUpdateBlockDescription(
+  translatedBlock: string,
+  enBlock: ContentBlock,
+  langCode: string
+): string {
+  const enDesc = extractUpdateDescription(enBlock.content);
+  if (!enDesc || langCode === "en") return translatedBlock;
+  const localized = localizeEnglishChangelogDate(enDesc, langCode);
+  if (localized === enDesc) return translatedBlock;
+  return translatedBlock.replace(
+    /(<Update\s+[^>]*description=")([^"]+)(")/,
+    `$1${localized}$3`
+  );
+}
+
+export function applyChangelogBlockLocalizations(
+  slots: BlockSlot[],
+  enBlocks: ContentBlock[],
+  langCode: string
+): BlockSlot[] {
+  if (langCode === "en") return slots;
+  const enByLabel = new Map(enBlocks.map((b) => [b.label, b]));
+  return slots.map((s) => {
+    const enBlock = enByLabel.get(s.label);
+    if (!s.content || !enBlock) return s;
+    return {
+      label: s.label,
+      content: syncUpdateBlockDescription(s.content, enBlock, langCode),
+    };
+  });
+}
+
+export function hasChangelogDateDrift(
+  enContent: string,
+  targetContent: string,
+  langCode: string
+): boolean {
+  if (langCode === "en") return false;
+  const enDoc = parseDocument(enContent, "update_blocks");
+  const targetDoc = parseDocument(targetContent, "update_blocks");
+  const targetByLabel = new Map(targetDoc.blocks.map((b) => [b.label, b]));
+  for (const enBlock of enDoc.blocks) {
+    const enDesc = extractUpdateDescription(enBlock.content);
+    if (!enDesc) continue;
+    const expected = localizeEnglishChangelogDate(enDesc, langCode);
+    const targetBlock = targetByLabel.get(enBlock.label);
+    if (!targetBlock) continue;
+    const actual = extractUpdateDescription(targetBlock.content) ?? "";
+    if (actual !== expected) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -352,21 +555,36 @@ export function serializeChunkedDocument(
   slots: BlockSlot[],
   fileHash: string,
   enRel: string,
-  blockHashes: Record<string, string>
+  blockHashes: Record<string, string>,
+  strategy: ChunkStrategy
 ): string {
-  const body = slots
+  const ordered = orderSlotsForStrategy(strategy, slots);
+  const body = ordered
     .map((s) => s.content)
     .filter((c): c is string => c !== null)
     .join("\n\n");
+  const labelOrder = ordered.map((s) => s.label);
   const raw = `${frontmatter}\n${body}\n`;
-  return setChunkedTranslationMeta(raw, fileHash, enRel, blockHashes);
+  return setChunkedTranslationMeta(raw, fileHash, enRel, blockHashes, labelOrder);
+}
+
+/** Rebuild changelog body with `<Update>` blocks in descending semver order. */
+export function serializeUpdateBlocksDocument(
+  frontmatter: string,
+  blocks: ContentBlock[]
+): string {
+  const body = sortUpdateBlocksByVersion(blocks)
+    .map((b) => b.content)
+    .join("\n\n");
+  return `${frontmatter}\n${body}\n`;
 }
 
 export function getSectionSyncStatus(
   enContent: string,
   existingContent: string,
   strategy: ChunkStrategy,
-  force: boolean
+  force: boolean,
+  langCode?: string
 ): SectionSyncStatus {
   const enDoc = parseDocument(enContent, strategy);
   const enHashes = documentBlockHashes(enDoc.blocks);
@@ -389,22 +607,33 @@ export function getSectionSyncStatus(
 
   const existingDoc = parseDocument(existingContent, strategy);
 
+  const existingFmBody = parseFrontmatterAndBody(existingContent).frontmatter
+    .replace(/^---\n/, "")
+    .replace(/\n---$/, "");
+  const storedLabels = parseBlockHashLabelOrderFromFrontmatter(existingFmBody);
+  const enLabels = canonicalBlockLabelOrder(
+    strategy,
+    enDoc.blocks.map((b) => b.label)
+  );
+  const hasOrderDrift = blockHashLabelOrderDrifts(enLabels, storedLabels);
+
   if (strategy === "update_blocks") {
     const existingLabels = new Set(existingDoc.blocks.map((b) => b.label));
     const pendingBlocks = enDoc.blocks
       .filter((b) => !existingLabels.has(b.label))
       .map((b) => b.label);
+    const hasDateDrift = langCode
+      ? hasChangelogDateDrift(enContent, existingContent, langCode)
+      : false;
     return {
-      upToDate: pendingBlocks.length === 0,
+      upToDate: pendingBlocks.length === 0 && !hasOrderDrift && !hasDateDrift,
       pendingBlocks,
       needsFrontmatter: existingDoc.blocks.length === 0,
+      needsReserialize: pendingBlocks.length === 0 && (hasOrderDrift || hasDateDrift),
     };
   }
 
-  const existingFm = parseFrontmatterAndBody(existingContent).frontmatter;
-  const storedHashes = parseBlockHashesFromFrontmatter(
-    existingFm.replace(/^---\n/, "").replace(/\n---$/, "")
-  );
+  const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
 
   const pendingBlocks = enDoc.blocks
     .filter((b) => storedHashes[b.label] !== enHashes[b.label])
@@ -413,10 +642,11 @@ export function getSectionSyncStatus(
   const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
 
   return {
-    upToDate: pendingBlocks.length === 0 && !hasStructureDrift,
+    upToDate: pendingBlocks.length === 0 && !hasStructureDrift && !hasOrderDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
-    needsReserialize: hasStructureDrift && pendingBlocks.length === 0,
+    needsReserialize:
+      pendingBlocks.length === 0 && (hasStructureDrift || hasOrderDrift),
   };
 }
 
