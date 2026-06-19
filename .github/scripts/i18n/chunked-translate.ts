@@ -429,6 +429,116 @@ export function changelogLabelHash(blocks: ContentBlock[]): string {
   return blockHash(labels.join("|"));
 }
 
+const EN_MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const EN_DATE_DESC_RE =
+  /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})$/;
+
+export function parseEnglishChangelogDate(
+  date: string
+): { year: number; month: number; day: number } | null {
+  const m = date.trim().match(EN_DATE_DESC_RE);
+  if (!m) return null;
+  const month = EN_MONTH_NAMES.indexOf(m[1] as (typeof EN_MONTH_NAMES)[number]) + 1;
+  if (month <= 0) return null;
+  return { year: Number(m[3]), month, day: Number(m[2]) };
+}
+
+/** Localized `<Update description="…">` date for ja / ko / zh. */
+export function formatChangelogDateForLang(
+  year: number,
+  month: number,
+  day: number,
+  lang: string
+): string {
+  switch (lang) {
+    case "ja":
+    case "zh":
+      return `${year}年${month}月${day}日`;
+    case "ko":
+      return `${year}년 ${month}월 ${day}일`;
+    default:
+      return `${EN_MONTH_NAMES[month - 1]} ${day}, ${year}`;
+  }
+}
+
+export function localizeEnglishChangelogDate(date: string, lang: string): string {
+  const parsed = parseEnglishChangelogDate(date);
+  if (!parsed || lang === "en") return date;
+  return formatChangelogDateForLang(parsed.year, parsed.month, parsed.day, lang);
+}
+
+export function extractUpdateDescription(updateBlock: string): string | null {
+  return updateBlock.match(/<Update\s+[^>]*description="([^"]+)"/)?.[1] ?? null;
+}
+
+/** Replace description with locale date derived from the English source block. */
+export function syncUpdateBlockDescription(
+  translatedBlock: string,
+  enBlock: ContentBlock,
+  langCode: string
+): string {
+  const enDesc = extractUpdateDescription(enBlock.content);
+  if (!enDesc || langCode === "en") return translatedBlock;
+  const localized = localizeEnglishChangelogDate(enDesc, langCode);
+  if (localized === enDesc) return translatedBlock;
+  return translatedBlock.replace(
+    /(<Update\s+[^>]*description=")([^"]+)(")/,
+    `$1${localized}$3`
+  );
+}
+
+export function applyChangelogBlockLocalizations(
+  slots: BlockSlot[],
+  enBlocks: ContentBlock[],
+  langCode: string
+): BlockSlot[] {
+  if (langCode === "en") return slots;
+  const enByLabel = new Map(enBlocks.map((b) => [b.label, b]));
+  return slots.map((s) => {
+    const enBlock = enByLabel.get(s.label);
+    if (!s.content || !enBlock) return s;
+    return {
+      label: s.label,
+      content: syncUpdateBlockDescription(s.content, enBlock, langCode),
+    };
+  });
+}
+
+export function hasChangelogDateDrift(
+  enContent: string,
+  targetContent: string,
+  langCode: string
+): boolean {
+  if (langCode === "en") return false;
+  const enDoc = parseDocument(enContent, "update_blocks");
+  const targetDoc = parseDocument(targetContent, "update_blocks");
+  const targetByLabel = new Map(targetDoc.blocks.map((b) => [b.label, b]));
+  for (const enBlock of enDoc.blocks) {
+    const enDesc = extractUpdateDescription(enBlock.content);
+    if (!enDesc) continue;
+    const expected = localizeEnglishChangelogDate(enDesc, langCode);
+    const targetBlock = targetByLabel.get(enBlock.label);
+    if (!targetBlock) continue;
+    const actual = extractUpdateDescription(targetBlock.content) ?? "";
+    if (actual !== expected) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Document parsing / serialization
 // ---------------------------------------------------------------------------
@@ -473,7 +583,8 @@ export function getSectionSyncStatus(
   enContent: string,
   existingContent: string,
   strategy: ChunkStrategy,
-  force: boolean
+  force: boolean,
+  langCode?: string
 ): SectionSyncStatus {
   const enDoc = parseDocument(enContent, strategy);
   const enHashes = documentBlockHashes(enDoc.blocks);
@@ -511,11 +622,14 @@ export function getSectionSyncStatus(
     const pendingBlocks = enDoc.blocks
       .filter((b) => !existingLabels.has(b.label))
       .map((b) => b.label);
+    const hasDateDrift = langCode
+      ? hasChangelogDateDrift(enContent, existingContent, langCode)
+      : false;
     return {
-      upToDate: pendingBlocks.length === 0 && !hasOrderDrift,
+      upToDate: pendingBlocks.length === 0 && !hasOrderDrift && !hasDateDrift,
       pendingBlocks,
       needsFrontmatter: existingDoc.blocks.length === 0,
-      needsReserialize: pendingBlocks.length === 0 && hasOrderDrift,
+      needsReserialize: pendingBlocks.length === 0 && (hasOrderDrift || hasDateDrift),
     };
   }
 
