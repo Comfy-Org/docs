@@ -85,7 +85,9 @@ export async function syncPublishedVersionsFromCms(
   }
 
   const current = await loadPublishedVersions();
-  const merged = mergePublishedEntries(current.published, fromCms);
+  const projectSet = new Set(projects);
+  const unchangedOutsideScan = current.published.filter((e) => !projectSet.has(e.project));
+  const merged = mergePublishedEntries(unchangedOutsideScan, fromCms);
 
   const currentKeys = new Set(current.published.map(entryKey));
   const mergedKeys = new Set(merged.map(entryKey));

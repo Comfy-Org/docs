@@ -11,7 +11,7 @@ import {
 } from "../i18n/chunked-translate.ts";
 import { parseChangelogUpdates } from "./changelog-parse.ts";
 import { configForProject, type CmsConfig } from "./cms-config.ts";
-import { ROOT } from "./cms-env.ts";
+import { isEnoent, ROOT } from "./cms-env.ts";
 
 export const STAGING_FRONTMATTER = `---
 title: "Changelog (CMS staging)"
@@ -48,8 +48,9 @@ export function mergeStagingBlocks(
 export async function readStaging(relPath: string): Promise<string> {
   try {
     return await readFile(join(ROOT, relPath), "utf-8");
-  } catch {
-    return "";
+  } catch (error) {
+    if (isEnoent(error)) return "";
+    throw error;
   }
 }
 

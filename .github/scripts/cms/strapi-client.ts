@@ -213,8 +213,21 @@ export class StrapiClient {
 
     const data: Record<string, unknown> = {};
     if (draft) {
-      for (const key of ["content", "project", "version", "attention"] as const) {
-        if (draft[key] != null && draft[key] !== "") data[key] = draft[key];
+      const metadata = new Set([
+        "id",
+        "documentId",
+        "locale",
+        "publishedAt",
+        "createdAt",
+        "updatedAt",
+        "createdBy",
+        "updatedBy",
+        "localizations",
+        "status",
+      ]);
+      for (const [key, value] of Object.entries(draft)) {
+        if (metadata.has(key)) continue;
+        if (value != null && value !== "") data[key] = value;
       }
     }
 
@@ -239,7 +252,7 @@ export class StrapiClient {
     const params = new URLSearchParams();
     if (opts?.locale) params.set("locale", opts.locale);
     // Strapi 5 returns 500 when status=draft is passed on DELETE; locale-only works.
-    if (opts?.status) this.withStatus(params, opts.status);
+    if (opts?.status && opts.status !== "draft") this.withStatus(params, opts.status);
     const res = await fetch(this.url(`/api/${contentTypePlural}/${documentId}`, params), {
       method: "DELETE",
       headers: this.headers(),

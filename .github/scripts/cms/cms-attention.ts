@@ -2,6 +2,7 @@ import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import type { CmsConfig } from "./cms-config.ts";
 import { getProjectConfig } from "./cms-config.ts";
+import { isEnoent } from "./cms-env.ts";
 
 export type AttentionLevel = "low" | "high";
 
@@ -17,8 +18,9 @@ export async function loadAttentionOverrides(): Promise<AttentionOverrides> {
   try {
     const raw = await readFile(attentionOverridesPath(), "utf-8");
     return JSON.parse(raw) as AttentionOverrides;
-  } catch {
-    return {};
+  } catch (error) {
+    if (isEnoent(error)) return {};
+    throw error;
   }
 }
 

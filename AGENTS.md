@@ -84,7 +84,7 @@ Copy `.env.local.example` → `.env.local` (never commit).
 3. **Do not commit** `.github/scripts/cms/staging/` or `.github/i18n-logs/`.
 4. **Do commit** translated docs (`zh/`, `ja/`, `ko/`) and `published-versions.json` after Strapi publish.
 5. Get user approval on **staging EN** before running full `cms:prepare` (translations cost API calls).
-5. Strapi publish is **manual by default** — use `pnpm cms:publish` after review (not automatic on sync).
+6. Strapi publish is **manual by default** — use `bun run cms:publish` after review (not automatic on sync).
 
 ## Reference docs
 

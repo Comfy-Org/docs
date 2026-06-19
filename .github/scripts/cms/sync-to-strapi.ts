@@ -19,7 +19,6 @@ import { loadEnvLocal, ROOT } from "./cms-env.ts";
 import { incrementalVersionSet, resolveTargetVersions } from "./cms-versions.ts";
 import {
   filterUnpublishedEnEntries,
-  isPublishedInRegistry,
   loadPublishedVersions,
   type PublishedVersionsFile,
 } from "./published-versions.ts";
@@ -189,7 +188,6 @@ async function planSync(
   client: StrapiClient,
   config: CmsConfig,
   project: string,
-  registry: PublishedVersionsFile,
   targetVersions: ReleaseNoteEntry[],
   byLocale: Map<string, Map<string, ReleaseNoteEntry>>
 ): Promise<SyncTask[]> {
@@ -213,19 +211,6 @@ async function planSync(
         continue;
       }
 
-      if (isPublishedInRegistry(registry, project, base.version, locale.code)) {
-        tasks.push({
-          project,
-          version: base.version,
-          locale: locale.code,
-          date: entry.date,
-          body: entry.body,
-          action: "skip",
-          reason: "published (registry)",
-        });
-        continue;
-      }
-
       const state = await resolveDocState(client, config, project, base.version, locale.code);
       if (state.published) {
         tasks.push({
@@ -239,6 +224,8 @@ async function planSync(
         });
         continue;
       }
+
+      // CMS is source of truth — do not skip on registry alone (stale registry strand).
 
       const enInChangelog = byLocale.get("en")?.has(base.version) ?? false;
 
@@ -428,7 +415,7 @@ async function syncProject(
       `locales=[${config.locales.filter((l) => l.changelog).map((l) => l.code).join(", ")}]\n`
   );
 
-  const tasks = await planSync(client, config, project, registry, entriesToSync, byLocale);
+  const tasks = await planSync(client, config, project, entriesToSync, byLocale);
   printTasks(tasks, dryRun);
 
   if (dryRun) return { ok: 0, failed: 0 };

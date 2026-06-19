@@ -36,19 +36,28 @@ export async function callTranslateApi(
   extra?: Record<string, unknown>
 ): Promise<string> {
   const key = requireTranslateApiKey();
-  const res = await fetch(`${BASE_URL.replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      temperature: 0.2,
-      ...extra,
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.TRANSLATE_API_TIMEOUT_MS ?? 45_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        temperature: 0.2,
+        ...extra,
+      }),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     throw new Error(`Translate API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }

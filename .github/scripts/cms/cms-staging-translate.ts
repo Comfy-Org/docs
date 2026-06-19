@@ -55,6 +55,7 @@ export async function prepareStagingLocale(
     const enBlock = blockForVersion(simplifiedEnContent, target.version);
     if (!enBlock) {
       console.log(`  skip ${locale.code}/v${target.version} — no simplified en block`);
+      skipped++;
       continue;
     }
 

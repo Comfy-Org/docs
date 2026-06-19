@@ -19,9 +19,39 @@ export function publishedVersionsPath(): string {
   return join(CMS_DIR, "published-versions.json");
 }
 
+function validatePublishedVersionsFile(data: unknown): PublishedVersionsFile {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("published-versions.json: expected object");
+  }
+  const published = (data as { published?: unknown }).published;
+  if (!Array.isArray(published)) {
+    throw new Error("published-versions.json: expected { published: [...] }");
+  }
+  for (const entry of published) {
+    if (!entry || typeof entry !== "object") {
+      throw new Error("published-versions.json: invalid entry");
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.project !== "string" || typeof e.version !== "string") {
+      throw new Error("published-versions.json: entry missing project/version");
+    }
+    if (e.locales != null) {
+      if (!Array.isArray(e.locales)) {
+        throw new Error("published-versions.json: entry locales must be array");
+      }
+      for (const loc of e.locales) {
+        if (typeof loc !== "string") {
+          throw new Error("published-versions.json: locale must be string");
+        }
+      }
+    }
+  }
+  return data as PublishedVersionsFile;
+}
+
 export async function loadPublishedVersions(): Promise<PublishedVersionsFile> {
   const raw = await readFile(publishedVersionsPath(), "utf-8");
-  return JSON.parse(raw) as PublishedVersionsFile;
+  return validatePublishedVersionsFile(JSON.parse(raw));
 }
 
 export async function savePublishedVersions(data: PublishedVersionsFile): Promise<void> {

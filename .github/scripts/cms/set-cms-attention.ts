@@ -68,13 +68,15 @@ function parseArgs(
 async function updateAttentionInStrapi(
   client: StrapiClient,
   contentType: string,
+  projectField: string,
+  versionField: string,
   attentionField: string,
   project: string,
   version: string,
   attention: AttentionLevel,
   dryRun: boolean
 ): Promise<void> {
-  const filters = { project, version };
+  const filters = { [projectField]: project, [versionField]: version };
   const payload = { [attentionField]: attention };
 
   const draft = await client.findOne(contentType, filters, { locale: "en", status: "draft" });
@@ -150,6 +152,8 @@ async function main(): Promise<void> {
   await updateAttentionInStrapi(
     client,
     config.content_type_plural,
+    config.project_field,
+    config.version_field,
     config.attention_field,
     project,
     version,

@@ -11,7 +11,7 @@ import { meetsMinVersion } from "./changelog-parse.ts";
 import { resolveProject, stripProjectArg } from "./cms-args.ts";
 import { loadCmsConfig } from "./cms-config.ts";
 import { loadEnvLocal } from "./cms-env.ts";
-import { loadPublishedVersions } from "./published-versions.ts";
+import { loadPublishedVersions, isPublishedInRegistry } from "./published-versions.ts";
 import { StrapiClient, type StrapiDocument } from "./strapi-client.ts";
 
 function parseArgs(argv: string[]): { dryRun: boolean } {
@@ -79,13 +79,9 @@ async function main(): Promise<void> {
     }
   }
 
-  const publishedVersions = new Set(
-    registry.published.filter((e) => e.project === project).map((e) => e.version)
-  );
-
   const enPublishedCache = new Map<string, boolean>();
   async function enIsPublished(version: string): Promise<boolean> {
-    if (publishedVersions.has(version)) return true;
+    if (isPublishedInRegistry(registry, project, version, "en")) return true;
     const cached = enPublishedCache.get(version);
     if (cached != null) return cached;
     const enPublishedInCms = await client.findOne(

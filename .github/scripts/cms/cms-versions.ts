@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import {
   meetsMinVersion,
   parseChangelogUpdates,
@@ -9,14 +9,10 @@ import { getSectionSyncStatus } from "../i18n/chunked-translate.ts";
 import { ROOT } from "./cms-env.ts";
 
 export function gitDiffChangelog(before: string, after: string): string {
-  try {
-    return execSync(`git diff ${before} ${after} -- changelog/index.mdx`, {
-      encoding: "utf-8",
-      cwd: ROOT,
-    });
-  } catch {
-    return "";
-  }
+  return execFileSync("git", ["diff", before, after, "--", "changelog/index.mdx"], {
+    encoding: "utf-8",
+    cwd: ROOT,
+  });
 }
 
 export function incrementalVersionSet(): Set<string> | null {
