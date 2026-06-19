@@ -186,7 +186,7 @@ Re-run with `--force`. Staging without `--force` **skips** existing `<Update>` b
 | `.github/scripts/cms/sync-to-strapi.ts` | Strapi draft sync |
 | `.github/scripts/cms/publish-cms-drafts.ts` | Draft → published |
 | `.github/scripts/cms/delete-cms-drafts.ts` | Clean bad drafts |
-| `.github/workflows/cms-changelog-sync.yml` | CI: prepare → preview → sync on main |
+| `.github/workflows/cms-changelog-sync.yml` | CI: prepare → preview → sync on main (changelog paths only) |
 
 ## Agent checklist
 
