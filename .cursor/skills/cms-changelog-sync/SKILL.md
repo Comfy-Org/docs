@@ -14,19 +14,60 @@ Push **draft** release notes to Strapi (`release-notes` content type). Docs chan
 
 ## Architecture
 
+Three **separate** steps — stop for human review between each:
+
 ```
-changelog/index.mdx              ← docs source of truth (do not shorten for CMS)
+changelog/index.mdx                    ← docs source of truth (full EN)
         │
-        ▼  pnpm cms:prepare:en / cms:prepare
-.github/scripts/cms/staging/
-  en/changelog/index.mdx         ← LLM-simplified popup EN
-  {zh,ja,ko,fr,ru,es}/…         ← translated from simplified EN
+        ▼  Step 1: pnpm cms:prepare:en
+staging/en/changelog/index.mdx         ← simplified popup EN → **review & approve**
         │
-        ▼  pnpm cms:sync
-Strapi CMS (draft only) → manual Publish → published-versions.json
+        ▼  Step 2: pnpm cms:prepare:locales
+staging/{zh,ja,ko,fr,ru,es}/…          ← translated from staging EN → **review & approve**
+        │
+        ▼  Step 3: pnpm cms:preview → cms:sync  (only after user confirms)
+Strapi CMS (draft) → manual Publish → published-versions.json
 ```
 
-**Never** edit docs `zh/changelog/` for CMS. **Never** auto-publish in Strapi.
+**Never** edit docs `zh/changelog/` for CMS. **Never** auto-publish in Strapi. **Never** use `pnpm translate` for CMS — that pipeline is for Mintlify docs only.
+
+## Three-step workflow (local)
+
+| Step | Command | What it does | Gate |
+|------|---------|--------------|------|
+| **1. Simplify EN** | `pnpm cms:prepare:en -- --force v0.26.0` | docs → LLM → `staging/en/` | Review EN staging |
+| **2. Translate** | `pnpm cms:prepare:locales -- --force v0.26.0` | `staging/en/` → `staging/{zh,ja,ko,fr,ru,es}/` | Review locale staging |
+| **3. Push CMS** | `pnpm cms:preview` then `pnpm cms:sync` | staging → Strapi **drafts** | Strapi review → `cms:publish` |
+
+`pnpm cms:prepare` without `--en-only` / `--translate-only` prints help and exits — use the step-specific scripts above.
+
+## Translation workflow (CMS staging)
+
+Step 2 only. **Input = simplified EN staging**, not docs changelog.
+
+```
+staging/en/changelog/index.mdx          ← input (Step 1 output, human-approved)
+        │
+        ▼  pnpm cms:prepare:locales -- v0.26.0
+staging/zh|ja|ko|fr|ru|es/changelog/…   ← output (popup copy per locale, ready to sync)
+        │
+        ▼  pnpm cms:sync  (Step 3, after user confirms)
+Strapi release-notes (draft)
+```
+
+| | Mintlify docs (`pnpm translate`) | CMS popup (`pnpm cms:prepare:locales`) |
+|--|----------------------------------|----------------------------------------|
+| English source | `changelog/index.mdx` (full docs) | `staging/en/changelog/index.mdx` (simplified popup) |
+| Output path | `zh/changelog/index.mdx`, etc. | `staging/zh/changelog/index.mdx`, etc. |
+| Purpose | Docs site | Strapi in-app notification |
+| Mix pipelines? | **No** | **No** |
+
+**Key points:**
+
+- `cms:prepare:locales` does **not** re-simplify English — it reads existing `staging/en/` only
+- If staging EN is missing the version, translate fails — run `cms:prepare:en` first
+- Target locales: **zh, ja, ko, fr, ru, es** (see `cms-config.json`)
+- `--force` re-translates existing locale blocks (common after manual EN edits)
 
 ## Environment (`.env.local`)
 
@@ -48,22 +89,40 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 
 | Rule | Value |
 |------|-------|
-| Total bullets per version | **3–5** (`max_bullets_total: 5`) |
-| Section headings max | **2** (`max_sections: 2`) |
+| Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
+| Section headings max | **3** (`max_sections: 3`) |
+| Section order | **New Open-Source Model Support** → **New Node Updates** → **Partner Node Updates** |
 | Words per version | ~60–120 |
-| Bullet format | `[**Name**](pr_url): 5–12 word function` |
+| Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
-| Sections allowed | `**New Open-Source Model Support**`, `**Partner Node Updates**` only |
-| Drop | Bug fixes, performance, Load3D, UI, internal refactors |
+| New Node Updates | Include meaningful entries from source **New Nodes** section (workflows, sockets, multimodal nodes) |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below) |
 
-Example staging output:
+Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
+
+## ComfyUI-WIKI commits (omit from changelog)
+
+When curating `changelog/index.mdx` from ComfyUI git history, **do not add bullets** for commits routinely opened by **[ComfyUI-WIKI](https://github.com/Comfy-Org/ComfyUI-WIKI)** — they are dependency/content syncs, not core release features:
+
+| Skip | Typical commit / PR pattern |
+|------|----------------------------|
+| **Embedded docs** | `chore: update embedded docs to v…`, `comfyui-embedded-docs` in `requirements.txt` |
+| **Workflow templates** | `chore: update workflow templates to v…`, `comfyui-workflow-templates` in `requirements.txt` |
+| **Model blueprints** | `Add new model blueprints`, blueprint starter workflows in template library |
+
+Also omit standalone **frontend package semver bumps** unless tied to a user-visible fix worth its own bullet. CMS simplify must never promote WIKI-only items into popup copy even if they appear in the full docs block.
+
+Example staging shape (placeholders only):
 
 ```markdown
-**New Open-Source Model Support**
-* [**Depth Anything 3**](https://github.com/Comfy-Org/ComfyUI/pull/13853): Monocular depth estimation model
+## New Open-Source Model Support
+* [**Model Name**](source_url): Short description with 1–2 traits from the release data
 
-**Partner Node Updates**
-* [**Kling V3-Turbo**](https://github.com/Comfy-Org/ComfyUI/pull/14528): Text-to-video generation model
+## New Node Updates
+* [**Node Name**](source_url): What the node does and why it matters
+
+## Partner Node Updates
+* [**Partner Node**](source_url): Partner scope and capability from the release data
 ```
 
 Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.
@@ -91,11 +150,12 @@ pnpm cms:set-attention -- cloud v0.24.0 high --save
 
 | Command | Action |
 |---------|--------|
-| `pnpm cms:prepare:en` | Simplify EN → staging (comfyui + cloud copy) |
-| `pnpm cms:prepare` | Simplify EN + translate all locales (both projects) |
-| `pnpm cms:preview -- v0.25.1` | Dry-run Strapi push (both projects) |
-| `pnpm cms:sync -- v0.25.1` | Push/update **drafts** (both projects) |
-| `pnpm cms:publish -- v0.25.1` | Publish + refresh `published-versions.json` (both) |
+| `pnpm cms:prepare:en` | **Step 1** — LLM simplify docs EN → `staging/en/` (no translation) |
+| `pnpm cms:prepare:locales` | **Step 2** — translate `staging/en/` → `staging/{zh,ja,ko,fr,ru,es}/` (does not re-simplify EN) |
+| `pnpm cms:preview -- v0.25.1` | **Step 3a** — Dry-run Strapi push |
+| `pnpm cms:sync -- v0.25.1` | **Step 3b** — Push/update **drafts** (run only after user confirms staging) |
+| `pnpm cms:publish -- v0.25.1` | Publish + refresh `published-versions.json` |
+| `pnpm cms:prepare` | Prints three-step help and exits when no mode flag is passed |
 | `pnpm cms:set-attention -- cloud v0.24.0 high` | Set attention low/high in Strapi |
 | `pnpm cms:delete-drafts --preview` | List deletable Strapi drafts |
 | `pnpm cms:delete-drafts` | Delete drafts (keeps published) |
@@ -119,44 +179,47 @@ Requires **Bun**. Loads `.env.local` automatically.
 ### New release version
 
 1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged).
-2. **English first** — review popup copy before translating:
+
+2. **Step 1 — Simplify EN** — review before translating:
 
    ```bash
    pnpm cms:prepare:en -- --force v0.25.1
    ```
 
-   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx`
+   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx` → **stop until approved**
 
-3. **Translate** after EN approved:
+3. **Step 2 — Translate** — from approved staging EN only:
 
    ```bash
-   pnpm cms:prepare -- v0.25.1
+   pnpm cms:prepare:locales -- v0.25.1          # first translate
+   pnpm cms:prepare:locales -- --force v0.25.1 # re-translate after EN edits
    ```
 
-4. **Push drafts**:
+   Inspect: `.github/scripts/cms/staging/zh/changelog/index.mdx` (and other locales) → **stop until approved**
+
+4. **Step 3 — Push drafts** (only after user confirms staging):
 
    ```bash
    pnpm cms:preview -- v0.25.1
    pnpm cms:sync -- v0.25.1
    ```
 
-5. **Publish** after review (CLI or Strapi admin):
+5. **Publish** after Strapi review:
 
    ```bash
    pnpm cms:publish --preview -- v0.25.1
    pnpm cms:publish -- v0.25.1
-   # published-versions.json is refreshed automatically — commit if changed
    ```
 
-6. Commit `.github/scripts/cms/published-versions.json` after publish (auto-refreshed by `cms:publish`).
+6. Commit `.github/scripts/cms/published-versions.json` after publish.
 
 ### Catch up all unpublished versions locally
 
 ```bash
-pnpm cms:prepare:en -- --force          # all unpublished EN
-pnpm cms:prepare -- --force             # then all locales
+pnpm cms:prepare:en -- --force              # Step 1: all unpublished EN
+pnpm cms:prepare:locales -- --force         # Step 2: all locales
 pnpm cms:preview
-pnpm cms:sync
+pnpm cms:sync                               # Step 3: after review
 ```
 
 ### After prompt or config changes
@@ -193,9 +256,10 @@ Re-run with `--force`. Staging without `--force` **skips** existing `<Update>` b
 When user asks to update CMS release notes:
 
 - [ ] Confirm `changelog/index.mdx` has the new `<Update>` block
-- [ ] Run `pnpm cms:prepare:en` (with `--force` if redoing); show staging EN for review
-- [ ] Wait for user approval before `pnpm cms:prepare` (translations)
-- [ ] Run `pnpm cms:preview` then `pnpm cms:sync`
+- [ ] Omit ComfyUI-WIKI items (embedded docs, workflow templates, model blueprints) unless user explicitly asks
+- [ ] Run `pnpm cms:prepare:en`; show staging EN → **wait for user approval**
+- [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
+- [ ] Run `pnpm cms:preview` then `pnpm cms:sync` **only after user confirms staging**
 - [ ] Remind: Strapi publish is manual; then `--write` on published-versions
 - [ ] Do **not** commit staging/ (gitignored)
 - [ ] Do **not** shorten docs changelog for CMS — staging is separate

@@ -21,10 +21,9 @@ Always load the matching skill before changing that pipeline.
              │                               │
              ▼                               ▼
    DOCS (Mintlify)                    CMS (Strapi popup)
-   pnpm translate                     pnpm cms:prepare:en
-   → zh/ ja/ ko/                      → staging/en/ (gitignored)
-   COMMIT to git                      pnpm cms:prepare → staging/{lang}/
-                                      pnpm cms:sync → Strapi draft
+   pnpm translate                     Step 1: pnpm cms:prepare:en → staging/en/
+   → zh/ ja/ ko/                      Step 2: pnpm cms:prepare:locales → staging/{lang}/
+   COMMIT to git                      Step 3: pnpm cms:sync → Strapi draft (after review)
              │                               │
              ▼                               ▼
    Mintlify site                      In-app notification
@@ -33,7 +32,7 @@ Always load the matching skill before changing that pipeline.
 
 | | Docs translation | CMS sync |
 |--|------------------|----------|
-| Command | `pnpm translate` | `pnpm cms:prepare` / `cms:sync` |
+| Command | `pnpm translate` | `pnpm cms:prepare:en` / `cms:prepare:locales` / `cms:sync` |
 | Output | `{lang}/**/*.mdx` | `.github/scripts/cms/staging/` |
 | English input | Full docs MDX | LLM-simplified popup copy |
 | Commit? | **Yes** | **No** (staging gitignored) |
@@ -53,12 +52,11 @@ pnpm translate:review                    # optional quality pass
 ### CMS — after editing `changelog/index.mdx`
 
 ```bash
-pnpm cms:prepare:en -- --force v0.25.1   # simplify EN (comfyui + cloud copy)
-pnpm cms:prepare -- v0.25.1               # translate all locales (both projects)
-pnpm cms:preview -- v0.25.1               # dry-run (both projects)
-pnpm cms:sync -- v0.25.1                  # push drafts (both projects)
-pnpm cms:publish -- v0.25.1               # publish + refresh published-versions.json
-pnpm cms:set-attention -- cloud v0.24.0 high --save   # optional high priority
+pnpm cms:prepare:en -- --force v0.25.1       # Step 1: simplify EN
+pnpm cms:prepare:locales -- v0.25.1          # Step 2: translate (after EN approved)
+pnpm cms:preview -- v0.25.1                # Step 3: dry-run
+pnpm cms:sync -- v0.25.1                   # Step 3: push drafts (after user confirms)
+pnpm cms:publish -- v0.25.1                # publish + refresh published-versions.json
 ```
 
 Default: **comfyui + cloud** together. Single project only: `--project cloud`.
@@ -80,10 +78,10 @@ Copy `.env.local.example` → `.env.local` (never commit).
 ## Agent rules
 
 1. **Do not shorten** `changelog/index.mdx` for CMS — use the staging + simplify pipeline.
-2. **Do not use** `pnpm translate` to fill CMS staging — use `pnpm cms:prepare`.
+2. **Do not use** `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
 3. **Do not commit** `.github/scripts/cms/staging/` or `.github/i18n-logs/`.
 4. **Do commit** translated docs (`zh/`, `ja/`, `ko/`) and `published-versions.json` after Strapi publish.
-5. Get user approval on **staging EN** before running full `cms:prepare` (translations cost API calls).
+5. Get user approval on **staging EN** before `cms:prepare:locales`; get approval on **all staging** before `cms:sync`.
 6. Strapi publish is **manual by default** — use `bun run cms:publish` after review (not automatic on sync).
 
 ## Reference docs

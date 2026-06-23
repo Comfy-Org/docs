@@ -73,9 +73,19 @@ pnpm translate:check-truncation         # if long page / changelog
 ### Changelog (`changelog/index.mdx`)
 
 - Strategy: `update_blocks` (configured in `translation-config.json`)
-- Only **new/changed** `<Update label="vX">` blocks are translated
+- Only **new or changed** `<Update label="vX">` blocks are translated (by label + `translationBlockHashes`)
 - Dates in `description` are localized automatically (ja/zh/ko formats)
 - Block hashes stored in `translationBlockHashes` frontmatter
+
+**Omit from English changelog** when triaging ComfyUI commits — these are **[ComfyUI-WIKI](https://github.com/Comfy-Org/ComfyUI-WIKI)** sync PRs, not core product features:
+
+| Skip | Typical pattern |
+|------|-----------------|
+| Embedded docs | `update embedded docs to v…`, `comfyui-embedded-docs` bump |
+| Workflow templates | `update workflow templates to v…`, `comfyui-workflow-templates` bump |
+| Model blueprints | `Add new model blueprints`, template-library starter workflows |
+
+Do not add bullets for dependency-only version bumps. See also **`cms-changelog-sync`** for CMS popup rules.
 
 ```bash
 pnpm translate -- changelog/index.mdx

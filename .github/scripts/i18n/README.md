@@ -36,7 +36,7 @@ output limits when translated in one shot. Two strategies avoid truncation:
 | Strategy | Use case | Split boundary | Incremental sync |
 |----------|----------|----------------|------------------|
 | `heading_sections` | Long reference pages | Level-2 `##` headings | Per-section content hash in `translationBlockHashes` |
-| `update_blocks` | Changelog | `<Update label="…">` blocks | New version labels only |
+| `update_blocks` | Changelog | `<Update label="…">` blocks | Per-block content hash in `translationBlockHashes` (new labels + EN edits) |
 
 Configure explicit paths in `translation-config.json` → `chunked_files`, or rely
 on `auto_chunk` (default: body ≥ 10k chars and ≥ 4 `##` sections) to auto-enable
