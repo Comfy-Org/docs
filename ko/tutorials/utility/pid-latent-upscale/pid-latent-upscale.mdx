@@ -1,0 +1,105 @@
+---
+title: "PiD Latent Upscale ComfyUI 워크플로우 예제"
+description: "PiD(Pixel Diffusion Decoder)는 확산 잠재 변수를 4단계의 픽셀 공간 증류 과정을 통해 4배 초해상도 이미지로 변환합니다 — 별도의 VAE 디코딩 불필요"
+sidebarTitle: "PiD Latent Upscale"
+---
+
+import UpdateReminder from '/snippets/ko/tutorials/update-reminder.mdx'
+
+**PiD(Pixel Diffusion Decoder)**는 확산 **잠재 변수**를 4단계의 증류된 픽셀 공간 과정을 통해 **4배 초해상도 이미지**로 변환합니다 — 별도의 VAE 디코딩이 필요하지 않습니다. 이 워크플로우는 PiD를 사용하여 Z-Image-Turbo 잠재 변수를 **1024px → 4096px**로 업스케일하는 방법을 보여줍니다.
+
+**관련 링크**:
+- [Comfy-Org/PixelDiT on Hugging Face](https://huggingface.co/Comfy-Org/PixelDiT)
+- [nvidia/PixelDiT-1300M-1024px (공식 릴리스)](https://huggingface.co/nvidia/PixelDiT-1300M-1024px)
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_pid_latent_upscale_dit-1.webp" alt="PiD Latent Upscale 워크플로우" />
+
+<UpdateReminder />
+
+<CardGroup cols={1}>
+  <Card title="워크플로우 다운로드" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_pid_latent_upscale_dit.json">
+    JSON 다운로드 또는 템플릿 라이브러리에서 "PiD Latent Upscale" 검색
+  </Card>
+</CardGroup>
+
+## PiD 작동 방식
+
+PiD는 업스트림 모델의 **VAE / 잠재 공간**(인코더 측)에 의해 체크포인트를 매칭하며, 확산 모델 이름만으로 매칭하지 않습니다. 초기 생성에 사용된 모델의 잠재 공간에 해당하는 PiD 체크포인트를 선택해야 합니다.
+
+이 워크플로우는 **Z-Image-Turbo**(1024px 잠재 변수 → 4096px 출력)를 사용하며, Flux.1의 16채널 VAE를 공유합니다.
+
+<Card title="서브그래프 알아보기" icon="book-open" href="/ko/interface/features/subgraph">
+  이 워크플로우는 모듈식 처리를 위해 서브그래프 노드를 사용합니다. 서브그래프 문서를 확인하여 워크플로우를 사용자 정의하고 확장하는 방법을 알아보세요.
+</Card>
+
+### 사용 가능한 PiD 체크포인트
+
+모든 체크포인트는 [Comfy-Org/PixelDiT](https://huggingface.co/Comfy-Org/PixelDiT)에서 다운로드 → `models/diffusion_models/`에 배치합니다.
+
+| 체크포인트 | 입력 → 출력 | 호환 가능한 잠재 변수 (VAE 백본) |
+|---|---|---|
+| [`pid_flux1_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_512_to_2048_4step_bf16.safetensors) | 512 → 2048 | Flux1-dev 16채널 VAE (Flux.1, Z-Image) |
+| [`pid_flux1_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_1024_to_4096_4step_bf16.safetensors) | 1024 → 4096 | Flux1-dev 16채널 VAE (Flux.1, Z-Image) **(이 워크플로우)** |
+| [`pid_flux2_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux2_512_to_2048_4step_bf16.safetensors) | 512 → 2048 | Flux2-dev 128채널 VAE (Flux.2) |
+| [`pid_flux2_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux2_1024_to_4096_4step_bf16.safetensors) | 1024 → 4096 | Flux2-dev 128채널 VAE (Flux.2) |
+| [`pid_sd3_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_sd3_512_to_2048_4step_bf16.safetensors) | 512 → 2048 | SD3 medium 16채널 VAE |
+| [`pid_sd3_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_sd3_1024_to_4096_4step_bf16.safetensors) | 1024 → 4096 | SD3 medium 16채널 VAE |
+
+### 서브그래프 설정
+
+**Latent Upscale Decode (PiD)** 서브그래프에서 다음을 구성합니다:
+
+| 설정 | 값 | 설명 |
+|---|---|---|
+| `latent_format` | `flux` | Flux.1/Flux.2/Z-Image의 경우 `flux`, SD3의 경우 `sd3` (Flux.2는 128채널로 자동 감지) |
+| `degrade_sigma` | `0.0` | 입력 잠재 변수의 "완성" 정도. 완전히 노이즈 제거된 경우 `0.0`(기본값), 부분적으로 노이즈 제거된 경우 `0.1–0.8`, 순수 노이즈의 경우 `1.0` |
+
+### 실행 단계
+
+1. **잠재 변수 생성** — T2I 워크플로우(예: Z-Image-Turbo)를 사용하여 잠재 이미지 생성
+2. **PiD에 연결** — 잠재 변수를 **Latent Upscale Decode (PiD)** 서브그래프 노드에 입력
+3. **체크포인트 선택** — 업스트림 모델의 VAE 잠재 공간과 일치하는 PiD 체크포인트 선택
+4. **출력 크기 설정** — PiD 출력 크기를 입력 잠재 변수 해상도의 **4배**로 설정
+5. **실행** — 서브그래프가 단일 4단계 과정으로 디코딩 및 업스케일 수행
+
+## 모델 다운로드
+
+PiD는 PixelDiT 모델 제품군의 일부입니다. 이 워크플로우는 초기 생성을 위해 Z-Image-Turbo 모델도 필요합니다.
+
+<CardGroup cols={2}>
+  <Card title="PiD Flux.1 1024→4096" icon="download" href="https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_1024_to_4096_4step_bf16.safetensors">
+    pid_flux1_1024_to_4096_4step_bf16.safetensors — Flux.1 / Z-Image 잠재 공간용 PiD 체크포인트
+  </Card>
+  <Card title="Z-Image-Turbo 확산" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors">
+    z_image_turbo_bf16.safetensors — PiD 업스케일 전 초기 생성에 사용
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="텍스트 인코더 (Z-Image)" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors">
+    qwen_3_4b.safetensors — Z-Image-Turbo용 텍스트 인코더
+  </Card>
+  <Card title="VAE (Z-Image)" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors">
+    ae.safetensors — Z-Image-Turbo용 VAE
+  </Card>
+</CardGroup>
+
+> PiD는 내장된 **pixel_space** VAE를 사용합니다 — PiD 자체에는 별도의 VAE 파일이 필요하지 않습니다.
+
+### 모델 저장 위치
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 text_encoders/
+│   │      └── qwen_3_4b.safetensors
+│   ├── 📂 diffusion_models/
+│   │      ├── pid_flux1_1024_to_4096_4step_bf16.safetensors
+│   │      └── z_image_turbo_bf16.safetensors
+│   └── 📂 vae/
+│          └── ae.safetensors
+```
+
+### 샘플 출력
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/utility_pid_latent_upscale_dit.png" alt="PiD 샘플 출력" />
