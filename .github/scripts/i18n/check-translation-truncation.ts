@@ -24,6 +24,12 @@ import {
   TRUNCATION_ISSUES_JSON,
   TRUNCATION_ISSUES_TXT,
 } from "./i18n-config.mjs";
+import {
+  missingSectionLabels,
+  parseFrontmatterAndBody,
+  resolveChunkStrategy,
+  type ChunkedFileConfig,
+} from "./chunked-translate.ts";
 
 const ROOT = REPO_ROOT;
 const LOG_DIR = TRANSLATE_LOG_DIR;
@@ -39,6 +45,8 @@ interface LangConfig {
 
 interface TranslationConfig {
   skip_paths: string[];
+  chunked_files?: ChunkedFileConfig[];
+  auto_chunk?: { min_body_chars?: number; min_sections?: number };
   languages: LangConfig[];
 }
 
@@ -59,10 +67,11 @@ export interface TruncationReport {
 
 const config = loadI18nConfig() as TranslationConfig;
 const pathFilterOpts = { languages: config.languages, skip_paths: config.skip_paths };
+const CHUNKED_FILES = config.chunked_files ?? [];
+const AUTO_CHUNK = config.auto_chunk;
 
-function parseFrontmatterAndBody(content: string): { body: string } {
-  const match = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-  return { body: match ? match[1] : content };
+function parseBody(content: string): string {
+  return parseFrontmatterAndBody(content).body;
 }
 
 function countCodeFences(body: string): { open: boolean; openLang: string; openLine: number } {
@@ -137,8 +146,8 @@ export function detectTruncation(
   enRel: string
 ): TruncationIssue["reasons"] {
   const reasons: string[] = [];
-  const enBody = parseFrontmatterAndBody(enContent).body;
-  const targetBody = parseFrontmatterAndBody(targetContent).body;
+  const enBody = parseBody(enContent);
+  const targetBody = parseBody(targetContent);
 
   const fence = countCodeFences(targetBody);
   if (fence.open) {
@@ -171,6 +180,14 @@ export function detectTruncation(
     }
   }
 
+  const chunkStrategy = resolveChunkStrategy(enRel, enBody, CHUNKED_FILES, AUTO_CHUNK);
+  if (chunkStrategy === "heading_sections") {
+    const missingSections = missingSectionLabels(enBody, targetBody, chunkStrategy);
+    if (missingSections.length > 0) {
+      reasons.push("missing_sections");
+    }
+  }
+
   return reasons;
 }
 
@@ -180,8 +197,8 @@ function formatDetail(
   targetContent: string
 ): string {
   const parts: string[] = [];
-  const enBody = parseFrontmatterAndBody(enContent).body;
-  const targetBody = parseFrontmatterAndBody(targetContent).body;
+  const enBody = parseBody(enContent);
+  const targetBody = parseBody(targetContent);
   const fence = countCodeFences(targetBody);
 
   if (reasons.includes("unclosed_code_fence")) {
@@ -208,6 +225,12 @@ function formatDetail(
     );
     const missing = enLabels.filter((l) => !targetLabels.has(l));
     parts.push(`missing versions: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "..." : ""}`);
+  }
+  if (reasons.includes("missing_sections")) {
+    const missing = missingSectionLabels(enBody, targetBody, "heading_sections");
+    parts.push(
+      `missing sections: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "..." : ""}`
+    );
   }
   return parts.join("; ");
 }

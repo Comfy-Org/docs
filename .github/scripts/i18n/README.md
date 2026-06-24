@@ -28,6 +28,44 @@ Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan
 (`check-translation-truncation.ts`).
 
+### Long pages (chunked translation)
+
+Very long MDX files (e.g. `tutorials/partner-nodes/pricing.mdx`) exceed model
+output limits when translated in one shot. Two strategies avoid truncation:
+
+| Strategy | Use case | Split boundary | Incremental sync |
+|----------|----------|----------------|------------------|
+| `heading_sections` | Long reference pages | Level-2 `##` headings | Per-section content hash in `translationBlockHashes` |
+| `update_blocks` | Changelog | `<Update label="…">` blocks | Per-block content hash in `translationBlockHashes` (new labels + EN edits) |
+
+Configure explicit paths in `translation-config.json` → `chunked_files`, or rely
+on `auto_chunk` (default: body ≥ 10k chars and ≥ 4 `##` sections) to auto-enable
+`heading_sections`.
+
+Changelog `<Update description="…">` dates are **derived from English** and
+localized automatically (`ja`/`zh`: `YYYY年M月D日`, `ko`: `YYYY년 M월 D일`) after
+each block is translated or re-serialized — English month names should not
+remain in translated files.
+
+During a chunked run the script:
+
+1. Parses English into blocks (intro + each `##` section).
+2. Compares each block’s hash to `translationBlockHashes` in the target frontmatter.
+3. Translates only pending blocks (plus frontmatter when needed).
+4. Checkpoints after every block so a failed run can resume.
+
+`translationBlockHashes` keys are written in **descending semver order** for
+changelog (`v0.25.1` before `v0.25.0`), matching the canonical `<Update>`
+sequence. Long pages use **English document order** for section hashes.
+
+Example:
+
+```bash
+pnpm translate -- tutorials/partner-nodes/pricing.mdx --lang ko
+pnpm translate:check-truncation -- --lang ko
+pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
+```
+
 ## Quality review (LLM-as-a-judge)
 
 `review-i18n.ts` scores existing translations with an **independent** (and
@@ -139,6 +177,7 @@ env → `frontend_locales_path` in `translation-config.json` →
 | File | Role |
 |------|------|
 | `translate-i18n.ts` | translation entry point |
+| `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
 | `sync-glossary.mjs` | rebuild the glossary frontend mirror |
 | `glossary.mjs` | load glossary layers, select + inject terms |
 | `i18n-config.mjs` | shared path rules from `translation-config.json` |
