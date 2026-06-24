@@ -429,6 +429,7 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "Do NOT report expected localization as issues: /{lang}/ internal links, translated snippet import paths, or other path prefix changes applied for the target locale.",
     "If no issues, output only the translated MDX with no separator.",
     "NEVER use HTML comments in the MDX output.",
+    "Use colons (:) or periods (.) instead of em-dashes (\u2014). Avoid em-dashes entirely.",
   ]
     .filter(Boolean)
     .join("\n");
