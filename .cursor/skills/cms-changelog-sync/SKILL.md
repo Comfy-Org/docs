@@ -115,13 +115,13 @@ Also omit standalone **frontend package semver bumps** unless tied to a user-vis
 Example staging shape (placeholders only):
 
 ```markdown
-## New Open-Source Model Support
+**New Open-Source Model Support**
 * [**Model Name**](source_url): Short description with 1–2 traits from the release data
 
-## New Node Updates
+**New Node Updates**
 * [**Node Name**](source_url): What the node does and why it matters
 
-## Partner Node Updates
+**Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
 ```
 
@@ -162,7 +162,7 @@ pnpm cms:set-attention -- cloud v0.24.0 high --save
 
 Flags (after `--`):
 
-- `--force` — re-simplify/re-translate even if staging has the version
+- `--force` — re-simplify/re-translate even if staging has the version; on **sync**, update already-**published** CMS entries (default skips published)
 - `--preview` / `--dry-run` — no API writes
 - `--project cloud` — single project only (default = both)
 - `v0.25.1` — explicit version(s)

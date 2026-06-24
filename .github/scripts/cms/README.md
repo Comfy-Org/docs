@@ -79,7 +79,7 @@ Configured in `cms-config.json` → `simplify`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **3** | `## New Open-Source Model Support` → `## New Node Updates` → `## Partner Node Updates` |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
 
 - Section order is **fixed**: open-source models first, node updates second, partner nodes last
 - Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)

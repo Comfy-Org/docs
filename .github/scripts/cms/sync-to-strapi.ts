@@ -325,22 +325,6 @@ async function executeTasks(
         }
         ok++;
         console.log(`Created  ${task.project}/v${task.version} [${task.locale}] (draft)`);
-      } else {
-        const draft = await client.findOne(
-          config.content_type_plural,
-          {
-            [config.project_field]: task.project,
-            [config.version_field]: task.version,
-          },
-          { locale: task.locale, status: "draft" }
-        );
-        if (!draft?.documentId) throw new Error("draft not found for update");
-        await client.update(config.content_type_plural, draft.documentId, payload, {
-          locale: task.locale,
-          status: "draft",
-        });
-        ok++;
-        console.log(`Updated  ${task.project}/v${task.version} [${task.locale}] (draft)`);
       } else if (task.action === "update-published") {
         const published = await client.findOne(
           config.content_type_plural,
@@ -357,6 +341,22 @@ async function executeTasks(
         });
         ok++;
         console.log(`Updated  ${task.project}/v${task.version} [${task.locale}] (published)`);
+      } else {
+        const draft = await client.findOne(
+          config.content_type_plural,
+          {
+            [config.project_field]: task.project,
+            [config.version_field]: task.version,
+          },
+          { locale: task.locale, status: "draft" }
+        );
+        if (!draft?.documentId) throw new Error("draft not found for update");
+        await client.update(config.content_type_plural, draft.documentId, payload, {
+          locale: task.locale,
+          status: "draft",
+        });
+        ok++;
+        console.log(`Updated  ${task.project}/v${task.version} [${task.locale}] (draft)`);
       }
     } catch (err) {
       failed++;
