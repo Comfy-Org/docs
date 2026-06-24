@@ -4,27 +4,27 @@ Push **draft** release notes to Strapi CMS. Content is **simplified for end user
 
 ## Architecture
 
+Three separate steps — review between each; sync only after confirmation:
+
 ```
 changelog/index.mdx          ← full docs (unchanged)
         │
-        ▼
-  pnpm cms:prepare
-    1. LLM simplify EN  →  staging/en/changelog/index.mdx
-    2. Translate EN     →  staging/{zh,ja,ko,fr,ru,es}/…
+        ▼  Step 1: pnpm cms:prepare:en
+staging/en/                  ← simplified popup EN (review)
         │
-        ▼
-  pnpm cms:sync        →  Strapi drafts (reads staging only)
+        ▼  Step 2: pnpm cms:prepare:locales
+staging/{zh,ja,ko,fr,ru,es}/ ← translated from staging EN (review)
         │
-        ▼
-  Editor review → Publish → update published-versions.json
+        ▼  Step 3: pnpm cms:sync
+Strapi drafts → publish → published-versions.json
 ```
 
-| Command | Role |
-|---------|------|
-| `pnpm cms:prepare` | Simplify + translate into **staging/** (uses `TRANSLATE_API_KEY`) |
-| `pnpm cms:preview` | Dry-run CMS push |
-| `pnpm cms:sync` | Push staging → Strapi (uses `CMS_API_TOKEN`) |
-| `pnpm cms:publish` | Publish reviewed Strapi drafts → live |
+| Command | Step | Role |
+|---------|------|------|
+| `pnpm cms:prepare:en` | 1 | LLM simplify docs EN → `staging/en/` |
+| `pnpm cms:prepare:locales` | 2 | Translate `staging/en/` → other locales |
+| `pnpm cms:preview` / `cms:sync` | 3 | Push staging → Strapi drafts |
+| `pnpm cms:publish` | — | Publish reviewed Strapi drafts → live |
 
 **Docs site** (`zh/changelog/`, etc.) stays independent. **CMS** uses `.github/scripts/cms/staging/` only.
 
@@ -59,12 +59,11 @@ Persists to `attention-overrides.json` (used on sync). Or edit that file manuall
 ## Commands
 
 ```bash
-pnpm cms:prepare:en -- --force v0.25.0   # simplify EN (comfyui + cloud copy)
-pnpm cms:prepare -- v0.25.1                # translate all locales (both projects)
-pnpm cms:preview -- v0.25.1                # dry-run sync (both projects)
-pnpm cms:sync -- v0.25.1                   # push drafts (both projects)
-pnpm cms:publish -- v0.25.1                # publish + refresh published-versions.json
-pnpm cms:set-attention -- cloud v0.24.0 high --save
+pnpm cms:prepare:en -- --force v0.25.0      # Step 1: simplify EN
+pnpm cms:prepare:locales -- v0.25.1         # Step 2: translate (after EN approved)
+pnpm cms:preview -- v0.25.1                 # Step 3: dry-run sync
+pnpm cms:sync -- v0.25.1                    # Step 3: push drafts (after staging approved)
+pnpm cms:publish -- v0.25.1                 # publish + refresh published-versions.json
 ```
 
 Default: **comfyui + cloud** on prepare / sync / publish. Single project: `--project cloud`.
@@ -79,13 +78,16 @@ Configured in `cms-config.json` → `simplify`:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `max_bullets_total` | **5** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **2** | At most `**New Open-Source Model Support**` + `**Partner Node Updates**` |
+| `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
 
-- Each bullet: **[**Name**](pr_url): 5–12 word function** — rewrite, do not copy docs wording
+- Section order is **fixed**: open-source models first, node updates second, partner nodes last
+- Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)
+- Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
 - **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping
-- English only (skip translation): `pnpm cms:prepare:en -- --force v0.25.0`
+- English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
+- Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
 
 ## Configuration
 

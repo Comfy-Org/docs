@@ -17,8 +17,8 @@ import {
 } from "./cms-simplify-prompt.ts";
 import { callTranslateApi } from "./cms-translate-client.ts";
 
-const DEFAULT_MAX_BULLETS_TOTAL = 5;
-const DEFAULT_MAX_SECTIONS = 2;
+const DEFAULT_MAX_BULLETS_TOTAL = 10;
+const DEFAULT_MAX_SECTIONS = 3;
 
 function simplifyLimits(config: CmsConfig): SimplifyLimits {
   return {

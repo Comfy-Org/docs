@@ -31,7 +31,7 @@ interface SyncTask {
   locale: string;
   date: string;
   body: string;
-  action: "create" | "update" | "skip";
+  action: "create" | "update" | "update-published" | "skip";
   reason?: string;
 }
 
@@ -44,14 +44,16 @@ function requireEnv(name: string): string {
   return val;
 }
 
-function parseArgs(argv: string[]): { dryRun: boolean; versions: string[] } {
+function parseArgs(argv: string[]): { dryRun: boolean; force: boolean; versions: string[] } {
   let dryRun = false;
+  let force = false;
   const versions: string[] = [];
   for (const arg of argv) {
     if (arg === "--dry-run" || arg === "--preview") dryRun = true;
+    else if (arg === "--force") force = true;
     else if (!arg.startsWith("-")) versions.push(arg.replace(/^v/i, ""));
   }
-  return { dryRun, versions };
+  return { dryRun, force, versions };
 }
 
 async function loadAllLocaleEntries(
@@ -189,7 +191,8 @@ async function planSync(
   config: CmsConfig,
   project: string,
   targetVersions: ReleaseNoteEntry[],
-  byLocale: Map<string, Map<string, ReleaseNoteEntry>>
+  byLocale: Map<string, Map<string, ReleaseNoteEntry>>,
+  force = false
 ): Promise<SyncTask[]> {
   const tasks: SyncTask[] = [];
 
@@ -219,8 +222,8 @@ async function planSync(
           locale: locale.code,
           date: entry.date,
           body: entry.body,
-          action: "skip",
-          reason: "published (CMS)",
+          action: force ? "update-published" : "skip",
+          reason: force ? undefined : "published (CMS)",
         });
         continue;
       }
@@ -322,6 +325,22 @@ async function executeTasks(
         }
         ok++;
         console.log(`Created  ${task.project}/v${task.version} [${task.locale}] (draft)`);
+      } else if (task.action === "update-published") {
+        const published = await client.findOne(
+          config.content_type_plural,
+          {
+            [config.project_field]: task.project,
+            [config.version_field]: task.version,
+          },
+          { locale: task.locale, status: "published" }
+        );
+        if (!published?.documentId) throw new Error("published entry not found for update");
+        await client.update(config.content_type_plural, published.documentId, payload, {
+          locale: task.locale,
+          status: "published",
+        });
+        ok++;
+        console.log(`Updated  ${task.project}/v${task.version} [${task.locale}] (published)`);
       } else {
         const draft = await client.findOne(
           config.content_type_plural,
@@ -357,6 +376,7 @@ async function syncProject(
   project: string,
   explicitVersions: string[],
   dryRun: boolean,
+  force: boolean,
   client: StrapiClient,
   registry: PublishedVersionsFile,
   attentionOverrides: Awaited<ReturnType<typeof loadAttentionOverrides>>
@@ -415,7 +435,7 @@ async function syncProject(
       `locales=[${config.locales.filter((l) => l.changelog).map((l) => l.code).join(", ")}]\n`
   );
 
-  const tasks = await planSync(client, config, project, entriesToSync, byLocale);
+  const tasks = await planSync(client, config, project, entriesToSync, byLocale, force);
   printTasks(tasks, dryRun);
 
   if (dryRun) return { ok: 0, failed: 0 };
@@ -431,7 +451,7 @@ async function syncProject(
 async function main(): Promise<void> {
   await loadEnvLocal();
   const { project: cliProject, rest } = stripProjectArg(process.argv.slice(2));
-  const { dryRun, versions: explicitVersions } = parseArgs(rest);
+  const { dryRun, force, versions: explicitVersions } = parseArgs(rest);
   const baseConfig = await loadCmsConfig();
   const projects = resolveProjects(baseConfig, cliProject);
   const registry = await loadPublishedVersions();
@@ -459,6 +479,7 @@ async function main(): Promise<void> {
       projectId,
       explicitVersions,
       dryRun,
+      force,
       client,
       registry,
       attentionOverrides

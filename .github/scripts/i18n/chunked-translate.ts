@@ -618,18 +618,30 @@ export function getSectionSyncStatus(
   const hasOrderDrift = blockHashLabelOrderDrifts(enLabels, storedLabels);
 
   if (strategy === "update_blocks") {
+    const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
     const existingLabels = new Set(existingDoc.blocks.map((b) => b.label));
     const pendingBlocks = enDoc.blocks
-      .filter((b) => !existingLabels.has(b.label))
+      .filter((b) => {
+        if (!existingLabels.has(b.label)) return true;
+        return storedHashes[b.label] !== enHashes[b.label];
+      })
       .map((b) => b.label);
+    const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
     const hasDateDrift = langCode
       ? hasChangelogDateDrift(enContent, existingContent, langCode)
       : false;
     return {
-      upToDate: pendingBlocks.length === 0 && !hasOrderDrift && !hasDateDrift,
+      upToDate:
+        pendingBlocks.length === 0 &&
+        !hasOrderDrift &&
+        !hasDateDrift &&
+        !hasStructureDrift,
       pendingBlocks,
-      needsFrontmatter: existingDoc.blocks.length === 0,
-      needsReserialize: pendingBlocks.length === 0 && (hasOrderDrift || hasDateDrift),
+      needsFrontmatter:
+        existingDoc.blocks.length === 0 || Object.keys(storedHashes).length === 0,
+      needsReserialize:
+        pendingBlocks.length === 0 &&
+        (hasOrderDrift || hasDateDrift || hasStructureDrift),
     };
   }
 
