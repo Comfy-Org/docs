@@ -35,7 +35,7 @@ Always load the matching skill before changing that pipeline.
 | Command | `pnpm translate` | `pnpm cms:prepare:en` / `cms:prepare:locales` / `cms:sync` |
 | Output | `{lang}/**/*.mdx` | `.github/scripts/cms/staging/` |
 | English input | Full docs MDX | LLM-simplified popup copy |
-| Commit? | **Yes** | **No** (staging gitignored) |
+| Commit? | **Yes** | **Yes** (staging is reviewed and committed) |
 | Locales | ja, zh, ko | en, zh, ja, ko, fr, ru, es |
 
 ## Quick commands
@@ -59,7 +59,8 @@ pnpm cms:sync -- v0.25.1                   # Step 3: push drafts (after user con
 pnpm cms:publish -- v0.25.1                # publish + refresh published-versions.json
 ```
 
-Default: **comfyui + cloud** together. Single project only: `--project cloud`.
+Prepare default: **comfyui + cloud** together so staging stays mirrored.
+Sync/publish default for agents: **comfyui only** (`--project comfyui`). Run **cloud** sync or publish only after the user explicitly confirms cloud, using `--project cloud`.
 
 Local default for prepare/sync: **all unpublished EN versions** per `published-versions.json`. Use `CMS_SYNC_ALL=1` for full backfill.
 
@@ -79,10 +80,11 @@ Copy `.env.local.example` → `.env.local` (never commit).
 
 1. **Do not shorten** `changelog/index.mdx` for CMS — use the staging + simplify pipeline.
 2. **Do not use** `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
-3. **Do not commit** `.github/scripts/cms/staging/` or `.github/i18n-logs/`.
-4. **Do commit** translated docs (`zh/`, `ja/`, `ko/`) and `published-versions.json` after Strapi publish.
+3. **Do not commit** `.github/i18n-logs/`.
+4. **Do commit** translated docs (`zh/`, `ja/`, `ko/`), `.github/scripts/cms/staging/`, and `published-versions.json` after Strapi publish.
 5. Get user approval on **staging EN** before `cms:prepare:locales`; get approval on **all staging** before `cms:sync`.
-6. Strapi publish is **manual by default** — use `bun run cms:publish` after review (not automatic on sync).
+6. Sync and publish **comfyui only** by default (`--project comfyui`). Cloud sync/publish requires separate explicit user confirmation (`--project cloud`).
+7. Strapi publish is **manual by default** — use `bun run cms:publish` after review (not automatic on sync).
 
 ## Reference docs
 
