@@ -1,6 +1,6 @@
 ---
-title: "ComfyUI preprocessor workflows"
-description: "Learn how to use depth estimation, lineart conversion, pose detection, and normals extraction preprocessors in ComfyUI"
+title: "ComfyUI image preprocessors"
+description: "A comprehensive guide to image preprocessors in ComfyUI, including Canny edge detection, depth estimation, OpenPose pose detection, lineart extraction, and normal map extraction"
 sidebarTitle: "Preprocessors"
 ---
 
@@ -10,7 +10,7 @@ sidebarTitle: "Preprocessors"
 These workflows contain custom nodes. You need to install them using [ComfyUI Manager](/manager/overview) before running the workflows.
 </Note>
 
-Preprocessors are foundational tools that extract structural information from images. They convert images into conditioning signals like depth maps, lineart, pose skeletons, and surface normals. These outputs drive better control and consistency in ControlNet, image-to-image, and video workflows.
+Preprocessors are foundational tools that extract structural information from images. They convert images into conditioning signals like edge maps, depth maps, pose skeletons, and surface normals. These outputs drive better control and consistency in ControlNet, image-to-image, and video workflows.
 
 Using preprocessors as separate workflows enables:
 - Faster iteration without full graph reruns
@@ -18,16 +18,102 @@ Using preprocessors as separate workflows enables:
 - Easier debugging and tuning
 - More predictable image and video results
 
+### How preprocessors work with ControlNet
+
+Preprocessors do not generate images themselves. Their role is to convert source images into condition maps that ControlNet models can understand. The typical workflow is:
+
+1. **Input image** → **Preprocessor** → **Condition map** (e.g., edge map, depth map)
+2. **Condition map** → **ControlNet** → **Guides diffusion model generation**
+
+Different ControlNet model types require matching preprocessor outputs. For example, a Canny ControlNet requires a Canny edge map, and a Depth ControlNet requires a depth map.
+
+### Preprocessor nodes in ComfyUI
+
+ComfyUI includes a built-in **Canny** edge detection node. To use other preprocessors (depth estimation, pose detection, etc.), install these custom node packages:
+
+- [ComfyUI ControlNet aux](https://github.com/Fannovel16/comfyui_controlnet_aux) — Contains many preprocessor nodes (depth, pose, lineart, normals, etc.)
+- [ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet) — Provides advanced ControlNet application nodes
+
+---
+
+## Canny edge detection
+
+Canny is one of the most classic edge detection algorithms and the only preprocessor node built into ComfyUI core. It detects edges by finding areas of rapid brightness change in an image.
+
+### How it works
+
+Canny edge detection follows these steps:
+1. **Gaussian blur** — Reduces image noise that could interfere with edge detection
+2. **Gradient calculation** — Uses Sobel operators to compute brightness gradient intensity and direction per pixel
+3. **Non-maximum suppression** — Retains only local maxima along gradient direction, thinning edges
+4. **Double threshold filtering** — Uses high and low thresholds to identify strong and weak edges
+5. **Edge linking** — Keeps weak edges connected to strong edges, discards isolated weak edges
+
+### Key parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `low_threshold` | Pixels below this value are not considered edges. Typical value: 100 |
+| `high_threshold` | Pixels above this value are considered strong edges. Typical value: 200 |
+
+- **Lower thresholds** → Detect more detailed edges, but may introduce noise
+- **Higher thresholds** → Keep only the most prominent edges, cleaner output
+
+### Best use cases
+
+- Precise contour control for image generation (architecture, products, mechanical parts)
+- Lineart-style image redrawing
+- Use with [Canny ControlNet](/tutorials/controlnet/controlnet)
+- Quick structural extraction as a generation reference
+
+### Tips
+
+- For high-contrast images, use higher thresholds (e.g., 150/300)
+- For low-contrast or detail-rich images, use lower thresholds (e.g., 50/150)
+- Canny is noise-sensitive — consider denoising your input image first
+
+---
+
 ## Depth estimation
 
-Depth estimation converts a flat image into a depth map representing relative distance within a scene. This structural signal is foundational for controlled generation, spatially aware edits, and relighting workflows.
+Depth estimation converts a flat image into a depth map representing relative distance within a scene using grayscale values. This structural signal is foundational for spatially aware generation, relighting, and 3D-aware editing.
 
-This workflow emphasizes:
-- Clean, stable depth extraction
-- Consistent normalization for downstream use
-- Easy integration with ControlNet and image-edit pipelines
+### Common depth estimation models
 
-Depth outputs can be reused across multiple passes, making it easier to iterate without re-running expensive upstream steps.
+#### Depth Anything V2
+
+The currently recommended depth estimation model, developed by TikTok and HKU. Significantly improved accuracy over its predecessor.
+
+- **Strengths**: High accuracy, strong generalization, supports multiple resolutions
+- **Model sizes**: Small/Base/Large/Giant variants available for speed vs. accuracy tradeoffs
+- **Best for**: General-purpose depth estimation across most scenarios
+
+#### MiDaS
+
+A classic depth estimation model by Intel with long history and broad community support.
+
+- **Strengths**: Fast inference, low resource usage
+- **Best for**: Scenarios requiring speed over precision
+
+#### ZoeDepth
+
+Combines relative and absolute depth estimation, outputting depth information with real-world scale.
+
+- **Strengths**: Supports metric depth estimation, not just relative depth
+- **Best for**: Applications needing real-world depth (e.g., 3D reconstruction)
+
+### Depth map output
+
+- **White areas**: Objects closer to the camera
+- **Black areas**: Objects farther from the camera
+- Depth maps are single-channel grayscale images, typically normalized to 0-255 range
+
+### Best use cases
+
+- Control spatial hierarchy in images (foreground/midground/background)
+- Use with [Depth ControlNet](/tutorials/controlnet/depth-controlnet) for 3D spatial layout control
+- Architectural visualization, scene composition
+- Maintaining frame-to-frame depth consistency in video workflows
 
 <Card title="Depth Estimation Workflow" icon="cloud" href="https://cloud.comfy.org/?template=utility-depthAnything-v2-relative-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   Run on Comfy Cloud
@@ -37,35 +123,54 @@ Depth outputs can be reused across multiple passes, making it easier to iterate 
   Download JSON
 </Card>
 
-## Lineart conversion
+---
 
-Lineart preprocessors distill an image down to its essential edges and contours, removing texture and color while preserving structure.
+## OpenPose pose detection
 
-This workflow is designed to:
-- Produce clean, high-contrast lineart
-- Minimize broken or noisy edges
-- Provide reliable structural guidance for stylization and redraw workflows
+OpenPose is a real-time multi-person pose estimation system developed at Carnegie Mellon University. It detects human body keypoints (head, shoulders, elbows, knees, etc.) from images, outputting skeletal structure maps for precise control over human poses in generated images.
 
-Lineart pairs especially well with depth and pose, offering strong structural constraints without overconstraining style.
+### How it works
 
-<Card title="Lineart Conversion Workflow" icon="cloud" href="https://cloud.comfy.org/?template=utility-lineart-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
-  Run on Comfy Cloud
-</Card>
+OpenPose uses a deep learning model to simultaneously predict:
+1. **Confidence maps** — Probability of each body part at each image location
+2. **Part affinity fields** — Describes connections between different keypoints
 
-<Card title="Download Workflow" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility-lineart-video.json">
-  Download JSON
-</Card>
+Using both, OpenPose correctly assembles keypoints into complete skeletons even in multi-person scenes.
 
-## Pose detection
+### Detection types
 
-Pose detection extracts body keypoints and skeletal structure from images, enabling precise control over human posture and movement.
+| Type | Description | Keypoints |
+|------|-------------|-----------|
+| **Body** | Detects major body joints | 18 |
+| **Hand** | Detects fine finger and wrist joints | 21 per hand |
+| **Face** | Detects facial features (eyes, nose, mouth, contour) | 70 |
 
-This workflow focuses on:
-- Clear, readable pose outputs
-- Stable keypoint detection suitable for reuse across frames
-- Compatibility with pose-based ControlNet and animation pipelines
+In ComfyUI's ControlNet aux, you can choose different detection modes:
+- **OpenPose** — Body keypoints only
+- **OpenPose + Face** — Body + face
+- **OpenPose + Hand** — Body + hands
+- **OpenPose Full** — Body + face + hands (most complete but slower)
 
-By isolating pose extraction into a dedicated workflow, pose data becomes easier to inspect, refine, and reuse.
+### Output color coding
+
+OpenPose output uses color coding for different skeletal connections:
+- Different colored line segments represent different body part connections
+- Circles represent keypoint positions
+- Colorful skeleton drawn on a black background
+
+### Best use cases
+
+- Control character poses and actions (standing, sitting, dancing)
+- Use with [Pose ControlNet](/tutorials/controlnet/pose-controlnet-2-pass)
+- Independently control each person's pose in multi-person scenes
+- Maintain consistent character motion in animation and video workflows
+
+### Tips
+
+- Clearer subjects in the input image produce more accurate detection
+- Heavily occluded body parts may fail detection — manually edit the skeleton map to correct
+- Enable Hand detection for scenes requiring fine hand control
+- Processing speed depends on detection mode; Full mode is slowest but most complete
 
 <Card title="Pose Detection Workflow" icon="cloud" href="https://cloud.comfy.org/?template=utility-openpose-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   Run on Comfy Cloud
@@ -75,20 +180,88 @@ By isolating pose extraction into a dedicated workflow, pose data becomes easier
   Download JSON
 </Card>
 
-## Normals extraction
+---
 
-Normals estimation converts a flat image into a surface normal map—a per-pixel direction field that describes how each part of a surface is oriented (typically encoded as RGB). This signal is useful for relighting, material-aware stylization, and highly structured edits.
+## Lineart extraction
 
-This workflow emphasizes:
-- Clean, stable normal extraction with minimal speckling
-- Consistent orientation and normalization for reliable downstream use
-- ControlNet-ready outputs for relighting, refinement, and structure-preserving edits
-- Reuse across passes so you can iterate without re-running earlier steps
+Lineart preprocessors distill an image down to its essential edges and contours, removing texture and color while preserving structure. Unlike Canny, lineart preprocessors use deep learning models that understand image semantics, producing results closer to hand-drawn lineart.
 
-Normal outputs can be used to:
-- Drive relight/shading changes while preserving geometry
-- Add a stronger 3D-like structure to stylization and redraw pipelines
-- Improve consistency across frames when paired with pose/depth for animation work
+### Common lineart models
+
+#### Lineart (standard)
+
+Uses a deep learning model to extract lineart representation with clean, continuous lines.
+
+- **Strengths**: Good line continuity, close to hand-drawn quality
+- **Best for**: Character design, illustration style transfer, manga/anime production
+
+#### Lineart Anime
+
+Optimized specifically for anime/manga-style lineart extraction.
+
+- **Strengths**: Better handling of anime character features like eyes and hair
+- **Best for**: Anime-style image processing, character redrawing
+
+#### Lineart Coarse
+
+Extracts thicker, more simplified lines for scenarios needing rough structure without fine detail.
+
+- **Strengths**: Bolder lines, simpler structure
+- **Best for**: Sketch-level structural control, stylized generation
+
+### Lineart vs Canny comparison
+
+| Feature | Lineart | Canny |
+|---------|---------|-------|
+| Method | Deep learning model | Traditional algorithm |
+| Semantic understanding | Yes, understands object structure | No, only detects brightness changes |
+| Line continuity | Good, similar to hand-drawn | Average, may have breaks |
+| Noise sensitivity | Low | High |
+| Speed | Slower (requires GPU) | Fast |
+| Parameter tuning | Minimal | Requires threshold adjustment |
+
+### Best use cases
+
+- Stylization and redraw workflows
+- Manga/anime character design
+- Combined with depth and pose for multi-layered structural constraints
+- Preserve structure while changing art style
+
+<Card title="Lineart Conversion Workflow" icon="cloud" href="https://cloud.comfy.org/?template=utility-lineart-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
+  Run on Comfy Cloud
+</Card>
+
+<Card title="Download Workflow" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility-lineart-video.json">
+  Download JSON
+</Card>
+
+---
+
+## Normal map extraction
+
+Normal estimation converts a flat image into a surface normal map — a per-pixel direction field that describes how each part of a surface is oriented (typically encoded as RGB). This signal is useful for relighting, material-aware stylization, and highly structured edits.
+
+### How it works
+
+Normal maps use RGB channels to encode surface direction along three axes:
+- **R (red) channel** — Surface tilt along the X axis (left/right)
+- **G (green) channel** — Surface tilt along the Y axis (up/down)
+- **B (blue) channel** — Surface tilt along the Z axis (front/back)
+
+Flat surfaces appear as uniform blue-purple in the normal map (since the normal points toward positive Z), while surfaces with relief show rich color variation.
+
+### Best use cases
+
+- Drive relighting/shading changes while preserving geometry
+- Add stronger 3D-like structure to stylization and redraw pipelines
+- Improve frame-to-frame consistency when paired with pose/depth for animation
+- Fine control over materials and textures
+
+### Tips
+
+- Normal maps are highly sensitive to lighting variation — more uniform input lighting produces more accurate results
+- Combine with depth maps for complementary 3D structural information
+- ControlNet-ready outputs can be used directly for relighting, refinement, and structure-preserving edits
 
 <Card title="Normals Extraction Workflow" icon="cloud" href="https://cloud.comfy.org/?template=utility-normal_crafter-video&utm_source=docs&utm_medium=inhouse_social&utm_campaign=inhouse_feature_launches&utm_content=post&utm_niche=workflow_engineering&utm_creator=purz">
   Run on Comfy Cloud
@@ -98,4 +271,59 @@ Normal outputs can be used to:
   Download JSON
 </Card>
 
+---
 
+## Other common preprocessors
+
+### Scribble
+
+Converts images into simple scribble-style lines, or allows using hand-drawn sketches directly as control conditions.
+
+- **Best for**: Quick sketch-guided generation, concept design phase
+- **Key feature**: Lowest input requirements — a hand-drawn sketch works
+
+### SoftEdge / HED
+
+Uses HED (Holistically-Nested Edge Detection) to extract soft edges. Compared to Canny, HED edges are softer and more natural.
+
+- **Best for**: Scenes needing soft edge control, such as natural landscapes and portraits
+- **Key feature**: Natural edge transitions without hard edges
+
+### Segmentation
+
+Segments an image into different semantic regions (sky, buildings, roads, people, etc.), each represented by a different color.
+
+- **Best for**: Scenes requiring region-level content control, such as cityscapes and interior design
+- **Key feature**: Highest-level semantic control, but does not preserve fine structural detail
+
+### MLSD (line segment detection)
+
+Detects straight line segments in images, particularly suited for architectural and interior scenes.
+
+- **Best for**: Architectural design, interior design, scenes requiring straight-line structure
+- **Key feature**: Detects only straight lines, ignores curves and organic shapes
+
+---
+
+## Preprocessor selection guide
+
+| Preprocessor | Control type | Best scenarios | Built-in / Custom |
+|-------------|-------------|----------------|-------------------|
+| **Canny** | Edge contours | Products, architecture, mechanical | Built-in |
+| **Depth** | Spatial depth | Scene composition, 3D layout | Custom node |
+| **OpenPose** | Human pose | Character action control | Custom node |
+| **Lineart** | Line structure | Character design, illustration | Custom node |
+| **Normal** | Surface normals | Relighting, materials | Custom node |
+| **Scribble** | Sketches | Concept design | Custom node |
+| **SoftEdge** | Soft edges | Natural scenes | Custom node |
+| **Segmentation** | Semantic regions | Regional content control | Custom node |
+| **MLSD** | Line segments | Architecture, interiors | Custom node |
+
+### Combining preprocessors
+
+Multiple preprocessors can be combined through [mixing ControlNets](/tutorials/controlnet/mixing-controlnets) for multi-layered fine control:
+
+- **Depth + Lineart**: Maintain spatial relationships while reinforcing contours — suited for architecture and product design
+- **Depth + OpenPose**: Control character pose while maintaining correct spatial relationships — suited for character scenes
+- **OpenPose + Lineart**: Precise control over character pose and clothing detail
+- **Canny + Depth**: Edge precision combined with spatial awareness — suited for strict structural control
