@@ -86,6 +86,10 @@ Copy `.env.local.example` → `.env.local` (never commit).
 6. Sync and publish **comfyui only** by default (`--project comfyui`). Cloud sync/publish requires separate explicit user confirmation (`--project cloud`).
 7. Strapi publish is **manual by default** — use `bun run cms:publish` after review (not automatic on sync).
 
+## Prose style
+
+When editing English MDX, avoid em dashes (—). Use periods, commas, or colons instead. Stacked em-dash clauses tend to read as AI-generated; keep sentences direct.
+
 ## Reference docs
 
 - i18n tooling: [.github/scripts/i18n/README.md](.github/scripts/i18n/README.md)
