@@ -99,3 +99,425 @@ class Example(io.ComfyNode):
 ### 단계 2: INPUT_TYPES를 define_schema로 변환
 
 노드 ID, 표시 이름, 카테고리 등 코드 내 다양한 위치에서 할당되었던 노드 속성들은 이제 ```Schema``` 클래스를 통해 함께 관리됩니다.
+
+`define_schema(cls)` 함수는 V1에서 INPUT_TYPES(s)가 작동한 방식과 매우 유사하게 ```Schema``` 객체를 반환해야 합니다.
+
+지원되는 핵심 입력/출력 유형은 ```comfy_api/{version}```의 ```_io.py```에 저장 및 문서화되어 있으며, 기본적으로 ```io```로 네임스페이스가 지정됩니다. 이제 입력/출력이 사전이나 문자열 대신 클래스로 정의되므로, 사용자 정의 유형은 직접 클래스를 정의하거나 ```io```의 ```Custom``` 헬퍼 함수를 사용하여 지원됩니다.
+
+사용자 정의 유형에 대한 자세한 내용은 아래 별도의 섹션에서 다룹니다.
+
+유형 클래스는 다음과 같은 속성을 가집니다:
+- 입력에 대한 ```class Input``` (예: ```Model.Input(...)```)
+- 출력에 대한 ```class Output``` (예: ```Model.Output(...)```). 모든 유형이 출력을 지원하지는 않습니다.
+- 유형의 타입 힌트를 얻기 위한 ```Type``` (예: ```Model.Type```). 일부 타입 힌트는 단순히 ```any```이며, 이는 향후 업데이트될 수 있습니다. 이러한 타입 힌트는 강제되지 않으며 유용한 문서 역할을 합니다.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # V1 처리: 임의의 유형
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # V3 처리: 임의의 유형
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### 단계 3: Execute 메서드 업데이트
+
+V3의 모든 실행 함수는 ```execute```라는 이름을 가지며 클래스 메서드입니다.
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # Process
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # Process
+    image = 1.0 - image
+
+    # 선택적 UI 미리보기와 함께 반환
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### 단계 4: 노드 속성 변환
+
+다음은 속성 이름의 몇 가지 예시입니다. 자세한 내용은 ```comfy_api.latest._io```의 소스 코드를 참조하세요.
+
+| V1 속성 | V3 스키마 필드 | 비고 |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | 스키마의 `outputs` | 출력 객체 목록 |
+| `RETURN_NAMES` | 출력의 `display_name` | 출력별 표시 이름 |
+| `FUNCTION` | 항상 `execute` | 메서드 이름이 표준화됨 |
+| `CATEGORY` | 스키마의 `category` | 문자열 값 |
+| `OUTPUT_NODE` | 스키마의 `is_output_node` | 불리언 플래그 |
+| `DEPRECATED` | 스키마의 `is_deprecated` | 불리언 플래그 |
+| `EXPERIMENTAL` | 스키마의 `is_experimental` | 불리언 플래그 |
+
+### 단계 5: 특수 메서드 처리
+
+V1과 동일한 특수 메서드가 지원되지만, 더 명확하게 하기 위해 소문자화되거나 완전히 이름이 변경되었습니다. 사용법은 동일합니다.
+
+#### 검증 (V1 → V3)
+
+입력 검증 함수는 ```validate_inputs```로 이름이 변경되었습니다.
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # 검증 로직
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # 유효하면 True, 아니면 오류 메시지 반환
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### 지연 평가 (V1 → V3) {#lazy-evaluation-v1--v3}
+
+`check_lazy_status` 함수는 클래스 메서드이며, 그 외에는 동일하게 유지됩니다.
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### 캐시 제어 (V1 → V3)
+
+캐시 제어의 기능은 V1과 동일하게 유지되지만, 원래 이름은 작동 방식을 매우 오해하기 쉽게 만들었습니다.
+
+V1의 ```IS_CHANGED``` 함수는 반환값이 노드가 마지막으로 실행되었을 때와 동일한 경우 노드 재실행을 트리거하지 않도록 신호를 보냅니다.
+
+따라서 ```IS_CHANGED``` 함수는 ```fingerprint_inputs```로 이름이 변경되었습니다. 개발자들이 저지르는 가장 흔한 실수 중 하나는 ```True```를 반환하면 노드가 항상 재실행된다고 생각하는 것이었습니다. ```True```가 항상 반환되면, 실제로는 노드를 한 번만 실행하고 캐시된 값을 재사용하는 반대 효과가 발생합니다.
+
+이 함수의 사용 예시는 LoadImage 노드입니다. 이 노드는 선택된 파일의 해시를 반환하여, 파일이 변경되면 노드가 강제로 재실행되도록 합니다.
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### 단계 6: 확장 프로그램 및 진입점 생성
+
+노드 ID를 노드 클래스/표시 이름에 연결하는 사전을 정의하는 대신, 이제 ```ComfyExtension``` 클래스와 정의해야 할 ```comfy_entrypoint``` 함수가 있습니다.
+
+향후 ```get_node_list```를 통해 노드만 등록하는 것 이상의 기능을 등록하기 위해 ComfyExtension에 더 많은 함수가 추가될 수 있습니다.
+
+`comfy_entrypoint`는 비동기이거나 아니어도 되지만, ```get_node_list```는 반드시 비동기로 정의해야 합니다.
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # 반드시 비동기로 선언해야 함
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # 여기에 더 많은 노드 추가
+        ]
+
+# 비동기 또는 비동기가 아닌 형태로 선언 가능, 둘 다 작동함
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## 입력 유형 참조
+
+이미 단계 2에서 설명했지만, V1 대비 V3의 몇 가지 유형 참조 비교를 제공합니다. 전체 유형 선언은 ```comfy_api.latest._io```를 참조하세요.
+
+### 기본 유형
+
+| V1 유형 | V3 유형 | 예시 |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+#### control_after_generate
+
+Int 및 Combo 입력은 각 생성 후 값을 자동으로 변경하기 위한 제어 위젯을 추가하는 `control_after_generate` 파라미터를 지원합니다. V1에서는 이 값이 단순한 `bool`이었지만, V3에서는 `io.ControlAfterGenerate` 열거형을 사용하여 명시적으로 제어할 수 있습니다. `True`를 전달하는 것은 `io.ControlAfterGenerate.randomize`와 동일합니다.
+
+| 값 | 동작 |
+|-------|----------|
+| `io.ControlAfterGenerate.fixed` | 각 생성 후 값이 동일하게 유지됩니다. |
+| `io.ControlAfterGenerate.increment` | 각 생성 후 값이 단계만큼 증가합니다. |
+| `io.ControlAfterGenerate.decrement` | 각 생성 후 값이 단계만큼 감소합니다. |
+| `io.ControlAfterGenerate.randomize` | 각 생성 후 값이 무작위화됩니다. |
+
+```python
+# 제어 위젯 활성화 (UI에서 사용자가 모드 선택)
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, control_after_generate=True)
+
+# 특정 기본 모드 설정
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
+    control_after_generate=io.ControlAfterGenerate.randomize)
+```
+
+### ComfyUI 유형
+
+| V1 유형 | V3 유형 | 예시 |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="입력 이미지")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### Combo (드롭다운/선택 목록)
+
+V3의 Combo 유형은 명시적인 클래스 정의가 필요합니다.
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## 스키마 참조
+
+`Schema` 데이터클래스는 V3 노드의 모든 속성을 정의합니다. 사용 가능한 모든 필드에 대한 완전한 참조입니다:
+
+| 필드 | 유형 | 기본값 | 설명 |
+|-------|------|---------|-------------|
+| `node_id` | `str` | *필수* | 전역적으로 고유한 노드 ID. 커스텀 노드는 충돌을 피하기 위해 접두사/접미사를 추가해야 합니다. |
+| `display_name` | `str` | `None` | UI에 표시되는 표시 이름. 설정하지 않으면 `node_id`로 대체됩니다. |
+| `category` | `str` | `"sd"` | "노드 추가" 메뉴의 카테고리 (예: `"image/transform"`). |
+| `description` | `str` | `""` | 노드 위에 마우스를 올리면 표시되는 툴팁. |
+| `inputs` | `list[Input]` | `[]` | 입력 정의 목록. |
+| `outputs` | `list[Output]` | `[]` | 출력 정의 목록. |
+| `hidden` | `list[Hidden]` | `[]` | 요청할 히든 입력 목록 (참조: [히든 입력](#hidden-inputs)). |
+| `search_aliases` | `list[str]` | `[]` | 검색을 위한 대체 이름. 동의어나 이름 변경 후의 이전 이름에 유용합니다. |
+| `is_output_node` | `bool` | `False` | 노드를 출력 노드로 표시하여, 해당 노드와 그 의존성이 실행되도록 합니다. |
+| `is_input_list` | `bool` | `False` | True이면 모든 입력이 전달된 항목 수에 관계없이 `list[type]`이 됩니다. |
+| `is_deprecated` | `bool` | `False` | 노드를 지원 중단됨으로 표시하여, 사용자에게 대안을 찾도록 알립니다. |
+| `is_experimental` | `bool` | `False` | 노드를 실험적으로 표시하여, 사용자에게 변경될 수 있음을 경고합니다. |
+| `is_dev_only` | `bool` | `False` | 개발자 모드가 활성화되지 않은 경우 검색/메뉴에서 노드를 숨깁니다. |
+| `is_api_node` | `bool` | `False` | Comfy API 서비스를 위한 API 노드로 표시합니다. |
+| `not_idempotent` | `bool` | `False` | True이면, 그래프의 다른 동일한 노드에서 생성된 캐시 출력을 재사용하지 않고 항상 다시 실행합니다. |
+| `enable_expand` | `bool` | `False` | `NodeOutput`이 노드 확장을 위한 `expand` 속성을 포함할 수 있도록 허용합니다. |
+| `accept_all_inputs` | `bool` | `False` | True이면, 스키마에 정의되지 않은 입력이라도 프롬프트의 모든 입력이 kwargs로 전달됩니다. |
+
+### 공통 입력 파라미터
+
+모든 입력 유형은 다음과 같은 기본 파라미터를 공유합니다:
+
+| 파라미터 | 유형 | 기본값 | 설명 |
+|-----------|------|---------|-------------|
+| `id` | `str` | *필수* | 입력의 고유 식별자, `execute`에서 kwarg 이름으로 사용됩니다. |
+| `display_name` | `str` | `None` | UI에 표시되는 레이블. 기본값은 `id`입니다. |
+| `optional` | `bool` | `False` | 입력이 선택 사항인지 여부. |
+| `tooltip` | `str` | `None` | 마우스 오버 툴팁 텍스트. |
+| `lazy` | `bool` | `None` | 지연 평가를 위한 입력을 표시합니다 (참조: [지연 평가](#lazy-evaluation-v1--v3)). |
+| `raw_link` | `bool` | `None` | True이면, 해석된 값 대신 원시 링크 정보를 전달합니다. |
+| `advanced` | `bool` | `None` | True이면, 입력은 UI의 "고급" 토글 뒤에 숨겨집니다. |
+
+위젯 입력(Int, Float, String, Boolean, Combo)은 추가로 다음을 지원합니다:
+
+| 파라미터 | 유형 | 기본값 | 설명 |
+|-----------|------|---------|-------------|
+| `default` | 다양함 | `None` | 위젯의 기본값. |
+| `socketless` | `bool` | `None` | True이면 입력 소켓을 숨깁니다 (위젯만, 들어오는 연결 없음). |
+| `force_input` | `bool` | `None` | True이면, 대신 위젯이 소켓 입력으로 표시되도록 강제합니다. |
+
+## 고급 기능
+
+### 히든 입력 {#hidden-inputs}
+
+히든 입력은 프롬프트 메타데이터, 노드 ID 및 기타 내부 값과 같은 실행 컨텍스트에 대한 접근을 제공합니다. 이들은 UI에 표시되지 않습니다.
+
+V1에서는 히든 입력이 `INPUT_TYPES`의 `"hidden"` 키로 선언되었습니다. V3에서는 스키마의 `hidden` 파라미터를 통해 선언되며, 해당 값은 `cls.hidden`을 통해 접근됩니다.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {...},
+        "hidden": {
+            "unique_id": "UNIQUE_ID",
+            "prompt": "PROMPT",
+            "extra_pnginfo": "EXTRA_PNGINFO",
+        }
+    }
+
+def execute(self, unique_id, prompt, extra_pnginfo, ...):
+    # 히든 값은 일반 인자로 전달됨
+    print(unique_id)
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="MyNode",
+        inputs=[...],
+        hidden=[io.Hidden.unique_id, io.Hidden.prompt, io.Hidden.extra_pnginfo],
+    )
+
+@classmethod
+def execute(cls, ...) -> io.NodeOutput:
+    # 히든 값은 cls.hidden을 통해 접근
+    print(cls.hidden.unique_id)
+    print(cls.hidden.prompt)
+    print(cls.hidden.extra_pnginfo)
+```
+
+사용 가능한 히든 값:
+
+| 히든 열거형 | 설명 |
+|-------------|-------------|
+| `io.Hidden.unique_id` | 클라이언트 측 ID와 일치하는 노드의 고유 식별자. |
+| `io.Hidden.prompt` | 클라이언트가 보낸 전체 프롬프트. |
+| `io.Hidden.extra_pnginfo` | 저장된 `.png` 파일의 메타데이터에 복사되는 사전. |
+| `io.Hidden.dynprompt` | 실행 중에 변경될 수 있는 `DynamicPrompt` 인스턴스. |
+| `io.Hidden.auth_token_comfy_org` | 프론트엔드에서 ComfyOrg 계정에 로그인하여 획득한 토큰. |
+| `io.Hidden.api_key_comfy_org` | ComfyOrg에서 생성한 API 키로, 프론트엔드 로그인을 건너뛸 수 있게 해줍니다. |
+
+<Note>
+일부 히든 값은 스키마 플래그에 따라 자동으로 추가됩니다. 출력 노드(`is_output_node=True`)는 자동으로 `prompt`와 `extra_pnginfo`를 받습니다. API 노드(`is_api_node=True`)는 자동으로 인증 토큰을 받습니다.
+</Note>
+
+### UI 헬퍼
+
+V3는 `ui` 모듈에서 미리보기 및 파일 저장과 같은 일반적인 패턴을 처리하기 위한 내장 UI 헬퍼를 제공합니다. `ui` 파라미터를 통해 `io.NodeOutput`에 전달하세요.
+
+#### 미리보기 헬퍼
+
+미리보기 헬퍼는 임시 파일을 저장하고 노드 내 표시를 위한 UI 데이터를 반환합니다.
+
+```python
+from comfy_api.latest import ui
+
+# 노드에서 이미지 미리보기
+return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+
+# 마스크 미리보기 (표시를 위해 자동으로 3채널로 변환)
+return io.NodeOutput(mask, ui=ui.PreviewMask(mask, cls=cls))
+
+# 오디오 미리듣기
+return io.NodeOutput(audio, ui=ui.PreviewAudio(audio, cls=cls))
+
+# 텍스트 미리보기
+return io.NodeOutput(ui=ui.PreviewText("Some text value"))
+
+# 3D 모델 미리보기
+return io.NodeOutput(ui=ui.PreviewUI3D(model_file, camera_info))
+```
+
+#### 저장 헬퍼
+
+저장 헬퍼는 적절한 메타데이터를 포함하여 파일을 출력 디렉토리에 저장하는 메서드를 제공합니다. 일반적으로 출력 노드에서 사용됩니다.
+
+```python
+from comfy_api.latest import ui, io
+
+# 이미지 저장 및 UI 데이터 반환 (가장 일반적인 패턴)
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_images_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,  # 메타데이터를 위한 히든 prompt/extra_pnginfo
+
+
+```
