@@ -255,8 +255,25 @@ export function setChunkedTranslationMeta(
 const H2_HEADING_RE = /^## (?![#])/;
 const FENCE_RE = /^(```|~~~)/;
 
-function toggleFence(line: string, inFence: boolean): boolean {
-  return FENCE_RE.test(line.trim()) ? !inFence : inFence;
+// Track fence depth (``` or ~~~) to handle nested/multiple code blocks correctly.
+// Returns 0 when no fence is open, >0 when inside a fence.
+function toggleFence(line: string, depth: number): number {
+  return FENCE_RE.test(line.trim()) ? depth + 1 : depth;
+}
+
+function isClosingFence(line: string): boolean {
+  return FENCE_RE.test(line.trim());
+}
+
+// Check if code fences are balanced in the text.
+// When translating in blocks, unmatched fences can cause parsing issues downstream.
+function fencesAreBalanced(text: string): boolean {
+  let depth = 0;
+  for (const line of text.split("\n")) {
+    if (FENCE_RE.test(line.trim())) depth++;
+  }
+  // Depth should be even (every open has a close).
+  return depth % 2 === 0;
 }
 
 function isH2SectionLine(line: string, inFence: boolean): boolean {
@@ -268,11 +285,13 @@ export function parseHeadingSections(body: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
   let introLines: string[] = [];
   let current: ContentBlock | null = null;
-  let inFence = false;
+  let fenceDepth = 0;
+
+  function inFence(): boolean { return fenceDepth % 2 !== 0; }
 
   for (const line of lines) {
-    inFence = toggleFence(line, inFence);
-    if (isH2SectionLine(line, inFence)) {
+    if (isClosingFence(line)) fenceDepth = toggleFence(line, fenceDepth);
+    if (isH2SectionLine(line, inFence())) {
       if (current) {
         blocks.push({ ...current, content: current.content.trimEnd() });
       } else if (introLines.length > 0) {
@@ -315,12 +334,14 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
   let introLines: string[] = [];
   let currentLines: string[] = [];
   let h2Count = 0;
-  let inFence = false;
+  let fenceDepth = 0;
   let hasIntro = body.trim().length > 0 && !H2_HEADING_RE.test(lines.find((l) => l.trim()) ?? "");
 
+  function inFenceFallback(): boolean { return fenceDepth % 2 !== 0; }
+
   for (const line of lines) {
-    inFence = toggleFence(line, inFence);
-    if (isH2SectionLine(line, inFence)) {
+    if (isClosingFence(line)) fenceDepth = toggleFence(line, fenceDepth);
+    if (isH2SectionLine(line, inFenceFallback())) {
       if (h2Count === 0 && introLines.length > 0) {
         sections.push(introLines.join("\n").trimEnd());
         introLines = [];
@@ -354,11 +375,11 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
 }
 
 export function countH2Sections(body: string): number {
-  let inFence = false;
+  let fenceDepth = 0;
   let count = 0;
   for (const line of body.split("\n")) {
-    inFence = toggleFence(line, inFence);
-    if (isH2SectionLine(line, inFence)) count++;
+    if (isClosingFence(line)) fenceDepth = toggleFence(line, fenceDepth);
+    if (isH2SectionLine(line, fenceDepth % 2 !== 0)) count++;
   }
   return count;
 }
@@ -690,8 +711,23 @@ export function validateTranslatedBlock(
     return true;
   }
 
-  // Section blocks must remain level-2 headings (text may be translated).
-  return /^## (?![#])/.test(translated.trimStart());
+  // Must start with a level-2 heading.
+  if (!/^## (?![#])/.test(translated.trimStart())) {
+    return false;
+  }
+
+  // Validate code fence balance: every open fence must have a matching close.
+  // Unmatched fences cause subsequent sections to be swallowed during re-parsing.
+  if (!fencesAreBalanced(translated)) {
+    const fenceLines = (translated.match(/^(```|~~~)/gm) || []).length;
+    console.log(
+      `    [WARN] Block "${enBlock.label}": unclosed code fence ` +
+      `(${fenceLines} fence markers, expected even count) — keeping existing content`
+    );
+    return false;
+  }
+
+  return true;
 }
 
 export function missingSectionLabels(
