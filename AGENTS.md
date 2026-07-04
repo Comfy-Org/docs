@@ -84,7 +84,7 @@ When editing English MDX, avoid em dashes (—). Use periods, commas, or colons 
 
 ## Reference docs
 
-- Local secrets & env: [.github/ENV.local.md](.github/ENV.local.md)
+- Local env template: [`.env.local.example`](.env.local.example)
 - i18n tooling: [.github/scripts/i18n/README.md](.github/scripts/i18n/README.md)
 - CMS tooling: [.github/scripts/cms/README.md](.github/scripts/cms/README.md)
 - Mintlify analytics: [.github/scripts/analytics/README.md](.github/scripts/analytics/README.md)

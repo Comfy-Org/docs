@@ -2,7 +2,7 @@
 
 Local cache of Mintlify AI assistant, search, and feedback data for docs gap analysis.
 
-**Credentials:** [ENV.local.md](../../ENV.local.md#mintlify-analytics) · **Agent entrypoint:** [AGENTS.md](../../../AGENTS.md)
+**Credentials:** [`.env.local.example`](../../../.env.local.example) · **Agent entrypoint:** [AGENTS.md](../../../AGENTS.md)
 
 ## Design
 
@@ -66,7 +66,7 @@ After a run, read `assistant-summary.md` → `by-day/YYYY-MM-DD.md` → `unanswe
 
 ```bash
 cp .env.local.example .env.local
-# Fill MINTLIFY_API_KEY + MINTLIFY_PROJECT_ID — see ENV.local.md
+# Fill MINTLIFY_API_KEY + MINTLIFY_PROJECT_ID — see .env.local.example
 ```
 
 ## Commands
@@ -104,4 +104,4 @@ Use `--fresh` when changing the date window so old checkpoint/store does not mix
 ### Resilience
 
 - **504 / 414:** 7-day chunks; page 2+ sends cursor only; auto-bisect on 414
-- **429:** backoff + resume; override throttle via `ANALYTICS_PAGE_LIMIT` / `ANALYTICS_PAGE_DELAY_MS` ([ENV.local.md](../../ENV.local.md#mintlify-analytics))
+- **429:** backoff + resume; override throttle via `ANALYTICS_PAGE_LIMIT` / `ANALYTICS_PAGE_DELAY_MS` (see `.env.local.example`)

@@ -93,7 +93,7 @@ pnpm translate:review -- --min-score 4    # report files scoring below 4/5
 ```
 
 Configure a dedicated (cheap) judge model via `REVIEW_API_*` — see
-[ENV.local.md](../../ENV.local.md); falls back to the `TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
+[`.env.local.example`](../../../.env.local.example); falls back to the `TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
 translation, and reasoning-heavy models are slow and can drop connections under
 concurrency (lower `REVIEW_CONCURRENCY` if you see socket errors).
 
