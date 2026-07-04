@@ -4,6 +4,27 @@ Tooling that translates the English MDX docs into the languages listed in
 [`translation-config.json`](./translation-config.json) (currently ja / zh / ko).
 English is the single source of truth; every other language is generated.
 
+## Relationship to CMS changelog
+
+`changelog/index.mdx` is the full English release notes for the **Mintlify docs site**.
+This pipeline produces `{lang}/**/*.mdx` via `pnpm translate`.
+
+**CMS popup release notes** are a separate pipeline — simplified copy in
+`.github/scripts/cms/staging/` → Strapi. See [cms/README.md](../cms/README.md).
+Do **not** use `pnpm translate` to fill CMS staging.
+
+```
+changelog/index.mdx
+        ├─► pnpm translate → zh/ ja/ ko/ (Mintlify docs)
+        └─► pnpm cms:prepare → staging/ → Strapi (in-app popup)
+```
+
+## Agent rules
+
+- Do **not** commit `.github/i18n-logs/`.
+- Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
+- When editing English MDX, avoid em dashes (—). Use periods, commas, or colons instead.
+
 ## How translation works
 
 `translate-i18n.ts` is the entry point. It is **incremental**: each translated

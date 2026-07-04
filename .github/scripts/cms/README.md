@@ -2,6 +2,25 @@
 
 Push **draft** release notes to Strapi CMS. Content is **simplified for end users** in staging, separate from full docs changelog.
 
+## Relationship to docs translation
+
+`changelog/index.mdx` is the single English source. **Do not shorten it for CMS** — Step 1 (LLM simplify) produces popup copy in `staging/en/`.
+
+| | Docs translation ([i18n/README.md](../i18n/README.md)) | CMS sync (this doc) |
+|--|--|--|
+| Command | `pnpm translate` | `pnpm cms:prepare:en` / `cms:prepare:locales` / `cms:sync` |
+| Output | `{lang}/**/*.mdx` on Mintlify | `.github/scripts/cms/staging/` → Strapi |
+| Input | Full docs MDX | LLM-simplified popup copy |
+| Locales | ja, zh, ko | en, zh, ja, ko, fr, ru, es |
+
+## Agent rules
+
+- Do **not** use `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
+- Get user approval on **staging EN** before `cms:prepare:locales`; on **all staging** before `cms:sync`.
+- Sync and publish **comfyui only** by default (`--project comfyui`). Use `--project cloud` only after explicit user confirmation.
+- Strapi publish is **manual by default** — run `pnpm cms:publish` after review (not automatic on sync).
+- Do commit `.github/scripts/cms/staging/` and `published-versions.json` after Strapi publish.
+
 ## Architecture
 
 Three separate steps — review between each; sync only after confirmation:
@@ -66,7 +85,7 @@ pnpm cms:sync -- v0.25.1                    # Step 3: push drafts (after staging
 pnpm cms:publish -- v0.25.1                 # publish + refresh published-versions.json
 ```
 
-Default: **comfyui + cloud** on prepare / sync / publish. Single project: `--project cloud`.
+Default: **comfyui + cloud** on prepare. **Sync/publish default for agents: comfyui only** — add `--project cloud` only when the user confirms.
 
 Local default (no args): **all unpublished EN versions** (from `published-versions.json`). Full backfill: `CMS_SYNC_ALL=1`.
 

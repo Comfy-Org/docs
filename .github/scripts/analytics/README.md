@@ -2,7 +2,7 @@
 
 Local cache of Mintlify AI assistant, search, and feedback data for docs gap analysis.
 
-**Credentials:** [`.env.local.example`](../../../.env.local.example) · **Agent entrypoint:** [AGENTS.md](../../../AGENTS.md)
+**Credentials:** [`.env.local.example`](../../../.env.local.example)
 
 ## Design
 
