@@ -12,6 +12,20 @@ English is the source of truth. **Docs translation**, **CMS changelog sync**, an
 
 Load the matching skill and its README before changing that pipeline.
 
+## Prose style (English MDX)
+
+When writing or editing English documentation, follow [.cursor/rules/docs-prose.mdc](.cursor/rules/docs-prose.mdc):
+
+- **Avoid em dashes (—).** They read as generic AI copy. Use periods, commas, colons, parentheses, or a second sentence instead.
+- Prefer short, direct sentences over stacked clauses joined by dashes.
+- Match the tone of surrounding pages: technical reference, not marketing blog.
+
+**Instead of:** `Comfy Cloud MCP is in public beta — APIs may change.`  
+**Prefer:** `Comfy Cloud MCP is in public beta. APIs may change while we iterate.`
+
+**Instead of:** `**Discord** — #channel for questions.`  
+**Prefer:** `**Discord**: #channel for questions.`
+
 ## Reference docs
 
 | Topic | Doc |

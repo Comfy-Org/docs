@@ -23,7 +23,7 @@ changelog/index.mdx
 
 - Do **not** commit `.github/i18n-logs/`.
 - Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
-- When editing English MDX, avoid em dashes (—). Use periods, commas, or colons instead.
+- Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
 
 ## How translation works
 
