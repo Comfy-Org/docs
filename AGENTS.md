@@ -12,6 +12,10 @@ English is the source of truth for documentation. This repo has **three separate
 
 Always load the matching skill before changing that pipeline.
 
+## Mintlify assistant insights
+
+When optimizing docs for AI assistant gaps, follow [.github/scripts/analytics/README.md](.github/scripts/analytics/README.md).
+
 ## Three pipelines
 
 ```
@@ -64,18 +68,6 @@ Sync/publish default for agents: **comfyui only** (`--project comfyui`). Run **c
 
 Local default for prepare/sync: **all unpublished EN versions** per `published-versions.json`. Use `CMS_SYNC_ALL=1` for full backfill.
 
-## Environment
-
-Copy `.env.local.example` → `.env.local` (never commit).
-
-| Variable | Docs translate | CMS prepare | CMS sync |
-|----------|----------------|-------------|----------|
-| `TRANSLATE_API_KEY` | ✓ | ✓ | |
-| `TRANSLATE_API_BASE_URL` | ✓ | ✓ | |
-| `TRANSLATE_API_MODEL` | ✓ | ✓ | |
-| `CMS_BASE_URL` | | | ✓ |
-| `CMS_API_TOKEN` | | | ✓ |
-
 ## Agent rules
 
 1. **Do not shorten** `changelog/index.mdx` for CMS — use the staging + simplify pipeline.
@@ -92,5 +84,7 @@ When editing English MDX, avoid em dashes (—). Use periods, commas, or colons 
 
 ## Reference docs
 
+- Local secrets & env: [.github/ENV.local.md](.github/ENV.local.md)
 - i18n tooling: [.github/scripts/i18n/README.md](.github/scripts/i18n/README.md)
 - CMS tooling: [.github/scripts/cms/README.md](.github/scripts/cms/README.md)
+- Mintlify analytics: [.github/scripts/analytics/README.md](.github/scripts/analytics/README.md)

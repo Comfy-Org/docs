@@ -99,7 +99,7 @@ Configured in `cms-config.json` → `simplify`:
 
 ## API tokens
 
-See `.env.local.example`: `TRANSLATE_API_KEY` (prepare), `CMS_API_TOKEN` (sync).
+See [ENV.local.md](../../ENV.local.md) (`TRANSLATE_*` for prepare, `CMS_*` for sync).
 
 ## Publish (draft → live)
 
