@@ -41,13 +41,30 @@ pnpm translate -- --lang zh,ja       # specific languages
 pnpm translate -- installation/x.mdx # specific files
 pnpm translate:snippets              # snippets only
 pnpm translate:check-truncation      # scan for truncated output
+pnpm translate:repair-fences         # append missing closing ```
 pnpm translate:repair-truncated -- --lang ko
+pnpm translate:sync-hash             # update hashes after manual translation edits
 pnpm translate:sync-docs-json        # sync docs.json navigation paths
 ```
 
 Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan
 (`check-translation-truncation.ts`).
+
+Truncation heuristics include **unclosed ` ``` ` blocks** (`unclosed_code_fence`),
+fewer fence markers than English (`missing_code_fence`), and short body length.
+
+```bash
+pnpm translate:check-truncation              # scan all languages
+pnpm translate:check-truncation -- --lang ko
+pnpm translate:repair-fences                 # append missing closing ```
+pnpm translate:repair-fences -- --dry-run    # preview fence fixes
+pnpm translate:repair-truncated -- --lang ko # re-translate via API when content was cut
+```
+
+`repair-fences` is a **structural** fix (adds `\`\`\`` at the end). It does not
+restore code lines lost inside the block. Use `repair-truncated` when the block
+body itself was truncated.
 
 ### Long pages (chunked translation)
 
@@ -60,7 +77,7 @@ output limits when translated in one shot. Two strategies avoid truncation:
 | `update_blocks` | Changelog | `<Update label="…">` blocks | Per-block content hash in `translationBlockHashes` (new labels + EN edits) |
 
 Configure explicit paths in `translation-config.json` → `chunked_files`, or rely
-on `auto_chunk` (default: body ≥ 10k chars and ≥ 4 `##` sections) to auto-enable
+on `auto_chunk` (default: body ≥ 3k chars and ≥ 2 `##` sections) to auto-enable
 `heading_sections`.
 
 Changelog `<Update description="…">` dates are **derived from English** and
@@ -85,6 +102,28 @@ Example:
 pnpm translate -- tutorials/partner-nodes/pricing.mdx --lang ko
 pnpm translate:check-truncation -- --lang ko
 pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
+```
+
+### Sync hashes after manual edits
+
+When you edit English and update zh/ja/ko translations by hand (or with Cursor), refresh
+metadata so `pnpm translate` skips those files:
+
+```bash
+pnpm translate:sync-hash -- path/to/page.mdx           # specific file(s)
+pnpm translate:sync-hash -- --lang zh path/to/page.mdx
+pnpm translate:sync-hash -- --dry-run path/to/page.mdx # preview
+pnpm translate:sync-hash -- --verify path/to/page.mdx  # warn if EN blocks still look pending
+pnpm translate:sync-hash                               # all files with hash drift
+```
+
+This updates `translationSourceHash` (and `translationBlockHashes` on chunked pages)
+from the English source. It does **not** call the translation API or change prose.
+
+Example:
+
+```bash
+pnpm translate:sync-hash -- installation/system_requirements.mdx
 ```
 
 ## Quality review (LLM-as-a-judge)
@@ -198,6 +237,8 @@ env → `frontend_locales_path` in `translation-config.json` →
 |------|------|
 | `translate-i18n.ts` | translation entry point |
 | `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
+| `sync-hash-i18n.ts` | Refresh translation hashes after manual edits (no API) |
+| `repair-fences-i18n.ts` | Append missing closing ``` in translations (no API) |
 | `sync-glossary.mjs` | rebuild the glossary frontend mirror |
 | `glossary.mjs` | load glossary layers, select + inject terms |
 | `i18n-config.mjs` | shared path rules from `translation-config.json` |

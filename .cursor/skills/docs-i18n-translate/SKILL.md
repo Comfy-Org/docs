@@ -52,7 +52,9 @@ Requires **Bun**.
 | `pnpm translate:snippets` | Snippets only |
 | `pnpm translate -- --pages-only` | Skip snippets |
 | `pnpm translate:check-truncation` | Scan for truncated output |
+| `pnpm translate:repair-fences` | Append missing closing ``` (no API) |
 | `pnpm translate:repair-truncated -- --lang ko` | Re-translate flagged files |
+| `pnpm translate:sync-hash` | Refresh hashes after manual zh/ja/ko edits (no API) |
 | `pnpm translate:sync-docs-json` | Sync `docs.json` nav paths (labels preserved) |
 | `pnpm translate:sync-docs-json -- --translate-nav-labels` | Also translate new EN nav labels |
 | `pnpm glossary:sync` | Rebuild glossary from ComfyUI frontend |
@@ -69,6 +71,20 @@ pnpm translate:dry-run                    # see pending
 pnpm translate -- changelog/index.mdx   # or specific paths
 pnpm translate:check-truncation         # if long page / changelog
 ```
+
+### Small English edits (manual translation)
+
+When only a line or paragraph changed:
+
+```bash
+# 1. Edit English + update zh/ja/ko by hand (or ask Cursor to patch matching sections)
+# 2. Sync hashes so translate skips the file
+pnpm translate:sync-hash -- path/to/page.mdx
+pnpm translate:sync-hash -- --verify path/to/page.mdx   # optional sanity check
+```
+
+For larger or new sections, use `pnpm translate -- path/to/page.mdx` (chunked pages
+only re-translate changed `##` sections when `auto_chunk` applies).
 
 ### Changelog (`changelog/index.mdx`)
 
@@ -96,7 +112,7 @@ pnpm translate -- changelog/index.mdx --lang zh
 
 | Strategy | When | Config |
 |----------|------|--------|
-| `heading_sections` | Long reference pages | `chunked_files` or `auto_chunk` (≥10k chars, ≥4 `##`) |
+| `heading_sections` | Long reference pages | `chunked_files` or `auto_chunk` (≥3k chars, ≥2 `##`) |
 | `update_blocks` | Changelog | `chunked_files` entry for `changelog/index.mdx` |
 
 Checkpoints per block — safe to resume after interrupt.
@@ -134,7 +150,8 @@ pnpm glossary:sync              # after frontend locale updates
 When user updates English docs and needs translations:
 
 - [ ] Identify changed files (or run `pnpm translate:dry-run`)
-- [ ] Run `pnpm translate` for affected paths — **not** `cms:prepare` unless CMS/Strapi
+- [ ] For small edits: hand-update translations, then `pnpm translate:sync-hash -- <path>`
+- [ ] For larger edits: run `pnpm translate` for affected paths — **not** `cms:prepare` unless CMS/Strapi
 - [ ] For changelog, translate **docs** `zh/changelog/` etc., not CMS staging
 - [ ] After long pages, run `pnpm translate:check-truncation`
 - [ ] Commit translated MDX + updated `translationSourceHash` / `translationBlockHashes`
@@ -148,6 +165,7 @@ When user updates English docs and needs translations:
 |------|------|
 | `.github/scripts/i18n/translate-i18n.ts` | Entry point |
 | `.github/scripts/i18n/chunked-translate.ts` | Block splitting/reassembly |
+| `.github/scripts/i18n/sync-hash-i18n.ts` | Hash-only sync after manual edits |
 | `.github/scripts/i18n/translation-config.json` | Languages, skip paths, chunked files |
 | `.github/scripts/i18n/glossary.mjs` | Term injection |
 | `.github/scripts/i18n/README.md` | Full reference |
@@ -158,7 +176,9 @@ When user updates English docs and needs translations:
 | Issue | Fix |
 |-------|-----|
 | File skipped | English hash unchanged — use `pnpm translate:force` or edit EN source |
+| Manual translation done | `pnpm translate:sync-hash -- <path>` to refresh hashes |
 | Truncated translation | `translate:repair-truncated` or add to `chunked_files` |
+| Missing closing ``` only | `translate:repair-fences` (structural); re-translate if code inside block was cut |
 | Wrong term | `glossary/overrides/{lang}.json` or `preserve_terms` |
 | PR i18n comment | Run `pnpm translate` for listed files |
 | Changelog date still English | Re-run translate for that block; dates derived from EN |
