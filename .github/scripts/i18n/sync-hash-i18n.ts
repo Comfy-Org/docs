@@ -297,15 +297,20 @@ async function syncOneFile(
   return { status: "updated", warnings };
 }
 
+function filterFileArgsForPhase(fileArgs: string[], snippetsMode: boolean): string[] {
+  return fileArgs
+    .map((f) => stripLangPrefix(f, config.languages))
+    .filter((f) =>
+      snippetsMode
+        ? isEnglishSnippetPath(f.replace(/^snippets\//, ""), pathFilterOpts)
+        : isEnglishPagePath(f, pathFilterOpts)
+    );
+}
+
 async function collectEnglishFiles(snippetsMode: boolean, fileArgs: string[]): Promise<string[]> {
-  if (fileArgs.length > 0) {
-    return fileArgs
-      .map((f) => stripLangPrefix(f, config.languages))
-      .filter((f) =>
-        snippetsMode
-          ? isEnglishSnippetPath(f.replace(/^snippets\//, ""), pathFilterOpts)
-          : isEnglishPagePath(f, pathFilterOpts)
-      );
+  const scopedArgs = filterFileArgsForPhase(fileArgs, snippetsMode);
+  if (scopedArgs.length > 0) {
+    return scopedArgs;
   }
 
   if (snippetsMode) {
@@ -352,8 +357,8 @@ async function main() {
   } else if (pagesOnly) {
     phases.push({ snippetsMode: false, fileArgs, label: "pages" });
   } else if (fileArgs.length > 0) {
-    const pageArgs = fileArgs.filter((f) => !f.replace(/^snippets\//, "").startsWith("snippets/"));
-    const snippetArgs = fileArgs.filter((f) => f.startsWith("snippets/"));
+    const pageArgs = filterFileArgsForPhase(fileArgs, false);
+    const snippetArgs = filterFileArgsForPhase(fileArgs, true);
     if (pageArgs.length > 0) phases.push({ snippetsMode: false, fileArgs: pageArgs, label: "pages" });
     if (snippetArgs.length > 0) phases.push({ snippetsMode: true, fileArgs: snippetArgs, label: "snippets" });
     if (phases.length === 0) phases.push({ snippetsMode: false, fileArgs, label: "pages" });

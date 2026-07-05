@@ -73,6 +73,7 @@ async function main() {
 
   console.log(`Found ${fenceIssues.length} file(s) with unclosed \`\`\` blocks${dryRun ? " [dry-run]" : ""}:`);
 
+  let wouldRepair = 0;
   let repaired = 0;
   let skipped = 0;
   const repairedPairs: { lang: string; enRel: string }[] = [];
@@ -101,6 +102,7 @@ async function main() {
     if (dryRun) {
       console.log(`  [${issue.lang}] would repair: ${issue.targetRel}`);
       console.log(`    ${result.detail}`);
+      wouldRepair++;
     } else {
       await writeFile(targetPath, result.content);
       console.log(`  [${issue.lang}] repaired: ${issue.targetRel}`);
@@ -120,7 +122,7 @@ async function main() {
   }
 
   console.log(
-    `\nDone: ${dryRun ? fenceIssues.length : repaired} repaired, ${skipped} skipped` +
+    `\nDone: ${dryRun ? wouldRepair : repaired} repaired, ${skipped} skipped` +
       (fenceIssues.some((i) => i.reasons.includes("missing_code_fence")) && !dryRun
         ? "\nNote: files with missing_code_fence (fewer fences than EN) may need translate:repair-truncated."
         : "")

@@ -238,6 +238,7 @@ env → `frontend_locales_path` in `translation-config.json` →
 | `translate-i18n.ts` | translation entry point |
 | `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
 | `sync-hash-i18n.ts` | Refresh translation hashes after manual edits (no API) |
+| `repair-fences-i18n.ts` | Append missing closing ``` in translations (no API) |
 | `sync-glossary.mjs` | rebuild the glossary frontend mirror |
 | `glossary.mjs` | load glossary layers, select + inject terms |
 | `i18n-config.mjs` | shared path rules from `translation-config.json` |
