@@ -319,15 +319,42 @@ function applyLabelMapToEntry(syncedEntry, enEntry, labelMap) {
   };
 }
 
-/** @param {unknown} openapi @param {string} langDir */
-export function localizeOpenApi(openapi, langDir) {
-  if (typeof openapi === "string") return openapi;
-  if (openapi && typeof openapi === "object" && typeof openapi.directory === "string") {
-    const directory = openapi.directory.startsWith(`${langDir}/`)
-      ? openapi.directory
-      : `${langDir}/${openapi.directory}`;
-    return { ...openapi, directory };
+/** @param {string} source @param {string} langCode */
+export function localizeOpenApiSource(source, langCode) {
+  if (!source || langCode === "en") return source;
+  if (/\.en\.(ya?ml|json)$/i.test(source)) {
+    return source.replace(/\.en\.(ya?ml|json)$/i, (_, ext) => `.${langCode}.${ext}`);
   }
+  return source.replace(/\.(ya?ml|json)$/i, (_, ext) => `.${langCode}.${ext}`);
+}
+
+/** @param {unknown} openapi @param {{ dir: string, code: string }} lang */
+export function localizeOpenApi(openapi, lang) {
+  const langDir = lang.dir;
+  const langCode = lang.code;
+
+  if (typeof openapi === "string") {
+    if (openapi.startsWith("http://") || openapi.startsWith("https://")) {
+      return openapi;
+    }
+    return localizeOpenApiSource(openapi, langCode);
+  }
+
+  if (openapi && typeof openapi === "object") {
+    /** @type {{ source?: string, directory?: string }} */
+    const spec = openapi;
+    const next = { ...spec };
+    if (typeof spec.source === "string") {
+      next.source = localizeOpenApiSource(spec.source, langCode);
+    }
+    if (typeof spec.directory === "string") {
+      next.directory = spec.directory.startsWith(`${langDir}/`)
+        ? spec.directory
+        : `${langDir}/${spec.directory}`;
+    }
+    return next;
+  }
+
   return openapi;
 }
 
@@ -352,7 +379,7 @@ export function syncTab(enTab, existingTab, lang, langDirs) {
   if (enTab.openapi != null) {
     return {
       tab: existingTab?.tab ?? enTab.tab,
-      openapi: localizeOpenApi(enTab.openapi, lang.dir),
+      openapi: localizeOpenApi(enTab.openapi, lang),
     };
   }
 
