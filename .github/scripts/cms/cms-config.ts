@@ -4,7 +4,7 @@ import { join } from "path";
 export const STAGING_ROOT = ".github/scripts/cms/staging";
 
 export type LocaleSource = "simplify" | "translate";
-export type AttentionLevel = "low" | "high";
+export type AttentionLevel = "low" | "medium" | "high";
 
 export interface LocaleConfig {
   code: string;
