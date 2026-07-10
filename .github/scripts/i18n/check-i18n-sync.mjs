@@ -69,6 +69,16 @@ const addedRaw = gitLines(
 const changedFiles = filterEnglish(changedRaw.filter((f) => f.endsWith(".mdx")));
 const deletedFiles = filterEnglish(deletedRaw.filter((f) => f.endsWith(".mdx")));
 const addedFiles = filterEnglish(addedRaw.filter((f) => f.endsWith(".mdx")));
+const openapiSources = (CONFIG.openapi_specs ?? []).map((spec) => spec.source);
+const changedOpenApiSources = changedRaw.filter((file) => openapiSources.includes(file));
+
+function localizedOpenApiSource(source, langCode) {
+  if (!source || langCode === "en") return source;
+  if (/\.en\.(ya?ml|json)$/i.test(source)) {
+    return source.replace(/\.en\.(ya?ml|json)$/i, (_, ext) => `.${langCode}.${ext}`);
+  }
+  return source.replace(/\.(ya?ml|json)$/i, (_, ext) => `.${langCode}.${ext}`);
+}
 
 const allDiffNames = gitLines(`git diff --name-only ${baseSha} ${headSha}`);
 const acmrtNames = gitLines(
@@ -87,9 +97,10 @@ const renamedDestinations = renameLines
 if (
   changedFiles.length === 0 &&
   deletedFiles.length === 0 &&
-  addedFiles.length === 0
+  addedFiles.length === 0 &&
+  changedOpenApiSources.length === 0
 ) {
-  console.log("No English MDX files changed outside translation directories. Skipping check.");
+  console.log("No English MDX or OpenAPI source files changed outside translation directories. Skipping check.");
   writeOutput({ skipped: true, missingByLang: {}, movedFiles: [] });
   process.exit(0);
 }
@@ -151,6 +162,16 @@ for (const lang of languages) {
       continue;
     }
     console.log(`❌ [${lang.code}] Missing equivalent for added file: ${langFile}`);
+    missing.push(langFile);
+  }
+
+  for (const source of changedOpenApiSources) {
+    const langFile = localizedOpenApiSource(source, lang.code);
+    if (acmrtNames.includes(langFile)) {
+      console.log(`✅ [${lang.code}] Found OpenAPI translation update: ${langFile}`);
+      continue;
+    }
+    console.log(`❌ [${lang.code}] Missing OpenAPI translation update: ${langFile}`);
     missing.push(langFile);
   }
 

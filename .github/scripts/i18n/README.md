@@ -45,6 +45,36 @@ pnpm translate:repair-fences         # append missing closing ```
 pnpm translate:repair-truncated -- --lang ko
 pnpm translate:sync-hash             # update hashes after manual translation edits
 pnpm translate:sync-docs-json        # sync docs.json navigation paths
+pnpm translate -- --openapi-only     # OpenAPI specs only
+pnpm translate -- --no-openapi         # skip OpenAPI specs
+pnpm translate -- --fetch-openapi      # refresh vendored specs from fetch_url
+```
+
+### OpenAPI API Reference (Mintlify auto-generated pages)
+
+Mintlify endpoint pages under `api-reference/**` are generated from OpenAPI
+specs, not MDX. This pipeline copies each English spec to locale-specific files
+(for example `openapi/cloud.zh.yaml`) and translates `summary` / `description`
+fields incrementally.
+
+Configure sources in `translation-config.json` → `openapi_specs`:
+
+| Source | Output | Notes |
+|--------|--------|-------|
+| `openapi/cloud.en.yaml` | `openapi/cloud.{lang}.yaml` | Cloud API Reference tab |
+| `openapi/registry.en.yaml` | `openapi/registry.{lang}.yaml` | Registry + Admin tabs; refresh with `--fetch-openapi` |
+
+`docs.json` keeps English sources under `openapi/`. Sidecar hashes live in `openapi/.i18n/`.
+`pnpm translate:sync-docs-json` localizes tab `openapi.source` values to the
+matching `{lang}` file for zh / ja / ko.
+
+Sidecar metadata lives beside each translated spec as `*.i18n.json` (block hashes
+for incremental sync). Commit translated specs and sidecars with MDX translations.
+
+```bash
+pnpm translate:dry-run -- --openapi-only --lang zh   # preview pending OpenAPI work
+pnpm translate -- --openapi-only --lang zh             # translate Cloud + Registry specs for zh
+pnpm translate -- --fetch-openapi --openapi-only       # pull latest Registry spec, then translate
 ```
 
 Quality controls during/after a run write to `.github/i18n-logs/translate/`
@@ -236,6 +266,7 @@ env → `frontend_locales_path` in `translation-config.json` →
 | File | Role |
 |------|------|
 | `translate-i18n.ts` | translation entry point |
+| `openapi-translate.ts` | OpenAPI summary/description translation |
 | `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
 | `sync-hash-i18n.ts` | Refresh translation hashes after manual edits (no API) |
 | `repair-fences-i18n.ts` | Append missing closing ``` in translations (no API) |
@@ -245,4 +276,4 @@ env → `frontend_locales_path` in `translation-config.json` →
 | `sync-docs-json.mjs` / `nav-label-translate.mjs` | docs.json navigation sync |
 | `check-translation-truncation.ts` | detect truncated output |
 | `check-i18n-sync.mjs` | PR check: English changes have matching translations |
-| `translation-config.json` | languages, skip paths, `preserve_terms`, frontend path |
+| `translation-config.json` | languages, skip paths, `openapi_specs`, `preserve_terms`, frontend path |
