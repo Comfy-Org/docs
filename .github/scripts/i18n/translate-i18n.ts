@@ -23,6 +23,9 @@
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
  *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths only (labels preserved)
  *   npm run translate:sync-docs-json -- --translate-nav-labels  # also translate new English nav labels
+ *   npm run translate -- --openapi-only              # OpenAPI specs only
+ *   npm run translate -- --no-openapi                  # skip OpenAPI specs
+ *   npm run translate -- --fetch-openapi               # refresh vendored specs from fetch_url
  *
  * Requires Bun: https://bun.sh
  *
@@ -91,6 +94,10 @@ import {
   syncUpdateBlockDescription,
   validateTranslatedBlock,
 } from "./chunked-translate.ts";
+import {
+  type OpenApiSpecConfig,
+  runOpenApiTranslation,
+} from "./openapi-translate.ts";
 
 // ---------------------------------------------------------------------------
 // Load .env.local
@@ -131,6 +138,7 @@ interface TranslationConfig {
   auto_chunk?: AutoChunkConfig;
   languages: LangConfig[];
   preserve_terms: string[];
+  openapi_specs?: OpenApiSpecConfig[];
 }
 
 const config = loadI18nConfig() as TranslationConfig;
@@ -236,6 +244,7 @@ const SKIP_PATHS: string[] = config.skip_paths ?? ["built-in-nodes"];
 const CHUNKED_FILES: ChunkedFileConfig[] = config.chunked_files ?? [];
 const AUTO_CHUNK: AutoChunkConfig | undefined = config.auto_chunk;
 const PRESERVE_TERMS: string[] = config.preserve_terms ?? [];
+const OPENAPI_SPECS: OpenApiSpecConfig[] = config.openapi_specs ?? [];
 
 function resolveFileChunkStrategy(relPath: string, enContent: string): ChunkStrategy | null {
   const { body } = parseFrontmatterAndBody(enContent);
@@ -575,6 +584,131 @@ async function translateBlockContent(
     mismatches,
     finishReason,
   };
+}
+
+function buildOpenApiTranslationInstructions(lang: LangConfig): string {
+  const preserveStr = PRESERVE_TERMS.join(", ");
+  return [
+    `Translate the English string VALUES in the JSON object into ${lang.name}.`,
+    "Keep every JSON key unchanged.",
+    "Output ONLY valid JSON with the same keys as the input.",
+    "Preserve Markdown formatting, code spans, URLs, HTTP paths, header names, and schema field names.",
+    "Do NOT translate operationId values, enum values, or content inside backticks.",
+    preserveStr ? `Do NOT translate these technical terms: ${preserveStr}` : "",
+    "Use colons (:) or periods (.) instead of em-dashes. Avoid em-dashes entirely.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function translateOpenApiBatch(
+  entries: Record<string, string>,
+  existingEntries: Record<string, string>,
+  lang: LangConfig,
+  relPath: string
+): Promise<Record<string, string>> {
+  if (Object.keys(entries).length === 0) return {};
+
+  const payload = JSON.stringify(entries, null, 2);
+  const existingPayload =
+    Object.keys(existingEntries).length > 0
+      ? JSON.stringify(existingEntries, null, 2)
+      : "";
+
+  const parts = [
+    `File: ${relPath}`,
+    "",
+    "=== English JSON (translate values only) ===",
+    payload,
+    "",
+    buildOpenApiTranslationInstructions(lang),
+  ];
+  const glossaryBlock = glossaryBlockFor(Object.values(entries).join("\n"), lang);
+  if (glossaryBlock) parts.push("", glossaryBlock);
+  if (existingPayload) {
+    parts.push(
+      "",
+      `=== Current ${lang.name} JSON (context — preserve unchanged entries) ===`,
+      existingPayload
+    );
+  }
+  parts.push("", "Output only the translated JSON object.");
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const raw = IS_QWEN_MT
+        ? await callApi(
+            [{ role: "user", content: parts.join("\n") }],
+            { translation_options: { source_lang: "English", target_lang: lang.name } }
+          )
+        : await callApi([
+            {
+              role: "system",
+              content: `You translate OpenAPI documentation strings into ${lang.name}. Output valid JSON only.`,
+            },
+            { role: "user", content: parts.join("\n") },
+          ]);
+
+      let cleaned = cleanModelOutput(raw).trim();
+      cleaned = cleaned.replace(/^```(?:json)?\n/, "").replace(/\n```$/, "");
+      const parsed = JSON.parse(cleaned) as Record<string, string>;
+      const out: Record<string, string> = {};
+      for (const key of Object.keys(entries)) {
+        const value = parsed[key];
+        if (typeof value === "string" && value.trim()) out[key] = value;
+      }
+      return out;
+    } catch (err) {
+      lastError = err;
+      if (attempt < 3) {
+        console.warn(
+          `[openapi] JSON parse retry ${attempt}/3 for ${relPath} (${Object.keys(entries).length} fields)`
+        );
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function runOpenApiPhase(options: {
+  selectedLangs: LangConfig[];
+  dryRun: boolean;
+  force: boolean;
+  fetchOpenApi: boolean;
+  specFilter?: string[];
+}): Promise<number> {
+  if (OPENAPI_SPECS.length === 0) return 0;
+
+  const specs =
+    options.specFilter && options.specFilter.length > 0
+      ? OPENAPI_SPECS.filter((s) => options.specFilter!.includes(s.source))
+      : OPENAPI_SPECS;
+  if (options.specFilter && options.specFilter.length > 0 && specs.length === 0) {
+    console.error(
+      `No matching openapi_specs for: ${options.specFilter.join(", ")}`
+    );
+    return 1;
+  }
+
+  console.log(`\nOpenAPI specs: ${specs.map((s) => s.source).join(", ")}`);
+  const result = await runOpenApiTranslation(specs, options.selectedLangs, {
+    dryRun: options.dryRun,
+    force: options.force,
+    fetchOpenApi: options.fetchOpenApi,
+    preserveTerms: PRESERVE_TERMS,
+    translateBatch: (entries, existingEntries, langName, relPath) => {
+      const lang = options.selectedLangs.find((l) => l.name === langName);
+      if (!lang) throw new Error(`Unknown language name: ${langName}`);
+      return translateOpenApiBatch(entries, existingEntries, lang, relPath);
+    },
+  });
+
+  console.log(
+    `OpenAPI done: ${result.translated} updated, ${result.skipped} skipped, ${result.failed} failed`
+  );
+  return result.failed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1400,9 @@ async function main() {
   const repairTruncated = args.includes("--repair-truncated");
   const syncDocsJsonOnly = args.includes("--sync-docs-json");
   const skipDocsJsonSync = args.includes("--no-sync-docs-json");
+  const openapiOnly = args.includes("--openapi-only");
+  const skipOpenApi = args.includes("--no-openapi");
+  const fetchOpenApi = args.includes("--fetch-openapi");
   const translateNavLabels = args.includes("--translate-nav-labels");
   const force = args.includes("--force") || repairTruncated;
   const snippetsOnly = args.includes("--snippets") || args.includes("--snippets-only");
@@ -1274,8 +1411,10 @@ async function main() {
   let fileArgs = args.filter(
     (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
   );
-  const phases = resolveTranslatePhases(snippetsOnly, pagesOnly, fileArgs);
-  const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync;
+  const phases = openapiOnly
+    ? []
+    : resolveTranslatePhases(snippetsOnly, pagesOnly, fileArgs);
+  const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync && !openapiOnly;
 
   if (syncDocsJsonOnly) {
     if (translateNavLabels && !API_KEY) {
@@ -1321,7 +1460,7 @@ async function main() {
     return;
   }
 
-  if (!API_KEY) {
+  if (!API_KEY && !dryRun) {
     console.error(
       "No API key. Set TRANSLATE_API_KEY or DEEPSEEK_API_KEY in .env.local"
     );
@@ -1343,7 +1482,9 @@ async function main() {
     console.log(`Repair-truncated: ${repairFiles.length} file(s) from truncation log`);
   }
 
-  const phaseSummary = phases.map((p) => p.label).join(" → ");
+  const phaseSummary = openapiOnly
+    ? "openapi"
+    : phases.map((p) => p.label).join(" → ");
   console.log(
     `Config: model=${MODEL} concurrency=${CONCURRENCY} mode=${IS_QWEN_MT ? "qwen-mt" : "llm"}` +
       ` languages=${selectedLangs.map((l) => l.code).join(",")}` +
@@ -1364,6 +1505,17 @@ async function main() {
       repairTruncated,
     });
     totalFailed += result.failed;
+  }
+
+  if (!skipOpenApi && OPENAPI_SPECS.length > 0) {
+    const openapiSpecFilter = fileArgs.filter((f) => /\.(ya?ml|json)$/i.test(f));
+    totalFailed += await runOpenApiPhase({
+      selectedLangs,
+      dryRun,
+      force,
+      fetchOpenApi,
+      specFilter: openapiSpecFilter.length > 0 ? openapiSpecFilter : undefined,
+    });
   }
 
   if (dryRun) {

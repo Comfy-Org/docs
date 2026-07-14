@@ -4,7 +4,8 @@ description: >-
   Translate ComfyUI Mintlify docs from English MDX to ja/zh/ko using translate-i18n.ts.
   Incremental hash sync, chunked long pages, changelog update_blocks, glossary terms.
   Use when translating docs, updating zh/ja/ko changelog or pages, running pnpm translate,
-  translationSourceHash, glossary sync, docs.json i18n, or fixing truncated translations.
+  translationSourceHash, glossary sync, docs.json i18n, OpenAPI spec localization,
+  or fixing truncated translations.
 ---
 
 # Docs i18n Translation
@@ -21,10 +22,17 @@ index.mdx, changelog/index.mdx, …   ← English (edit here)
         ▼  pnpm translate
 {ja,zh,ko}/…                        ← translated MDX (commit to git)
 snippets/{ja,zh,ko}/…
+openapi/cloud.{lang}.yaml           ← translated OpenAPI (API Reference pages)
+openapi/registry.{lang}.yaml
+openapi/.i18n/*.json                 ← translation sidecar metadata
         │
         ▼  optional
 pnpm translate:sync-docs-json       ← mirror nav paths in docs.json
 ```
+
+OpenAPI endpoint pages (`api-reference/**`) are Mintlify-generated from specs in
+`translation-config.json` → `openapi_specs`. `pnpm translate` copies each English
+spec to `*.{lang}.yaml` and translates `summary` / `description` incrementally.
 
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
@@ -57,6 +65,9 @@ Requires **Bun**.
 | `pnpm translate:sync-hash` | Refresh hashes after manual zh/ja/ko edits (no API) |
 | `pnpm translate:sync-docs-json` | Sync `docs.json` nav paths (labels preserved) |
 | `pnpm translate:sync-docs-json -- --translate-nav-labels` | Also translate new EN nav labels |
+| `pnpm translate:openapi` | OpenAPI specs only |
+| `pnpm translate -- --no-openapi` | Skip OpenAPI during a normal run |
+| `pnpm translate -- --fetch-openapi` | Refresh `openapi/registry.en.yaml` from API before translating |
 | `pnpm glossary:sync` | Rebuild glossary from ComfyUI frontend |
 | `pnpm glossary:sync:dry-run` | Preview glossary sync |
 
