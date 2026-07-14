@@ -115,6 +115,10 @@ pnpm translate -- changelog/index.mdx --lang zh
 | `heading_sections` | Long reference pages | `chunked_files` or `auto_chunk` (≥3k chars, ≥2 `##`) |
 | `update_blocks` | Changelog | `chunked_files` entry for `changelog/index.mdx` |
 
+Oversized individual `##` blocks (e.g. many Mintlify Tabs) are sub-chunked when
+they exceed `auto_chunk.max_block_chars` (default 6000): Tabs → `###` → fence-safe
+size splits. Invalid/truncated blocks stay pending (hash not updated).
+
 Checkpoints per block — safe to resume after interrupt.
 
 ```bash

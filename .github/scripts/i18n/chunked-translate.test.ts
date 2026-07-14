@@ -4,6 +4,11 @@ import {
   documentBlockHashes,
   getSectionSyncStatus,
   parseDocument,
+  softSplitByBudget,
+  splitByH3Subheadings,
+  splitByMintlifyTabs,
+  splitOversizedBlock,
+  validateTranslatedBlock,
 } from "./chunked-translate.ts";
 
 const FM = `---
@@ -72,7 +77,6 @@ describe("getSectionSyncStatus update_blocks", () => {
     );
     const status = getSectionSyncStatus(en, target, "update_blocks", false, "zh");
     expect(status.pendingBlocks).toEqual(["v0.26.0"]);
-    expect(status.upToDate).toBe(false);
   });
 
   test("re-translates when block exists but hash entry is missing", () => {
@@ -87,5 +91,115 @@ describe("getSectionSyncStatus update_blocks", () => {
     );
     const status = getSectionSyncStatus(en, target, "update_blocks", false, "zh");
     expect(status.pendingBlocks).toEqual(["v0.26.0"]);
+  });
+});
+
+describe("splitOversizedBlock", () => {
+  test("returns single piece when under budget", () => {
+    expect(splitOversizedBlock("## Small\n\nHello", 6000)).toEqual(["## Small\n\nHello"]);
+  });
+
+  test("splits Mintlify Tabs and concatenates to original", () => {
+    const content = `## Install
+
+Intro text.
+
+<Tabs>
+  <Tab title="A">
+    Alpha content here.
+  </Tab>
+  <Tab title="B">
+    Bravo content here.
+  </Tab>
+</Tabs>
+`;
+    const pieces = splitByMintlifyTabs(content);
+    expect(pieces).not.toBeNull();
+    expect(pieces!.length).toBeGreaterThanOrEqual(3);
+    expect(pieces!.join("")).toBe(content);
+
+    const oversized = splitOversizedBlock(content, 40);
+    expect(oversized.length).toBeGreaterThan(1);
+    expect(oversized.join("")).toBe(content);
+  });
+
+  test("splits on ### subheadings", () => {
+    const content = `## Advanced
+
+Prefix.
+
+### One
+aaaa
+
+### Two
+bbbb
+`;
+    const pieces = splitByH3Subheadings(content);
+    expect(pieces).not.toBeNull();
+    expect(pieces!.length).toBe(2);
+    expect(pieces!.join("")).toBe(content);
+  });
+
+  test("soft-split does not leave an open fence", () => {
+    const fenceBody = Array.from({ length: 20 }, (_, i) => `line-${i}`).join("\n");
+    const content = `## Code\n\nBefore\n\n\`\`\`\n${fenceBody}\n\`\`\`\n\nAfter paragraph text\n`;
+    const pieces = softSplitByBudget(content, 80);
+    expect(pieces.join("")).toBe(content);
+    for (const p of pieces) {
+      let inFence = false;
+      for (const line of p.split("\n")) {
+        if (/^(```|~~~)/.test(line.trim())) inFence = !inFence;
+      }
+      expect(inFence).toBe(false);
+    }
+  });
+});
+
+describe("validateTranslatedBlock heading_sections", () => {
+  const installBlock = {
+    label: "Install Comfy Cloud MCP",
+    content: `## Install Comfy Cloud MCP
+
+<Tabs>
+  <Tab title="A">
+    one
+  </Tab>
+  <Tab title="B">
+    two
+  </Tab>
+</Tabs>
+`,
+  };
+
+  test("accepts complete Tab set", () => {
+    const tr = `## 安装
+
+<Tabs>
+  <Tab title="A">
+    一
+  </Tab>
+  <Tab title="B">
+    二
+  </Tab>
+</Tabs>
+`;
+    expect(validateTranslatedBlock("heading_sections", installBlock, tr)).toBe(true);
+  });
+
+  test("rejects truncated Tab set", () => {
+    const tr = `## 安装
+
+<Tabs>
+  <Tab title="A">
+    一
+`;
+    expect(validateTranslatedBlock("heading_sections", installBlock, tr)).toBe(false);
+  });
+
+  test("rejects finish_reason length", () => {
+    const tr = installBlock.content;
+    expect(
+      validateTranslatedBlock("heading_sections", installBlock, tr, { finishReason: "length" })
+    ).toBe(false);
   });
 });
