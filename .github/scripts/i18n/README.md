@@ -39,13 +39,20 @@ pnpm translate:dry-run               # list what would be translated
 pnpm translate:force                 # re-translate everything
 pnpm translate -- --lang zh,ja       # specific languages
 pnpm translate -- installation/x.mdx # specific files
+pnpm translate -- --with-docs-json   # also sync docs.json nav after translate (opt-in)
 pnpm translate:snippets              # snippets only
 pnpm translate:check-truncation      # scan for truncated output
 pnpm translate:repair-fences         # append missing closing ```
 pnpm translate:repair-truncated -- --lang ko
 pnpm translate:sync-hash             # update hashes after manual translation edits
-pnpm translate:sync-docs-json        # sync docs.json navigation paths
+pnpm translate:sync-docs-json        # sync docs.json navigation paths (standalone)
 ```
+
+**`docs.json` is not rewritten by `pnpm translate` by default.** Nav sync used to run
+after every page translate and would also normalize EN path casing against on-disk
+MDX filenames, so a changelog-only run could produce a large unrelated `docs.json`
+diff. When you add, move, or rename pages in the English nav, run
+`pnpm translate:sync-docs-json` (or `pnpm translate -- --with-docs-json`) separately.
 
 Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan

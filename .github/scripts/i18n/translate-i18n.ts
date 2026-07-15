@@ -19,10 +19,16 @@
  *   npm run translate:snippets                     # snippets only
  *   npm run translate -- --pages-only              # pages only, skip snippets
  *   npm run translate -- installation/foo.mdx      # specific files
+ *   npm run translate -- --with-docs-json          # also sync docs.json nav paths after translate
  *   npm run translate:check-truncation             # scan for truncated translations
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
  *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths only (labels preserved)
  *   npm run translate:sync-docs-json -- --translate-nav-labels  # also translate new English nav labels
+ *
+ * docs.json is NOT synced after translate by default. Path/label navigation sync
+ * is a separate concern (new pages, renames, casing). Use
+ * `pnpm translate:sync-docs-json` or pass `--with-docs-json` when the EN nav tree
+ * actually changed. `--no-sync-docs-json` is kept as a no-op for older scripts.
  *
  * Requires Bun: https://bun.sh
  *
@@ -1265,6 +1271,10 @@ async function main() {
   const checkTruncation = args.includes("--check-truncation");
   const repairTruncated = args.includes("--repair-truncated");
   const syncDocsJsonOnly = args.includes("--sync-docs-json");
+  // Opt-in: translate used to always rewrite docs.json (path casing + locale
+  // nav mirror), which mixed unrelated nav diffs into single-file translate PRs
+  // (e.g. changelog-only). Sync only when explicitly requested.
+  const withDocsJsonSync = args.includes("--with-docs-json");
   const skipDocsJsonSync = args.includes("--no-sync-docs-json");
   const translateNavLabels = args.includes("--translate-nav-labels");
   const force = args.includes("--force") || repairTruncated;
@@ -1275,7 +1285,8 @@ async function main() {
     (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
   );
   const phases = resolveTranslatePhases(snippetsOnly, pagesOnly, fileArgs);
-  const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync;
+  const runDocsJsonAfter =
+    withDocsJsonSync && !snippetsOnly && !skipDocsJsonSync;
 
   if (syncDocsJsonOnly) {
     if (translateNavLabels && !API_KEY) {
