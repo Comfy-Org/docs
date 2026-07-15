@@ -86,9 +86,11 @@ import {
   changelogLabelHash,
   documentBlockHashes,
   getSectionSyncStatus,
+  parseBlockHashLabelOrderFromFrontmatter,
   parseBlockHashesFromFrontmatter,
   parseDocument,
   parseFrontmatterAndBody,
+  parseHeadingSections,
   parseTargetSectionsByIndex,
   resolveChunkStrategy,
   serializeChunkedDocument,
@@ -689,12 +691,36 @@ async function translateChunkedFile(
       ? parseTargetSectionsByIndex(parseFrontmatterAndBody(existingContent).body, enDoc.blocks.length)
       : [];
 
+  // Use stored label order (from frontmatter) to map EN labels to target section positions.
+  // This handles the case where a new H2 section is inserted in the middle of the English
+  // source — without this, all target sections after the insertion would shift by one position
+  // and the wrong section content would be preserved (e.g. Tencent content replaced by Topaz).
+  const storedLabels = existingFmBody
+    ? parseBlockHashLabelOrderFromFrontmatter(existingFmBody)
+    : [];
+  const targetHeadingSections =
+    strategy === "heading_sections" && existingContent
+      ? parseHeadingSections(parseFrontmatterAndBody(existingContent).body)
+      : [];
+
   const slots: BlockSlot[] = enDoc.blocks.map((b, i) => {
     if (!force && !status.pendingBlocks.includes(b.label)) {
-      const content =
-        strategy === "heading_sections"
-          ? existingByIndex[i] ?? null
-          : existingByLabel.get(b.label) ?? null;
+      let content: string | null = null;
+
+      if (strategy === "heading_sections") {
+        // Match by stored label position (stable across insertions), not by EN index
+        const storedPos = storedLabels.indexOf(b.label);
+        if (storedPos >= 0 && storedPos < targetHeadingSections.length) {
+          content = targetHeadingSections[storedPos].content;
+        }
+        // Fallback to positional (works when target and EN section counts match)
+        if (!content?.trim()) {
+          content = existingByIndex[i] ?? null;
+        }
+      } else {
+        content = existingByLabel.get(b.label) ?? null;
+      }
+
       return { label: b.label, content: content?.trim() ? content : null };
     }
     return { label: b.label, content: null };
