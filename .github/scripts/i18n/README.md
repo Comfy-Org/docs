@@ -4,6 +4,27 @@ Tooling that translates the English MDX docs into the languages listed in
 [`translation-config.json`](./translation-config.json) (currently ja / zh / ko).
 English is the single source of truth; every other language is generated.
 
+## Relationship to CMS changelog
+
+`changelog/index.mdx` is the full English release notes for the **Mintlify docs site**.
+This pipeline produces `{lang}/**/*.mdx` via `pnpm translate`.
+
+**CMS popup release notes** are a separate pipeline — simplified copy in
+`.github/scripts/cms/staging/` → Strapi. See [cms/README.md](../cms/README.md).
+Do **not** use `pnpm translate` to fill CMS staging.
+
+```
+changelog/index.mdx
+        ├─► pnpm translate → zh/ ja/ ko/ (Mintlify docs)
+        └─► pnpm cms:prepare → staging/ → Strapi (in-app popup)
+```
+
+## Agent rules
+
+- Do **not** commit `.github/i18n-logs/`.
+- Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
+- Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
+
 ## How translation works
 
 `translate-i18n.ts` is the entry point. It is **incremental**: each translated
@@ -18,15 +39,39 @@ pnpm translate:dry-run               # list what would be translated
 pnpm translate:force                 # re-translate everything
 pnpm translate -- --lang zh,ja       # specific languages
 pnpm translate -- installation/x.mdx # specific files
+pnpm translate -- --with-docs-json   # also sync docs.json nav after translate (opt-in)
 pnpm translate:snippets              # snippets only
 pnpm translate:check-truncation      # scan for truncated output
+pnpm translate:repair-fences         # append missing closing ```
 pnpm translate:repair-truncated -- --lang ko
-pnpm translate:sync-docs-json        # sync docs.json navigation paths
+pnpm translate:sync-hash             # update hashes after manual translation edits
+pnpm translate:sync-docs-json        # sync docs.json navigation paths (standalone)
 ```
+
+**`docs.json` is not rewritten by `pnpm translate` by default.** Nav sync used to run
+after every page translate and would also normalize EN path casing against on-disk
+MDX filenames, so a changelog-only run could produce a large unrelated `docs.json`
+diff. When you add, move, or rename pages in the English nav, run
+`pnpm translate:sync-docs-json` (or `pnpm translate -- --with-docs-json`) separately.
 
 Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan
 (`check-translation-truncation.ts`).
+
+Truncation heuristics include **unclosed ` ``` ` blocks** (`unclosed_code_fence`),
+fewer fence markers than English (`missing_code_fence`), and short body length.
+
+```bash
+pnpm translate:check-truncation              # scan all languages
+pnpm translate:check-truncation -- --lang ko
+pnpm translate:repair-fences                 # append missing closing ```
+pnpm translate:repair-fences -- --dry-run    # preview fence fixes
+pnpm translate:repair-truncated -- --lang ko # re-translate via API when content was cut
+```
+
+`repair-fences` is a **structural** fix (adds `\`\`\`` at the end). It does not
+restore code lines lost inside the block. Use `repair-truncated` when the block
+body itself was truncated.
 
 ### Long pages (chunked translation)
 
@@ -39,8 +84,29 @@ output limits when translated in one shot. Two strategies avoid truncation:
 | `update_blocks` | Changelog | `<Update label="…">` blocks | Per-block content hash in `translationBlockHashes` (new labels + EN edits) |
 
 Configure explicit paths in `translation-config.json` → `chunked_files`, or rely
-on `auto_chunk` (default: body ≥ 10k chars and ≥ 4 `##` sections) to auto-enable
+on `auto_chunk` (default: body ≥ 3k chars and ≥ 2 `##` sections) to auto-enable
 `heading_sections`.
+
+**Oversized H2 blocks:** a single `##` section can still be too large for one API
+call (e.g. Install tabs with many Mintlify `<Tab>` children). When an English
+block exceeds `auto_chunk.max_block_chars` (default **6000**), the translator
+sub-chunks it for the API only:
+
+1. Mintlify `<Tab title="…">…</Tab>` pieces (preferred)
+2. Else `###` subheadings
+3. Else fence-safe soft splits by character budget
+
+Pieces are translated separately and concatenated. Sync hashes stay keyed by the
+H2 label (no frontmatter schema change).
+
+API calls use `max_tokens: 16384` and inspect `finish_reason`. Truncated or
+structurally invalid block output (wrong Tab count, unclosed fences, short line
+ratio, `finish_reason === "length"`) is **rejected**: previous target content is
+kept and that block’s hash is left pending so the next run retries. A file with
+failed blocks is reported as failed, not silently marked up-to-date.
+
+Truncation scan also flags per-block problems (`truncated_block`) when whole-file
+line count still looks acceptable but a Tab-heavy section is cut.
 
 Changelog `<Update description="…">` dates are **derived from English** and
 localized automatically (`ja`/`zh`: `YYYY年M月D日`, `ko`: `YYYY년 M월 D일`) after
@@ -51,7 +117,7 @@ During a chunked run the script:
 
 1. Parses English into blocks (intro + each `##` section).
 2. Compares each block’s hash to `translationBlockHashes` in the target frontmatter.
-3. Translates only pending blocks (plus frontmatter when needed).
+3. Translates only pending blocks (plus frontmatter when needed), sub-chunking oversized blocks.
 4. Checkpoints after every block so a failed run can resume.
 
 `translationBlockHashes` keys are written in **descending semver order** for
@@ -64,6 +130,28 @@ Example:
 pnpm translate -- tutorials/partner-nodes/pricing.mdx --lang ko
 pnpm translate:check-truncation -- --lang ko
 pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
+```
+
+### Sync hashes after manual edits
+
+When you edit English and update zh/ja/ko translations by hand (or with Cursor), refresh
+metadata so `pnpm translate` skips those files:
+
+```bash
+pnpm translate:sync-hash -- path/to/page.mdx           # specific file(s)
+pnpm translate:sync-hash -- --lang zh path/to/page.mdx
+pnpm translate:sync-hash -- --dry-run path/to/page.mdx # preview
+pnpm translate:sync-hash -- --verify path/to/page.mdx  # warn if EN blocks still look pending
+pnpm translate:sync-hash                               # all files with hash drift
+```
+
+This updates `translationSourceHash` (and `translationBlockHashes` on chunked pages)
+from the English source. It does **not** call the translation API or change prose.
+
+Example:
+
+```bash
+pnpm translate:sync-hash -- installation/system_requirements.mdx
 ```
 
 ## Quality review (LLM-as-a-judge)
@@ -92,9 +180,8 @@ pnpm translate:review -- --sample 20      # N pending files per language
 pnpm translate:review -- --min-score 4    # report files scoring below 4/5
 ```
 
-Configure a dedicated (cheap) judge model via `REVIEW_API_KEY` /
-`REVIEW_API_BASE_URL` / `REVIEW_API_MODEL` in `.env.local`; falls back to the
-`TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
+Configure a dedicated (cheap) judge model via `REVIEW_API_*` — see
+[`.env.local.example`](../../../.env.local.example); falls back to the `TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
 translation, and reasoning-heavy models are slow and can drop connections under
 concurrency (lower `REVIEW_CONCURRENCY` if you see socket errors).
 
@@ -178,6 +265,8 @@ env → `frontend_locales_path` in `translation-config.json` →
 |------|------|
 | `translate-i18n.ts` | translation entry point |
 | `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
+| `sync-hash-i18n.ts` | Refresh translation hashes after manual edits (no API) |
+| `repair-fences-i18n.ts` | Append missing closing ``` in translations (no API) |
 | `sync-glossary.mjs` | rebuild the glossary frontend mirror |
 | `glossary.mjs` | load glossary layers, select + inject terms |
 | `i18n-config.mjs` | shared path rules from `translation-config.json` |
