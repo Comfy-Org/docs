@@ -69,8 +69,9 @@ Configure sources in `translation-config.json` → `openapi_specs`:
 `pnpm translate:sync-docs-json` localizes tab `openapi.source` values to the
 matching `{lang}` file for zh / ja / ko.
 
-Sidecar metadata lives beside each translated spec as `*.i18n.json` (block hashes
-for incremental sync). Commit translated specs and sidecars with MDX translations.
+Sidecar hashes per locale live in `openapi/.i18n/` as `{basename}.json`
+(e.g. `openapi/.i18n/cloud.zh.json`). Commit translated specs and sidecars
+with MDX translations.
 
 ```bash
 pnpm translate:dry-run -- --openapi-only --lang zh   # preview pending OpenAPI work

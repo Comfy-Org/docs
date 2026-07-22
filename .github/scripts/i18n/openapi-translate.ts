@@ -1,6 +1,11 @@
 /**
  * Translate OpenAPI summary/description fields into locale-specific spec copies.
  * Used by translate-i18n.ts (pnpm translate) and sync-docs-json.mjs (source paths).
+ *
+ * Path encoding uses JSON Pointer (RFC 6901) style: each segment is joined with
+ * "/", and segments containing "~" or "/" are escaped as "~0" / "~1" so that
+ * OpenAPI path keys like "/proxy/bfl/flux-pro-1.1/generate" are handled
+ * correctly (dot-joined paths would break on the "1.1" part).
  */
 
 import { createHash } from "crypto";
@@ -9,7 +14,7 @@ import { join, dirname } from "path";
 import { REPO_ROOT } from "./i18n-config.mjs";
 
 export interface OpenApiSpecConfig {
-/** Repo-relative English OpenAPI path (e.g. openapi/cloud.en.yaml). */
+  /** Repo-relative English OpenAPI path (e.g. openapi/cloud.en.yaml). */
   source: string;
   /** Optional remote URL to refresh the English source (e.g. Registry API). */
   fetch_url?: string;
@@ -67,41 +72,39 @@ export function blockHash(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 8);
 }
 
-/** Walk an OpenAPI object and collect summary/description string values. */
-export function extractTranslatableStrings(
-  value: unknown,
-  path = ""
-): Record<string, string> {
-  const out: Record<string, string> = {};
+// ---------------------------------------------------------------------------
+// JSON Pointer (RFC 6901) helpers
+// ---------------------------------------------------------------------------
 
-  if (value == null) return out;
-
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => {
-      Object.assign(out, extractTranslatableStrings(item, `${path}[${index}]`));
-    });
-    return out;
-  }
-
-  if (typeof value !== "object") return out;
-
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    const childPath = path ? `${path}.${key}` : key;
-    if (
-      TRANSLATABLE_KEYS.has(key) &&
-      typeof child === "string" &&
-      child.trim().length > 0
-    ) {
-      out[childPath] = child;
-    } else {
-      Object.assign(out, extractTranslatableStrings(child, childPath));
-    }
-  }
-
-  return out;
+/** Escape a single path segment per RFC 6901: ~ -> ~0, / -> ~1. */
+export function escapeJpSegment(segment: string): string {
+  return segment.replace(/~/g, "~0").replace(/\//g, "~1");
 }
 
-function parsePath(path: string): Array<string | number> {
+/** Unescape a JSON Pointer segment: ~1 -> /, ~0 -> ~. */
+export function unescapeJpSegment(segment: string): string {
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/**
+ * Parse a JSON Pointer path string into an array of segments.
+ * Handles both absolute pointers (leading "/") and legacy dot-format paths
+ * (no leading "/") for backward compatibility with old sidecars.
+ * Array index segments are returned as numbers.
+ */
+export function parseJpPath(path: string): Array<string | number> {
+  if (path.startsWith("/")) {
+    // JSON Pointer format: /info/description or /paths/~1proxy~1.../post/summary
+    const parts = path.split("/");
+    // First element is empty string from the leading "/"
+    parts.shift();
+    return parts.map((s) => {
+      const unescaped = unescapeJpSegment(s);
+      const n = Number(unescaped);
+      return Number.isFinite(n) && String(n) === unescaped ? n : unescaped;
+    });
+  }
+  // Legacy dot-format fallback (old sidecar compatibility)
   const parts: Array<string | number> = [];
   const re = /([^.\[\]]+)|\[(\d+)\]/g;
   let match: RegExpExecArray | null;
@@ -114,7 +117,7 @@ function parsePath(path: string): Array<string | number> {
 
 function getAtPath(root: unknown, path: string): unknown {
   let cur: unknown = root;
-  for (const part of parsePath(path)) {
+  for (const part of parseJpPath(path)) {
     if (cur == null || typeof cur !== "object") return undefined;
     cur = (cur as Record<string | number, unknown>)[part];
   }
@@ -122,7 +125,7 @@ function getAtPath(root: unknown, path: string): unknown {
 }
 
 function setAtPath(root: Record<string, unknown>, path: string, value: string): void {
-  const parts = parsePath(path);
+  const parts = parseJpPath(path);
   let cur: Record<string | number, unknown> = root;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
@@ -133,6 +136,45 @@ function setAtPath(root: Record<string, unknown>, path: string, value: string): 
   const last = parts[parts.length - 1];
   if (last == null) return;
   cur[last] = value;
+}
+
+// ---------------------------------------------------------------------------
+// String extraction & translation application
+// ---------------------------------------------------------------------------
+
+/** Walk an OpenAPI object and collect summary/description string values. */
+export function extractTranslatableStrings(
+  value: unknown,
+  path = ""
+): Record<string, string> {
+  const out: Record<string, string> = {};
+
+  if (value == null) return out;
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      Object.assign(out, extractTranslatableStrings(item, `${path}/${index}`));
+    });
+    return out;
+  }
+
+  if (typeof value !== "object") return out;
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const escapedKey = escapeJpSegment(key);
+    const childPath = path ? `${path}/${escapedKey}` : escapedKey;
+    if (
+      TRANSLATABLE_KEYS.has(key) &&
+      typeof child === "string" &&
+      child.trim().length > 0
+    ) {
+      out[childPath] = child;
+    } else {
+      Object.assign(out, extractTranslatableStrings(child, childPath));
+    }
+  }
+
+  return out;
 }
 
 export function applyTranslations(
@@ -216,7 +258,7 @@ async function writeSpecFile(
 
 export async function ensureEnglishOpenApiSource(
   spec: OpenApiSpecConfig,
-  options: { fetchOpenApi?: boolean } = {}
+  options: { fetchOpenApi?: boolean; dryRun?: boolean } = {}
 ): Promise<void> {
   const absPath = join(REPO_ROOT, spec.source);
   const needsFetch = Boolean(spec.fetch_url);
@@ -230,6 +272,14 @@ export async function ensureEnglishOpenApiSource(
   }
 
   if (!options.fetchOpenApi && exists) return;
+
+  // Dry-run guard: never write when dry-run is active
+  if (options.dryRun) {
+    console.log(
+      `[openapi] DRY-RUN: would fetch ${spec.source} from ${spec.fetch_url}`
+    );
+    return;
+  }
 
   if (!spec.fetch_url) return;
 
@@ -400,6 +450,7 @@ export async function runOpenApiTranslation(
     try {
       await ensureEnglishOpenApiSource(spec, {
         fetchOpenApi: options.fetchOpenApi,
+        dryRun: options.dryRun,
       });
     } catch (err) {
       failed++;

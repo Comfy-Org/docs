@@ -658,7 +658,7 @@ async function translateOpenApiBatch(
             { role: "user", content: parts.join("\n") },
           ]);
 
-      let cleaned = cleanModelOutput(raw).trim();
+      let cleaned = cleanModelOutput(raw.content).trim();
       cleaned = cleaned.replace(/^```(?:json)?\n/, "").replace(/\n```$/, "");
       const parsed = JSON.parse(cleaned) as Record<string, string>;
       const out: Record<string, string> = {};
