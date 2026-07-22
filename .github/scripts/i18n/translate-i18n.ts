@@ -19,10 +19,16 @@
  *   npm run translate:snippets                     # snippets only
  *   npm run translate -- --pages-only              # pages only, skip snippets
  *   npm run translate -- installation/foo.mdx      # specific files
+ *   npm run translate -- --with-docs-json          # also sync docs.json nav paths after translate
  *   npm run translate:check-truncation             # scan for truncated translations
  *   npm run translate:repair-truncated -- --lang ko  # re-translate files from truncation log
  *   npm run translate:sync-docs-json -- --lang ko    # sync docs.json paths only (labels preserved)
  *   npm run translate:sync-docs-json -- --translate-nav-labels  # also translate new English nav labels
+ *
+ * docs.json is NOT synced after translate by default. Path/label navigation sync
+ * is a separate concern (new pages, renames, casing). Use
+ * `pnpm translate:sync-docs-json` or pass `--with-docs-json` when the EN nav tree
+ * actually changed. `--no-sync-docs-json` is kept as a no-op for older scripts.
  *
  * Requires Bun: https://bun.sh
  *
@@ -73,16 +79,22 @@ import {
   type BlockSlot,
   type ChunkedFileConfig,
   type ChunkStrategy,
+  type ContentBlock,
+  DEFAULT_MAX_BLOCK_CHARS,
   aggregateDocumentHash,
   applyChangelogBlockLocalizations,
   changelogLabelHash,
   documentBlockHashes,
   getSectionSyncStatus,
+  parseBlockHashLabelOrderFromFrontmatter,
+  parseBlockHashesFromFrontmatter,
   parseDocument,
   parseFrontmatterAndBody,
+  parseHeadingSections,
   parseTargetSectionsByIndex,
   resolveChunkStrategy,
   serializeChunkedDocument,
+  splitOversizedBlock,
   stripTranslationMetaFromFrontmatter,
   syncUpdateBlockDescription,
   validateTranslatedBlock,
@@ -368,6 +380,12 @@ function parseLangArg(args: string[]): LangConfig[] {
 interface TranslationResult {
   content: string;
   mismatches: string[];
+  finishReason: string | null;
+}
+
+interface ApiCallResult {
+  content: string;
+  finishReason: string | null;
 }
 
 function extractMismatches(text: string): { clean: string; mismatches: string[] } {
@@ -392,7 +410,7 @@ function extractMismatches(text: string): { clean: string; mismatches: string[] 
 async function callApi(
   messages: { role: string; content: string }[],
   extraBody: Record<string, unknown> = {}
-): Promise<string> {
+): Promise<ApiCallResult> {
   const response = await fetch(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -403,7 +421,7 @@ async function callApi(
       model: MODEL,
       messages,
       temperature: 0.3,
-      max_tokens: 8192,
+      max_tokens: 16384,
       ...extraBody,
     }),
   });
@@ -411,8 +429,14 @@ async function callApi(
     const err = await response.text();
     throw new Error(`API ${response.status}: ${err}`);
   }
-  const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-  return data.choices?.[0]?.message?.content ?? "";
+  const data = (await response.json()) as {
+    choices?: { message?: { content?: string }; finish_reason?: string }[];
+  };
+  const choice = data.choices?.[0];
+  return {
+    content: choice?.message?.content ?? "",
+    finishReason: choice?.finish_reason ?? null,
+  };
 }
 
 function buildTranslationInstructions(lang: LangConfig): string {
@@ -456,12 +480,12 @@ async function translateWithQwenMT(
     );
   }
 
-  const translated = await callApi(
+  const apiResult = await callApi(
     [{ role: "user", content: parts.join("\n") }],
     { translation_options: { source_lang: "English", target_lang: lang.name } }
   );
-  const { clean, mismatches } = extractMismatches(translated);
-  return { content: clean, mismatches };
+  const { clean, mismatches } = extractMismatches(apiResult.content);
+  return { content: clean, mismatches, finishReason: apiResult.finishReason };
 }
 
 async function translateWithLLM(
@@ -493,12 +517,72 @@ Output ONLY the translated MDX content.`;
   }
   userParts.push("", `Translate/update to ${lang.name}. Output only the translated MDX.`);
 
-  const translated = await callApi([
+  const apiResult = await callApi([
     { role: "system", content: systemPrompt },
     { role: "user", content: userParts.join("\n") },
   ]);
-  const { clean, mismatches } = extractMismatches(translated);
-  return { content: clean, mismatches };
+  const { clean, mismatches } = extractMismatches(apiResult.content);
+  return { content: clean, mismatches, finishReason: apiResult.finishReason };
+}
+
+/**
+ * Translate one English block, sub-chunking oversized content (Tabs / ### / size)
+ * so each API call stays under max_block_chars.
+ */
+async function translateBlockContent(
+  enText: string,
+  existingText: string,
+  lang: LangConfig,
+  relPath: string
+): Promise<TranslationResult> {
+  const maxChars = AUTO_CHUNK?.max_block_chars ?? DEFAULT_MAX_BLOCK_CHARS;
+  const enPieces = splitOversizedBlock(enText, maxChars);
+
+  const translateOne = (en: string, existing: string, piecePath: string) =>
+    IS_QWEN_MT
+      ? translateWithQwenMT(en, existing, lang)
+      : translateWithLLM(en, existing, lang, piecePath);
+
+  if (enPieces.length === 1) {
+    return translateOne(enText, existingText, relPath);
+  }
+
+  console.log(
+    `      sub-chunked into ${enPieces.length} pieces (max ${maxChars} chars)`
+  );
+  const existingPieces = existingText.trim()
+    ? splitOversizedBlock(existingText, maxChars)
+    : [];
+  const aligned = existingPieces.length === enPieces.length;
+  if (existingText.trim() && !aligned) {
+    console.log(
+      `      existing piece count ${existingPieces.length} ≠ ${enPieces.length}; translating pieces without aligned context`
+    );
+  }
+
+  const outs: string[] = [];
+  const mismatches: string[] = [];
+  let finishReason: string | null = "stop";
+
+  for (let i = 0; i < enPieces.length; i++) {
+    const piece = enPieces[i]!;
+    const ex = aligned ? existingPieces[i]! : "";
+    console.log(`      piece ${i + 1}/${enPieces.length} (${piece.length} chars)`);
+    const result = await translateOne(piece, ex, `${relPath}#piece${i + 1}`);
+    mismatches.push(...result.mismatches);
+    outs.push(result.content);
+    if (result.finishReason === "length") {
+      finishReason = "length";
+      break;
+    }
+    if (result.finishReason) finishReason = result.finishReason;
+  }
+
+  return {
+    content: outs.join(""),
+    mismatches,
+    finishReason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +657,7 @@ async function translateChunkedFile(
   targetPath: string
 ): Promise<{
   mismatches: string[];
-  status: "translated" | "skipped" | "up-to-date";
+  status: "translated" | "skipped" | "up-to-date" | "failed";
   blocksTranslated: number;
   output: string | null;
 }> {
@@ -590,6 +674,15 @@ async function translateChunkedFile(
       ? changelogLabelHash(enDoc.blocks)
       : aggregateDocumentHash(enBlockHashes);
 
+  const existingFmBody = existingContent
+    ? parseFrontmatterAndBody(existingContent)
+        .frontmatter.replace(/^---\n/, "")
+        .replace(/\n---$/, "")
+    : "";
+  const oldBlockHashes = existingFmBody
+    ? parseBlockHashesFromFrontmatter(existingFmBody)
+    : {};
+
   const existingByLabel = new Map(
     (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
   );
@@ -598,12 +691,36 @@ async function translateChunkedFile(
       ? parseTargetSectionsByIndex(parseFrontmatterAndBody(existingContent).body, enDoc.blocks.length)
       : [];
 
+  // Use stored label order (from frontmatter) to map EN labels to target section positions.
+  // This handles the case where a new H2 section is inserted in the middle of the English
+  // source — without this, all target sections after the insertion would shift by one position
+  // and the wrong section content would be preserved (e.g. Tencent content replaced by Topaz).
+  const storedLabels = existingFmBody
+    ? parseBlockHashLabelOrderFromFrontmatter(existingFmBody)
+    : [];
+  const targetHeadingSections =
+    strategy === "heading_sections" && existingContent
+      ? parseHeadingSections(parseFrontmatterAndBody(existingContent).body)
+      : [];
+
   const slots: BlockSlot[] = enDoc.blocks.map((b, i) => {
     if (!force && !status.pendingBlocks.includes(b.label)) {
-      const content =
-        strategy === "heading_sections"
-          ? existingByIndex[i] ?? null
-          : existingByLabel.get(b.label) ?? null;
+      let content: string | null = null;
+
+      if (strategy === "heading_sections") {
+        // Match by stored label position (stable across insertions), not by EN index
+        const storedPos = storedLabels.indexOf(b.label);
+        if (storedPos >= 0 && storedPos < targetHeadingSections.length) {
+          content = targetHeadingSections[storedPos].content;
+        }
+        // Fallback to positional (works when target and EN section counts match)
+        if (!content?.trim()) {
+          content = existingByIndex[i] ?? null;
+        }
+      } else {
+        content = existingByLabel.get(b.label) ?? null;
+      }
+
       return { label: b.label, content: content?.trim() ? content : null };
     }
     return { label: b.label, content: null };
@@ -640,6 +757,8 @@ async function translateChunkedFile(
   const allMismatches: string[] = [];
   let blocksTranslated = 0;
   let frontmatterDirty = false;
+  const hashesForMeta: Record<string, string> = { ...enBlockHashes };
+  const failedLabels: string[] = [];
 
   let translatedFrontmatter = existingDoc?.frontmatter ?? "";
   if (force || status.needsFrontmatter) {
@@ -664,7 +783,7 @@ async function translateChunkedFile(
       slots,
       fileHash,
       enRel,
-      enBlockHashes,
+      hashesForMeta,
       strategy,
     );
   } else {
@@ -689,9 +808,12 @@ async function translateChunkedFile(
         : slot.label;
 
     console.log(`    Translating block: ${blockTag}...`);
-    const blockResult = IS_QWEN_MT
-      ? await translateWithQwenMT(enBlock.content, existingBlock, lang)
-      : await translateWithLLM(enBlock.content, existingBlock, lang, `${relPath}#${blockTag}`);
+    const blockResult = await translateBlockContent(
+      enBlock.content,
+      existingBlock,
+      lang,
+      `${relPath}#${blockTag}`
+    );
 
     let translatedBlock = cleanModelOutput(blockResult.content);
     translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
@@ -699,22 +821,35 @@ async function translateChunkedFile(
       translatedBlock = syncUpdateBlockDescription(translatedBlock, enBlock, lang.code);
     }
 
-    if (!validateTranslatedBlock(strategy, enBlock, translatedBlock)) {
-      console.log(`    [WARN] Block ${blockTag}: invalid output, keeping existing`);
-      translatedBlock = existingBlock.trim() ? existingBlock : enBlock.content;
+    const valid = validateTranslatedBlock(strategy, enBlock, translatedBlock, {
+      finishReason: blockResult.finishReason,
+    });
+
+    if (!valid) {
+      console.log(
+        `    [FAIL] Block ${blockTag}: truncated or invalid (finish_reason=${blockResult.finishReason ?? "n/a"}); leaving pending`
+      );
+      slot.content = existingBlock.trim() ? existingBlock : enBlock.content;
+      if (oldBlockHashes[slot.label]) {
+        hashesForMeta[slot.label] = oldBlockHashes[slot.label]!;
+      } else {
+        delete hashesForMeta[slot.label];
+      }
+      failedLabels.push(slot.label);
     } else {
+      slot.content = translatedBlock;
       blocksTranslated++;
     }
 
-    slot.content = translatedBlock;
     allMismatches.push(...blockResult.mismatches);
     await writeChunkedCheckpoint(
       targetPath,
       translatedFrontmatter,
       slots,
-      fileHash,
+      // Keep source hash as full EN aggregate only when nothing failed.
+      failedLabels.length === 0 ? fileHash : aggregateDocumentHash(hashesForMeta),
       enRel,
-      enBlockHashes,
+      hashesForMeta,
       strategy,
       blockTag
     );
@@ -723,13 +858,25 @@ async function translateChunkedFile(
   const output = serializeChunkedDocument(
     translatedFrontmatter,
     applyChangelogBlockLocalizations(slots, enDoc.blocks, lang.code),
-    fileHash,
+    failedLabels.length === 0 ? fileHash : aggregateDocumentHash(hashesForMeta),
     enRel,
-    enBlockHashes,
+    hashesForMeta,
     strategy
   );
   const didWork =
     blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter || status.needsReserialize;
+
+  if (failedLabels.length > 0) {
+    console.log(
+      `    [FAIL] ${failedLabels.length} block(s) still pending: ${failedLabels.join(", ")}`
+    );
+    return {
+      mismatches: allMismatches,
+      status: "failed",
+      blocksTranslated,
+      output,
+    };
+  }
 
   return {
     mismatches: allMismatches,
@@ -748,7 +895,7 @@ async function translateFile(
   lang: LangConfig,
   force: boolean,
   snippetsMode: boolean
-): Promise<{ mismatches: string[]; status: "translated" | "skipped" | "up-to-date"; blocksTranslated?: number }> {
+): Promise<{ mismatches: string[]; status: "translated" | "skipped" | "up-to-date" | "failed"; blocksTranslated?: number }> {
   const { enPath, targetPath, enRel } = makeMapping(lang, relPath, snippetsMode);
 
   const enContent = await readFileOr(enPath);
@@ -784,6 +931,15 @@ async function translateFile(
         mismatches: [],
         status: "up-to-date",
         blocksTranslated: 0,
+      };
+    }
+    if (chunked.status === "failed") {
+      await mkdir(dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, chunked.output);
+      return {
+        mismatches: chunked.mismatches,
+        status: "failed",
+        blocksTranslated: chunked.blocksTranslated,
       };
     }
     return {
@@ -1069,6 +1225,18 @@ async function runTranslatePhase(options: {
         if (result.mismatches.length > 0) {
           runMismatches.push({ enRel: relPath, lang: lang.code, issues: result.mismatches });
         }
+      } else if (result.status === "failed") {
+        failed++;
+        translatedJobs.push({ relPath, lang });
+        console.error(
+          `${tag} FAIL ${label}: truncated/invalid block(s); left pending for retry` +
+            (result.blocksTranslated != null
+              ? ` (${result.blocksTranslated} block(s) ok)`
+              : "")
+        );
+        if (result.mismatches.length > 0) {
+          runMismatches.push({ enRel: relPath, lang: lang.code, issues: result.mismatches });
+        }
       } else {
         skipped++;
         console.log(`${tag} SKIP ${label}`);
@@ -1129,6 +1297,10 @@ async function main() {
   const checkTruncation = args.includes("--check-truncation");
   const repairTruncated = args.includes("--repair-truncated");
   const syncDocsJsonOnly = args.includes("--sync-docs-json");
+  // Opt-in: translate used to always rewrite docs.json (path casing + locale
+  // nav mirror), which mixed unrelated nav diffs into single-file translate PRs
+  // (e.g. changelog-only). Sync only when explicitly requested.
+  const withDocsJsonSync = args.includes("--with-docs-json");
   const skipDocsJsonSync = args.includes("--no-sync-docs-json");
   const translateNavLabels = args.includes("--translate-nav-labels");
   const force = args.includes("--force") || repairTruncated;
@@ -1139,7 +1311,8 @@ async function main() {
     (a, i) => !a.startsWith("--") && args[i - 1] !== "--lang"
   );
   const phases = resolveTranslatePhases(snippetsOnly, pagesOnly, fileArgs);
-  const runDocsJsonAfter = !snippetsOnly && !skipDocsJsonSync;
+  const runDocsJsonAfter =
+    withDocsJsonSync && !snippetsOnly && !skipDocsJsonSync;
 
   if (syncDocsJsonOnly) {
     if (translateNavLabels && !API_KEY) {
