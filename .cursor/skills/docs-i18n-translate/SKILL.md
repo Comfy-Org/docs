@@ -18,14 +18,13 @@ Translate **Mintlify docs** (not CMS). English is source of truth; ja / zh / ko 
 ```
 index.mdx, changelog/index.mdx, …   ← English (edit here)
         │
-        ▼  pnpm translate
+        ▼  pnpm translate            ← MDX only (does NOT touch docs.json)
 {ja,zh,ko}/…                        ← translated MDX (commit to git)
 snippets/{ja,zh,ko}/…
         │
-        ▼  optional
-pnpm translate:sync-docs-json       ← mirror nav paths in docs.json
+        ▼  only if EN nav changed
+pnpm translate:sync-docs-json       ← mirror nav paths in docs.json (opt-in)
 ```
-
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
 ## Environment (`.env.local`)
@@ -55,7 +54,8 @@ Requires **Bun**.
 | `pnpm translate:repair-fences` | Append missing closing ``` (no API) |
 | `pnpm translate:repair-truncated -- --lang ko` | Re-translate flagged files |
 | `pnpm translate:sync-hash` | Refresh hashes after manual zh/ja/ko edits (no API) |
-| `pnpm translate:sync-docs-json` | Sync `docs.json` nav paths (labels preserved) |
+| `pnpm translate -- --with-docs-json` | Translate then sync `docs.json` nav (opt-in) |
+| `pnpm translate:sync-docs-json` | Sync `docs.json` nav paths only (labels preserved) |
 | `pnpm translate:sync-docs-json -- --translate-nav-labels` | Also translate new EN nav labels |
 | `pnpm glossary:sync` | Rebuild glossary from ComfyUI frontend |
 | `pnpm glossary:sync:dry-run` | Preview glossary sync |
@@ -115,6 +115,10 @@ pnpm translate -- changelog/index.mdx --lang zh
 | `heading_sections` | Long reference pages | `chunked_files` or `auto_chunk` (≥3k chars, ≥2 `##`) |
 | `update_blocks` | Changelog | `chunked_files` entry for `changelog/index.mdx` |
 
+Oversized individual `##` blocks (e.g. many Mintlify Tabs) are sub-chunked when
+they exceed `auto_chunk.max_block_chars` (default 6000): Tabs → `###` → fence-safe
+size splits. Invalid/truncated blocks stay pending (hash not updated).
+
 Checkpoints per block — safe to resume after interrupt.
 
 ```bash
@@ -156,7 +160,7 @@ When user updates English docs and needs translations:
 - [ ] After long pages, run `pnpm translate:check-truncation`
 - [ ] Commit translated MDX + updated `translationSourceHash` / `translationBlockHashes`
 - [ ] Do not commit `.github/i18n-logs/`
-- [ ] If nav structure changed, run `pnpm translate:sync-docs-json`
+- [ ] Do **not** expect `pnpm translate` to edit `docs.json`; if EN nav structure changed, run `pnpm translate:sync-docs-json` (or `--with-docs-json`) separately
 - [ ] Optional quality pass: skill `docs-i18n-review`
 
 ## Key files
