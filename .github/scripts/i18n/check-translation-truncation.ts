@@ -25,8 +25,13 @@ import {
   TRUNCATION_ISSUES_TXT,
 } from "./i18n-config.mjs";
 import {
+  countNonEmptyLines,
+  countTagCloses,
+  countTagOpens,
   missingSectionLabels,
   parseFrontmatterAndBody,
+  parseHeadingSections,
+  parseTargetSectionsByIndex,
   resolveChunkStrategy,
   type ChunkedFileConfig,
 } from "./chunked-translate.ts";
@@ -46,7 +51,7 @@ interface LangConfig {
 interface TranslationConfig {
   skip_paths: string[];
   chunked_files?: ChunkedFileConfig[];
-  auto_chunk?: { min_body_chars?: number; min_sections?: number };
+  auto_chunk?: { min_body_chars?: number; min_sections?: number; max_block_chars?: number };
   languages: LangConfig[];
 }
 
@@ -187,6 +192,42 @@ async function collectEnglishFiles(snippetsMode: boolean): Promise<string[]> {
     .filter((f) => isEnglishPagePath(f, pathFilterOpts));
 }
 
+function findTruncatedHeadingBlocks(
+  enBody: string,
+  targetBody: string
+): string[] {
+  const enBlocks = parseHeadingSections(enBody);
+  const targetSections = parseTargetSectionsByIndex(targetBody, enBlocks.length);
+  const bad: string[] = [];
+
+  for (let i = 0; i < enBlocks.length; i++) {
+    const en = enBlocks[i]!;
+    const tr = targetSections[i] ?? "";
+    if (!tr.trim()) continue;
+
+    const enTabs = countTagOpens(en.content, "Tab");
+    const trTabs = countTagOpens(tr, "Tab");
+    if (enTabs >= 2 && trTabs !== enTabs) {
+      bad.push(en.label);
+      continue;
+    }
+
+    const enWrappers = countTagOpens(en.content, "Tabs");
+    if (enWrappers > 0 && countTagCloses(tr, "Tabs") < enWrappers) {
+      bad.push(en.label);
+      continue;
+    }
+
+    const enLines = countNonEmptyLines(en.content);
+    const trLines = countNonEmptyLines(tr);
+    if (enLines >= 80 && trLines < enLines * 0.6) {
+      bad.push(en.label);
+    }
+  }
+
+  return bad;
+}
+
 export function detectTruncation(
   enContent: string,
   targetContent: string,
@@ -233,6 +274,10 @@ export function detectTruncation(
     if (missingSections.length > 0) {
       reasons.push("missing_sections");
     }
+    const truncatedBlocks = findTruncatedHeadingBlocks(enBody, targetBody);
+    if (truncatedBlocks.length > 0) {
+      reasons.push("truncated_block");
+    }
   }
 
   return reasons;
@@ -277,6 +322,12 @@ function formatDetail(
     const missing = missingSectionLabels(enBody, targetBody, "heading_sections");
     parts.push(
       `missing sections: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "..." : ""}`
+    );
+  }
+  if (reasons.includes("truncated_block")) {
+    const bad = findTruncatedHeadingBlocks(enBody, targetBody);
+    parts.push(
+      `truncated block(s): ${bad.slice(0, 5).join(", ")}${bad.length > 5 ? "..." : ""}`
     );
   }
   return parts.join("; ");
