@@ -3,6 +3,7 @@ import {
   blockHash,
   documentBlockHashes,
   getSectionSyncStatus,
+  mapTargetSectionsByStoredLabels,
   parseDocument,
   softSplitByBudget,
   splitByH3Subheadings,
@@ -91,6 +92,97 @@ describe("getSectionSyncStatus update_blocks", () => {
     );
     const status = getSectionSyncStatus(en, target, "update_blocks", false, "zh");
     expect(status.pendingBlocks).toEqual(["v0.26.0"]);
+  });
+});
+
+describe("getSectionSyncStatus heading_sections", () => {
+  function headingDoc(sections: Array<{ label: string; body: string }>): string {
+    return `---\ntitle: Test\n---\nIntro\n\n${sections
+      .map((section) => `## ${section.label}\n${section.body}`)
+      .join("\n\n")}\n`;
+  }
+
+  function translatedHeadingDoc(
+    enContent: string,
+    targetSections: Array<{ heading: string; body: string }>
+  ): string {
+    const enHashes = documentBlockHashes(parseDocument(enContent, "heading_sections").blocks);
+    const hashLines = Object.entries(enHashes)
+      .map(([label, hash]) => `  ${JSON.stringify(label)}: ${hash}`)
+      .join("\n");
+    return `---\ntitle: 测试\ntranslationBlockHashes:\n${hashLines}\n---\n简介\n\n${targetSections
+      .map((section) => `## ${section.heading}\n${section.body}`)
+      .join("\n\n")}\n`;
+  }
+
+  test("maps a changed section by label when another section is inserted", () => {
+    const oldEn = headingDoc([
+      { label: "Alpha", body: "A" },
+      { label: "Beta", body: "B" },
+    ]);
+    const en = headingDoc([
+      { label: "Alpha", body: "A updated" },
+      { label: "Inserted", body: "I" },
+      { label: "Beta", body: "B" },
+    ]);
+    const target = translatedHeadingDoc(oldEn, [
+      { heading: "阿尔法", body: "甲" },
+      { heading: "贝塔", body: "乙" },
+    ]);
+
+    const status = getSectionSyncStatus(en, target, "heading_sections", false, "zh");
+    expect(status.pendingBlocks).toEqual(["Alpha", "Inserted"]);
+
+    const targetByLabel = mapTargetSectionsByStoredLabels(
+      parseDocument(target, "heading_sections").blocks.map((b) => b.content).join("\n\n"),
+      ["_intro", "Alpha", "Beta"]
+    );
+    expect(targetByLabel.get("Alpha")).toContain("## 阿尔法");
+    expect(targetByLabel.get("Beta")).toContain("## 贝塔");
+    expect(targetByLabel.has("Inserted")).toBe(false);
+  });
+
+  test("marks every section pending when target body is missing sections", () => {
+    const en = headingDoc([
+      { label: "Alpha", body: "A" },
+      { label: "Beta", body: "B" },
+    ]);
+    const fullTarget = translatedHeadingDoc(en, [
+      { heading: "阿尔法", body: "甲" },
+      { heading: "贝塔", body: "乙" },
+    ]);
+    const truncatedTarget = fullTarget.replace(/\n\n## 贝塔[\s\S]*$/, "\n");
+
+    const status = getSectionSyncStatus(
+      en,
+      truncatedTarget,
+      "heading_sections",
+      false,
+      "zh"
+    );
+    expect(status.upToDate).toBe(false);
+    expect(status.pendingBlocks).toEqual(["_intro", "Alpha", "Beta"]);
+  });
+
+  test("re-serializes deletion and reorder without re-translating unchanged sections", () => {
+    const oldEn = headingDoc([
+      { label: "Alpha", body: "A" },
+      { label: "Removed", body: "R" },
+      { label: "Beta", body: "B" },
+    ]);
+    const en = headingDoc([
+      { label: "Beta", body: "B" },
+      { label: "Alpha", body: "A" },
+    ]);
+    const target = translatedHeadingDoc(oldEn, [
+      { heading: "阿尔法", body: "甲" },
+      { heading: "已删除", body: "删" },
+      { heading: "贝塔", body: "乙" },
+    ]);
+
+    const status = getSectionSyncStatus(en, target, "heading_sections", false, "zh");
+    expect(status.pendingBlocks).toEqual([]);
+    expect(status.needsReserialize).toBe(true);
   });
 });
 
