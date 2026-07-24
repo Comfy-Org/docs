@@ -133,6 +133,17 @@ Label translations:
 - **Skip pages already passing audit** (have `-1.webp` preview, `CardGroup cols={2}`, correct UTM, no `resolve/main` in HF links on page).
 - **Do not commit** unless explicitly asked.
 
+## Audit script
+
+`audit_workflows.py` checks tutorial MDX under `tutorials/` and `zh|ja|ko/tutorials/`:
+
+```bash
+python3 .cursor/skills/tutorial-workflow-standard/audit_workflows.py        # report only
+python3 .cursor/skills/tutorial-workflow-standard/audit_workflows.py --fix  # auto-fix webp misuse + empty Cards
+```
+
+Requires sibling repo `../workflow_templates/templates/index.json` for output URL lookups when fixing webp misuse.
+
 ## Already completed (skip unless still failing audit)
 
 - `tutorials/flux/flux-2-dev.mdx` (+ zh/ja/ko partial — sync i18n if EN-only)
