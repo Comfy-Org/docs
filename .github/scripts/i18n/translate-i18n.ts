@@ -86,12 +86,12 @@ import {
   changelogLabelHash,
   documentBlockHashes,
   getSectionSyncStatus,
+  mapTargetSectionsByStoredLabels,
   parseBlockHashLabelOrderFromFrontmatter,
   parseBlockHashesFromFrontmatter,
   parseDocument,
   parseFrontmatterAndBody,
   parseHeadingSections,
-  parseTargetSectionsByIndex,
   resolveChunkStrategy,
   serializeChunkedDocument,
   splitOversizedBlock,
@@ -686,10 +686,6 @@ async function translateChunkedFile(
   const existingByLabel = new Map(
     (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
   );
-  const existingByIndex =
-    strategy === "heading_sections" && existingContent
-      ? parseTargetSectionsByIndex(parseFrontmatterAndBody(existingContent).body, enDoc.blocks.length)
-      : [];
 
   // Use stored label order (from frontmatter) to map EN labels to target section positions.
   // This handles the case where a new H2 section is inserted in the middle of the English
@@ -698,32 +694,47 @@ async function translateChunkedFile(
   const storedLabels = existingFmBody
     ? parseBlockHashLabelOrderFromFrontmatter(existingFmBody)
     : [];
+  const targetBody = existingContent
+    ? parseFrontmatterAndBody(existingContent).body
+    : "";
   const targetHeadingSections =
     strategy === "heading_sections" && existingContent
-      ? parseHeadingSections(parseFrontmatterAndBody(existingContent).body)
+      ? parseHeadingSections(targetBody)
       : [];
-
-  const slots: BlockSlot[] = enDoc.blocks.map((b, i) => {
-    if (!force && !status.pendingBlocks.includes(b.label)) {
-      let content: string | null = null;
-
-      if (strategy === "heading_sections") {
-        // Match by stored label position (stable across insertions), not by EN index
-        const storedPos = storedLabels.indexOf(b.label);
-        if (storedPos >= 0 && storedPos < targetHeadingSections.length) {
-          content = targetHeadingSections[storedPos].content;
-        }
-        // Fallback to positional (works when target and EN section counts match)
-        if (!content?.trim()) {
-          content = existingByIndex[i] ?? null;
-        }
-      } else {
-        content = existingByLabel.get(b.label) ?? null;
+  const mappedByStoredLabel =
+    strategy === "heading_sections" && existingContent
+      ? mapTargetSectionsByStoredLabels(targetBody, storedLabels)
+      : new Map<string, string>();
+  const existingContentForLabel = new Map<string, string>();
+  if (strategy === "heading_sections") {
+    if (mappedByStoredLabel.size > 0) {
+      for (const [label, content] of mappedByStoredLabel) {
+        existingContentForLabel.set(label, content);
       }
-
-      return { label: b.label, content: content?.trim() ? content : null };
+    } else if (targetHeadingSections.length !== storedLabels.length) {
+      // Section count drift: positional seeding preserves already-translated blocks
+      // without borrowing content across a mismatched intro boundary.
+      storedLabels.forEach((label, index) => {
+        if (index < targetHeadingSections.length) {
+          existingContentForLabel.set(label, targetHeadingSections[index]!.content);
+        }
+      });
     }
-    return { label: b.label, content: null };
+  } else {
+    for (const [label, content] of existingByLabel) {
+      existingContentForLabel.set(label, content);
+    }
+  }
+  const pendingLabels = new Set(
+    force ? enDoc.blocks.map((b) => b.label) : status.pendingBlocks
+  );
+
+  // Keep old target content in pending slots until a replacement succeeds. This
+  // makes checkpoints non-destructive and prevents an interrupted run from
+  // dropping all blocks that had not been processed yet.
+  const slots: BlockSlot[] = enDoc.blocks.map((b) => {
+    const content = existingContentForLabel.get(b.label) ?? null;
+    return { label: b.label, content: content?.trim() ? content : null };
   });
 
   if (status.needsReserialize && status.pendingBlocks.length === 0) {
@@ -757,8 +768,24 @@ async function translateChunkedFile(
   const allMismatches: string[] = [];
   let blocksTranslated = 0;
   let frontmatterDirty = false;
-  const hashesForMeta: Record<string, string> = { ...enBlockHashes };
+  const hashesForMeta: Record<string, string> = {};
+  for (const slot of slots) {
+    if (!slot.content?.trim()) continue;
+    if (!pendingLabels.has(slot.label)) {
+      hashesForMeta[slot.label] = enBlockHashes[slot.label]!;
+    } else if (oldBlockHashes[slot.label]) {
+      hashesForMeta[slot.label] = oldBlockHashes[slot.label]!;
+    }
+  }
   const failedLabels: string[] = [];
+  const checkpointFileHash = (): string => {
+    const allCurrent = enDoc.blocks.every(
+      (b) =>
+        slots.find((s) => s.label === b.label)?.content?.trim() &&
+        hashesForMeta[b.label] === enBlockHashes[b.label]
+    );
+    return allCurrent ? fileHash : aggregateDocumentHash(hashesForMeta);
+  };
 
   let translatedFrontmatter = existingDoc?.frontmatter ?? "";
   if (force || status.needsFrontmatter) {
@@ -781,7 +808,7 @@ async function translateChunkedFile(
       targetPath,
       translatedFrontmatter,
       slots,
-      fileHash,
+      checkpointFileHash(),
       enRel,
       hashesForMeta,
       strategy,
@@ -792,13 +819,10 @@ async function translateChunkedFile(
 
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i]!;
-    if (slot.content !== null) continue;
+    if (!pendingLabels.has(slot.label)) continue;
 
     const enBlock = enDoc.blocks[i]!;
-    const existingBlock =
-      strategy === "heading_sections"
-        ? existingByIndex[i] ?? ""
-        : existingByLabel.get(slot.label) ?? "";
+    const existingBlock = existingContentForLabel.get(slot.label) ?? "";
 
     const blockTag =
       strategy === "heading_sections"
@@ -838,6 +862,7 @@ async function translateChunkedFile(
       failedLabels.push(slot.label);
     } else {
       slot.content = translatedBlock;
+      hashesForMeta[slot.label] = enBlockHashes[slot.label]!;
       blocksTranslated++;
     }
 
@@ -846,8 +871,7 @@ async function translateChunkedFile(
       targetPath,
       translatedFrontmatter,
       slots,
-      // Keep source hash as full EN aggregate only when nothing failed.
-      failedLabels.length === 0 ? fileHash : aggregateDocumentHash(hashesForMeta),
+      checkpointFileHash(),
       enRel,
       hashesForMeta,
       strategy,

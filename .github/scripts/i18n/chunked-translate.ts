@@ -6,8 +6,8 @@
  * - heading_sections: long pages — split on level-2 `##` headings
  *
  * Incremental sync stores per-block English hashes in frontmatter
- * (`translationBlockHashes`) keyed by stable English labels. Target files
- * are split by section index (headings are translated, so labels differ).
+ * (`translationBlockHashes`) keyed by stable English labels. Target headings
+ * are translated, so stored label order maps them back to their English keys.
  */
 
 import { createHash } from "crypto";
@@ -361,6 +361,34 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
   return sections.slice(0, enBlockCount);
 }
 
+/**
+ * Map localized target sections back to their stable English labels.
+ *
+ * Target H2 text is translated, so the labels stored in frontmatter are the
+ * only reliable identity. Refuse a partial positional mapping when the target
+ * section count differs from the stored label count. In that case, callers
+ * must treat the structure as incomplete and re-translate instead of borrowing
+ * content from a neighboring section.
+ */
+export function mapTargetSectionsByStoredLabels(
+  body: string,
+  storedLabels: string[]
+): Map<string, string> {
+  const targetSections = parseHeadingSections(body);
+  if (targetSections.length !== storedLabels.length) {
+    return new Map();
+  }
+
+  const introIndex = storedLabels.indexOf("_intro");
+  if (introIndex !== -1 && targetSections[introIndex]?.label !== "_intro") {
+    return new Map();
+  }
+
+  return new Map(
+    storedLabels.map((label, index) => [label, targetSections[index]!.content])
+  );
+}
+
 export function countH2Sections(body: string): number {
   let inFence = false;
   let count = 0;
@@ -654,19 +682,36 @@ export function getSectionSyncStatus(
   }
 
   const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
+  const targetByStoredLabel = mapTargetSectionsByStoredLabels(
+    parseFrontmatterAndBody(existingContent).body,
+    storedLabels
+  );
+  const targetStructureComplete =
+    storedLabels.length > 0 && targetByStoredLabel.size === storedLabels.length;
 
   const pendingBlocks = enDoc.blocks
-    .filter((b) => storedHashes[b.label] !== enHashes[b.label])
+    .filter(
+      (b) =>
+        !targetStructureComplete ||
+        !targetByStoredLabel.get(b.label)?.trim() ||
+        storedHashes[b.label] !== enHashes[b.label]
+    )
     .map((b) => b.label);
 
   const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
 
   return {
-    upToDate: pendingBlocks.length === 0 && !hasStructureDrift && !hasOrderDrift,
+    upToDate:
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      !hasStructureDrift &&
+      !hasOrderDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
     needsReserialize:
-      pendingBlocks.length === 0 && (hasStructureDrift || hasOrderDrift),
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      (hasStructureDrift || hasOrderDrift),
   };
 }
 
