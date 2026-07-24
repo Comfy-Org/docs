@@ -379,6 +379,11 @@ export function mapTargetSectionsByStoredLabels(
     return new Map();
   }
 
+  const introIndex = storedLabels.indexOf("_intro");
+  if (introIndex !== -1 && targetSections[introIndex]?.label !== "_intro") {
+    return new Map();
+  }
+
   return new Map(
     storedLabels.map((label, index) => [label, targetSections[index]!.content])
   );

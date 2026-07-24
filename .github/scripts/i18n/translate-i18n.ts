@@ -91,6 +91,7 @@ import {
   parseBlockHashesFromFrontmatter,
   parseDocument,
   parseFrontmatterAndBody,
+  parseHeadingSections,
   resolveChunkStrategy,
   serializeChunkedDocument,
   splitOversizedBlock,
@@ -693,15 +694,37 @@ async function translateChunkedFile(
   const storedLabels = existingFmBody
     ? parseBlockHashLabelOrderFromFrontmatter(existingFmBody)
     : [];
-  const targetByStoredLabel =
+  const targetBody = existingContent
+    ? parseFrontmatterAndBody(existingContent).body
+    : "";
+  const targetHeadingSections =
     strategy === "heading_sections" && existingContent
-      ? mapTargetSectionsByStoredLabels(
-          parseFrontmatterAndBody(existingContent).body,
-          storedLabels
-        )
-      : existingByLabel;
-  const existingContentForLabel =
-    strategy === "heading_sections" ? targetByStoredLabel : existingByLabel;
+      ? parseHeadingSections(targetBody)
+      : [];
+  const mappedByStoredLabel =
+    strategy === "heading_sections" && existingContent
+      ? mapTargetSectionsByStoredLabels(targetBody, storedLabels)
+      : new Map<string, string>();
+  const existingContentForLabel = new Map<string, string>();
+  if (strategy === "heading_sections") {
+    if (mappedByStoredLabel.size > 0) {
+      for (const [label, content] of mappedByStoredLabel) {
+        existingContentForLabel.set(label, content);
+      }
+    } else if (targetHeadingSections.length !== storedLabels.length) {
+      // Section count drift: positional seeding preserves already-translated blocks
+      // without borrowing content across a mismatched intro boundary.
+      storedLabels.forEach((label, index) => {
+        if (index < targetHeadingSections.length) {
+          existingContentForLabel.set(label, targetHeadingSections[index]!.content);
+        }
+      });
+    }
+  } else {
+    for (const [label, content] of existingByLabel) {
+      existingContentForLabel.set(label, content);
+    }
+  }
   const pendingLabels = new Set(
     force ? enDoc.blocks.map((b) => b.label) : status.pendingBlocks
   );
