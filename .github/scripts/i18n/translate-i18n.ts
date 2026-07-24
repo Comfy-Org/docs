@@ -713,10 +713,9 @@ async function translateChunkedFile(
         if (storedPos >= 0 && storedPos < targetHeadingSections.length) {
           content = targetHeadingSections[storedPos].content;
         }
-        // Fallback to positional (works when target and EN section counts match)
-        if (!content?.trim()) {
-          content = existingByIndex[i] ?? null;
-        }
+        // No fallback to positional — a new block not in storedLabels is genuinely new
+        // (e.g. an H2 section inserted between existing ones). Positional fallback
+        // would pull content from the wrong section, creating duplicates and misalignment.
       } else {
         content = existingByLabel.get(b.label) ?? null;
       }
