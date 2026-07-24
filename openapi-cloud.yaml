@@ -936,15 +936,17 @@ paths:
     post:
       tags:
         - asset
-      summary: Upload a new asset
+      summary: Create a new asset
       description: |
-        Uploads a new asset to the system with associated metadata.
-        Supports two upload methods:
-        1. Direct file upload (multipart/form-data)
-        2. URL-based upload (application/json with source: "url")
+        Creates a new asset from a direct file upload (`multipart/form-data`) with associated metadata.
 
-        If an asset with the same hash already exists, returns the existing asset.
-      operationId: uploadAsset
+        URL-based asset creation is not supported on this endpoint. Use `POST /api/assets/download`
+        for Hugging Face or Civitai URLs, or `GET /api/assets/remote-metadata` to preview remote
+        metadata before downloading.
+
+        If an asset with the same hash already exists for this user, returns the existing asset
+        (`created_new=false`, HTTP 200) instead of creating a duplicate.
+      operationId: createAsset
       requestBody:
         required: true
         content:
@@ -958,11 +960,13 @@ paths:
                   type: string
                   format: binary
                   description: The asset file to upload
+                hash:
+                  type: string
+                  description: Content hash of the file.
+                  pattern: '^(blake3|sha256):[a-f0-9]{64}$'
                 tags:
-                  type: array
-                  items:
-                    type: string
-                  description: Freeform tags for the asset. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
+                  type: string
+                  description: JSON-encoded array of freeform tag strings, e.g. '["models","checkpoint"]'. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
                 id:
                   type: string
                   format: uuid
@@ -980,66 +984,29 @@ paths:
                 user_metadata:
                   type: string
                   description: Custom JSON metadata as a string
-          application/json:
-            schema:
-              type: object
-              required:
-                - url
-                - name
-              properties:
-                url:
-                  type: string
-                  format: uri
-                  description: HTTP/HTTPS URL to download the asset from
-                name:
-                  type: string
-                  description: Display name for the asset (used to determine file extension)
-                tags:
-                  type: array
-                  items:
-                    type: string
-                  description: Freeform tags for the asset. Common types include "models", "input", "output", and "temp", but any tag can be used in any order.
-                user_metadata:
-                  type: object
-                  additionalProperties: true
-                  description: Custom metadata to store with the asset
-                preview_id:
-                  type: string
-                  format: uuid
-                  description: Optional preview asset ID
       responses:
-        '201':
-          description: Asset created successfully
+        '200':
+          description: |
+            Asset already existed for this user (deduplicated by content hash); the
+            existing asset is returned with created_new=false.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssetCreated'
-        '200':
-          description: Asset already exists (returned existing asset)
+        '201':
+          description: Asset created successfully (created_new=true)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AssetCreated'
         '400':
-          description: Invalid request (bad file, invalid URL, invalid content type, etc.)
+          description: Invalid request (bad file, invalid content type, non-multipart body, etc.)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '403':
-          description: Source URL requires authentication or access denied
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Source URL not found
           content:
             application/json:
               schema:
@@ -1057,7 +1024,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: Download failed due to network error or timeout
+          description: Validation error (e.g., disallowed model_type tag)
           content:
             application/json:
               schema:
@@ -1174,7 +1141,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AssetMetadataResponse'
         '400':
-          description: Invalid URL or missing required parameter
+          description: Invalid URL, missing required parameter, or unsupported source (error codes may include `INVALID_URL_FORMAT` or `UNSUPPORTED_SOURCE`)
           content:
             application/json:
               schema:
@@ -1221,7 +1188,7 @@ paths:
                 source_url:
                   type: string
                   format: uri
-                  description: URL of the file to download (must be from huggingface.co or civitai.com)
+                  description: URL of the file to download (must be from huggingface.co, civitai.com, or civitai.red)
                   example: "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned.safetensors"
                 tags:
                   type: array
