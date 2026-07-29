@@ -90,7 +90,7 @@ def find_example_output_blocks(text: str) -> list[tuple[int, int]]:
             if idx == -1:
                 break
             rest = text[idx + len(marker) :]
-            end_match = re.search(r"\n(?:## |### |\*\*[A-Z])", rest)
+            end_match = re.search(r"\n(?:## |### |\*\*[^\s*])", rest)
             block_end = idx + len(marker) + (end_match.start() if end_match else len(rest))
             blocks.append((idx, block_end))
             start = idx + len(marker)
@@ -175,8 +175,11 @@ def main() -> None:
     args = parser.parse_args()
 
     templates = load_templates()
-    if not templates and args.fix:
-        print(f"warn: index not found at {INDEX_PATH}, webp fixes may be limited")
+    if args.fix and not INDEX_PATH.exists():
+        parser.error(
+            f"workflow_templates index not found at {INDEX_PATH}; "
+            "refusing to run --fix (expected a sibling checkout at ../workflow_templates)"
+        )
 
     webp_issues: list[str] = []
     card_issues: list[str] = []

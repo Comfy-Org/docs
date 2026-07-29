@@ -4,9 +4,11 @@ Apply to any MDX tutorial page that links to `cloud.comfy.org/?template=` or `wo
 
 ## Source of truth for template metadata
 
-- Index: `/Users/linmoumou/Documents/comfy/workflow_templates/templates/index.json`
-- Local templates JSON: `/Users/linmoumou/Documents/comfy/workflow_templates/templates/{name}.json`
-- Manifest (webp filenames): `/Users/linmoumou/Documents/comfy/workflow_templates/packages/core/src/comfyui_workflow_templates_core/manifest.json`
+The `Comfy-Org/workflow_templates` repo is expected as a sibling checkout next to this docs repo (same layout `audit_workflows.py` assumes: `Path(__file__).resolve().parents[3].parent / "workflow_templates"`).
+
+- Index: `../workflow_templates/templates/index.json`
+- Local templates JSON: `../workflow_templates/templates/{name}.json`
+- Manifest (webp filenames): `../workflow_templates/packages/core/src/comfyui_workflow_templates_core/manifest.json`
 
 For each `template` name referenced on a page, look up `name`, `title`, `description`, `io.inputs`, `io.outputs`, `thumbnail`, `thumbnailVariant` in `index.json`.
 
