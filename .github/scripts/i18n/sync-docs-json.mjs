@@ -120,6 +120,11 @@ export function normalizeNavTree(nodes, options = {}) {
       const pages = normalizeNavTree(node.pages, options);
       if (pages.length === 0 && pruneMissing) continue;
       out.push({ ...node, pages });
+      continue;
+    }
+    // Groups that render an OpenAPI spec have no `pages` of their own.
+    if (node && typeof node === "object" && node.openapi != null) {
+      out.push(node);
     }
   }
   return out;
@@ -161,6 +166,9 @@ export function localizeNavTree(nodes, langDir, langDirs) {
         ...node,
         pages: localizeNavTree(node.pages, langDir, langDirs),
       };
+    }
+    if (node && typeof node === "object" && node.openapi != null) {
+      return { ...node, openapi: localizeOpenApi(node.openapi, langDir) };
     }
     return node;
   });
@@ -242,6 +250,27 @@ function findGroupMatch(existingPages, newChild, langDirs) {
   return best;
 }
 
+/** @param {unknown} openapi */
+function openApiSpecKey(openapi) {
+  if (typeof openapi === "string") return openapi;
+  if (openapi && typeof openapi === "object" && typeof openapi.source === "string") {
+    return openapi.source;
+  }
+  return null;
+}
+
+/** @param {unknown[]} existingPages @param {object} newChild */
+function findOpenApiMatch(existingPages, newChild) {
+  if (!Array.isArray(existingPages)) return null;
+  const key = openApiSpecKey(newChild.openapi);
+  if (!key) return null;
+  for (const node of existingPages) {
+    if (typeof node === "string" || !node) continue;
+    if (openApiSpecKey(node.openapi) === key) return node;
+  }
+  return null;
+}
+
 /**
  * @param {unknown[]} newPages
  * @param {unknown[]} existingPages
@@ -251,7 +280,15 @@ export function mergeNavPages(newPages, existingPages, langDirs) {
   if (!Array.isArray(newPages)) return [];
   return newPages.map((newChild) => {
     if (typeof newChild === "string") return newChild;
-    if (!newChild?.pages) return newChild;
+    if (!newChild?.pages) {
+      // OpenAPI groups have no pages to match on; key them by spec instead so a
+      // localized title survives the sync.
+      if (newChild?.openapi != null) {
+        const match = findOpenApiMatch(existingPages, newChild);
+        if (match?.group) return { ...newChild, group: match.group };
+      }
+      return newChild;
+    }
 
     const match = findGroupMatch(existingPages, newChild, langDirs);
     const merged = { ...newChild };
