@@ -180,7 +180,10 @@ npm run glossary:sync -- --lang ko    # 单一语言
 npm run glossary:sync:dry-run         # 仅报告数量，不写入
 ```
 
-前端 locale 路径按以下顺序解析：`--frontend <path>` → `FRONTEND_LOCALES_PATH` 环境变量 → `translation-config.json` 中的 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`。
+前端 locale 来源按以下顺序解析：
+
+- **在线（默认）：** `translation-config.json` 中的 `frontend_locales_url`（GitHub raw `main` 分支）。可用 `FRONTEND_LOCALES_URL` 或 `--frontend-url <url>` 覆盖。
+- **本地（可选）：** `--frontend <path>` 或 `FRONTEND_LOCALES_PATH`，用于离线或 fork 的 checkout。
 
 #### 添加新语言
 
