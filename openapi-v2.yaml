@@ -1,0 +1,1000 @@
+# Comfy API v2 — public specification.
+#
+# GENERATED ONE-WAY — DO NOT HAND-EDIT.
+# Projected automatically from the canonical Comfy API v2 contract and
+# synced by CI. Change the upstream contract, not this public copy.
+
+openapi: 3.0.3
+info:
+  title: Comfy API v2
+  version: 2.0.0
+  description: "The official, versioned HTTP API for running ComfyUI workflows from\nexternal applications: upload inputs, submit a workflow, observe\nexecution, retrieve results.\n\nDesign principles:\n- **Poll-first.** Every capability is reachable via plain GET polling;\n  the SSE stream is a live enhancement, never the source of truth.\n- **Everything is resumable.** Submission is idempotent; job state and\n  outputs are retrievable by ID until `expires_at`.\n- **UUID identity, content-addressed dedup.** Assets are UUID-identified\n  records over blobs keyed by a server-computed blake3 hash. The hash is\n  nullable and may be computed lazily.\n- **Follow links, don't build URLs.** Responses embed follow-up URLs.\n\nAdditive changes only within v2; breaking changes require v3.\n"
+servers:
+- url: http://127.0.0.1:8189
+  description: Self-hosted (comfy-api-proxy)
+- url: https://cloud.comfy.org
+  description: Comfy Cloud
+- url: https://{deployment}.comfy.org
+  description: Serverless deployment (URL shape not final)
+  variables:
+    deployment:
+      default: my-deployment
+security:
+- bearerAuth: []
+- {}
+tags:
+- name: assets
+  description: UUID-identified records over content-addressed blobs.
+- name: jobs
+  description: One execution of a workflow — durable, pollable, cancelable.
+paths:
+  /api/v2/assets:
+    post:
+      operationId: postAssets
+      tags:
+      - assets
+      summary: Upload an asset (single-call multipart)
+      description: 'Single-call `multipart/form-data` upload. The platform streams the
+
+        bytes through its trusted byte-path, dedups by the server-computed
+
+        hash, and mints the asset record.
+
+
+        The blake3 hash is always computed server-side from the received
+
+        bytes — a client-declared `expected_hash` is verified, never trusted.
+
+        The uploaded asset is referenceable immediately; any content scanning
+
+        runs in the background and does not block the response.
+
+
+        ~100 MB single-request expectation for v1; chunked/resumable large
+
+        uploads are a deliberate open question.
+
+        '
+      x-streaming-upload: true
+      x-idempotency-key: recommended
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              - content_type
+              - file_path
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The raw bytes.
+                content_type:
+                  type: string
+                  example: image/png
+                file_path:
+                  type: string
+                  description: Placement path / filename (global-namespace-root form, e.g. `photo.png` or `models/checkpoints/x.safetensors`).
+                  example: photo.png
+                expected_hash:
+                  type: string
+                  description: Optional client-computed blake3 (`blake3:<hex>`). Verified against the server-computed hash; mismatch is rejected with 409 `hash_mismatch` and no asset is minted.
+                  example: blake3:9f8a1c0d...
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Category tags (e.g. `input`).
+      responses:
+        '201':
+          description: New blob stored; asset minted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '200':
+          description: Bytes deduped to an existing blob; asset minted over it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`hash_mismatch`.'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: '`idempotency_key_reuse` or validation failure.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/assets/from-hash:
+    post:
+      operationId: assetFromHash
+      tags:
+      - assets
+      summary: Mint an asset over existing bytes (dedup fast-path)
+      description: 'Zero-byte fast-path: mints a new asset UUID over a blob the platform
+
+        already has, identified by its blake3 hash.
+
+
+        Trust boundary: resolves only against blobs the platform itself
+
+        ingested and hashed, and only those the calling account is authorized
+
+        to use — the client hash is a lookup key, never an authority to
+
+        register new content. A miss and "exists but not yours" are
+
+        deliberately indistinguishable (`404` `blob_not_found`).
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - hash
+              properties:
+                hash:
+                  type: string
+                  example: blake3:9f8a1c0d...
+                file_path:
+                  type: string
+                  example: photo.png
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Asset minted over the existing blob.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '200':
+          description: An identical reference already existed; returned as-is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`blob_not_found` — no blob the caller may mint from.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/assets/by-hash/{hash}:
+    head:
+      operationId: headAssetByHash
+      tags:
+      - assets
+      summary: Existence check for a blob by blake3 hash
+      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes.'
+      parameters:
+      - $ref: '#/components/parameters/BlakeHash'
+      responses:
+        '200':
+          description: Blob present and mintable by the caller.
+        '404':
+          description: No blob the caller may mint from.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/assets/{id}:
+    get:
+      operationId: getAsset
+      tags:
+      - assets
+      summary: Asset metadata
+      description: Returns the asset object with a fresh short-lived `url` for the content. Re-fetching always yields fresh URLs.
+      parameters:
+      - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: The asset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/assets/{id}/content:
+    get:
+      operationId: getAssetContent
+      tags:
+      - assets
+      summary: Asset bytes
+      description: 'Serves the bytes directly on surfaces where the platform stores blobs
+
+        itself (self-hosted); on Cloud and serverless issues a `302` to a
+
+        fresh signed URL. Range requests are supported for resumable
+
+        downloads of large outputs.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - name: Range
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Standard HTTP range, e.g. `bytes=0-1048575`.
+      responses:
+        '200':
+          description: The full content.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Partial content for a ranged request.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '302':
+          description: Redirect to a fresh signed URL (Cloud / serverless).
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          description: Range not satisfiable.
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs:
+    post:
+      operationId: postJobs
+      tags:
+      - jobs
+      summary: Submit a workflow for execution
+      description: 'Accepts the API-format workflow graph verbatim. Validation is
+
+        synchronous: graph structure, unknown node classes, and asset
+
+        references (`core/ASSET` objects — every referenced `id` must exist
+
+        and be owned by the caller). A `201` means the job is durably
+
+        recorded and queued.
+
+
+        UI-format workflow JSON (the export with `nodes`/`links`) is
+
+        rejected with `workflow_format_ui`.
+
+
+        `Idempotency-Key` is single-use (reject-on-duplicate, NOT
+
+        record-and-replay): the first request to present a given key is
+
+        processed normally; ANY later request presenting the same key — a
+
+        retry, a concurrent duplicate, or a same-key request with a different
+
+        body — is rejected `422` `idempotency_key_reuse` and is never
+
+        re-executed. The key is claimed only for a request that actually
+
+        reaches submission and is released if that submission definitively
+
+        fails without creating a job (a validation error, or an upstream
+
+        reject such as out-of-credits or queue-full), so a legitimate retry
+
+        with the same key can proceed. If a submission''s outcome is unknown
+
+        (an upstream timeout or 5xx where the job may or may not have been
+
+        created), the key stays claimed and the retry is rejected: poll or
+
+        list your jobs to find the possibly-created job rather than
+
+        resubmitting. Keys expire after 24h. There is no response replay and
+
+        no `Idempotency-Replayed` header.
+
+
+        Reserved for post-MVP and rejected if present today: `webhook_url`,
+
+        `inputs`.
+
+        '
+      x-idempotency-key: recommended
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - workflow
+              properties:
+                workflow:
+                  type: object
+                  description: API-format workflow graph, verbatim.
+                  additionalProperties: true
+                extra_data:
+                  type: object
+                  description: 'Per-prompt ComfyUI `extra_data`, same shape as Comfy Cloud and local ComfyUI. Closed object: only the enumerated keys are accepted, keeping the contract fully typed. Forwarded to the worker per-prompt, never persisted, and excluded from idempotency comparison.'
+                  additionalProperties: false
+                  properties:
+                    api_key_comfy_org:
+                      type: string
+                      description: API key for partner (API) nodes.
+      responses:
+        '201':
+          description: Job created and queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          description: '`insufficient_credits` (Cloud / serverless only).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: '`invalid_workflow` (with per-node details), `workflow_format_ui`, `missing_asset`, or `idempotency_key_reuse`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          description: '`queue_full` (bounded queue depth reached) or, on deployment-scoped surfaces, `deployment_not_ready` (deployment still provisioning/starting). Disambiguate by `error.code`; both mean back off and retry after `Retry-After`.'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs/{id}:
+    get:
+      operationId: getJob
+      tags:
+      - jobs
+      summary: Job status (the polling workhorse)
+      description: 'Returns the full job object: current status, the latest progress
+
+        snapshot, and every output committed so far (`outputs` populates
+
+        incrementally while the job runs). This is the authoritative,
+
+        resumable view of a job; everything on the SSE stream is derived
+
+        from it.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs/{id}/events:
+    get:
+      operationId: getJobEvents
+      tags:
+      - jobs
+      summary: Live event stream (SSE)
+      description: 'Server-Sent Events stream of the job''s live state. On connect the
+
+        client receives the current snapshot (a `status` event, the latest
+
+        `progress`, and the most recent `preview` if any), then future
+
+        updates. The stream ends after the terminal `status` event.
+
+
+        Live push only — NOT a replayable log: events carry no `id`, there
+
+        is no `Last-Event-ID` resume, and frames emitted while disconnected
+
+        are gone. Each `progress` event is a complete snapshot, so a single
+
+        one fully re-syncs a reconnecting client; the authoritative state is
+
+        always `GET /api/v2/jobs/{id}`.
+
+        '
+      x-sse-events:
+        status:
+          description: Every lifecycle transition, including the initial state on connect and queue_position updates while queued.
+          schema: '#/components/schemas/StatusEvent'
+        progress:
+          description: Node- and step-level progress, throttled server-side (~2/s). Complete snapshot per event.
+          schema: '#/components/schemas/Progress'
+        preview:
+          description: In-progress preview image (JPEG, base64), throttled; server keeps only the most recent, pushed on connect.
+          schema: '#/components/schemas/PreviewEvent'
+        output:
+          description: 'Emitted the moment each output asset is committed, carrying the same `Output` object that appears on `job.outputs[]`. A latency optimization only: it lets a client render each result as it lands instead of waiting for the terminal `status` event. It is delivered best-effort over the live broadcast path — an output whose durable asset record is not yet resolvable when its node finishes may be delivered on a slightly later event or, failing that, only in the terminal `status` snapshot — so the authoritative, complete set of outputs is always `job.outputs[]` on `GET /api/v2/jobs/{id}` and on the terminal `status` event. A client must therefore treat these as additive hints and must not assume it receives one per output.'
+          schema: '#/components/schemas/Output'
+        log:
+          description: Selected execution log lines. Best-effort diagnostics; the one event type with no snapshot equivalent. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet.
+          x-sse-not-yet-emitted: true
+          schema: '#/components/schemas/LogEvent'
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: SSE stream; see `x-sse-events` for the event catalog.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Stream of `event:`/`data:` frames. Data payloads are the JSON schemas listed in x-sse-events.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: '`too_many_streams` — the caller already has the maximum number of concurrent GET .../events streams open. Close an existing stream (or wait for one to reach a terminal status) before opening another; GET /api/v2/jobs/{id} remains available as a plain poll regardless of this limit.'
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '501':
+          description: '`not_implemented` — this deployment does not yet serve live event streaming. GET /api/v2/jobs/{id} remains available as a plain poll in the meantime.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      tags:
+      - jobs
+      summary: Request cancellation
+      description: 'Requests cancellation and returns the current job object —
+
+        `canceling` (interruption takes effect at node/step boundaries) or
+
+        already-terminal. Idempotent: canceling a finished job is a no-op
+
+        returning the terminal state. On serverless, GPU seconds consumed
+
+        before the interrupt takes effect are still billed.
+
+        '
+      x-retryable: true
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Current job state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: '`Authorization: Bearer <api-key>` — account-scoped API keys on Cloud and serverless. Self-hosted accepts unauthenticated requests by default and can be configured with a static bearer token.'
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: 'Client-generated UUID (recommended). Single-use: the first request to present a key is processed; any later request with the same key is rejected `422` `idempotency_key_reuse` (reject-on-duplicate, no response replay). Keys expire after 24h.'
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: job_01JZTGXW9Q2M4R8V0B1N3P5D7F
+    AssetId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+    BlakeHash:
+      name: hash
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Content hash, written `blake3:<hex>`.
+      example: blake3:9f8a1c0d...
+  headers:
+    RetryAfter:
+      schema:
+        type: integer
+      description: Seconds to wait before retrying.
+  responses:
+    Unauthorized:
+      description: '`unauthorized` — missing or invalid credentials.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: '`forbidden` — authenticated but not allowed.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: '`not_found`.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UpstreamError:
+      description: '`upstream_error` — an unexpected failure reaching or processing the request in this implementation''s backing services. The message is always a generic, safe-to-display string; implementation detail (the specific upstream, its error text, transport failures) is never included here — see each implementation''s own error-mapping notes. Every operation in this contract can fail this way.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: '`rate_limited` — the caller has exceeded the request rate limit for this account. Account/rate-scoped, not job-specific — this can be returned even for a job id the caller doesn''t own or that doesn''t exist, without revealing which.'
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    Asset:
+      type: object
+      description: 'A user-owned record identified by a server-assigned UUID, backing an immutable blob whose content carries a server-computed blake3 hash. `hash` may be computed lazily: an asset record (and its retrievable bytes) can exist before its hash is filled in.'
+      required:
+      - id
+      - hash
+      - size_bytes
+      - content_type
+      - created_at
+      - url
+      - url_expires_at
+      properties:
+        id:
+          type: string
+          example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+        hash:
+          type: string
+          nullable: true
+          description: '`blake3:<hex>`; null while lazily computed.'
+          example: blake3:9f8a1c0d...
+        size_bytes:
+          type: integer
+          format: int64
+          example: 4816293
+        content_type:
+          type: string
+          example: image/png
+        file_path:
+          type: string
+          nullable: true
+          example: photo.png
+        created_new:
+          type: boolean
+          description: 'On create responses: distinguishes a brand-new blob (true) from a dedup hit against bytes the platform already had (false).'
+        created_at:
+          type: string
+          format: date-time
+        url:
+          type: string
+          format: uri
+          description: Short-lived content URL (signed, or proxy-served).
+        url_expires_at:
+          type: string
+          format: date-time
+    Job:
+      type: object
+      description: One execution of a workflow. Durable from creation until `expires_at`; `outputs` populates incrementally during execution.
+      required:
+      - id
+      - status
+      - created_at
+      - started_at
+      - completed_at
+      - expires_at
+      - queue_position
+      - progress
+      - outputs
+      - error
+      - urls
+      properties:
+        id:
+          type: string
+          example: job_01JZTGXW9Q2M4R8V0B1N3P5D7F
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          description: Retention deadline — a platform property, not an API constant.
+        queue_position:
+          type: integer
+          nullable: true
+        progress:
+          allOf:
+          - $ref: '#/components/schemas/Progress'
+          nullable: true
+          description: The latest progress snapshot; same data the SSE stream pushes.
+        outputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Output'
+        error:
+          allOf:
+          - $ref: '#/components/schemas/JobError'
+          nullable: true
+        metrics:
+          type: object
+          description: 'Values are nullable (a metric not yet available — e.g. `execution_ms` before a job starts running — is `null`, not omitted); the example below is deliberately all-non-null purely to work around a Spectral/nimma lint-tooling crash on a literal `null` inside a schema `example` combined with `additionalProperties.nullable: true` — the schema itself is unchanged and still allows null values at runtime.'
+          additionalProperties:
+            type: integer
+            nullable: true
+          example:
+            queue_ms: 9000
+            execution_ms: 42000
+        urls:
+          $ref: '#/components/schemas/JobUrls'
+    JobStatus:
+      type: string
+      enum:
+      - queued
+      - running
+      - succeeded
+      - canceling
+      - canceled
+      - failed
+      - expired
+      description: 'Lifecycle: queued → running → succeeded | failed | expired;
+
+        a cancel request moves running → canceling → canceled.
+
+        Terminal states: succeeded, canceled, failed, expired.
+
+        '
+    JobUrls:
+      type: object
+      description: Embedded follow-up links — follow these, don't build URLs. A link is either an absolute URL or a host-relative reference (leading `/`) that already includes any prefix the serving surface is mounted under (e.g. a serverless gateway's `/deployment/{deployment_id}/api/v2`). Clients MUST resolve a host-relative link against the request origin (scheme + authority), never against a configured base URL — joining it to a base URL that carries the same mount prefix duplicates the prefix.
+      required:
+      - self
+      - events
+      - cancel
+      properties:
+        self:
+          type: string
+          format: uri-reference
+        events:
+          type: string
+          format: uri-reference
+        cancel:
+          type: string
+          format: uri-reference
+    Progress:
+      type: object
+      description: Server-computed progress snapshot (node-count and sampler-step weighted). Complete per snapshot — one fully re-syncs a client.
+      required:
+      - value
+      - nodes_done
+      - nodes_total
+      properties:
+        value:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Overall fraction, server-computed.
+          example: 0.42
+        nodes_done:
+          type: integer
+          example: 11
+        nodes_total:
+          type: integer
+          example: 31
+        current_node:
+          type: string
+          nullable: true
+          example: '12'
+        current_node_class:
+          type: string
+          nullable: true
+          example: KSampler
+        step:
+          type: integer
+          nullable: true
+          example: 21
+        steps:
+          type: integer
+          nullable: true
+          example: 50
+        message:
+          type: string
+          nullable: true
+          example: KSampler 21/50
+    Output:
+      type: object
+      description: 'A committed job output. Outputs are assets: `id` is the asset UUID, retrievable via GET /api/v2/assets/{id} for as long as the job is retained. `hash` is lazily computed and may be null on the retrieval hot path.'
+      required:
+      - node_id
+      - name
+      - type
+      - content_type
+      - size_bytes
+      - id
+      - hash
+      - url
+      - url_expires_at
+      properties:
+        node_id:
+          type: string
+          example: '9'
+        name:
+          type: string
+          example: ComfyUI_00001_.png
+        type:
+          $ref: '#/components/schemas/OutputType'
+        content_type:
+          type: string
+          example: image/png
+        size_bytes:
+          type: integer
+          format: int64
+          example: 1848320
+        id:
+          type: string
+          description: Asset UUID.
+          example: asset_01JZV9R4N8...
+        hash:
+          type: string
+          nullable: true
+          description: '`blake3:<hex>`; null until lazily computed.'
+        url:
+          type: string
+          format: uri
+        url_expires_at:
+          type: string
+          format: date-time
+    OutputType:
+      type: string
+      enum:
+      - image
+      - video
+      - audio
+      - text
+      - file
+      - latent
+      description: Normalized output kind — nothing silently dropped.
+    JobError:
+      type: object
+      description: Execution failure detail, carried in `job.error` (not an HTTP error).
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          example: node_execution_error
+        message:
+          type: string
+        node_id:
+          type: string
+          nullable: true
+        class_type:
+          type: string
+          nullable: true
+        traceback:
+          type: string
+          nullable: true
+    ErrorEnvelope:
+      type: object
+      description: 'Shared error envelope with machine-readable codes. Core codes (v1):
+
+        `invalid_workflow` (422), `workflow_format_ui` (422),
+
+        `missing_asset` (422), `hash_mismatch` (409), `blob_not_found`
+
+        (404), `idempotency_key_reuse` (422),
+
+        `queue_full` (429 + Retry-After), `insufficient_credits` (402),
+
+        `not_found` (404), `unauthorized` (401), `forbidden` (403).
+
+        Deployment-scoped surfaces add: `deployment_not_ready` (429 +
+
+        Retry-After — the deployment can still reach ready; retry) and
+
+        `deployment_stopped` (422 — terminal deployment state; a retry
+
+        cannot succeed without operator action). A 429 is disambiguated
+
+        by `error.code` alone; clients should treat any 429 + Retry-After
+
+        as "back off and retry".
+
+        '
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              example: invalid_workflow
+            message:
+              type: string
+              example: 'Node 12 (KSampler): required input ''model'' is not connected'
+            details:
+              type: object
+              nullable: true
+              additionalProperties: true
+              example:
+                node_errors:
+                  '12':
+                  - field: model
+                    reason: missing_input
+    StatusEvent:
+      type: object
+      description: SSE `status` event payload.
+      required:
+      - status
+      properties:
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        queue_position:
+          type: integer
+          nullable: true
+    PreviewEvent:
+      type: object
+      description: SSE `preview` event payload (JPEG, base64, throttled).
+      required:
+      - node_id
+      - content_type
+      - data_base64
+      properties:
+        node_id:
+          type: string
+        content_type:
+          type: string
+          example: image/jpeg
+        data_base64:
+          type: string
+    LogEvent:
+      type: object
+      description: SSE `log` event payload. Best-effort diagnostics.
+      required:
+      - level
+      - message
+      properties:
+        level:
+          type: string
+          example: info
+        message:
+          type: string
+    AssetReference:
+      type: object
+      description: "The typed asset-reference object placed inside workflow JSON where a\nfilename would normally go (documented here for tooling; it is not a\nrequest/response body itself):\n\n    {\"__type\": \"core/ASSET\",\n     \"info\": {\"id\": \"asset_...\", \"hash\": \"blake3:...\",\n              \"file_path\": \"photo.png\"}}\n\n`info.id` (the asset UUID) is required in v1 and authoritative;\n`hash` and `file_path` are optional staging/lookup hints and never\noverride a present `id`. A malformed reference or one that is not\nresolvable/owned by the caller fails submission with 422\n`missing_asset`.\n"
+      required:
+      - __type
+      - info
+      properties:
+        __type:
+          type: string
+          enum:
+          - core/ASSET
+        info:
+          type: object
+          required:
+          - id
+          properties:
+            id:
+              type: string
+              example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+            hash:
+              type: string
+              example: blake3:9f8a1c0d...
+            file_path:
+              type: string
+              example: photo.png
