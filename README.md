@@ -180,7 +180,10 @@ npm run glossary:sync -- --lang ko    # one language
 npm run glossary:sync:dry-run         # report counts without writing
 ```
 
-The frontend locales path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH` env → `frontend_locales_path` in `translation-config.json` → `../ComfyUI_frontend/src/locales`.
+The frontend locales source resolves in order:
+
+- **Remote (default):** `frontend_locales_url` in `translation-config.json` (GitHub raw `main` branch). Override with `FRONTEND_LOCALES_URL` or `--frontend-url <url>`.
+- **Local (optional):** `--frontend <path>` or `FRONTEND_LOCALES_PATH` when you need an offline or forked checkout.
 
 #### Quality review
 
