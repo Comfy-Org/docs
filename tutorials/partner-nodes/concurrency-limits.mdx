@@ -6,9 +6,19 @@ sidebarTitle: "Concurrency Limits"
 
 Concurrency limits control how many requests your account can process at the same time. Requests beyond your limit are rejected with a `429` error code. Your concurrency limit is based on your lifetime paid spend, and applies at the platform level across all endpoints you call.
 
+<Note>
+Concurrency limits are tuned over time to keep the platform fast and reliable for everyone. The specific values on this page reflect the current configuration and may change.
+</Note>
+
 ## How it works
 
 When you submit a request, the platform tracks it against your concurrency limit. If you exceed the limit, additional requests are rejected with a `429` error until in-flight requests complete.
+
+## Partner Node concurrency vs. Cloud job concurrency
+
+This page covers the concurrency limit on Partner Node calls specifically. It's a separate, independently enforced limit from **Cloud job concurrency**, which controls how many Comfy Cloud workflow runs you can have executing at once and is set by your Cloud plan or subscription tier rather than your lifetime spend.
+
+Because the two limits are enforced independently, your effective throughput is bounded by whichever one you reach first. A high Cloud plan does not, by itself, raise your Partner Node concurrency limit: that's governed separately by the lifetime spend tiers below.
 
 ## Concurrency tiers
 
@@ -22,11 +32,45 @@ Your concurrency limit is based on your **lifetime paid spend**: the total of al
 | $500 or more          | 20                 |
 | $1,000 or more        | 40                 |
 
+How to read this table:
+
+- **First match wins.** The rows are evaluated from most to least specific: a custom limit set by our team beats the spend tiers, which beat the never-paid floor. If you've paid $1,200 lifetime, you get 40, and the lower tiers are never considered.
+- **Lifetime, not rolling.** A payment from months ago still counts toward your tier. Spend doesn't expire or reset over time.
+- **Cloud and Partner Node spend both count.** It doesn't matter whether you paid for Cloud subscriptions or Partner Node credits; both contribute to the same lifetime total.
+- **Any payment lifts you off the floor.** Accounts that have never made a successful payment are capped at 1 concurrent call. A single successful payment moves you to the default tier (5), and the $100 / $500 / $1,000 thresholds raise it from there.
+- **Custom limits override the table.** If our team has set a specific limit on your account, for example for an enterprise arrangement or a policy restriction, it takes precedence over every spend-based row, including down to 0 (Partner Node access disabled).
+
 Self-serve limits scale up to **40 concurrent requests** at the $1,000 tier.
 
 ## Model-based limits
 
 Higher-cost models have a lower allowed concurrency. When you call a model that costs **$5 or more per request**, your concurrency limit for that model is **one quarter** of your account's tier limit (rounded down, with a minimum of 1). Requests to lower-cost models continue to use your full account limit, and the two limits are tracked independently.
+
+## How concurrency slots work
+
+A Partner Node call occupies one concurrency slot for the full duration of that call: from the moment the request is accepted until the provider returns a result, which for video or 3D generation can take several minutes. The slot is released as soon as the call finishes.
+
+Only in-flight calls count against your limit. A completed call frees its slot immediately, so a workflow that makes many Partner Node calls over the course of its run will still complete successfully; it just can't have more calls running at the same instant than your limit allows.
+
+## What happens when you reach your limit
+
+When all your concurrency slots are occupied and you make another Partner Node call, that call is rejected immediately with an HTTP `429` status and a response body whose message tells you to wait for existing requests to complete.
+
+- **A blocked account returns 403 instead.** If Partner Node access has been disabled on your account (a custom limit of 0), calls are rejected with an HTTP `403` rather than a `429`.
+- **Concurrency is separate from your credit balance.** Concurrency slots only govern how many calls can run simultaneously. If your credit balance reaches zero, calls fail because you're out of credits, independent of how many concurrency slots you have free. Keep a positive balance to keep running.
+- Whether a throttled call is retried automatically depends on how you're calling the API. Check the behavior of the specific node or client you're using.
+
+## Concurrency response headers
+
+Partner Node responses include headers that reflect your concurrency usage at the moment the request was processed. They're set on both successful and throttled responses, for API key and other callers alike:
+
+| Header | Meaning |
+| :--- | :--- |
+| `X-Concurrency-Limit` | Your effective concurrency limit |
+| `X-Concurrency-Current` | Calls currently in flight, including this one |
+| `X-Concurrency-Remaining` | Slots still available |
+
+These headers aren't returned for accounts with an unlimited custom limit, and they're best-effort: useful for visibility and debugging, but not intended as a precise scheduling signal.
 
 ## Increasing your limit
 
@@ -35,3 +79,19 @@ For concurrency above 40, contact our support team.
 <Card title="Support" icon="life-ring" href="https://support.comfy.org/">
   Get help raising your concurrency limit
 </Card>
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="Is the limit per request, per minute, or per simultaneous call?">
+    Per simultaneous (in-flight) call. There's no cap here on total volume or how fast you make requests over time, only on how many can be running at once.
+  </Accordion>
+
+  <Accordion title="Does spending expire?">
+    No. Your tier is based on lifetime spend, so past payments always continue to count toward it.
+  </Accordion>
+
+  <Accordion title="I have a high Cloud plan, but my Partner Node calls are still throttling. Why?">
+    The two limits are separate. A high Cloud job concurrency doesn't raise your Partner Node concurrency limit; that's governed by lifetime spend instead. See [Partner Node concurrency vs. Cloud job concurrency](#partner-node-concurrency-vs-cloud-job-concurrency).
+  </Accordion>
+</AccordionGroup>
