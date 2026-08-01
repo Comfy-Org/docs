@@ -2,15 +2,35 @@
 title: "并发限制"
 description: "了解并发限制如何控制您账户上同时进行的 Partner Node 请求数量。"
 sidebarTitle: "并发限制"
-translationSourceHash: 49612347
+translationSourceHash: a94c4e22
 translationFrom: tutorials/partner-nodes/concurrency-limits.mdx
+translationBlockHashes:
+  "_intro": 9626bfa7
+  "How it works": 37bcd7ad
+  "Partner Node concurrency vs. Cloud job concurrency": 1e4c1e61
+  "Concurrency tiers": 345a46d7
+  "Model-based limits": a98e7c1b
+  "How concurrency slots work": c653e492
+  "What happens when you reach your limit": 0d13e66f
+  "Concurrency response headers": 9f49840f
+  "Increasing your limit": 1ac08fce
+  "FAQ": cb721749
 ---
-
 并发限制控制您的账户在同一时间可以处理的请求数量。超出限制的请求会以 `429` 错误码被拒绝。您的并发上限基于您的终身付费总额，并在您调用的所有端点的平台层面生效。
+
+<Note>
+并发限制会随时间调整，以确保平台对所有人都保持快速可靠。本页面上的具体数值反映当前配置，可能会发生变化。
+</Note>
 
 ## 工作原理
 
 当您提交请求时，平台会将其计入您的并发限制。若超出限制，额外请求会以 `429` 错误被拒绝，直至进行中的请求完成。
+
+## Partner Node 并发与 Cloud 任务并发
+
+本页面专门介绍 Partner Node 调用的并发限制。这是一项独立于 **Cloud 任务并发** 并单独强制执行的限制。Cloud 任务并发控制您可以同时运行的 Comfy Cloud 工作流数量，其上限由您的 Cloud 套餐或订阅层级决定，而非您的终身付费金额。
+
+由于这两项限制独立执行，您的实际吞吐量以先达到的那一个为上限。更高的 Cloud 套餐本身并不会提高您的 Partner Node 并发限制：该限制由下述终身付费金额层级单独决定。
 
 ## 并发分级
 
@@ -24,11 +44,45 @@ translationFrom: tutorials/partner-nodes/concurrency-limits.mdx
 | $500 及以上             | 20                 |
 | $1,000 及以上           | 40                 |
 
-自助服务上限在 $1,000 档位最高可提升至**40 个并发请求**。
+如何阅读此表：
+
+- **首个匹配项优先。** 各行按从最具体到最宽泛的顺序评估：团队设置的自定义限制优先于付费层级，而付费层级优先于从未付费账户的最低值。如果您的终身付费总额为 $1,200，适用的限制就是 40，不会再考虑较低层级。
+- **终身累计，而非滚动统计。** 数月前的付款仍会计入您的层级。付费不会随时间推移而过期或重置。
+- **Cloud 和 Partner Node 付费均计入。** 无论您支付的是 Comfy Cloud 订阅还是 Partner Node 积分，两者都会计入同一个终身总额。
+- **一次成功付款即可突破最低限制。** 从未成功付款的账户最多只能进行 1 次并发调用。一次成功付款即可进入默认层级（5），达到 $100 / $500 / $1,000 后，限制还会继续提高。
+- **自定义限制优先于表格规则。** 如果我们团队为您的账户设置了特定限制（例如出于企业协议或策略限制），该限制将优先于所有基于付费的行，甚至可降至 0（即禁用 Partner Node 访问权限）。
+
+自助服务上限在 $1,000 档位最高可提升至 **40 个并发请求**。
 
 ## 基于模型的限制
 
 成本较高的模型允许的并发数较低。当您调用每次请求费用**达到或超过 5 美元**的模型时，该模型的并发上限为账户对应档位上限的**四分之一**（向下取整，最小为 1）。针对低成本模型的请求继续使用完整的账户并发上限，并且这两个限制独立跟踪。
+
+## 并发槽位的工作方式
+
+一次 Partner Node 调用会在整个调用期间占用一个并发槽位：从请求被接受到提供商返回结果为止。视频或 3D 生成可能需要几分钟。调用完成后，槽位会立即释放。
+
+只有进行中的调用会计入您的限制。已完成的调用会立即释放其槽位，因此在运行过程中多次调用 Partner Node 的工作流仍然可以成功完成；只是同一时刻运行中的调用数不能超过您的限制所允许的数量。
+
+## 当您达到限制时会发生什么
+
+当您的所有并发槽位都被占用，而您再次发起 Partner Node 调用时，该调用会立即被拒绝，并返回 HTTP `429` 状态码，响应正文中的消息会提示您等待现有请求完成。
+
+- **被阻止的账户会改为返回 403。** 如果您的账户上的 Partner Node 访问已被禁用（自定义限制为 0），调用将以 HTTP `403` 而非 `429` 被拒绝。
+- **并发与您的积分余额相互独立。** 并发槽位仅决定可以同时运行多少个调用。如果您的积分余额降至零，调用将因积分不足而失败，这与您有多少空闲的并发槽位无关。请保持余额为正数，以便继续运行。
+- 被限流的调用是否自动重试，取决于您调用 API 的方式。请检查您所使用的特定节点或客户端的行为。
+
+## 并发响应头
+
+Partner Node 响应包含反映请求处理时并发使用情况的响应头。成功响应和被限流的响应都会设置这些响应头，API 密钥调用方和其他调用方均适用：
+
+| 响应头 | 含义 |
+| :--- | :--- |
+| `X-Concurrency-Limit` | 您的有效并发限制 |
+| `X-Concurrency-Current` | 当前正在处理中的调用，包括本请求 |
+| `X-Concurrency-Remaining` | 仍可用的槽位 |
+
+具有无限自定义限制的账户不会收到这些响应头。这些响应头仅尽力提供，适合用于观察和调试，不应作为精确的调度信号。
 
 ## 提高上限
 
@@ -37,3 +91,19 @@ translationFrom: tutorials/partner-nodes/concurrency-limits.mdx
 <Card title="支持" icon="life-ring" href="https://support.comfy.org/">
   获取提高并发上限方面的帮助
 </Card>
+
+## 常见问题
+
+<AccordionGroup>
+  <Accordion title="限制是按请求、按分钟，还是按同时调用计算？">
+    按同时（进行中）调用计算。这里没有总调用量或请求频率的上限，只有同时运行中的调用数量上限。
+  </Accordion>
+
+  <Accordion title="付费金额会过期吗？">
+    不会。您的层级基于终身付费金额，因此过去的付款始终会计入其中。
+  </Accordion>
+
+  <Accordion title="我的 Cloud 套餐很高，但 Partner Node 调用仍然被限流。为什么？">
+    这两项限制是分开的。较高的 Cloud 任务并发不会提高您的 Partner Node 并发限制；后者由终身付费金额决定。请参阅 [Partner Node 并发与 Cloud 任务并发](#partner-node-并发与-cloud-任务并发)。
+  </Accordion>
+</AccordionGroup>
