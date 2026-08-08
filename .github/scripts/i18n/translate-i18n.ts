@@ -95,6 +95,7 @@ import {
   resolveChunkStrategy,
   serializeChunkedDocument,
   splitOversizedBlock,
+  frontmatterMetaPrefix,
   stripTranslationMetaFromFrontmatter,
   syncUpdateBlockDescription,
   validateTranslatedBlock,
@@ -331,7 +332,7 @@ function setTranslationMeta(content: string, hash: string, enPath: string): stri
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripAndSanitizeTranslationMeta(body);
 
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 /** Set hash on snippet files (no frontmatter) via HTML comment */
