@@ -232,6 +232,20 @@ export function stripTranslationMetaFromFrontmatter(body: string): string {
   return out;
 }
 
+/**
+ * Reassemble the opening `---` plus whatever frontmatter survived meta
+ * stripping, ready for a translation meta block to be appended.
+ *
+ * When the frontmatter held nothing but translation metadata, `cleaned` is
+ * empty and the naive `${open}${cleaned}\n` leaves a blank first line inside
+ * the frontmatter that the next run cannot remove — the write stops being
+ * idempotent. See https://github.com/Comfy-Org/docs/issues/1358.
+ */
+export function frontmatterMetaPrefix(open: string, cleaned: string): string {
+  const head = cleaned.replace(/\n+$/, "");
+  return head ? `${open}${head}\n` : open;
+}
+
 export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
@@ -253,7 +267,7 @@ export function setChunkedTranslationMeta(
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripTranslationMetaFromFrontmatter(body);
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 // ---------------------------------------------------------------------------
