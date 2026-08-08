@@ -180,7 +180,10 @@ npm run glossary:sync -- --lang ko    # 단일 언어
 npm run glossary:sync:dry-run         # 개수만 보고, 쓰기 없음
 ```
 
-프론트엔드 locale 경로는 다음 순서로 해석됩니다: `--frontend <path>` → `FRONTEND_LOCALES_PATH` 환경 변수 → `translation-config.json`의 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`.
+프론트엔드 locale 소스는 다음 순서로 해석됩니다:
+
+- **원격(기본):** `translation-config.json`의 `frontend_locales_url`(GitHub raw `main` 브랜치). `FRONTEND_LOCALES_URL` 또는 `--frontend-url <url>`로 덮어쓸 수 있습니다.
+- **로컬(선택):** 오프라인 또는 fork checkout이 필요할 때 `--frontend <path>` 또는 `FRONTEND_LOCALES_PATH`.
 
 #### 새 언어 추가
 

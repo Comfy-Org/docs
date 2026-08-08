@@ -180,7 +180,10 @@ npm run glossary:sync -- --lang ko    # 単一言語
 npm run glossary:sync:dry-run         # 件数のみ報告、書き込みなし
 ```
 
-フロントエンド locale のパスは次の順で解決されます：`--frontend <path>` → `FRONTEND_LOCALES_PATH` 環境変数 → `translation-config.json` の `frontend_locales_path` → `../ComfyUI_frontend/src/locales`。
+フロントエンド locale の取得元は次の順で解決されます：
+
+- **リモート（デフォルト）：** `translation-config.json` の `frontend_locales_url`（GitHub raw の `main` ブランチ）。`FRONTEND_LOCALES_URL` または `--frontend-url <url>` で上書き可能。
+- **ローカル（任意）：** オフラインや fork 用に `--frontend <path>` または `FRONTEND_LOCALES_PATH`。
 
 #### 新しい言語の追加
 
