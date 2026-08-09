@@ -281,6 +281,27 @@ function toggleFence(line: string, inFence: boolean): boolean {
   return FENCE_RE.test(line.trim()) ? !inFence : inFence;
 }
 
+/** Extract fenced code blocks exactly as written, including fence markers. */
+function extractCodeFences(content: string): string[] {
+  const lines = content.split("\n");
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (FENCE_RE.test(line.trim())) {
+      if (current) {
+        current.push(line);
+        blocks.push(current.join("\n"));
+        current = null;
+      } else {
+        current = [line];
+      }
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  return blocks;
+}
+
 function isH2SectionLine(line: string, inFence: boolean): boolean {
   return !inFence && H2_HEADING_RE.test(line);
 }
@@ -931,6 +952,17 @@ export function validateTranslatedBlock(
 
   if (hasUnclosedCodeFence(translated)) return false;
 
+  // Code is executable documentation. Never accept a translation that
+  // changes, drops, or truncates a fenced code block.
+  const enCode = extractCodeFences(enBlock.content);
+  const translatedCode = extractCodeFences(translated);
+  if (
+    enCode.length !== translatedCode.length ||
+    enCode.some((block, index) => block !== translatedCode[index])
+  ) {
+    return false;
+  }
+
   const enTabs = countTagOpens(enBlock.content, "Tab");
   const trTabs = countTagOpens(translated, "Tab");
   if (enTabs >= 2 && trTabs !== enTabs) return false;
@@ -943,7 +975,11 @@ export function validateTranslatedBlock(
 
   const enLines = countNonEmptyLines(enBlock.content);
   const trLines = countNonEmptyLines(translated);
-  if (enLines >= 80 && trLines < enLines * 0.6) return false;
+  // A stopped model response can be syntactically valid but still be severely
+  // truncated. Apply the guard to ordinary-sized sections too, not only very
+  // long ones. Short sections are exempt because localization can legitimately
+  // reduce their line count.
+  if (enLines >= 20 && trLines < enLines * 0.6) return false;
 
   return true;
 }

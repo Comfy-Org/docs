@@ -447,8 +447,9 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "The English source is authoritative — always follow it for meaning.",
     "If a current translation is provided, use it as context: preserve wording where the English is unchanged; only update sections that differ from the English.",
     "Preserve ALL MDX/JSX syntax exactly: component tags, import statements, code blocks, URLs, frontmatter YAML structure.",
+    "For Markdown headings, preserve custom anchor syntax like {#workflow-id} exactly. Never convert it to visible inline code such as (`workflow_id`). The {#...} anchor must remain outside the translated heading text.",
     "DO translate: title, description, sidebarTitle in frontmatter; all prose; Card title/children text; table content; list items.",
-    "Do NOT translate: component tag names, code inside ``` blocks, code identifiers in backticks, URLs, file paths, image paths.",
+    "Do NOT translate or rewrite code inside ``` fenced blocks. Copy every fenced code block byte-for-byte from the English source, including its language tag, indentation, whitespace, and closing fence. Translate only prose outside fenced blocks.",
     preserveStr ? `Do NOT translate these technical terms: ${preserveStr}` : "",
     "If you notice semantic issues in the existing translation relative to the English (wrong meaning, missing section, untranslated prose), note them AFTER the MDX content, separated by a line containing only '=== MISMATCHES ===' followed by one issue per line.",
     "Do NOT report expected localization as issues: /{lang}/ internal links, translated snippet import paths, or other path prefix changes applied for the target locale.",
@@ -986,6 +987,23 @@ async function translateFile(
 
   let output = sanitizeMdxFrontmatter(cleanModelOutput(result.content));
   output = localizeMdxPaths(output, lang, config.languages);
+
+  // Non-chunked pages used to be written without structural validation. A
+  // model response could therefore be accepted after being cut short even
+  // when finish_reason was "stop". Reuse the same guard as chunked pages and
+  // keep the previous translation intact when the response is unsafe.
+  const valid = validateTranslatedBlock(
+    "heading_sections",
+    { label: "_intro", content: enContent },
+    output,
+    { finishReason: result.finishReason }
+  );
+  if (!valid) {
+    console.log(
+      `  [FAIL] [${lang.code}] ${relPath}: rejected truncated or invalid response; keeping existing translation`
+    );
+    return { mismatches: result.mismatches, status: "failed" };
+  }
 
   if (snippetsMode) {
     output = setSnippetHash(output, hash);
