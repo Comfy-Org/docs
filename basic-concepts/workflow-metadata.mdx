@@ -1,0 +1,154 @@
+---
+title: "Workflow Metadata"
+description: "Learn how ComfyUI embeds workflows in generated files and how to read the embedded metadata"
+icon: "file-code"
+---
+
+## Overview
+
+When ComfyUI saves an output file, it can store the workflow that produced the file inside the file itself.
+
+You can think of this as saving a generated image together with its recipe. The image is the result, and the embedded workflow describes the steps used to create it.
+
+Embedded workflow metadata allows you to:
+
+- Reopen a generated file in ComfyUI and recover its workflow.
+- Share a generated file together with the workflow used to create it.
+- Inspect generation settings in an automated workflow.
+- Build tools that read ComfyUI workflow metadata from output files.
+
+The metadata is stored inside the file format. It does not change the visible image or video content.
+
+## Embedded fields
+
+ComfyUI commonly stores two JSON fields:
+
+| Field | Description |
+| --- | --- |
+| `workflow` | The complete workflow graph, including nodes, links, and layout information. |
+| `prompt` | The API prompt used to execute the workflow. It contains the nodes and inputs required for execution. |
+
+A simplified example looks like this:
+
+```json
+{
+  "workflow": {
+    "nodes": [],
+    "links": []
+  },
+  "prompt": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {}
+    }
+  }
+}
+```
+
+The actual contents depend on the workflow and the ComfyUI version. Custom nodes can also add fields through `extra_pnginfo`.
+
+## Supported formats
+
+Built-in save nodes embed metadata in the following output formats:
+
+| Output | Metadata location |
+| --- | --- |
+| PNG | PNG `tEXt` chunks |
+| Animated PNG | PNG text metadata |
+| Animated WebP | WebP metadata written by the image save helper |
+| MP4 | Container metadata tags |
+| WebM | Container metadata tags |
+| `.latent` | Safetensors metadata |
+| `.safetensors` | Safetensors metadata, when written by a node that includes workflow metadata |
+
+The exact metadata support depends on the save node and the file-writing path. A file that has been re-encoded by another application may no longer contain the metadata.
+
+## How ComfyUI writes metadata
+
+Built-in output nodes receive the API prompt and additional workflow information when ComfyUI executes a workflow. Unless metadata saving is disabled, the save node serializes these values as JSON and writes them to the output file.
+
+For PNG output, the values are written as text entries. The standard field names are `prompt` and `workflow`.
+
+To disable metadata when starting ComfyUI, use:
+
+```bash
+python main.py --disable-metadata
+```
+
+Files created while this option is enabled cannot be used to recover a workflow from embedded metadata.
+
+## How ComfyUI reads metadata
+
+To recover a workflow in the ComfyUI interface, drag a generated file onto the canvas. You can also open a file from **File** > **Open**.
+
+If the file contains both `workflow` and `prompt`, ComfyUI uses the embedded `workflow` to rebuild the canvas. If the file does not contain a workflow, ComfyUI treats supported media files as regular input media.
+
+## Reading PNG metadata with Python
+
+The following example reads the standard fields from a PNG file:
+
+```python
+from PIL import Image
+import json
+
+image = Image.open("output.png")
+
+if "workflow" in image.info:
+    workflow = json.loads(image.info["workflow"])
+    print(workflow)
+
+if "prompt" in image.info:
+    prompt = json.loads(image.info["prompt"])
+    print(prompt)
+```
+
+Pillow exposes PNG text chunks through `Image.info`. The values are JSON strings, so call `json.loads` before using them as Python objects.
+
+## Reading PNG metadata from the command line
+
+You can inspect PNG text metadata with ImageMagick:
+
+```bash
+identify -verbose output.png
+```
+
+Look for the `workflow` and `prompt` text entries in the output.
+
+## Reading video metadata
+
+ComfyUI stores workflow metadata in the container metadata for MP4 and WebM outputs. You can inspect these fields with `ffprobe`:
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.mp4
+```
+
+For a WebM file, use the same command with the `.webm` file path:
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.webm
+```
+
+The returned tags contain JSON strings. Parse the values of the `workflow` and `prompt` tags with a JSON parser.
+
+## Reading latent metadata
+
+`.latent` files use the safetensors format. The metadata can be read with the `safetensors` Python package:
+
+```python
+from safetensors import safe_open
+
+with safe_open("output.latent", framework="pt", device="cpu") as file:
+    metadata = file.metadata() or {}
+    print(metadata.get("workflow"))
+    print(metadata.get("prompt"))
+```
+
+Safetensors metadata values are strings. Parse the `workflow` and `prompt` values as JSON when they are present.
+
+## Limitations
+
+- Embedded metadata is not a digital signature. It does not prove who created or modified a file.
+- The workflow does not include the model files, input assets, or custom node packages it depends on.
+- Moving or renaming a model, input asset, or custom node can prevent a recovered workflow from running.
+- Image and video editors may remove metadata when they re-encode a file.
+- Files created with `--disable-metadata` do not contain the standard ComfyUI workflow metadata.

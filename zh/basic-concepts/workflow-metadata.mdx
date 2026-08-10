@@ -1,0 +1,166 @@
+---
+title: "工作流元数据"
+description: "了解 ComfyUI 如何将工作流嵌入已生成的文件中，以及如何读取嵌入的元数据"
+icon: "file-code"
+translationSourceHash: 7189f23d
+translationFrom: basic-concepts/workflow-metadata.mdx
+translationBlockHashes:
+  "Overview": 2181be93
+  "Embedded fields": 43d8c81a
+  "Supported formats": c5b086e1
+  "How ComfyUI writes metadata": b1af4851
+  "How ComfyUI reads metadata": 1c60af15
+  "Reading PNG metadata with Python": 6e254e44
+  "Reading PNG metadata from the command line": a972ab0f
+  "Reading video metadata": 08826fc6
+  "Reading latent metadata": 35a1dd38
+  "Limitations": 0c96fa78
+---
+## 概述
+
+当 ComfyUI 保存输出文件时，它可以将生成该文件的工作流存储在文件本身内部。
+
+你可以将此视为将已生成的图像连同其配方一起保存。图像是结果，嵌入的工作流描述了创建它所用的步骤。
+
+嵌入的工作流元数据允许你：
+
+- 在 ComfyUI 中重新打开已生成的文件并恢复其工作流。
+- 共享已生成的文件以及用于创建它的工作流。
+- 在自动化工作流中检查生成设置。
+- 构建能够从输出文件中读取 ComfyUI 工作流元数据的工具。
+
+元数据存储在文件格式内部。它不会改变可见的图像或视频内容。
+
+## 嵌入字段
+
+ComfyUI 通常存储两个 JSON 字段：
+
+| 字段 | 描述 |
+| --- | --- |
+| `workflow` | 完整的工作流图，包括节点、链接和布局信息。 |
+| `prompt` | 用于执行工作流的 API 提示。其中包含执行所需的节点和输入。 |
+
+简化示例如下：
+
+```json
+{
+  "workflow": {
+    "nodes": [],
+    "links": []
+  },
+  "prompt": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {}
+    }
+  }
+}
+```
+
+实际内容取决于工作流和 ComfyUI 版本。自定义节点还可以通过 `extra_pnginfo` 添加字段。
+
+## 支持的格式
+
+内置保存节点会将元数据嵌入到以下输出格式中：
+
+| 输出 | 元数据位置 |
+| --- | --- |
+| PNG | PNG `tEXt` 数据块 |
+| 动画 PNG | PNG 文本元数据 |
+| 动画 WebP | 由图像保存辅助写入的 WebP 元数据 |
+| MP4 | 容器元数据标签 |
+| WebM | 容器元数据标签 |
+| `.latent` | Safetensors 元数据 |
+| `.safetensors` | Safetensors 元数据（由包含工作流元数据的节点写入时） |
+
+具体的元数据支持取决于保存节点和文件写入路径。经过其他应用程序重新编码的文件可能不再包含元数据。
+
+## ComfyUI 如何写入元数据
+
+内置输出节点在 ComfyUI 执行工作流时会收到 API prompt 和额外的工作流信息。除非已禁用元数据保存，否则保存节点会将这些值序列化为 JSON 并写入输出文件。
+
+对于 PNG 输出，这些值将以文本条目的形式写入。标准字段名为 `prompt` 和 `workflow`。
+
+要在启动 ComfyUI 时禁用元数据，请使用：
+
+```bash
+python main.py --disable-metadata
+```
+
+启用该选项期间创建的文件无法用于从嵌入的元数据中恢复工作流。
+
+## ComfyUI 如何读取元数据
+
+要在 ComfyUI 界面中恢复工作流，请将已生成的文件拖放到画布上。你也可以从**文件** > **打开**中打开文件。
+
+如果文件同时包含 `workflow` 和 `prompt`，ComfyUI 会使用嵌入的 `workflow` 来重建画布。如果文件不包含工作流，ComfyUI 会将支持的媒体文件视为常规输入媒体。
+
+## 使用 Python 读取 PNG 元数据
+
+以下示例从 PNG 文件中读取标准字段：
+
+```python
+from PIL import Image
+import json
+
+image = Image.open("output.png")
+
+if "workflow" in image.info:
+    workflow = json.loads(image.info["workflow"])
+    print(workflow)
+
+if "prompt" in image.info:
+    prompt = json.loads(image.info["prompt"])
+    print(prompt)
+```
+
+Pillow 通过 `Image.info` 公开 PNG 文本块。这些值是 JSON 字符串，因此在将它们用作 Python 对象之前，需要调用 `json.loads`。
+
+## 从命令行读取 PNG 元数据
+
+你可以使用 ImageMagick 检查 PNG 文本元数据：
+
+```bash
+identify -verbose output.png
+```
+
+在输出中查找 `workflow` 和 `prompt` 的文本条目。
+
+## 读取视频元数据
+
+ComfyUI 将工作流元数据存储在 MP4 和 WebM 输出的容器元数据中。您可以使用 `ffprobe` 检查这些字段：
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.mp4
+```
+
+对于 WebM 文件，请使用相同的指令并附带 `.webm` 文件路径：
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.webm
+```
+
+返回的标签包含 JSON 字符串。使用 JSON 解析器解析 `workflow` 和 `prompt` 标签的值。
+
+## 读取 Latent 元数据
+
+`.latent` 文件使用 safetensors 格式。可以使用 `safetensors` Python 包读取元数据：
+
+```python
+from safetensors import safe_open
+
+with safe_open("output.latent", framework="pt", device="cpu") as file:
+    metadata = file.metadata() or {}
+    print(metadata.get("workflow"))
+    print(metadata.get("prompt"))
+```
+
+Safetensors 元数据值为字符串。当存在 `workflow` 和 `prompt` 值时，将它们解析为 JSON。
+
+## 限制
+
+- 嵌入的元数据并非数字签名。它不能证明谁创建或修改了文件。
+- 工作流不包含其依赖的模型文件、输入资产或自定义节点包。
+- 移动或重命名模型、输入资产或自定义节点可能会导致恢复的工作流无法运行。
+- 图像和视频编辑器在重新编码文件时可能会移除元数据。
+- 使用 `--disable-metadata` 创建的文件不包含标准的 ComfyUI 工作流元数据。
