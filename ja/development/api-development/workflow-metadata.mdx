@@ -1,0 +1,203 @@
+---
+title: "ワークフローメタデータ"
+description: "ComfyUIが生成済みファイルにワークフローを埋め込む仕組みと、埋め込まれたメタデータの読み取り方法を学びます"
+icon: "file-code"
+translationSourceHash: 8372339c
+translationFrom: development/api-development/workflow-metadata.mdx
+translationBlockHashes:
+  "Overview": 2181be93
+  "Embedded fields": 9538565e
+  "Supported formats": 055eb94e
+  "How ComfyUI writes metadata": 4cc6f35c
+  "How ComfyUI reads metadata": 88fa6b84
+  "Reading PNG metadata with Python": 6e254e44
+  "Reading PNG metadata from the command line": a972ab0f
+  "Reading video metadata": 08826fc6
+  "Reading WebP metadata": 35fb9e5b
+  "Reading latent metadata": 5245037a
+  "Limitations": 0c96fa78
+---
+## 概要
+
+ComfyUI が出力ファイルを保存するとき、そのファイルを生成したワークフローをファイル自体の中に保存できます。
+
+これは、生成済み画像をレシピと一緒に保存するようなものと考えられます。画像が結果であり、埋め込まれたワークフローがその作成に使用された手順を説明します。
+
+埋め込まれたワークフローメタデータを使用すると、以下のことが可能になります：
+
+- 生成済みファイルを ComfyUI で再度開き、ワークフローを復元する。
+- 生成済みファイルを、その作成に使用されたワークフローと一緒に共有する。
+- 自動化されたワークフローで生成設定を検査する。
+- 出力ファイルから ComfyUI ワークフローメタデータを読み取るツールを構築する。
+
+メタデータはファイル形式の中に保存されます。表示される画像やビデオのコンテンツは変更されません。
+
+## 埋め込みフィールド
+
+ComfyUIは通常、2つのJSONフィールドを保存します：
+
+| フィールド | 説明 |
+| --- | --- |
+| `workflow` | ノード、リンク、レイアウト情報を含む完全なワークフローグラフ。 |
+| `prompt` | ワークフローの実行に使用されるAPIプロンプト。実行に必要なノードと入力が含まれます。 |
+
+簡略化した例は次のようになります：
+
+```json
+{
+  "workflow": {
+    "nodes": [],
+    "links": []
+  },
+  "prompt": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {}
+    }
+  }
+}
+```
+
+実際の内容はワークフローとComfyUIバージョンによって異なります。カスタムノードは`extra_pnginfo`を通じてフィールドを追加することもできます。
+
+この2つのフィールドは用途が異なります。`workflow` はフロントエンドでワークフローを復元するために使用します。`prompt` は実行用の形式で、ComfyUI サーバーにワークフローを送信するときに使用します。ファイルにどちらか一方のフィールドしか含まれない場合もあります。
+
+## サポートされている形式
+
+組み込みの保存ノードは、以下の出力形式にメタデータを埋め込みます：
+
+| 出力 | メタデータの場所 |
+| --- | --- |
+| PNG | PNG `tEXt` チャンク |
+| アニメーションPNG | PNG テキストメタデータ |
+| アニメーションWebP | EXIFタグ |
+| MP4 | コンテナのメタデータタグ |
+| WebM | コンテナのメタデータタグ |
+| `.latent` | Safetensorsメタデータ |
+| `.safetensors` | ワークフローメタデータを含むノードによって書き込まれる場合のSafetensorsメタデータ |
+
+正確なメタデータのサポートは、保存ノードとファイルの書き込みパスによって異なります。別のアプリケーションで再エンコードされたファイルには、メタデータが含まれなくなる場合があります。
+
+Animated WebP ファイルは、値を EXIF タグに保存します。タグには `workflow:{JSON}` や `prompt:{JSON}` のような文字列が含まれます。これは、値をコンテナのメタデータタグに保存する MP4 や WebM とは異なります。
+
+## ComfyUIがメタデータを書き込む方法
+
+組み込みの出力ノードは、ComfyUIがワークフローを実行する際に、APIプロンプトと追加のワークフロー情報を受け取ります。メタデータの保存が無効化されていない限り、保存ノードはこれらの値をJSONとしてシリアライズし、出力ファイルに書き込みます。
+
+PNG出力の場合、値はテキストエントリとして書き込まれます。標準のフィールド名は `prompt` と `workflow` です。
+
+メタデータは別のサイドカーファイルではありません。保存処理中に出力ファイル自体へ書き込まれます。そのため、ファイルをコピーすると埋め込まれたワークフローもコピーされますが、ファイルを書き換える操作によってメタデータが削除または置換される場合があります。
+
+ComfyUIの起動時にメタデータを無効化するには、次のコマンドを使用します：
+
+```bash
+python main.py --disable-metadata
+```
+
+ComfyUI Desktop では、**Settings** > **Server-Config** を開き、**Disable saving prompt metadata in files.** を有効にしてください。
+
+このオプションが有効な状態で作成されたファイルは、埋め込まれたメタデータからワークフローを復元するために使用できません。
+
+## ComfyUIがメタデータを読み取る方法
+
+ComfyUIインターフェースでワークフローを復元するには、生成済みファイルをキャンバスにドラッグします。**File** > **Open** からファイルを開くこともできます。
+
+ファイルに`workflow`と`prompt`の両方が含まれている場合、ComfyUIは埋め込まれた`workflow`を使用してキャンバスを再構築します。ファイルにワークフローが含まれていない場合、ComfyUIは対応するメディアファイルを通常の入力メディアとして扱います。
+
+インテグレーションを構築するときは、解析する前にフィールドの存在を確認してください。`--disable-metadata` を使用して作成されたファイル、保存ノードにワークフロー情報が渡されなかったファイル、または別のアプリケーションで再エンコードされたファイルには、メタデータが存在しない場合があります。
+
+埋め込まれたワークフローをブラウザで確認または編集するには、[ComfyUI Embedded Workflow Editor](https://comfyui-embedded-workflow-editor.vercel.app/) を使用できます。このエディターはオプションです。ComfyUI でワークフローを復元したり、プログラムからメタデータを読み取ったりするために必要ではありません。
+
+## PythonでPNGメタデータを読み取る
+
+次の例では、PNGファイルから標準フィールドを読み取ります。
+
+```python
+from PIL import Image
+import json
+
+image = Image.open("output.png")
+
+if "workflow" in image.info:
+    workflow = json.loads(image.info["workflow"])
+    print(workflow)
+
+if "prompt" in image.info:
+    prompt = json.loads(image.info["prompt"])
+    print(prompt)
+```
+
+Pillow は PNG のテキストチャンクを `Image.info` を通じて公開します。値は JSON 文字列なので、Python オブジェクトとして使用する前に `json.loads` を呼び出してください。
+
+## コマンドラインからPNGメタデータを読み取る
+
+ImageMagickを使用してPNGテキストメタデータを検査できます：
+
+```bash
+identify -verbose output.png
+```
+
+出力内の`workflow`と`prompt`テキストエントリを探してください。
+
+## ビデオメタデータの読み取り
+
+ComfyUIは、MP4およびWebM出力のコンテナメタデータにワークフローメタデータを保存します。これらのフィールドは`ffprobe`で確認できます：
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.mp4
+```
+
+WebMファイルの場合は、`.webm`ファイルのパスを指定して同じコマンドを使用します：
+
+```bash
+ffprobe -v quiet -show_entries format_tags -of json output.webm
+```
+
+返されたタグにはJSON文字列が含まれます。JSONパーサーを使用して、`workflow`タグと`prompt`タグの値を解析します。
+
+## WebPメタデータの読み取り
+
+ComfyUI は Animated WebP ファイルのメタデータを EXIF タグに保存します。Pillow でタグを読み取り、フィールドのプレフィックスを取り除いて JSON を解析できます。
+
+```python
+from PIL import Image
+import json
+
+image = Image.open("output.webp")
+
+for _, value in image.getexif().items():
+    if not isinstance(value, str) or ":" not in value:
+        continue
+
+    field, encoded_value = value.split(":", 1)
+    if field in {"workflow", "prompt"}:
+        data = json.loads(encoded_value)
+        print(field, data)
+```
+
+メタデータは最初の画像フレームに保存されます。アプリケーションが WebP ファイルを書き換えると、EXIF タグが削除される場合があります。
+
+## 潜在メタデータの読み取り
+
+`.latent` ファイルは safetensors 形式を使用します。メタデータは `safetensors` Python パッケージで読み取ることができます：
+
+```python
+from safetensors import safe_open
+
+with safe_open("output.latent", framework="pt", device="cpu") as file:
+    metadata = file.metadata() or {}
+    print(metadata.get("workflow"))
+    print(metadata.get("prompt"))
+```
+
+Safetensors のメタデータ値は文字列です。`workflow` と `prompt` の値が存在する場合は、JSON として解析してください。
+
+どの形式でも、メタデータは任意であり、信頼できない入力として扱ってください。使用前に値が有効な JSON か検証し、ワークフローに実行に必要なすべてのモデルやカスタムノードが含まれているとは限りません。
+
+## 制限事項
+
+- 埋め込みメタデータはデジタル署名ではありません。誰がファイルを作成または変更したかを証明するものではありません。
+- ワークフローには、依存するモデルファイル、入力アセット、カスタムノードパッケージは含まれません。
+- モデル、入力アセット、またはカスタムノードを移動または名前変更すると、復元されたワークフローが実行できなくなる可能性があります。
+- 画像エディタやビデオエディタは、ファイルを再エンコードする際にメタデータを削除する場合があります。
+- `--disable-metadata` を指定して作成されたファイルには、スタンダードなComfyUIワークフローメタデータは含まれません。
