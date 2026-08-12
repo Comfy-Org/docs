@@ -296,5 +296,6 @@ When user asks to update CMS release notes:
 |--|-----------|-----------|
 | Source | `changelog/index.mdx` | `staging/en/…` |
 | Length | Full detail | 3–5 bullets |
+| New Nodes | Keep in full changelog | **Optional**; omit by default unless a human asks |
 | i18n | `zh/changelog/` etc. | `staging/zh/` etc. |
 | Deploy | Mintlify | Strapi draft → publish |
