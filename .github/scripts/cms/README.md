@@ -60,6 +60,8 @@ Strapi drafts → publish → published-versions.json
 
 Each version is **saved immediately** after simplify/translate (safe to resume).
 
+After prepare, secondary projects (cloud) **merge only the prepared `<Update>` blocks** from comfyui. Older cloud blocks (including project-specific tracking shortlinks) are left untouched. Do not full-file overwrite `staging/cloud/`.
+
 ## Projects & attention
 
 | Project | CLI | Default attention |

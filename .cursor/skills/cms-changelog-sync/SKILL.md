@@ -138,7 +138,7 @@ Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI
 | `comfyui` | `staging/{locale}/…` | `# ComfyUI vX.Y.Z` |
 | `cloud` | `staging/cloud/{locale}/…` | `# Cloud vX.Y.Z` |
 
-Prepare runs LLM once on comfyui, then **copies staging to cloud**. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
+Prepare runs LLM once on comfyui, then **merges only the prepared version blocks into cloud** (does not overwrite older cloud-only tracking shortlinks). Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
 
 Single project: `--project comfyui`, `--project cloud`, or `CMS_PROJECT=<project>`.
 
