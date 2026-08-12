@@ -2,14 +2,14 @@
  * Shared read/write helpers for CMS staging MDX (per-version checkpoint).
  */
 
-import { copyFile, mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import {
   parseDocument,
   serializeUpdateBlocksDocument,
   sortUpdateBlocksByVersion,
 } from "../i18n/chunked-translate.ts";
-import { parseChangelogUpdates } from "./changelog-parse.ts";
+import { normalizeVersion, parseChangelogUpdates } from "./changelog-parse.ts";
 import { configForProject, type CmsConfig } from "./cms-config.ts";
 import { isEnoent, ROOT } from "./cms-env.ts";
 
@@ -66,12 +66,26 @@ export async function writeStagingCheckpoint(
   return output;
 }
 
-/** Copy all locale staging files from one project to another (same changelog body). */
+/**
+ * Merge selected version blocks from one project's staging into another.
+ *
+ * Never replaces whole locale files: cloud may keep project-specific tracking
+ * shortlinks on older versions (e.g. clo* vs rel*). Only upsert the versions
+ * prepared in this run.
+ */
 export async function copyProjectStaging(
   baseConfig: CmsConfig,
   fromProject: string,
-  toProject: string
+  toProject: string,
+  versions: string[]
 ): Promise<number> {
+  const versionList = [
+    ...new Set(versions.map((v) => normalizeVersion(v)).filter(Boolean)),
+  ];
+  if (versionList.length === 0) {
+    return 0;
+  }
+
   const fromConfig = configForProject(baseConfig, fromProject);
   const toConfig = configForProject(baseConfig, toProject);
   let copied = 0;
@@ -81,15 +95,22 @@ export async function copyProjectStaging(
     const toLocale = toConfig.locales.find((l) => l.code === locale.code);
     if (!toLocale?.changelog) continue;
 
-    const fromPath = join(ROOT, locale.changelog);
-    const toPath = join(ROOT, toLocale.changelog);
-    try {
-      await readFile(fromPath, "utf-8");
-    } catch {
-      continue;
+    const fromContent = await readStaging(locale.changelog);
+    if (!fromContent.trim()) continue;
+
+    const blocksToMerge: Array<{ label: string; content: string }> = [];
+    for (const version of versionList) {
+      const block = blockForVersion(fromContent, version);
+      if (!block) continue;
+      blocksToMerge.push({ label: block.label, content: block.updateBlock });
     }
+    if (blocksToMerge.length === 0) continue;
+
+    const toPath = join(ROOT, toLocale.changelog);
+    const existing = await readStaging(toLocale.changelog);
+    const output = mergeStagingBlocks(existing, blocksToMerge);
     await mkdir(dirname(toPath), { recursive: true });
-    await copyFile(fromPath, toPath);
+    await writeFile(toPath, output);
     copied++;
   }
 
