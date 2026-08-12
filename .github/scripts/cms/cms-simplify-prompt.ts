@@ -24,10 +24,10 @@ export const CMS_SIMPLIFY_SYSTEM_PROMPT = `You are an expert technical writer cr
 
 **Section order (mandatory — never reorder):**
 1. \`**New Open-Source Model Support**\` — when the source lists new open-source models
-2. \`**Partner Node Updates**\` — when the source lists partner or API node updates; always immediately after open-source models
-3. \`**New Node Updates**\` — when the source has a **New Nodes** (or equivalent) section with user-facing additions; last among these three
+2. \`**Partner Node Updates**\` — when the source lists partner or API node updates; when open-source models are also present, place this immediately after them
+3. \`**New Node Updates**\` — when the source has a **New Nodes** (or equivalent) section with user-facing additions; last among these three when present
 
-Never place Partner Node Updates before New Open-Source Model Support. Never place New Node Updates before Partner Node Updates when both are present. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
+Emit only sections that have source items, in the order above. When open-source models are absent, Partner Node Updates may lead. Never place Partner Node Updates before New Open-Source Model Support when both are present. Never place New Node Updates before Partner Node Updates when both are present. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
 
 **New Open-Source Model Support:**
 - Include every open-source model from the source (within the bullet limit)
