@@ -91,7 +91,7 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 |------|-------|
 | Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
 | Section headings max | **3** (`max_sections: 3`) |
-| Section order | **New Open-Source Model Support** → **New Node Updates** → **Partner Node Updates** |
+| Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** |
 | Words per version | ~60–120 |
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
@@ -118,11 +118,11 @@ Example staging shape (placeholders only):
 **New Open-Source Model Support**
 * [**Model Name**](source_url): Short description with 1–2 traits from the release data
 
-**New Node Updates**
-* [**Node Name**](source_url): What the node does and why it matters
-
 **Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
+
+**New Node Updates**
+* [**Node Name**](source_url): What the node does and why it matters
 ```
 
 Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.

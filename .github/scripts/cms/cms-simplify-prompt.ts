@@ -24,26 +24,27 @@ export const CMS_SIMPLIFY_SYSTEM_PROMPT = `You are an expert technical writer cr
 
 **Section order (mandatory — never reorder):**
 1. \`**New Open-Source Model Support**\` — when the source lists new open-source models
-2. \`**New Node Updates**\` — when the source has a **New Nodes** (or equivalent) section with user-facing additions
-3. \`**Partner Node Updates**\` — when the source lists partner or API node updates; always last among these three
+2. \`**Partner Node Updates**\` — when the source lists partner or API node updates; always immediately after open-source models
+3. \`**New Node Updates**\` — when the source has a **New Nodes** (or equivalent) section with user-facing additions; last among these three
 
-Never place Partner Node Updates before New Open-Source Model Support. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
+Never place Partner Node Updates before New Open-Source Model Support. Never place New Node Updates before Partner Node Updates when both are present. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
 
 **New Open-Source Model Support:**
 - Include every open-source model from the source (within the bullet limit)
 - Do not drop models to make room for nodes or partner items
 - Preserve 1–2 distinguishing traits per model from the source (variants, sizes, encoder, modality, key capability)
 
+**Partner Node Updates:**
+- Include partner/API node additions or updates from the source
+- Preserve scope or capability details when stated (e.g. number of new nodes, supported modality)
+- Always the second section when open-source models are also present (right after Open-Source Model Support)
+
 **New Node Updates:**
 - When the source has a **New Nodes** section, include meaningful user-facing entries (within the bullet limit)
 - Include: new workflow nodes, save/load or I/O improvements, multimodal or video node additions
 - Skip only entries that are minor plumbing with no user workflow impact (e.g. internal loader tweaks)
 - Use \`**New Node Updates**\` as the section label
-
-**Partner Node Updates:**
-- Include partner/API node additions or updates from the source
-- Preserve scope or capability details when stated (e.g. number of new nodes, supported modality)
-- Always in the last section when other sections are present
+- Always last among the three sections when present
 
 **Bullet format:**
 - Linked: * [**Name**](url_from_source): Description
@@ -56,8 +57,8 @@ Never place Partner Node Updates before New Open-Source Model Support. Never mer
 
 **What to include (priority — matches section order):**
 1. All open-source models from the source
-2. All meaningful **New Nodes** entries
-3. Partner/API node updates
+2. Partner/API node updates
+3. All meaningful **New Nodes** entries
 
 **What to drop:**
 - Minor fixes, refactors, dtype cleanups, internal tooling
@@ -81,7 +82,7 @@ export function buildSimplifyUserPrompt(
     "Rewrite the release note below for an **in-app popup**.",
     "",
     `Hard limits: **${limits.maxBulletsTotal} bullets total**, **${limits.maxSections} section headings max**.`,
-    "Section order: New Open-Source Model Support → New Node Updates → Partner Node Updates (omit empty sections).",
+    "Section order: New Open-Source Model Support → Partner Node Updates → New Node Updates (omit empty sections).",
     "Section labels: **bold** (e.g. **Partner Node Updates**), not ## headings.",
     "Use only facts and links from the release data. Each bullet: **6–12 words** — one key trait, no filler.",
     "",

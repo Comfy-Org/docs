@@ -98,9 +98,9 @@ Configured in `cms-config.json` → `simplify`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → `**New Node Updates**` (bold labels, not `##`) |
 
-- Section order is **fixed**: open-source models first, node updates second, partner nodes last
+- Section order is **fixed**: open-source models first, partner nodes second, node updates last
 - Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)
 - Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
