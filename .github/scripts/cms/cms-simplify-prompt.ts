@@ -25,13 +25,13 @@ export const CMS_SIMPLIFY_SYSTEM_PROMPT = `You are an expert technical writer cr
 **Section order (mandatory — never reorder):**
 1. \`**New Open-Source Model Support**\` — when the source lists new open-source models
 2. \`**Partner Node Updates**\` — when the source lists partner or API node updates; when open-source models are also present, place this immediately after them
-3. \`**New Node Updates**\` — when the source has a **New Nodes** (or equivalent) section with user-facing additions; last among these three when present
+3. \`**New Node Updates**\` — **optional**; omit by default even if the source has a **New Nodes** section
 
 Emit only sections that have source items, in the order above. When open-source models are absent, Partner Node Updates may lead. Never place Partner Node Updates before New Open-Source Model Support when both are present. Never place New Node Updates before Partner Node Updates when both are present. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
 
 **New Open-Source Model Support:**
 - Include every open-source model from the source (within the bullet limit)
-- Do not drop models to make room for nodes or partner items
+- Do not drop models to make room for partner items
 - Preserve 1–2 distinguishing traits per model from the source (variants, sizes, encoder, modality, key capability)
 
 **Partner Node Updates:**
@@ -39,12 +39,10 @@ Emit only sections that have source items, in the order above. When open-source 
 - Preserve scope or capability details when stated (e.g. number of new nodes, supported modality)
 - Always the second section when open-source models are also present (right after Open-Source Model Support)
 
-**New Node Updates:**
-- When the source has a **New Nodes** section, include meaningful user-facing entries (within the bullet limit)
-- Include: new workflow nodes, save/load or I/O improvements, multimodal or video node additions
-- Skip only entries that are minor plumbing with no user workflow impact (e.g. internal loader tweaks)
-- Use \`**New Node Updates**\` as the section label
-- Always last among the three sections when present
+**New Node Updates (optional — default omit):**
+- **Default: do not emit this section.** Docs changelog may list New Nodes; the CMS popup does not need them.
+- Only include \`**New Node Updates**\` when the user message explicitly asks to include new nodes (or equivalent). Otherwise skip the whole section even if the source has **New Nodes**.
+- When explicitly requested: include meaningful user-facing entries (within the bullet limit); last among the three sections; skip minor plumbing with no workflow impact
 
 **Bullet format:**
 - Linked: * [**Name**](url_from_source): Description
@@ -58,9 +56,10 @@ Emit only sections that have source items, in the order above. When open-source 
 **What to include (priority — matches section order):**
 1. All open-source models from the source
 2. Partner/API node updates
-3. All meaningful **New Nodes** entries
+3. **New Nodes only if the user message explicitly requests them** (otherwise omit)
 
 **What to drop:**
+- **New Node Updates / New Nodes** by default (unless explicitly requested in the user message)
 - Minor fixes, refactors, dtype cleanups, internal tooling
 - Pure loader/plumbing changes with no workflow impact
 - Performance, stability, API housekeeping, console logging
@@ -82,7 +81,8 @@ export function buildSimplifyUserPrompt(
     "Rewrite the release note below for an **in-app popup**.",
     "",
     `Hard limits: **${limits.maxBulletsTotal} bullets total**, **${limits.maxSections} section headings max**.`,
-    "Section order: New Open-Source Model Support → Partner Node Updates → New Node Updates (omit empty sections).",
+    "Section order: New Open-Source Model Support → Partner Node Updates → (optional) New Node Updates.",
+    "Omit **New Node Updates** by default even if the source has New Nodes, unless this message explicitly asks to include them.",
     "Section labels: **bold** (e.g. **Partner Node Updates**), not ## headings.",
     "Use only facts and links from the release data. Each bullet: **6–12 words** — one key trait, no filler.",
     "",

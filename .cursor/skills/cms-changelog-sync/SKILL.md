@@ -91,12 +91,12 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 |------|-------|
 | Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
 | Section headings max | **3** (`max_sections: 3`) |
-| Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** |
+| Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** (optional) |
 | Words per version | ~60–120 |
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
-| New Node Updates | Include meaningful entries from source **New Nodes** section (workflows, sockets, multimodal nodes) |
-| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below) |
+| New Node Updates | **Optional by default.** Omit from CMS popup even if docs has **New Nodes**; add only when a human explicitly asks |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested |
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
 
@@ -112,7 +112,7 @@ When curating `changelog/index.mdx` from ComfyUI git history, **do not add bulle
 
 Also omit standalone **frontend package semver bumps** unless tied to a user-visible fix worth its own bullet. CMS simplify must never promote WIKI-only items into popup copy even if they appear in the full docs block.
 
-Example staging shape (placeholders only):
+Example staging shape (placeholders only). **New Node Updates** is optional and usually omitted:
 
 ```markdown
 **New Open-Source Model Support**
@@ -120,7 +120,11 @@ Example staging shape (placeholders only):
 
 **Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
+```
 
+Only when a human asks to include nodes:
+
+```markdown
 **New Node Updates**
 * [**Node Name**](source_url): What the node does and why it matters
 ```
