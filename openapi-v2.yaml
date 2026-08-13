@@ -91,6 +91,12 @@ paths:
                   items:
                     type: string
                   description: Category tags (e.g. `input`).
+                expires_in:
+                  type: integer
+                  minimum: 60
+                  maximum: 604800
+                  description: 'Optional retention override in seconds (60s–7d): the asset''s `expires_at` becomes now + `expires_in`, replacing the platform''s default retention. Implementations without configurable retention ignore it. The bounds apply to this override only — the platform default is operator-configured and may lie outside them.'
+                  example: 86400
       responses:
         '201':
           description: New blob stored; asset minted.
@@ -166,6 +172,12 @@ paths:
                   type: array
                   items:
                     type: string
+                expires_in:
+                  type: integer
+                  minimum: 60
+                  maximum: 604800
+                  description: 'Optional retention override in seconds (60s–7d): the asset''s `expires_at` becomes now + `expires_in`, replacing the platform''s default retention. Implementations without configurable retention ignore it. The bounds apply to this override only — the platform default is operator-configured and may lie outside them.'
+                  example: 86400
       responses:
         '201':
           description: Asset minted over the existing blob.
@@ -231,6 +243,44 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+    delete:
+      operationId: deleteAsset
+      tags:
+      - assets
+      summary: Delete an asset record
+      description: 'Deletes the asset RECORD. The underlying content-addressed blob is
+
+        untouched while any other asset still references it (hash dedup means
+
+        blobs are shared) — deleting an asset never destroys another asset''s
+
+        bytes.
+
+
+        A second delete of the same id returns `404`, indistinguishable from
+
+        an id that never existed or belongs to another account.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/AssetId'
+      responses:
+        '204':
+          description: Record deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: '`asset_in_use` — the record cannot be deleted while the platform still depends on it. Each surface defines its own holds (for example: a job''s outputs reference the record, or a content-moderation workflow requires it to be preserved); the response body deliberately never says which hold applies.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/assets/{id}/content:
@@ -440,6 +490,32 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs/{id}/workflow:
+    get:
+      operationId: getJobWorkflow
+      tags:
+      - jobs
+      summary: The workflow behind a job — authoring version if pinned, executed graph otherwise
+      description: "Returns the workflow behind a job. The response's `format` field says\nwhich of two different shapes `workflow` is in:\n\n- `format: save` — the original authoring workflow exactly as saved\n  in the Comfy Cloud editor at the version the job ran, including\n  canvas layout and frontend-only nodes (e.g. Note nodes; Get/Set\n  nodes not yet expanded). Returned only when the job is pinned to a\n  specific workflow version — see the \"when you get which\" note\n  below.\n- `format: api` — the executed API-format prompt graph the job\n  actually ran: frontend-only constructs are gone and Get/Set nodes\n  are expanded. This is the same shape `POST /api/v2/jobs`'s\n  `workflow` request field takes, and never includes the\n  submission's `extra_data`, which can carry a live credential.\n\nAlways branch on `format`, never assume one or the other — which\nshape comes back depends on how the job was submitted, not on\nanything the caller controls per-request.\n\nA deliberate sub-resource, not a field on `GET /api/v2/jobs/{id}` —\nso the polling workhorse stays cheap and a caller pays for this only\nwhen it actually wants the workflow (for example, to recover what\nproduced a given output).\n\nTied to the job's own retention: this 404s under the same conditions\n`GET /api/v2/jobs/{id}` does (unknown, not-yours, or past its\nretention deadline) — there is no separate lifetime for the\nworkflow.\n\n**When you get which:** a job only carries a pinned workflow version\nwhen it was submitted with that association. Today that means jobs\nsubmitted from the Comfy Cloud frontend/editor. Jobs submitted\ndirectly through this v2 API (`POST /api/v2/jobs`) do not carry that\nassociation — v2 job submission has no version-linking fields yet —\nso they always get `format: api`. This is expected, not a bug: it\nwill change once v2 submission grows the same version pinning.\n\nA job pinned to a version also falls back to `format: api` if that\nversion, or the workflow it belongs to, is no longer readable by the\ncaller — for example the caller deleted the workflow since the job\nran. This is the same fallback as an unpinned job, and for the same\nreason: it is preferable to the alternative of erroring the whole\nrequest over data that is genuinely gone.\n"
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The workflow graph.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobWorkflowResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/events:
     get:
       operationId: getJobEvents
@@ -573,14 +649,14 @@ components:
       required: true
       schema:
         type: string
-      example: job_01JZTGXW9Q2M4R8V0B1N3P5D7F
+      example: 7f3d2c1b-9a8e-4d6f-b012-3c4d5e6f7a8b
     AssetId:
       name: id
       in: path
       required: true
       schema:
         type: string
-      example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+      example: 9f8a1c0d-2b3e-4f56-8a7b-1c2d3e4f5a6b
     BlakeHash:
       name: hash
       in: path
@@ -643,7 +719,7 @@ components:
       properties:
         id:
           type: string
-          example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+          example: 9f8a1c0d-2b3e-4f56-8a7b-1c2d3e4f5a6b
         hash:
           type: string
           nullable: true
@@ -673,6 +749,15 @@ components:
         url_expires_at:
           type: string
           format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 'Retention deadline for the asset itself (distinct from `url_expires_at`, the signed URL''s validity). Null or absent means the asset is non-expiring. On a dedup-hit create response the deadline may be later than now + the requested/default retention: re-referencing content extends its retention, never shortens it.'
+        job_id:
+          type: string
+          nullable: true
+          description: ID of the job that produced this asset. Absent for uploaded assets, which have no producing job.
     Job:
       type: object
       description: One execution of a workflow. Durable from creation until `expires_at`; `outputs` populates incrementally during execution.
@@ -691,7 +776,7 @@ components:
       properties:
         id:
           type: string
-          example: job_01JZTGXW9Q2M4R8V0B1N3P5D7F
+          example: 7f3d2c1b-9a8e-4d6f-b012-3c4d5e6f7a8b
         status:
           $ref: '#/components/schemas/JobStatus'
         created_at:
@@ -736,6 +821,23 @@ components:
             execution_ms: 42000
         urls:
           $ref: '#/components/schemas/JobUrls'
+    JobWorkflowResponse:
+      type: object
+      description: The workflow behind a job. See GET /api/v2/jobs/{id}/workflow's description for exactly when `format` is `save` vs `api`.
+      required:
+      - workflow
+      - format
+      properties:
+        workflow:
+          type: object
+          description: The workflow, verbatim, in the shape `format` says.
+          additionalProperties: true
+        format:
+          type: string
+          enum:
+          - save
+          - api
+          description: 'Discriminates the `workflow` field''s shape. `save`: the original authoring workflow JSON, at the version pinned to the job. `api`: the executed API-format prompt graph.'
     JobStatus:
       type: string
       enum:
@@ -843,7 +945,7 @@ components:
         id:
           type: string
           description: Asset UUID.
-          example: asset_01JZV9R4N8...
+          example: 9f8a1c0d-2b3e-4f56-...
         hash:
           type: string
           nullable: true
@@ -854,6 +956,10 @@ components:
         url_expires_at:
           type: string
           format: date-time
+        job_id:
+          type: string
+          nullable: true
+          description: ID of the job that produced this output.
     OutputType:
       type: string
       enum:
@@ -976,7 +1082,7 @@ components:
           type: string
     AssetReference:
       type: object
-      description: "The typed asset-reference object placed inside workflow JSON where a\nfilename would normally go (documented here for tooling; it is not a\nrequest/response body itself):\n\n    {\"__type\": \"core/ASSET\",\n     \"info\": {\"id\": \"asset_...\", \"hash\": \"blake3:...\",\n              \"file_path\": \"photo.png\"}}\n\n`info.id` (the asset UUID) is required in v1 and authoritative;\n`hash` and `file_path` are optional staging/lookup hints and never\noverride a present `id`. A malformed reference or one that is not\nresolvable/owned by the caller fails submission with 422\n`missing_asset`.\n"
+      description: "The typed asset-reference object placed inside workflow JSON where a\nfilename would normally go (documented here for tooling; it is not a\nrequest/response body itself):\n\n    {\"__type\": \"core/ASSET\",\n     \"info\": {\"id\": \"<asset-uuid>\", \"hash\": \"blake3:...\",\n              \"file_path\": \"photo.png\"}}\n\n`info.id` (the asset UUID) is required in v1 and authoritative;\n`hash` and `file_path` are optional staging/lookup hints and never\noverride a present `id`. A malformed reference or one that is not\nresolvable/owned by the caller fails submission with 422\n`missing_asset`.\n"
       required:
       - __type
       - info
@@ -992,7 +1098,7 @@ components:
           properties:
             id:
               type: string
-              example: asset_01JZV8Q3M7K2W9X0Y1Z2A3B4C5
+              example: 9f8a1c0d-2b3e-4f56-8a7b-1c2d3e4f5a6b
             hash:
               type: string
               example: blake3:9f8a1c0d...
