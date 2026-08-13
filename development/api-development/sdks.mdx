@@ -113,6 +113,10 @@ Then point the SDK at `http://127.0.0.1:8189`. Authentication is not required by
 
 The proxy is a stopgap. Once the v2 API stabilizes it moves into ComfyUI core and the proxy is no longer needed.
 
+<Note>
+  One gap while the proxy catches up: `assets.delete()` works against Comfy Cloud but is not implemented in the proxy yet, so it returns `405` there. Everything else in this guide behaves the same on both.
+</Note>
+
 ## Watching a job run
 
 `job.events()` gives you a live stream of the job's state: node and step progress, preview frames, and each output the moment it is committed. It reconnects on its own if the connection drops.
@@ -161,6 +165,56 @@ for await (const event of job.events()) {
 
 The stream is a live feed, not a replayable log. It exists so you can render progress, not so you can rely on it for results. Polling the job is what is authoritative, and `run()`, `wait()`, and `result()` fall back to polling automatically. See [Design Notes](/development/api-development/sdks-design#poll-first-stream-for-progress) for why.
 
+## Tracing an output back to its workflow
+
+Outputs carry the id of the job that produced them, so you can start from a file and work backwards without keeping a side table.
+
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # the job that produced this file
+```
+
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // the job that produced this file
+```
+</CodeGroup>
+
+The same id is on an asset fetched on its own, so a file you found later still leads back to its job. It is `None` (TypeScript: `undefined`) for an asset you uploaded, which has no producing job.
+
+From the job you can ask for the workflow behind it — including a job you did not submit in this process, rehydrated by id:
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # the workflow as authored, canvas layout and Note nodes intact
+else:
+    ...  # the executed API-format graph
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // the workflow as authored, canvas layout and Note nodes intact
+} else {
+  // the executed API-format graph
+}
+```
+</CodeGroup>
+
+**Always branch on `format`.** Which shape comes back depends on how the job was submitted, not on anything you control per request:
+
+| `format` | What you get | When |
+|---|---|---|
+| `save` | The authoring workflow at the version the job ran, with canvas layout and editor-only nodes such as Note | Jobs submitted from the Comfy Cloud editor, which pins a workflow version |
+| `api` | The executed graph. Editor-only constructs are gone and Get/Set nodes are expanded | Everything else, including every job submitted through these SDKs today |
+
+Jobs you submit through the SDK always return `api`, because v2 submission has no version-pinning fields yet. That will change; the discriminator is there so your code does not have to.
+
 ## What the SDKs cover today
 
 The first version does one thing properly: run a workflow and get the results back.
@@ -169,6 +223,8 @@ The first version does one thing properly: run a workflow and get the results ba
 - **Submission.** Submit an API-format graph. Submission is idempotent, and a full queue is retried for you within a bounded budget.
 - **Execution.** Poll with `wait()`, or follow `events()` for live progress.
 - **Outputs.** Write to disk, buffer into memory, fetch a byte range, or get a short-lived download URL.
+- **Traceability.** Every output carries the id of the job that produced it, and a job can hand back the workflow behind it.
+- **Deleting assets.** Remove an asset you uploaded, by handle or by id.
 - **Errors.** Typed exceptions such as `JobFailed`, `Unauthorized`, `InsufficientCredits`, and `QueueFull`, rather than raw status codes.
 - **Cancellation.** Jobs can be canceled while running. TypeScript additionally accepts an `AbortSignal` on any call.
 
