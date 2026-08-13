@@ -11,7 +11,7 @@ description: "Programmatic access to Comfy Cloud for running workflows, managing
 
 The Comfy Cloud API provides programmatic access to run workflows on Comfy Cloud infrastructure. The API is compatible with local ComfyUI's API, making it easy to migrate existing integrations.
 
-The Python and TypeScript examples on this page use the official [Comfy SDKs](/development/api-development/sdks), which wrap the API's [v2 endpoints](/api-reference/v2/overview). The curl examples show the underlying HTTP calls, which you can make from any language. See the [Cloud API Reference](/development/cloud/api-reference) for the full HTTP surface.
+If you are working in Python or TypeScript, use the [Comfy SDKs](/development/api-development/sdks). They wrap this API and are the shortest path to running a workflow. This page covers what is specific to Comfy Cloud: your API key, credits, and concurrency limits. Everything else is in the [Cloud API Reference](/development/cloud/api-reference).
 
 <Note>
   **Subscription required:** API access is available on the **Standard**, **Creator** and **Pro** tiers. The Free tier does not include API access. See [pricing plans](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api) for details.
@@ -27,21 +27,7 @@ API requests draw from the same monthly credit allocation as the Comfy Cloud web
 https://cloud.comfy.org
 ```
 
-This is the SDK's default target, so you do not need to configure it for Comfy Cloud. To point the same code at a serverless deployment or your own ComfyUI, set `COMFY_BASE_URL`. See [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
-
-## Install the SDK
-
-<CodeGroup>
-```bash Python
-pip install comfy-sdk
-```
-
-```bash TypeScript
-npm i @comfyorg/sdk
-```
-</CodeGroup>
-
-Python 3.10 or newer. Node 22 or newer. Python ships both a synchronous `Comfy` client and an `AsyncComfy` client with the same surface. TypeScript is async only.
+This is also the SDK's default target, so you do not need to configure it for Comfy Cloud. To point the same code at a serverless deployment or your own ComfyUI, set `COMFY_BASE_URL`. See [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
 
 ## Authentication
 
@@ -73,29 +59,23 @@ const client = new Comfy({ apiKey: process.env.COMFY_CLOUD_API_KEY! });
 ```
 </CodeGroup>
 
-An invalid or missing key raises `Unauthorized`. A key that is valid but not entitled raises `Forbidden`.
+An invalid or missing key returns `401`, which the SDKs raise as `Unauthorized`. A key on an inactive subscription returns `429`.
 
-## Core Concepts
+The same key is used for [Partner Nodes](/tutorials/partner-nodes/overview). Over HTTP you pass it again in `extra_data.api_key_comfy_org`. The SDKs do it for you when you pass `api_key` to `submit()`.
 
-### Workflows
+## Running Workflows
 
-ComfyUI workflows are JSON objects describing a graph of nodes. The API accepts workflows in the [API format](/development/api-development/workflow-api-format) (node IDs as keys with class_type, inputs, etc.) as produced by the ComfyUI frontend's "Export Workflow (API)" option.
+Workflows are submitted in [API format](/development/api-development/workflow-api-format), the JSON produced by the ComfyUI frontend's "Export Workflow (API)" option. You submit a workflow, the job executes asynchronously, and you download the outputs when it finishes.
 
-### Jobs
+<Card title="Comfy SDKs" icon="code" href="/development/api-development/sdks">
+  Install, submit a workflow, follow live progress, and save the outputs, in Python or TypeScript. Start here.
+</Card>
 
-When you submit a workflow, a **job** is created. Jobs are executed asynchronously:
-1. Submit a workflow with `client.submit(wf)`, or `POST /api/prompt` over HTTP
-2. Receive a job ID
-3. Monitor progress by polling or by following the live event stream
-4. Retrieve outputs when complete
-
-### Assets
-
-Input files are uploaded as **assets** and referenced by workflow inputs. Asset handles are lazy and content addressed: the file is hashed locally and only uploaded if the server does not already have those bytes, so re-running with the same input costs nothing.
+To call the HTTP endpoints directly, from another language or for the capabilities below, see the [Cloud API Reference](/development/cloud/api-reference). It documents submission, polling, the WebSocket protocol, and output downloads with curl, Python, and TypeScript examples.
 
 ### Parallel Execution (Concurrent Jobs)
 
-API users can submit multiple workflows concurrently without waiting for previous jobs to complete. `submit()` returns as soon as the job is accepted, so you can keep several in flight. The dispatcher will run them in parallel up to your subscription tier's limit.
+API users can submit multiple workflows concurrently without waiting for previous jobs to complete. Submission returns as soon as the job is accepted, so you can keep several in flight. The dispatcher will run them in parallel up to your subscription tier's limit.
 
 | Subscription Tier | Concurrent Jobs |
 |-------------------|-----------------|
@@ -109,344 +89,20 @@ Jobs submitted beyond your concurrency limit will queue normally and execute aut
   Parallel execution is currently available via the API only. See [pricing plans](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api) for subscription details.
 </Info>
 
-#### Example: Submitting Multiple Jobs in Parallel
-
-<CodeGroup>
-```python Python
-import os
-from comfy_sdk import Comfy
-
-client = Comfy(api_key=os.environ["COMFY_CLOUD_API_KEY"])
-
-# Create variations by changing the seed
-jobs = []
-for seed in [42, 123, 456]:
-    wf = client.workflows.from_file("workflow_api.json")
-    wf.set_input("3", "seed", seed)
-    jobs.append(client.submit(wf))
-
-for job in jobs:
-    print(f"Job submitted: {job.id}")
-
-# The jobs run in parallel. Wait for all of them.
-for job in jobs:
-    job.wait()
-```
-
-```typescript TypeScript
-import { Comfy } from "@comfyorg/sdk";
-
-const client = new Comfy({ apiKey: process.env.COMFY_CLOUD_API_KEY! });
-
-// Create variations by changing the seed
-const jobs = await Promise.all(
-  [42, 123, 456].map(async (seed) => {
-    const wf = await client.workflows.fromFile("workflow_api.json");
-    wf.setInput("3", "seed", seed);
-    return client.submit(wf);
-  })
-);
-
-for (const job of jobs) {
-  console.log(`Job submitted: ${job.id}`);
-}
-
-// The jobs run in parallel. Wait for all of them.
-await Promise.all(jobs.map((job) => job.wait()));
-```
-</CodeGroup>
-
-`"3"` is the node ID of the sampler in `workflow_api.json`. Use `AsyncComfy` in Python if you want the waits to be concurrent rather than sequential.
-
-### Outputs
-
-Generated content (images, videos, audio) is stored in cloud storage. The SDKs download outputs for you. Over raw HTTP, output files are fetched from the `/api/view` endpoint, which returns a 302 redirect to a temporary signed URL.
-
-## Quick Start
-
-Here's a complete example showing how to submit a workflow, monitor its progress, and retrieve outputs.
-
-### Step 1: Submit a Workflow
-
-<CodeGroup>
-```bash curl
-curl -X POST "https://cloud.comfy.org/api/prompt" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": '"$(cat workflow_api.json)"'}'
-```
-
-```python Python
-import os
-from comfy_sdk import Comfy
-
-client = Comfy(api_key=os.environ["COMFY_CLOUD_API_KEY"])
-
-# Load your workflow (exported from ComfyUI in API format)
-wf = client.workflows.from_file("workflow_api.json")
-
-# Optional: attach an input file to the node that consumes it
-asset = client.assets.from_file("photo.png")
-wf.set_input("10", "image", asset)
-
-# Submit the workflow
-job = client.submit(wf)
-print(f"Job submitted: {job.id}")
-```
-
-```typescript TypeScript
-import { Comfy } from "@comfyorg/sdk";
-
-const client = new Comfy({ apiKey: process.env.COMFY_CLOUD_API_KEY! });
-
-// Load your workflow (exported from ComfyUI in API format)
-const wf = await client.workflows.fromFile("workflow_api.json");
-
-// Optional: attach an input file to the node that consumes it
-const asset = client.assets.fromFile("photo.png");
-wf.setInput("10", "image", asset);
-
-// Submit the workflow
-const job = await client.submit(wf);
-console.log(`Job submitted: ${job.id}`);
-```
-</CodeGroup>
-
-`"10"` is a node ID from `workflow_api.json`, the node your input image feeds into. Submission is idempotent, so a retried submit does not run the workflow twice.
-
-<Note>
-  To submit and wait in one call, use `client.run(wf)` instead of `submit()`. Use `submit()` when you want to do other work while the job executes.
-</Note>
-
-### Step 2: Monitor Job Progress
-
-You can wait for the job by polling, or follow the live event stream for real-time updates.
-
-#### Option A: Polling (Simple)
-
-`wait()` polls until the job reaches a terminal state. Polling is authoritative: it is the source of truth for job state, and it survives a dropped connection.
-
-<CodeGroup>
-```bash curl
-# Poll for job completion
-curl -X GET "$BASE_URL/api/job/{prompt_id}/status" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
-
-# Response examples:
-# {"status": "queued_waiting"}       - Job is queued
-# {"status": "executing"}            - Job is currently running
-# {"status": "success"}              - Job finished successfully
-# {"status": "error"}                - Job encountered an error
-# {"status": "non_retryable_error"}  - Job failed, retrying will not help
-# {"status": "lost"}                 - Job disappeared before finishing
-# {"status": "cancelled"}            - Job was cancelled
-```
-
-```python Python
-from comfy_sdk import JobFailed
-
-job.wait()  # polls until the job reaches a terminal state
-
-try:
-    job.result()  # the finished job, or JobFailed with the node-level detail
-    print("Job completed!")
-except JobFailed as e:
-    print(f"Job failed: {e.error}")
-
-# A job from another process, rehydrated by id
-job = client.jobs.get("<job-id>")
-```
-
-```typescript TypeScript
-await job.wait(); // polls until the job reaches a terminal state
-
-if (job.status !== "succeeded") {
-  throw new Error(`Job ${job.status}`);
-}
-console.log("Job completed!");
-
-// A job from another process, rehydrated by id
-const existing = await client.jobs.get("<job-id>");
-```
-</CodeGroup>
-
-**Job status values (HTTP):** `success`, `error`, `non_retryable_error`, `lost`, and `cancelled` are the five terminal states. Everything else means the job is still in flight, including `submitted`, `queued_waiting`, `preparing`, `executing`, and transitional states such as `cancel_requested`. Poll until you see a terminal value rather than matching on the in-flight names. The SDKs handle this for you and surface a failure as `JobFailed`.
-
-#### Option B: Live Progress Events
-
-`job.events()` gives you a live stream of the job's state: node and step progress, preview frames, and each output the moment it is committed. It reconnects on its own if the connection drops.
-
-<CodeGroup>
-```python Python
-from comfy_sdk import Progress, Preview, OutputReady, StatusChange
-
-for event in job.events():
-    match event:
-        case Progress() as p:
-            print(f"{p.value:.0%} {p.message}")
-        case Preview() as pv:
-            image = pv.to_pil()
-        case OutputReady() as o:
-            o.output.to_file(f"partial/{o.output.name}")
-        case StatusChange(status="succeeded"):
-            break
-```
-
-```typescript TypeScript
-// The label is required: a bare `break` inside a switch leaves the switch,
-// not the loop.
-eventLoop: for await (const event of job.events()) {
-  switch (event.kind) {
-    case "progress":
-      console.log(event.value);
-      break;
-    case "outputReady":
-      await event.output.toFile(event.output.name);
-      break;
-    case "statusChange":
-      if (event.status === "succeeded") break eventLoop;
-  }
-}
-```
-</CodeGroup>
-
-`Preview.to_pil()` requires the optional Pillow extra: `pip install "comfy-sdk[pil]"`.
-
-The stream is a live feed, not a replayable log. It exists so you can render progress, not so you can rely on it for results. `run()` and `wait()` fall back to polling automatically. See [Design Notes](/development/api-development/sdks-design#poll-first-stream-for-progress) for why.
-
-<Note>
-  The raw WebSocket protocol, including message types and binary preview frames, is documented in the [WebSocket Reference](/development/cloud/api-reference#websocket-for-real-time-progress).
-</Note>
-
-### Step 3: Download Outputs
-
-Once the job completes, write the generated files to disk. `get_outputs()` filters by node ID, and `job.outputs` gives you everything the job produced.
-
-<CodeGroup>
-```bash curl
-# Step 1: read the 302 target. Do not use -L here: following the redirect
-# would resend your API key to the storage host.
-SIGNED_URL=$(curl -s -o /dev/null -w '%{redirect_url}' \
-  "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY")
-
-# Step 2: the signed URL carries its own authorization, so send no headers.
-curl -s "$SIGNED_URL" -o output.png
-```
-
-```python Python
-# Outputs of a single node
-for output in job.get_outputs("9"):
-    output.to_file(output.name)
-
-# Every output the job produced
-for output in job.outputs:
-    output.to_file(f"./my_outputs/{output.name}")
-
-# Or keep the bytes in memory, or hand a URL to something else
-data = job.outputs[0].to_bytes()
-link = job.outputs[0].get_download_url()  # url and expires_at
-```
-
-```typescript TypeScript
-// Outputs of a single node
-for (const output of job.getOutputs("9")) {
-  await output.toFile(output.name);
-}
-
-// Every output the job produced
-for (const output of job.outputs) {
-  await output.toFile(`./my_outputs/${output.name}`);
-}
-
-// Or keep the bytes in memory, or hand a URL to something else
-const data = await job.outputs[0].toBytes();
-const { url, expiresAt } = await job.outputs[0].getDownloadUrl();
-```
-</CodeGroup>
-
-The node ID (`"9"` in this example) corresponds to the SaveImage or other output node in your workflow. You can find these IDs by opening your workflow JSON file and looking for nodes with `class_type` like `SaveImage`, `VHS_VideoCombine`, etc.
-
-Every output also carries the ID of the job that produced it (`output.job_id`, TypeScript `output.jobId`), so a file you found later still leads back to its job and, through `job.get_workflow()`, to the graph behind it.
-
-<Info>
-  Calling `/api/view` directly returns a 302 redirect to a temporary signed URL. Do not follow that redirect with your API key attached: the signed URL points at storage, carries its own authorization, and needs no header from you. Read the `Location` header and fetch it as a separate unauthenticated request, as the curl sample above does. The SDKs handle this for you.
-</Info>
-
-### Complete Example
-
-Here's a full end-to-end example combining all three steps:
-
-<CodeGroup>
-```python Python
-import os
-from comfy_sdk import Comfy, JobFailed
-
-client = Comfy(api_key=os.environ["COMFY_CLOUD_API_KEY"])
-
-def main():
-    # 1. Load and modify the workflow
-    wf = client.workflows.from_file("workflow_api.json")
-    wf.set_input("3", "seed", 42)
-    wf.set_input("6", "text", "a beautiful sunset")
-
-    # 2. Attach an input file (uploaded only if the server lacks those bytes)
-    asset = client.assets.from_file("photo.png")
-    wf.set_input("10", "image", asset)
-
-    # 3. Submit and wait for completion
-    try:
-        job = client.run(wf)
-    except JobFailed as e:
-        raise SystemExit(f"Job failed: {e.error}")
-
-    print(f"Job {job.id} finished")
-
-    # 4. Download the outputs
-    for output in job.outputs:
-        output.to_file(output.name)
-        print(f"Downloaded: {output.name}")
-
-if __name__ == "__main__":
-    main()
-```
-
-```typescript TypeScript
-import { Comfy, JobFailed } from "@comfyorg/sdk";
-
-const client = new Comfy({ apiKey: process.env.COMFY_CLOUD_API_KEY! });
-
-async function main() {
-  // 1. Load and modify the workflow
-  const wf = await client.workflows.fromFile("workflow_api.json");
-  wf.setInput("3", "seed", 42);
-  wf.setInput("6", "text", "a beautiful sunset");
-
-  // 2. Attach an input file (uploaded only if the server lacks those bytes)
-  const asset = client.assets.fromFile("photo.png");
-  wf.setInput("10", "image", asset);
-
-  // 3. Submit and wait for completion
-  let job;
-  try {
-    job = await client.run(wf);
-  } catch (e) {
-    if (e instanceof JobFailed) throw new Error(`Job failed: ${e.message}`);
-    throw e;
-  }
-
-  console.log(`Job ${job.id} finished`);
-
-  // 4. Download the outputs
-  for (const output of job.outputs) {
-    await output.toFile(output.name);
-    console.log(`Downloaded: ${output.name}`);
-  }
-}
-
-main();
-```
-</CodeGroup>
+## What the SDKs Don't Cover Yet
+
+The SDKs do one thing: run a workflow and get the results back. The rest of the Cloud surface is reachable over HTTP only, so call these endpoints directly even if you use an SDK for execution.
+
+| Capability | Endpoint | Reference |
+|---|---|---|
+| Queue status, running and pending jobs | `GET /api/queue` | [Queue Management](/development/cloud/api-reference#queue-management) |
+| Interrupt the current execution | `POST /api/interrupt` | [Queue Management](/development/cloud/api-reference#queue-management) |
+| Node definitions and input specs | `GET /api/object_info` | [Object Info](/development/cloud/api-reference#object-info) |
+| Browse available models | Model endpoints | [Cloud API Reference](/development/cloud/api-reference) |
+| Account and user information | `GET /api/user` | [Cloud API Reference](/development/cloud/api-reference) |
+| Mask uploads that reference an existing image | `POST /api/upload/mask` | [Uploading Inputs](/development/cloud/api-reference#uploading-inputs) |
+
+Canceling a job is covered by both: the SDKs cancel a job you hold a handle to, and `POST /api/queue` cancels by ID.
 
 ## Available Endpoints
 
@@ -459,25 +115,33 @@ main();
 | [WebSocket](/development/cloud/api-reference#websocket-for-real-time-progress) | Real-time progress updates |
 | [Object Info](/development/cloud/api-reference#object-info) | Available nodes and their definitions |
 
+## Error Handling
+
+REST endpoints return standard HTTP status codes:
+
+| Status | Description |
+|--------|-------------|
+| `400` | Invalid request (bad workflow, missing fields) |
+| `401` | Unauthorized (invalid or missing API key) |
+| `402` | Insufficient credits |
+| `429` | Subscription inactive |
+| `500` | Internal server error |
+
+The SDKs raise these as typed exceptions instead, including `Unauthorized`, `InvalidWorkflow`, `InsufficientCredits`, `QueueFull`, and `JobFailed`, all extending `ComfyError`.
+
+Execution failures are separate from HTTP errors. See [Error Handling](/development/cloud/api-reference#error-handling) for the `exception_type` values delivered during execution.
+
 ## Next Steps
-
-The quick start above covers the basics of submitting workflows and retrieving results. The SDKs cover running a workflow and getting the results back. For the rest of the Cloud surface, call the HTTP endpoints documented in the [Cloud API Reference](/development/cloud/api-reference):
-
-- **[Uploading Input Files](/development/cloud/api-reference#uploading-inputs)** - Upload images, masks, or other user-provided content over raw HTTP
-- **[Modifying Workflow Inputs](/development/cloud/api-reference#modify-workflow-inputs)** - Dynamically change workflow parameters like prompts, seeds, or node settings before submission
-- **[Using Partner Nodes](/development/cloud/api-reference#using-partner-nodes)** - Call external AI services (Flux Pro, Ideogram, etc.) that require additional API key configuration
-- **[Queue Management](/development/cloud/api-reference#queue-management)** - Monitor queue status, cancel jobs, or interrupt running executions
-- **[Error Handling](/development/cloud/api-reference#error-handling)** - Handle HTTP errors, execution failures, and understand exception types
 
 <CardGroup cols={2}>
   <Card title="Comfy SDKs" icon="code" href="/development/api-development/sdks">
-    Full SDK guide: base URLs, assets, events, errors, and current scope.
+    Run workflows from Python or TypeScript. Assets, live events, and typed errors.
+  </Card>
+  <Card title="Cloud API Reference" icon="book" href="/development/cloud/api-reference">
+    Complete endpoint documentation with curl, Python, and TypeScript examples.
   </Card>
   <Card title="Comfy API v2 Reference" icon="cloud" href="/api-reference/v2/overview">
     The versioned HTTP API underneath both SDKs. Use it from any language.
-  </Card>
-  <Card title="Cloud API Reference" icon="book" href="/development/cloud/api-reference">
-    Complete endpoint documentation for the Cloud API.
   </Card>
   <Card title="OpenAPI Specification" icon="file-code" href="/development/cloud/openapi">
     Machine-readable API spec for code generation.
