@@ -1,0 +1,204 @@
+---
+title: "Comfy SDKs"
+description: "Official Python and TypeScript SDKs for running ComfyUI workflows from your own application"
+sidebarTitle: "Overview"
+icon: "code"
+---
+
+<Warning>
+  **Beta.** The SDKs and the Comfy API v2 they call are at `0.1.x`. The shape of the API can still change before we lock it down. Now is the cheapest time to tell us it is wrong. See [Feedback](#feedback).
+</Warning>
+
+The Comfy SDKs let your application run ComfyUI workflows and get the results back. You submit a workflow, ComfyUI executes it, and you download the outputs. The same code runs against Comfy Cloud or against a ComfyUI instance you host yourself. Only the base URL changes.
+
+The SDKs are clients for the [Comfy API v2](/api-reference/v2/overview), a versioned HTTP API that we intend to support long term. New releases of ComfyUI will not break integrations built on it.
+
+Things people build this way:
+
+- Plugins that generate content inside another application, such as Blender or Krita
+- Consumer apps that run generation on behalf of their users
+- Batch pipelines, for example running one workflow over every frame of a video
+- Backend services that need many workflows in flight at once
+
+<Note>
+  These SDKs drive ComfyUI **from the outside**. If you are writing custom nodes or frontend extensions that run **inside** ComfyUI, you want [Develop Custom Nodes](/custom-nodes/overview) instead. Those are a separate set of APIs.
+</Note>
+
+## Install
+
+<CodeGroup>
+```bash Python
+pip install comfy-sdk
+```
+
+```bash TypeScript
+npm i @comfyorg/sdk
+```
+</CodeGroup>
+
+Python 3.10 or newer. Node 22 or newer.
+
+## Quickstart
+
+Upload an input image, run a workflow, and write the results to disk.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Comfy Cloud
+client = Comfy(api_key="comfyui-...")
+
+wf = client.workflows.from_file("workflow_api.json")
+
+asset = client.assets.from_file("photo.png")
+wf.set_input("10", "image", asset)
+
+job = client.run(wf)
+for output in job.get_outputs("9"):
+    output.to_file(output.name)
+```
+
+```typescript TypeScript
+import { Comfy } from "@comfyorg/sdk";
+
+// Comfy Cloud
+const client = new Comfy({ apiKey: "comfyui-..." });
+
+const wf = await client.workflows.fromFile("workflow_api.json");
+
+const asset = client.assets.fromFile("photo.png");
+wf.setInput("10", "image", asset);
+
+const job = await client.run(wf);
+await job.getOutputs("9")[0].toFile("out.png");
+```
+</CodeGroup>
+
+`workflow_api.json` is a workflow saved in [API format](/development/api-development/workflow-api-format). `"10"` and `"9"` are node IDs from that file: the node the input image feeds into, and the output node whose results you want.
+
+Asset handles are lazy. `photo.png` is hashed locally and only uploaded if the server does not already have those bytes, so re-running with the same input costs nothing.
+
+`run()` submits the job and waits for it to reach a terminal state. To do work while it executes, use `submit()` instead and watch the [event stream](#watching-a-job-run).
+
+To run against your own ComfyUI instead, change one line and drop the key: `Comfy("http://127.0.0.1:8189")`. See below.
+
+## Choosing a base URL
+
+| Surface | Base URL | API key |
+|---|---|---|
+| **Comfy Cloud** | `https://cloud.comfy.org` (the default) | Required |
+| **Your own ComfyUI** | `http://127.0.0.1:8189` (the local proxy) | None by default. Optional static bearer token |
+
+### Comfy Cloud
+
+Works out of the box. Create an [API key](/development/api-development/getting-an-api-key) and pass it to the client.
+
+<Note>
+  API access requires a paid Comfy Cloud subscription. The free tier does not include it. How many jobs you can run at once depends on your tier. See [Cloud API Overview](/development/cloud/overview#parallel-execution-concurrent-jobs).
+</Note>
+
+### Your own ComfyUI
+
+During the beta, the v2 API is served by [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), a small open-source service that runs alongside your ComfyUI:
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+```
+
+By default it proxies the ComfyUI on `127.0.0.1:8188` and serves the v2 API on `127.0.0.1:8189`. Use `--comfyui` and `--port` to change either.
+
+Then point the SDK at `http://127.0.0.1:8189`. Authentication is not required by default. If the proxy is configured with a static bearer token, pass that token as the SDK API key: `Comfy("http://127.0.0.1:8189", api_key="...")`. The proxy binds to loopback only by default. Run it with `--comfyui-base-dir /path/to/ComfyUI` if you also want to upload model files into your install.
+
+The proxy is a stopgap. Once the v2 API stabilizes it moves into ComfyUI core and the proxy is no longer needed.
+
+## Watching a job run
+
+`job.events()` gives you a live stream of the job's state: node and step progress, preview frames, and each output the moment it is committed. It reconnects on its own if the connection drops.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Progress, Preview, OutputReady, StatusChange
+
+job = client.submit(wf)
+
+for event in job.events():
+    match event:
+        case Progress() as p:
+            print(f"{p.value:.0%} {p.message}")
+        case Preview() as pv:
+            image = pv.to_pil()
+        case OutputReady() as o:
+            o.output.to_file(f"partial/{o.output.name}")
+        case StatusChange(status="succeeded"):
+            break
+
+result = job.result()
+```
+
+```typescript TypeScript
+const job = await client.submit(wf);
+
+for await (const event of job.events()) {
+  switch (event.kind) {
+    case "progress":
+      console.log(event.value);
+      break;
+    case "outputReady":
+      await event.output.toFile(`${event.output.name}`);
+      break;
+    case "statusChange":
+      if (event.status === "succeeded") break;
+  }
+}
+```
+</CodeGroup>
+
+`Preview.to_pil()` requires the optional Pillow extra: `pip install "comfy-sdk[pil]"`.
+
+`result()` returns the finished job, or raises `JobFailed` with the node-level detail if execution failed. See the [SDK README](#reference) for your language for the full event catalog.
+
+The stream is a live feed, not a replayable log. It exists so you can render progress, not so you can rely on it for results. Polling the job is what is authoritative, and `run()`, `wait()`, and `result()` fall back to polling automatically. See [Design Notes](/development/api-development/sdks-design#poll-first-stream-for-progress) for why.
+
+## What the SDKs cover today
+
+The first version does one thing properly: run a workflow and get the results back.
+
+- **Assets.** Create input handles from a file, bytes, a stream, or a URL. Handles are lazy and content addressed, so re-running with the same input does not re-upload it.
+- **Submission.** Submit an API-format graph. Submission is idempotent, and a full queue is retried for you within a bounded budget.
+- **Execution.** Poll with `wait()`, or follow `events()` for live progress.
+- **Outputs.** Write to disk, buffer into memory, fetch a byte range, or get a short-lived download URL.
+- **Errors.** Typed exceptions such as `JobFailed`, `Unauthorized`, `InsufficientCredits`, and `QueueFull`, rather than raw status codes.
+- **Cancellation.** Jobs can be canceled while running. TypeScript additionally accepts an `AbortSignal` on any call.
+
+Python ships both a synchronous `Comfy` client and an `AsyncComfy` client with the same surface. TypeScript is async only.
+
+Not in this version: managing saved workflows, the model library, node introspection, and named workflow parameters. [Design Notes](/development/api-development/sdks-design#scope-of-the-first-version) explains why the surface starts this small.
+
+## Reference
+
+The SDK READMEs are the full reference for each language, including auth, assets, errors, and the low-level escape hatches.
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
+    <code>comfy-sdk</code> on PyPI. Sync and async clients.
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
+    <code>@comfyorg/sdk</code> on npm. Typed, async, with a low-level client.
+  </Card>
+  <Card title="Comfy API v2 Reference" icon="code" href="/api-reference/v2/overview">
+    The HTTP API underneath both SDKs. Use it directly from any language.
+  </Card>
+  <Card title="Design Notes" icon="compass" href="/development/api-development/sdks-design">
+    Why this API exists, how it relates to the existing ComfyUI APIs, and what comes next.
+  </Card>
+</CardGroup>
+
+## Feedback
+
+This is `0.1.x` on purpose. Method names, the client shape, the event catalog, the error taxonomy, and how asset handling feels in practice are all still cheap to change, and we plan to lock the surface down over the next few weeks. After that, "we support this long term" starts to mean we cannot fix it for you anymore.
+
+So tell us what is awkward, what you expected to find and did not, and what you ended up working around. The `#developer-platform` channel in [our Discord](https://discord.com/invite/comfyorg) is the place for it.
+
+If you want a first-party SDK in another language, say so there. Both SDKs sit on the same documented HTTP contract, so any language can talk to the API today, but we would rather know where the demand is.
