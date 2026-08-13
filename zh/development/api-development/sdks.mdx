@@ -1,0 +1,210 @@
+---
+title: "Comfy SDKs"
+description: "用于在您自己的应用程序中运行 ComfyUI 工作流的官方 Python 和 TypeScript SDK"
+sidebarTitle: "概述"
+icon: "code"
+translationSourceHash: 10fd6129
+translationFrom: development/api-development/sdks.mdx
+translationBlockHashes:
+  "_intro": 0df68ad9
+  "Install": 6bcd1ccf
+  "Quickstart": 47f1a4c5
+  "Choosing a base URL": a25d0390
+  "Watching a job run": 2fbd5add
+  "What the SDKs cover today": 6151cc1e
+  "Reference": 5fc97b4a
+  "Feedback": f8553211
+---
+<Warning>
+  **测试版。** 这些 SDK 及其调用的 Comfy API v2 目前均为 `0.1.x` 版本。在我们将其锁定之前，API 的结构仍可能发生变化。现在告诉我们哪里有问题，成本最低。参见[反馈](#feedback)。
+</Warning>
+
+Comfy SDK 让您的应用程序能够运行 ComfyUI 工作流并取回结果。您提交工作流，ComfyUI 执行它，然后您下载输出。同一份代码既可用于 Comfy Cloud，也可用于您自行托管的 ComfyUI 实例，只需更改基础 URL。
+
+这些 SDK 是 [Comfy API v2](/zh/api-reference/v2/overview) 的客户端。Comfy API v2 是一个版本化的 HTTP API，我们计划长期支持。未来发布的 ComfyUI 新版本不会破坏基于该 API 构建的集成。
+
+人们通过这种方式构建的内容：
+
+- 在其他应用程序（如 Blender 或 Krita）内部生成内容的插件
+- 代表用户执行生成的面向消费者的应用
+- 批处理流水线，例如对视频的每一帧运行同一个工作流
+- 需要同时运行大量工作流的后端服务
+
+<Note>
+  这些 SDK 是从**外部**驱动 ComfyUI。如果您要编写在 ComfyUI **内部**运行的自定义节点或前端扩展，请改用[开发自定义节点](/zh/custom-nodes/overview)。那是一套独立的 API。
+</Note>
+
+## 安装
+
+<CodeGroup>
+```bash Python
+pip install comfy-sdk
+```
+
+```bash TypeScript
+npm i @comfyorg/sdk
+```
+</CodeGroup>
+
+Python 3.10 或更高版本。Node 22 或更高版本。
+
+## 快速入门
+
+上传输入图像，运行工作流，并将结果写入磁盘。
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Comfy Cloud
+client = Comfy(api_key="comfyui-...")
+
+wf = client.workflows.from_file("workflow_api.json")
+
+asset = client.assets.from_file("photo.png")
+wf.set_input("10", "image", asset)
+
+job = client.run(wf)
+for output in job.get_outputs("9"):
+    output.to_file(output.name)
+```
+
+```typescript TypeScript
+import { Comfy } from "@comfyorg/sdk";
+
+// Comfy Cloud
+const client = new Comfy({ apiKey: "comfyui-..." });
+
+const wf = await client.workflows.fromFile("workflow_api.json");
+
+const asset = client.assets.fromFile("photo.png");
+wf.setInput("10", "image", asset);
+
+const job = await client.run(wf);
+await job.getOutputs("9")[0].toFile("out.png");
+```
+</CodeGroup>
+
+`workflow_api.json` 是以 [API 格式](/zh/development/api-development/workflow-api-format) 保存的工作流。`"10"` 和 `"9"` 是该文件中的节点 ID：即输入图像送入的节点，以及你希望获取结果的输出节点。
+
+资产句柄是惰性的。`photo.png` 会在本地进行哈希计算，仅当服务器尚未拥有这些字节时才会被上传，因此使用相同的输入重新运行不会产生任何成本。
+
+`run()` 提交任务并等待其达到终端状态。如要在其执行期间进行其他操作，请改用 `submit()`，并观察 [事件流](#watching-a-job-run)。
+
+若要改为在你自己的 ComfyUI 上运行，只需更改一行代码并去掉密钥：`Comfy("http://127.0.0.1:8189")`。请参阅下文。
+
+## 选择基础 URL
+
+| 使用环境 | 基础 URL | API 密钥 |
+|---|---|---|
+| **Comfy Cloud** | `https://cloud.comfy.org`（默认） | 必填 |
+| **您自己的 ComfyUI** | `http://127.0.0.1:8189`（本地代理） | 不使用 |
+
+### Comfy Cloud
+
+开箱即用。创建 [API 密钥](/zh/development/api-development/getting-an-api-key) 并将其传递给客户端。
+
+<Note>
+  API 访问需要付费的 Comfy Cloud 订阅。免费版不包含此权限。一次可执行的任务数取决于您的层级。请参阅 [Cloud API 概览](/zh/development/cloud/overview#parallel-execution-concurrent-jobs)。
+</Note>
+
+### 您自己的 ComfyUI
+
+在测试版期间，v2 API 由 [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) 提供，这是一个与您的 ComfyUI 一起运行的小型开源服务：
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+```
+
+默认情况下，它代理 `127.0.0.1:8188` 上的 ComfyUI，并在 `127.0.0.1:8189` 上提供 v2 API。使用 `--comfyui` 和 `--port` 可更改其中任一配置。
+
+然后将 SDK 指向 `http://127.0.0.1:8189`，并且不要传递任何 API 密钥。默认情况下，代理仅绑定到回环地址。如果您还想将模型文件上传到您的安装中，请使用 `--comfyui-base-dir /path/to/ComfyUI` 运行它。
+
+该代理只是一个权宜之计。一旦 v2 API 稳定下来，它就会移入 ComfyUI 核心，届时就不再需要代理了。
+
+## 查看任务运行
+
+`job.events()` 提供任务状态的实时流：节点和步骤进度、预览帧，以及每个输出在提交时的即时信息。如果连接中断，它会自动重新连接。
+
+<CodeGroup>
+```python Python
+job = client.submit(wf)
+
+for event in job.events():
+    match event:
+        case Progress() as p:
+            print(f"{p.value:.0%} {p.message}")
+        case Preview() as pv:
+            show(pv.to_pil())
+        case OutputReady() as o:
+            o.output.to_file(f"partial/{o.output.name}")
+        case StatusChange(status="succeeded"):
+            break
+
+result = job.result()
+```
+
+```typescript TypeScript
+const job = await client.submit(wf);
+
+for await (const event of job.events()) {
+  switch (event.kind) {
+    case "progress":
+      console.log(event.value);
+      break;
+    case "outputReady":
+      await event.output.toFile(`${event.output.name}`);
+      break;
+    case "statusChange":
+      if (event.status === "succeeded") break;
+  }
+}
+```
+</CodeGroup>
+
+`result()` 返回已完成的任务，如果执行失败，则抛出带有节点级详细信息的 `JobFailed` 异常。有关完整的事件目录，请参阅适用于您的语言的 [SDK README](#reference)。
+
+该流是实时馈送，而非可重放的日志。它的存在是为了让您能够呈现进度，而不是依赖它来获取结果。轮询任务才是权威的，`run()`、`wait()` 和 `result()` 会自动回退到轮询。原因请参阅 [设计说明](/zh/development/api-development/sdks-design#poll-first-stream-for-progress)。
+
+## SDK 目前涵盖的内容
+
+第一个版本只做好了一件事：运行工作流并取回结果。
+
+- **资产。** 从文件、字节、流或 URL 创建输入句柄。句柄是惰性的且基于内容寻址，因此使用相同输入重新运行时不会重复上传。
+- **提交。** 提交 API 格式的图。提交是幂等的，并且完整的队列会在有限的预算内为您重试。
+- **执行。** 使用 `wait()` 轮询，或通过 `events()` 跟踪实时进度。
+- **输出。** 写入磁盘、缓冲到内存、获取字节范围，或获取短期有效的下载 URL。
+- **错误。** 提供类型化的异常，例如 `JobFailed`、`Unauthorized`、`InsufficientCredits` 和 `QueueFull`，而不是原始状态码。
+- **取消。** 作业可以在运行过程中取消。此外，TypeScript 的任何调用都可以接受 `AbortSignal`。
+
+Python 同时提供同步的 `Comfy` 客户端和具有相同接口的 `AsyncComfy` 客户端。TypeScript 仅支持异步。
+
+此版本暂不包含：管理已保存的工作流、模型库、节点内省和命名工作流参数。[设计说明](/zh/development/api-development/sdks-design#scope-of-the-first-version) 解释了为什么接口一开始就如此精简。
+
+## 参考
+
+SDK 的 README 是每种语言的完整参考，涵盖认证、资产、错误以及底层逃生通道。
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
+    <code>comfy-sdk</code>，位于 PyPI。提供同步与异步客户端。
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
+    <code>@comfyorg/sdk</code>，位于 npm。带类型定义、异步，并附带底层客户端。
+  </Card>
+  <Card title="Comfy API v2 参考" icon="code" href="/zh/api-reference/v2/overview">
+    两个 SDK 底层的 HTTP API。可直接从任何语言使用。
+  </Card>
+  <Card title="设计说明" icon="compass" href="/zh/development/api-development/sdks-design">
+    这个 API 为何存在、它与现有 ComfyUI API 的关系，以及后续的演进方向。
+  </Card>
+</CardGroup>
+
+## 反馈
+
+这有意保持为 `0.1.x` 版本。方法名称、客户端形状、事件目录、错误分类体系，以及资产处理在实际使用中的体验，这些目前的改动成本都还很低，我们计划在接下来几周内将这一对外接口固定下来。之后，"我们提供长期支持" 就开始意味着我们无法再为你修复这些问题了。
+
+所以，请告诉我们哪些地方用起来别扭、你期望找到却没有找到的东西，以及你最终是如何绕开这些问题的。[我们的 Discord](https://discord.com/invite/comfyorg) 中的 `#developer-platform` 频道就是反馈这些内容的地方。
+
+如果你想要其他语言的第一方 SDK，也可以在那里告诉我们。两个 SDK 都建立在同一份有文档记录的 HTTP 契约之上，因此任何语言目前都可以直接与 API 通信，但我们更想知道需求在哪里。

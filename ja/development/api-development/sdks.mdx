@@ -1,0 +1,210 @@
+---
+title: "Comfy SDK"
+description: "独自のアプリケーションからComfyUIワークフローを実行するための公式PythonおよびTypeScript SDK"
+sidebarTitle: "概要"
+icon: "code"
+translationSourceHash: 10fd6129
+translationFrom: development/api-development/sdks.mdx
+translationBlockHashes:
+  "_intro": 0df68ad9
+  "Install": 6bcd1ccf
+  "Quickstart": 47f1a4c5
+  "Choosing a base URL": a25d0390
+  "Watching a job run": 2fbd5add
+  "What the SDKs cover today": 6151cc1e
+  "Reference": 5fc97b4a
+  "Feedback": f8553211
+---
+<Warning>
+  **ベータ。** SDKと、それらが呼び出すComfy API v2は`0.1.x`です。APIの形状は、確定する前にまだ変更される可能性があります。今が、間違っていることを私たちに伝えるのに最もコストのかからない時期です。[フィードバック](#feedback)を参照してください。
+</Warning>
+
+Comfy SDKを使用すると、アプリケーションでComfyUIワークフローを実行し、結果を受け取ることができます。ワークフローを送信すると、ComfyUIがそれを実行し、出力をダウンロードできます。同じコードが、Comfy Cloudまたは自分でホストするComfyUIインスタンスに対して実行されます。変更されるのはベースURLのみです。
+
+SDKは、[Comfy API v2](/ja/api-reference/v2/overview)のクライアントです。これは、長期的にサポートする予定のバージョン管理されたHTTP APIです。ComfyUIの新しいリリースでも、それに基づいて構築された統合が壊れることはありません。
+
+この方法で人々が構築するもの:
+
+- BlenderやKritaなど、別のアプリケーション内でコンテンツを生成するプラグイン
+- ユーザーに代わって生成を実行するコンシューマー向けアプリ
+- バッチパイプライン。たとえば、ビデオの全フレームに1つのワークフローを実行するなど
+- 同時に多くのワークフローを処理する必要があるバックエンドサービス
+
+<Note>
+  これらのSDKは、ComfyUIを**外部から**操作します。**ComfyUIの内部で**実行されるカスタムノードやフロントエンド拡張機能を記述している場合は、代わりに[カスタムノードの開発](/ja/custom-nodes/overview)を参照してください。これらは別のAPIセットです。
+</Note>
+
+## インストール
+
+<CodeGroup>
+```bash Python
+pip install comfy-sdk
+```
+
+```bash TypeScript
+npm i @comfyorg/sdk
+```
+</CodeGroup>
+
+Python 3.10 以降。Node 22 以降。
+
+## クイックスタート
+
+入力画像をアップロードし、ワークフローを実行して、結果をディスクに書き込みます。
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Comfy Cloud
+client = Comfy(api_key="comfyui-...")
+
+wf = client.workflows.from_file("workflow_api.json")
+
+asset = client.assets.from_file("photo.png")
+wf.set_input("10", "image", asset)
+
+job = client.run(wf)
+for output in job.get_outputs("9"):
+    output.to_file(output.name)
+```
+
+```typescript TypeScript
+import { Comfy } from "@comfyorg/sdk";
+
+// Comfy Cloud
+const client = new Comfy({ apiKey: "comfyui-..." });
+
+const wf = await client.workflows.fromFile("workflow_api.json");
+
+const asset = client.assets.fromFile("photo.png");
+wf.setInput("10", "image", asset);
+
+const job = await client.run(wf);
+await job.getOutputs("9")[0].toFile("out.png");
+```
+</CodeGroup>
+
+`workflow_api.json` は、[API 形式](/ja/development/api-development/workflow-api-format)で保存されたワークフローです。`"10"` と `"9"` はそのファイル内のノード ID です。入力画像が送り込まれるノードと、結果を取得したい出力ノードを指します。
+
+アセットハンドルは遅延評価されます。`photo.png` はローカルでハッシュ化され、サーバーがそのバイトをまだ保持していない場合にのみアップロードされます。そのため、同じ入力を使用して再実行してもコストはかかりません。
+
+`run()` はジョブを送信し、ターミナル状態に達するまで待機します。実行中に他の作業を行うには、代わりに `submit()` を使用し、[イベントストリーム](#watching-a-job-run)を監視してください。
+
+代わりに自分の ComfyUI に対して実行するには、1行変更してキーを削除します: `Comfy("http://127.0.0.1:8189")`。以下を参照してください。
+
+## ベースURLの選択
+
+| 接続先 | Base URL | APIキー |
+|---|---|---|
+| **Comfy Cloud** | `https://cloud.comfy.org` (デフォルト) | 必須 |
+| **ご自身のComfyUI** | `http://127.0.0.1:8189` (ローカルプロキシ) | 使用されません |
+
+### Comfy Cloud
+
+そのまま動作します。[APIキー](/ja/development/api-development/getting-an-api-key)を作成し、クライアントに渡します。
+
+<Note>
+  APIアクセスには有料のComfy Cloudサブスクリプションが必要です。無料プランには含まれません。同時に実行できるジョブ数はプランによって異なります。[Cloud API概要](/ja/development/cloud/overview#parallel-execution-concurrent-jobs)をご覧ください。
+</Note>
+
+### ご自身のComfyUI
+
+ベータ期間中、v2 APIは[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy)によって提供されます。これは、ComfyUIと一緒に動作する小規模なオープンソースサービスです。
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+```
+
+デフォルトでは、`127.0.0.1:8188`のComfyUIをプロキシし、`127.0.0.1:8189`でv2 APIを提供します。いずれかを変更するには、`--comfyui`と`--port`を使用します。
+
+その後、SDKを`http://127.0.0.1:8189`に指定し、APIキーは渡しません。プロキシはデフォルトではループバックのみにバインドします。インストール環境にモデルファイルもアップロードしたい場合は、`--comfyui-base-dir /path/to/ComfyUI`を指定して実行してください。
+
+プロキシは暫定対策です。v2 APIが安定すれば、ComfyUIコアに組み込まれ、プロキシは不要になります。
+
+## ジョブの実行を監視する
+
+`job.events()` は、ジョブの状態のライブストリームを提供します。ノードとステップの進捗、プレビューフレーム、各出力がコミットされた瞬間のデータを取得できます。接続が切断された場合は、自動的に再接続されます。
+
+<CodeGroup>
+```python Python
+job = client.submit(wf)
+
+for event in job.events():
+    match event:
+        case Progress() as p:
+            print(f"{p.value:.0%} {p.message}")
+        case Preview() as pv:
+            show(pv.to_pil())
+        case OutputReady() as o:
+            o.output.to_file(f"partial/{o.output.name}")
+        case StatusChange(status="succeeded"):
+            break
+
+result = job.result()
+```
+
+```typescript TypeScript
+const job = await client.submit(wf);
+
+for await (const event of job.events()) {
+  switch (event.kind) {
+    case "progress":
+      console.log(event.value);
+      break;
+    case "outputReady":
+      await event.output.toFile(`${event.output.name}`);
+      break;
+    case "statusChange":
+      if (event.status === "succeeded") break;
+  }
+}
+```
+</CodeGroup>
+
+`result()` は、完了したジョブを返します。実行に失敗した場合は、ノードレベルの詳細情報を含む `JobFailed` を送出します。完全なイベントカタログについては、お使いの言語の [SDK README](#reference) を参照してください。
+
+ストリームはライブフィードであり、再生可能なログではありません。進捗を表示するためのものであり、結果の取得に依存するためのものではありません。ジョブのポーリングこそが信頼できる情報源であり、`run()`、`wait()`、`result()` は自動的にポーリングにフォールバックします。理由については、[設計ノート](/ja/development/api-development/sdks-design#poll-first-stream-for-progress) を参照してください。
+
+## 現在SDKがカバーするもの
+
+最初のバージョンは、1つのことを適切に行います: ワークフローを実行して結果を取得することです。
+
+- **アセット。** ファイル、バイト、ストリーム、またはURLから入力ハンドルを作成します。ハンドルは遅延評価され、コンテンツアドレス方式であるため、同じ入力で再実行しても再アップロードされません。
+- **送信。** API形式のグラフを送信します。送信は冪等であり、キューがいっぱいの場合は、制限された予算内で自動的に再試行されます。
+- **実行。** `wait()`でポーリングするか、`events()`でライブの進行状況を追跡します。
+- **出力。** ディスクに書き込んだり、メモリにバッファリングしたり、バイト範囲を取得したり、短期間有効なダウンロードURLを取得したりできます。
+- **エラー。** 生のステータスコードではなく、`JobFailed`、`Unauthorized`、`InsufficientCredits`、`QueueFull`などの型付き例外。
+- **キャンセル。** 実行中のジョブはキャンセルできます。TypeScriptでは、任意の呼び出しで`AbortSignal`も受け入れます。
+
+Pythonには、同じサーフェスを持つ同期`Comfy`クライアントと`AsyncComfy`クライアントの両方が用意されています。TypeScriptは非同期のみです。
+
+このバージョンに含まれないもの: 保存済みワークフローの管理、モデルライブラリ、ノードイントロスペクション、名前付きワークフローパラメータ。[設計ノート](/ja/development/api-development/sdks-design#scope-of-the-first-version)では、サーフェスがこれほど小さく始まる理由を説明しています。
+
+## リファレンス
+
+SDK の README は、認証、アセット、エラー、低レベルのエスケープハッチなど、各言語の完全なリファレンスです。
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
+    <code>comfy-sdk</code> は PyPI で公開されています。同期クライアントと非同期クライアントに対応しています。
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
+    <code>@comfyorg/sdk</code> は npm で公開されています。型付けされた非同期クライアントで、低レベルクライアントも備えています。
+  </Card>
+  <Card title="Comfy API v2 リファレンス" icon="code" href="/ja/api-reference/v2/overview">
+    両 SDK の基盤となる HTTP API です。任意の言語から直接利用できます。
+  </Card>
+  <Card title="設計ノート" icon="compass" href="/ja/development/api-development/sdks-design">
+    この API が存在する理由、既存の ComfyUI API との関連性、そして今後の展開について説明します。
+  </Card>
+</CardGroup>
+
+## フィードバック
+
+あえて `0.1.x` にしています。メソッド名、クライアントの形、イベントカタログ、エラーの分類体系、実際のアセット処理の使用感は、まだどれも変更が容易です。今後数週間のうちにインターフェースを固定する予定です。その後は、「長期的にサポートします」というのは、もはやあなたのために修正できないという意味になり始めます。
+
+だから、使いにくい点、見つかると思っていたのに見つからなかった点、結局回避策を取らざるを得なかった点を教えてください。そのための場所は、[私たちのDiscord](https://discord.com/invite/comfyorg) の `#developer-platform` チャンネルです。
+
+別の言語向けのファーストパーティSDKが必要な場合は、そこでお知らせください。どちらのSDKも同じ文書化されたHTTPコントラクトに基づいているため、現在どの言語でもAPIと通信できますが、むしろ需要がどこにあるのかを知りたいのです。
