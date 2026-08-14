@@ -1461,16 +1461,17 @@ async function main() {
     return;
   }
 
-  // Auto-fix anchor fragments on freshly translated files: translation
-  // localizes heading text but keeps the English anchor fragment in links, so
-  // those anchors die on the translated page. fixAnchorSlugs rewrites them to
-  // the localized slug (see fix-anchor-slugs.ts), keeping check-anchors green
-  // after every translate run.
+  // Auto-fix anchor fragments after translation: translation localizes
+  // heading text but keeps the English anchor fragment in links, so those
+  // anchors die on the translated page. fixAnchorSlugs rewrites them to the
+  // localized slug (see fix-anchor-slugs.ts). A full scan keeps check-anchors
+  // green: not only this run's files but also untouched translated pages can
+  // link to a heading whose localized slug changed in this run.
   if (translatedTargets.length > 0) {
     const { fixAnchorSlugs } = await import("./fix-anchor-slugs.ts");
-    const stats = await fixAnchorSlugs({ fileArgs: translatedTargets });
+    const stats = await fixAnchorSlugs({});
     console.log(
-      `Anchor fragments: ${stats.fixed} fixed, ${stats.unresolved} need manual review (${stats.scanned} file(s) scanned).`
+      `Anchor fragments: ${stats.fixed} fixed, ${stats.unresolved} need manual review (${stats.scanned} file(s) affected).`
     );
   }
 
