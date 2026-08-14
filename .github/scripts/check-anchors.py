@@ -32,10 +32,12 @@ def slugify(text: str) -> str:
     # escaped underscore in markdown source -> hyphen in slug
     text = text.replace('\\_', '-')
     text = text.lower()
-    # Mintlify keeps full-width CJK punctuation (（）、。) in anchors, e.g.
-    # "並列実行（同時ジョブ）" or "直接アップロード（multipart）". Preserve them
-    # before NFKC normalization (which would collapse （ -> ( and then drop).
-    fullwidth = {'（', '）', '、', '。'}
+    # Mintlify keeps full-width CJK punctuation in anchors, e.g.
+    # U+FF08/U+FF09 full-width parens: "\u4e26\u5217\u5b9f\u884c\uff08\u540c\u6642\u30b8\u30e7\u30d6\uff09"
+    # (並列実行（同時ジョブ）) or "\u76f4\u63a5\u30a2\u30c3\u30d7\u30ed\u30fc\u30c9\uff08multipart\uff09"
+    # (直接アップロード（multipart）). Preserve them before NFKC normalization,
+    # which would collapse U+FF08 -> '(' and then drop it.
+    fullwidth = {'\uff08', '\uff09', '\u3001', '\u3002'}
     out = []
     for ch in text:
         if ch in fullwidth:
