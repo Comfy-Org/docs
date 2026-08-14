@@ -10,7 +10,6 @@ Usage:
   python3 check-anchors.py                  # check all docs
   python3 check-anchors.py --only-changed   # only files changed vs origin/main
   python3 check-anchors.py --file PATH      # check a single file (repeatable)
-  python3 check-anchors.py --fix-suggest    # print closest-match suggestions
 """
 import argparse
 import glob
@@ -27,6 +26,8 @@ import urllib.parse
 #   collapse whitespace to single '-'. Escaped underscore `\_` in the source
 #   renders as a hyphen in the slug (e.g. "Getting node\_id" -> getting-node-id),
 #   while a plain underscore is kept ("VALIDATE_INPUTS" -> validate_inputs).
+#   A literal period is converted to a hyphen ("Including `.js` files" ->
+#   "including-js-files"), matching Mintlify's anchor behavior.
 def slugify(text: str) -> str:
     # escaped underscore in markdown source -> hyphen in slug
     text = text.replace('\\_', '-')
@@ -39,9 +40,14 @@ def slugify(text: str) -> str:
             out.append(ch)
         elif ch in ' \t':
             out.append(' ')
-        # everything else dropped (punctuation like : ( ) ? . , & / >)
+        elif ch == '.':
+            out.append('-')
+        # everything else dropped (punctuation like : ( ) ? , & / >)
     slug = ''.join(out)
     slug = re.sub(r'\s+', '-', slug).strip('-')
+    # Mintlify collapses consecutive hyphens from mixed separators, e.g.
+    # "Including `.js` files" -> "including-js-files" (not "--js--").
+    slug = re.sub(r'-{2,}', '-', slug)
     return slug
 
 
@@ -54,94 +60,118 @@ ID_ATTR_RE = re.compile(r'<(?:a|span|div|section|h[1-6]|li|p|td|th)[^>]*\bid\s*=
 # Mintlify components that generate heading anchors from their `title` prop.
 COMPONENT_TITLE_RE = re.compile(
     r'<(Tab|Accordion|Step|TabItem|Card)[^>]*\btitle\s*=\s*["\']([^"\']+)["\']')
+# MDX snippet imports: `import X from "/snippets/foo.mdx"`
+SNIPPET_IMPORT_RE = re.compile(r'import\s+[^"\']+\s+from\s+["\'](/snippets/[^"\']+)["\']')
 
 
-def collect_anchors(path: str) -> set:
+def iter_prose_segments(content: str):
+    """Yield (start_line, text) chunks outside fenced code blocks.
+
+    A single fence-aware pass shared by anchor extraction and link scanning,
+    so fenced content can never create anchors or satisfy broken links.
+    """
+    lines = content.split('\n')
+    chunk: list = []
+    chunk_start = 1
+    in_fence = False
+    fence_marker = ''
+    for i, line in enumerate(lines, 1):
+        stripped = line.lstrip()
+        m = FENCE_RE.match(stripped)
+        if m:
+            marker = m.group(1)
+            if not in_fence:
+                if chunk:
+                    yield chunk_start, '\n'.join(chunk)
+                    chunk = []
+                in_fence = True
+                fence_marker = marker
+            elif marker == fence_marker:
+                in_fence = False
+            continue
+        if in_fence:
+            continue
+        if not chunk:
+            chunk_start = i
+        chunk.append(line)
+    if chunk:
+        yield chunk_start, '\n'.join(chunk)
+
+
+def read_file(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception:
+        return ''
+
+
+def collect_anchors(path: str, root: str) -> set:
     """All anchors a page provides: heading slugs, {#..} ids, id= attrs.
 
     Also follows MDX snippet imports (`import X from "/snippets/..."`) so
     anchors defined inside imported snippets count as page anchors.
+    Resolves snippet paths against the repository root passed by the caller.
     """
     anchors = set()
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except Exception:
+    content = read_file(path)
+    if not content:
         return anchors
 
-    in_fence = False
-    for line in content.split('\n'):
-        stripped = line.lstrip()
-        m = FENCE_RE.match(stripped)
-        if m:
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        hm = HEADING_RE.match(stripped)
-        if hm:
-            heading_text = hm.group(2).strip()
-            em = EXPLICIT_ANCHOR_RE.search(heading_text)
-            if em:
-                anchors.add(em.group(1))
-                pre = heading_text[:em.start()].strip()
-                if pre:
-                    anchors.add(slugify(pre))
-            else:
-                anchors.add(slugify(heading_text))
+    for _start, seg in iter_prose_segments(content):
+        for line in seg.split('\n'):
+            stripped = line.lstrip()
+            hm = HEADING_RE.match(stripped)
+            if hm:
+                heading_text = hm.group(2).strip()
+                em = EXPLICIT_ANCHOR_RE.search(heading_text)
+                if em:
+                    anchors.add(em.group(1))
+                    pre = heading_text[:em.start()].strip()
+                    if pre:
+                        anchors.add(slugify(pre))
+                else:
+                    anchors.add(slugify(heading_text))
 
-    for m in ID_ATTR_RE.finditer(content):
-        anchors.add(m.group(1))
+        for m in ID_ATTR_RE.finditer(seg):
+            anchors.add(m.group(1))
 
-    # Mintlify components (Tab, Accordion, Step, Card, ...) generate heading
-    # anchors from their title prop, e.g. <Tab title="Install via ComfyUI Manager">
-    for m in COMPONENT_TITLE_RE.finditer(content):
-        anchors.add(slugify(m.group(2)))
+        # Mintlify components (Tab, Accordion, Step, Card, ...) generate
+        # heading anchors from their title prop.
+        for m in COMPONENT_TITLE_RE.finditer(seg):
+            anchors.add(slugify(m.group(2)))
 
-    # Follow MDX snippet imports: `import X from "/snippets/foo.mdx"` renders
-    # the snippet's content inline, so its headings are anchors on this page.
-    root = os.path.dirname(os.path.dirname(path))  # repo root
-    for m in re.finditer(r'import\s+[^"\']+\s+from\s+["\'](/snippets/[^"\']+)["\']', content):
-        sp = os.path.join(root, m.group(1).lstrip('/'))
-        if os.path.isfile(sp):
-            anchors |= collect_anchors(sp)
+        # Follow MDX snippet imports; their headings are anchors on this page.
+        for m in SNIPPET_IMPORT_RE.finditer(seg):
+            sp = os.path.join(root, m.group(1).lstrip('/'))
+            if os.path.isfile(sp):
+                anchors |= collect_anchors(sp, root)
 
     return anchors
 
 
 def iter_links(path: str):
     """Yield (url, match_text, lineno) outside code fences."""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except Exception as e:
-        print(f'!! cannot read {path}: {e}', file=sys.stderr)
+    content = read_file(path)
+    if not content:
         return
-
-    in_fence = False
-    fence_marker = ''
-    for i, line in enumerate(content.split('\n'), 1):
-        stripped = line.lstrip()
-        m = FENCE_RE.match(stripped)
-        if m:
-            marker = m.group(1)
-            if not in_fence:
-                in_fence, fence_marker = True, marker
-            elif marker == fence_marker:
-                in_fence = False
-            continue
-        if in_fence:
-            continue
-        for m in MD_LINK_RE.finditer(line):
-            yield m.group(2), m.group(0), i
-        for m in HTML_HREF_RE.finditer(line):
-            yield m.group(1), m.group(0), i
+    for start_ln, seg in iter_prose_segments(content):
+        for i, line in enumerate(seg.split('\n'), start_ln):
+            for m in MD_LINK_RE.finditer(line):
+                yield m.group(2), m.group(0), i
+            for m in HTML_HREF_RE.finditer(line):
+                yield m.group(1), m.group(0), i
 
 
 def resolve_target(src_file: str, url: str, root: str):
-    """Return (target_mdx_path, anchor) or (None, anchor) for non-internal links."""
+    """Return (target_mdx_path, anchor) for internal links, (None, None) for
+    external URLs, and (first_candidate_path, anchor) when the target file is
+    missing locally so callers can report it as a problem."""
     if url.startswith(('http://', 'https://', 'mailto:', 'tel:')):
         return None, None
+    # Markdown permits "( ./path#anchor)" — trim leading whitespace the same
+    # way Markdown/Mintlify does before parsing the path.
+    url = url.strip()
     base, _, anchor = url.partition('#')
     if not anchor:
         return None, None
@@ -163,14 +193,37 @@ def resolve_target(src_file: str, url: str, root: str):
     for c in candidates:
         if os.path.isfile(c):
             return c, anchor
-    return None, anchor  # target page missing locally -> handled separately
+    return candidates[0], anchor  # missing target -> reported by caller
+
+
+def collect_doc_files(root: str) -> list:
+    files = []
+    for pat in ('**/*.mdx', '**/*.md'):
+        files.extend(glob.glob(os.path.join(root, pat), recursive=True))
+    return [f for f in files
+            if not any(x in f for x in ('node_modules/', '.git/', '.github/', 'tmp/'))]
+
+
+def git_changed_files(root: str) -> list:
+    """Files changed vs origin/main (fallback: HEAD~1 for direct pushes)."""
+    out = subprocess.run(
+        ['git', 'diff', '--name-only', 'origin/main...HEAD'],
+        capture_output=True, text=True, cwd=root)
+    changed = out.stdout.split()
+    if not changed:
+        out = subprocess.run(
+            ['git', 'diff', '--name-only', 'HEAD~1...HEAD'],
+            capture_output=True, text=True, cwd=root)
+        changed = out.stdout.split()
+    return changed
 
 
 def main():
     ap = argparse.ArgumentParser(description='Static anchor link checker')
     ap.add_argument('--root', default='.')
     ap.add_argument('--only-changed', action='store_true',
-                    help='Only check MDX files changed vs origin/main')
+                    help='Check MDX/MD files changed vs origin/main, plus any '
+                         'unchanged English pages that link to changed headings')
     ap.add_argument('--file', action='append', default=[],
                     help='Check a specific file (repeatable)')
     args = ap.parse_args()
@@ -180,25 +233,27 @@ def main():
     if args.file:
         files = [os.path.abspath(f) for f in args.file]
     elif args.only_changed:
-        # PR: compare against origin/main if available; fall back to HEAD~1
-        # for direct pushes to main (where origin/main == HEAD).
-        out = subprocess.run(
-            ['git', 'diff', '--name-only', 'origin/main...HEAD'],
-            capture_output=True, text=True, cwd=root)
-        changed = out.stdout.split()
-        if not changed:
-            out = subprocess.run(
-                ['git', 'diff', '--name-only', 'HEAD~1...HEAD'],
-                capture_output=True, text=True, cwd=root)
-            changed = out.stdout.split()
+        changed = git_changed_files(root)
         files = [os.path.join(root, f) for f in changed
                  if f.endswith(('.mdx', '.md'))]
+        # If a PR renames/removes a heading on a changed page, unchanged pages
+        # linking to it would silently break. Scan all English sources that
+        # point at a changed file (with an anchor) and include them too.
+        if files:
+            changed_abs = {os.path.abspath(f) for f in files}
+            for f in collect_doc_files(root):
+                if f in changed_abs:
+                    continue
+                rel = os.path.relpath(f, root)
+                if rel.split('/')[0] in ('ja', 'ko', 'zh'):
+                    continue  # translations swept separately
+                for url, _match, _ln in iter_links(f):
+                    target, anchor = resolve_target(f, url, root)
+                    if anchor and target in changed_abs:
+                        files.append(f)
+                        break
     else:
-        files = []
-        for pat in ('**/*.mdx', '**/*.md'):
-            files.extend(glob.glob(os.path.join(root, pat), recursive=True))
-        files = [f for f in files
-                 if not any(x in f for x in ('node_modules/', '.git/', '.github/', 'tmp/'))]
+        files = collect_doc_files(root)
     files = sorted(set(os.path.abspath(f) for f in files if os.path.isfile(f)))
 
     if not files:
@@ -210,7 +265,7 @@ def main():
     anchor_cache = {}
     def anchors_of(p):
         if p not in anchor_cache:
-            anchor_cache[p] = collect_anchors(p)
+            anchor_cache[p] = collect_anchors(p, root)
         return anchor_cache[p]
 
     problems = []
@@ -218,28 +273,36 @@ def main():
         for url, match, ln in iter_links(fp):
             target, anchor = resolve_target(fp, url, root)
             if target is None or anchor is None:
+                continue  # external URL or link without a fragment
+            if not os.path.isfile(target):
+                problems.append(
+                    (fp, ln, url, os.path.relpath(target, root), anchor,
+                     'target page not found locally'))
                 continue
-            if target not in anchor_cache:
-                anchor_cache[target] = collect_anchors(target)
-            if anchor not in anchor_cache[target]:
-                problems.append((fp, ln, url, os.path.relpath(target, root), anchor))
+            if anchor not in anchors_of(target):
+                problems.append(
+                    (fp, ln, url, os.path.relpath(target, root), anchor,
+                     'anchor NOT FOUND'))
 
     if not problems:
         print('✅ All anchor links OK!')
         return 0
 
     print(f'\n❌ Found {len(problems)} broken anchor link(s):\n')
-    for fp, ln, url, target, anchor in problems:
+    for fp, ln, url, target, anchor, reason in problems:
         print(f'  {os.path.relpath(fp, root)}:{ln}')
         print(f'    link:     {url}')
         print(f'    target:   {target}')
-        print(f'    anchor:   #{anchor}  (NOT FOUND)')
-        # suggestions
-        have = sorted(anchor_cache[os.path.join(root, target)])
-        import difflib
-        close = difflib.get_close_matches(anchor, have, n=2, cutoff=0.5)
-        if close:
-            print(f'    maybe meant: {close}')
+        if reason == 'anchor NOT FOUND':
+            print(f'    anchor:   #{anchor}  (NOT FOUND)')
+            # suggestions
+            have = sorted(anchors_of(os.path.join(root, target)))
+            import difflib
+            close = difflib.get_close_matches(anchor, have, n=2, cutoff=0.5)
+            if close:
+                print(f'    maybe meant: {close}')
+        else:
+            print(f'    {reason}')
         print()
     return 1
 
