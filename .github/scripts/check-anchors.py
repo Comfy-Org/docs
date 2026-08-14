@@ -230,22 +230,25 @@ def git_changed_files(root: str) -> list:
     the HEAD~1 fallback only runs when origin/main is unavailable. Raises
     RuntimeError if both diffs fail.
     """
-    out = subprocess.run(
+    origin_result = subprocess.run(
         ['git', 'diff', '--name-status', '-M', 'origin/main...HEAD'],
         capture_output=True, text=True, cwd=root)
-    if out.returncode == 0:
-        return parse_name_status(out.stdout)
+    if origin_result.returncode == 0:
+        return parse_name_status(origin_result.stdout)
 
     # origin/main unavailable (e.g. shallow direct push): fall back to HEAD~1
-    out = subprocess.run(
+    fallback_result = subprocess.run(
         ['git', 'diff', '--name-status', '-M', 'HEAD~1...HEAD'],
         capture_output=True, text=True, cwd=root)
-    if out.returncode == 0:
-        return parse_name_status(out.stdout)
+    if fallback_result.returncode == 0:
+        return parse_name_status(fallback_result.stdout)
 
     raise RuntimeError(
-        f'git diff failed: origin/main...HEAD rc={out.returncode}; '
-        f'HEAD~1...HEAD rc={out.returncode}: {out.stderr.strip()[:300]}')
+        f'git diff failed: origin/main...HEAD '
+        f'rc={origin_result.returncode}: '
+        f'{origin_result.stderr.strip()[:200]}; '
+        f'HEAD~1...HEAD rc={fallback_result.returncode}: '
+        f'{fallback_result.stderr.strip()[:200]}')
 
 
 def parse_name_status(output: str) -> list:
