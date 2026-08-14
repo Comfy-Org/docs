@@ -91,12 +91,12 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 |------|-------|
 | Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
 | Section headings max | **3** (`max_sections: 3`) |
-| Section order | **New Open-Source Model Support** → **New Node Updates** → **Partner Node Updates** |
+| Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** (optional) |
 | Words per version | ~60–120 |
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
-| New Node Updates | Include meaningful entries from source **New Nodes** section (workflows, sockets, multimodal nodes) |
-| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below) |
+| New Node Updates | **Optional by default.** Omit from CMS popup even if docs has **New Nodes**; add only when a human explicitly asks |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested |
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
 
@@ -112,17 +112,21 @@ When curating `changelog/index.mdx` from ComfyUI git history, **do not add bulle
 
 Also omit standalone **frontend package semver bumps** unless tied to a user-visible fix worth its own bullet. CMS simplify must never promote WIKI-only items into popup copy even if they appear in the full docs block.
 
-Example staging shape (placeholders only):
+Example staging shape (placeholders only). **New Node Updates** is optional and usually omitted:
 
 ```markdown
 **New Open-Source Model Support**
 * [**Model Name**](source_url): Short description with 1–2 traits from the release data
 
-**New Node Updates**
-* [**Node Name**](source_url): What the node does and why it matters
-
 **Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
+```
+
+Only when a human asks to include nodes:
+
+```markdown
+**New Node Updates**
+* [**Node Name**](source_url): What the node does and why it matters
 ```
 
 Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.
@@ -138,7 +142,7 @@ Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI
 | `comfyui` | `staging/{locale}/…` | `# ComfyUI vX.Y.Z` |
 | `cloud` | `staging/cloud/{locale}/…` | `# Cloud vX.Y.Z` |
 
-Prepare runs LLM once on comfyui, then **copies staging to cloud**. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
+When prepare targets both projects, it runs the LLM once on comfyui, then **merges only the prepared version blocks into cloud** (does not overwrite older cloud-only tracking shortlinks). With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
 
 Single project: `--project comfyui`, `--project cloud`, or `CMS_PROJECT=<project>`.
 
@@ -292,5 +296,6 @@ When user asks to update CMS release notes:
 |--|-----------|-----------|
 | Source | `changelog/index.mdx` | `staging/en/…` |
 | Length | Full detail | 3–5 bullets |
+| New Nodes | Keep in full changelog | **Optional**; omit by default unless a human asks |
 | i18n | `zh/changelog/` etc. | `staging/zh/` etc. |
 | Deploy | Mintlify | Strapi draft → publish |
