@@ -1433,6 +1433,7 @@ async function main() {
   );
 
   let totalFailed = 0;
+  const translatedTargets: string[] = [];
   for (const phase of phases) {
     const result = await runTranslatePhase({
       snippetsMode: phase.snippetsMode,
@@ -1444,6 +1445,10 @@ async function main() {
       repairTruncated,
     });
     totalFailed += result.failed;
+    for (const job of result.translatedJobs) {
+      const { targetPath } = makeMapping(job.lang, job.relPath, phase.snippetsMode);
+      translatedTargets.push(targetPath);
+    }
   }
 
   if (dryRun) {
@@ -1454,6 +1459,19 @@ async function main() {
       });
     }
     return;
+  }
+
+  // Auto-fix anchor fragments on freshly translated files: translation
+  // localizes heading text but keeps the English anchor fragment in links, so
+  // those anchors die on the translated page. fixAnchorSlugs rewrites them to
+  // the localized slug (see fix-anchor-slugs.ts), keeping check-anchors green
+  // after every translate run.
+  if (translatedTargets.length > 0) {
+    const { fixAnchorSlugs } = await import("./fix-anchor-slugs.ts");
+    const stats = await fixAnchorSlugs({ fileArgs: translatedTargets });
+    console.log(
+      `Anchor fragments: ${stats.fixed} fixed, ${stats.unresolved} need manual review (${stats.scanned} file(s) scanned).`
+    );
   }
 
   if (repairTruncated && totalFailed === 0) {

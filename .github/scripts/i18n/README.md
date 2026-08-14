@@ -73,6 +73,27 @@ pnpm translate:repair-truncated -- --lang ko # re-translate via API when content
 restore code lines lost inside the block. Use `repair-truncated` when the block
 body itself was truncated.
 
+### Anchor fragments (automatic)
+
+Translation localizes heading text, and Mintlify derives heading slugs from the
+**localized** text. Links inside translated files keep the English anchor
+fragment (`[フィードバック](#feedback)` while the heading is `## フィードバック`,
+real anchor `#フィードバック`). Those anchors are dead on the translated page
+and make the `check-anchors` CI job fail. `translate` therefore **automatically
+rewrites anchor fragments after every run** to the localized slug of the target
+page (English-order alignment against the source page, with a hyphen/underscore
+fallback; links whose target structure drifted are reported for manual review).
+
+```bash
+pnpm translate:fix-anchors                 # fix all translated pages + snippets
+pnpm translate:fix-anchors -- --lang ko    # one language
+pnpm translate:fix-anchors -- --dry-run    # report only (no writes)
+pnpm translate:fix-anchors -- path/to/page.mdx
+```
+
+`fix-anchor-slugs.ts` mirrors `check-anchors.py`'s slug rules and fence
+handling, so it never rewrites links the checker would consider valid.
+
 ### Long pages (chunked translation)
 
 Very long MDX files (e.g. `tutorials/partner-nodes/pricing.mdx`) exceed model
