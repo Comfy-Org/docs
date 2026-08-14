@@ -187,7 +187,7 @@ npm run glossary:sync:dry-run         # 仅报告数量，不写入
 
 #### 添加新语言
 
-见上文 [申请新增语言](#申请新增语言) — 请通过 Issue 申请，勿自行在 PR 中添加语言。
+见上文 [申请新增语言](#添加新语言) — 请通过 Issue 申请，勿自行在 PR 中添加语言。
 
 维护者：在 `.github/scripts/i18n/translation-config.json` 的 `languages` 下新增一条（`code`、`name`、`dir`、`snippets_dir`）。路径排除、链接本地化与英文文件扫描由同目录的 `i18n-config.mjs` 自动推导，添加新语言时无需修改翻译脚本。随后在 `docs.json` 中添加导航（见 [Mintlify 本地化](https://mintlify.com/docs/navigation/localization)），并批量翻译：
 

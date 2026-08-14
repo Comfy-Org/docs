@@ -187,7 +187,7 @@ npm run glossary:sync:dry-run         # 개수만 보고, 쓰기 없음
 
 #### 새 언어 추가
 
-위 [새 언어 요청](#새-언어-요청) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
+위 [새 언어 요청](#새-언어-추가) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
 
 메인테이너: `.github/scripts/i18n/translation-config.json`의 `languages`에 항목 추가（`code`, `name`, `dir`, `snippets_dir`）. 경로 제외, 링크 현지화, 영문 파일 스캔은 같은 폴더의 `i18n-config.mjs`에서 자동으로 파생되므로 로케일 추가 시 번역 스크립트를 언어별로 수정할 필요가 없습니다. 그다음 `docs.json`에 내비게이션 추가（[Mintlify 로컬라이제이션](https://mintlify.com/docs/navigation/localization) 참고） 후 일괄 번역:
 
