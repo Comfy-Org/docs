@@ -32,15 +32,21 @@ def slugify(text: str) -> str:
     # escaped underscore in markdown source -> hyphen in slug
     text = text.replace('\\_', '-')
     text = text.lower()
-    # normalize unicode so e.g. full-width chars compare sanely
-    text = unicodedata.normalize('NFKC', text)
+    # Mintlify keeps full-width CJK punctuation (（）、。) in anchors, e.g.
+    # "並列実行（同時ジョブ）" or "直接アップロード（multipart）". Preserve them
+    # before NFKC normalization (which would collapse （ -> ( and then drop).
+    fullwidth = {'（', '）', '、', '。'}
     out = []
     for ch in text:
-        if ch.isalnum() or ch in '+-_':
+        if ch in fullwidth:
             out.append(ch)
-        elif ch in ' \t':
+            continue
+        norm = unicodedata.normalize('NFKC', ch)
+        if norm.isalnum() or norm in '+-_':
+            out.append(norm)
+        elif norm in ' \t':
             out.append(' ')
-        elif ch == '.':
+        elif norm == '.':
             out.append('-')
         # everything else dropped (punctuation like : ( ) ? , & / >)
     slug = ''.join(out)
