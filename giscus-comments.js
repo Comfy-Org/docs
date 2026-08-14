@@ -538,99 +538,69 @@
     return `https://github.com/${repoOwner}/${repoName}/discussions`;
   }
   
-  // Generate URL for creating a new discussion with context
-  function generateNewDiscussionUrl() {
-    const repoOwner = 'Comfy-Org';
-    const repoName = 'docs';
-    const currentPath = window.location.pathname;
-    const currentTitle = document.title || 'Discussion';
-    const currentUrl = window.location.href;
-    
-    // Create discussion title based on complete page path
-    let discussionTitle = currentTitle;
-    if (currentPath && currentPath !== '/') {
-      const pathSegments = currentPath.split('/').filter(Boolean);
-      
-      if (pathSegments.length > 0) {
-        // Create title from complete path, keeping language prefixes
-        // Example: /zh/development/core-concepts/workflow -> "zh/development/core-concepts/workflow"
-        const pathTitle = pathSegments.join('/');
-        discussionTitle = pathTitle;
-      }
-    }
-    
-    // Create discussion body with context
-    const body = `Discussion for: ${currentTitle}\nPage: ${currentUrl}\nPath: ${currentPath}`;
-    const encodedTitle = encodeURIComponent(discussionTitle);
-    const encodedBody = encodeURIComponent(body);
-    
-    return `https://github.com/${repoOwner}/${repoName}/discussions/new?category=general&title=${encodedTitle}&body=${encodedBody}`;
-  }
-
   // Show friendly discussion notice
   function showGiscusNotice(container, noticeType = 'rate_limit') {
     const discussionUrl = generateDiscussionUrl();
-    const newDiscussionUrl = generateNewDiscussionUrl();
     
     const noticeMessages = {
       rate_limit: {
         en: {
           title: '💬 Join the Discussion',
           message: 'Comments are temporarily unavailable due to high traffic.',
-          suggestion: 'Please first check if there are existing discussions about this page. If you can\'t find any relevant discussions, then start a new one to connect your comments with this page.',
+          suggestion: 'Retry loading comments, or check GitHub for an existing discussion about this page.',
           discussionLink: 'Find Related Discussions',
-          newDiscussionLink: 'Start New Discussion'
+          retryLink: 'Retry Comments'
         },
         zh: {
           title: '💬 参与讨论',
           message: '由于访问量较高，评论功能暂时不可用。',
-          suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
+          suggestion: '请重试加载评论，或前往 GitHub 查找此页面已有的讨论。',
           discussionLink: '查找相关讨论',
-          newDiscussionLink: '发起新讨论'
+          retryLink: '重试评论'
         },
         ja: {
           title: '💬 ディスカッションに参加',
           message: 'アクセスが集中しているため、コメント機能は一時的にご利用いただけません。',
-          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          suggestion: 'コメントの再読み込みを試すか、GitHub でこのページに関する既存のディスカッションを確認してください。',
           discussionLink: '関連ディスカッションを検索',
-          newDiscussionLink: '新しいディスカッションを開始'
+          retryLink: 'コメントを再読み込み'
         },
         ko: {
           title: '💬 토론에 참여하기',
           message: '접속량이 많아 댓글 기능을 일시적으로 사용할 수 없습니다.',
-          suggestion: '먼저 이 페이지에 대한 관련 토론이 있는지 확인해 주세요. 관련 토론이 없으면 새 토론을 시작해 댓글을 이 페이지와 연결할 수 있습니다.',
+          suggestion: '댓글을 다시 불러오거나 GitHub에서 이 페이지의 기존 토론을 확인해 주세요.',
           discussionLink: '관련 토론 찾기',
-          newDiscussionLink: '새 토론 시작'
+          retryLink: '댓글 다시 불러오기'
         }
       },
       network: {
         en: {
           title: '💬 Join the Discussion',
           message: 'Comments could not be loaded at this time.',
-          suggestion: 'Please first check if there are existing discussions about this page. If you can\'t find any relevant discussions, then start a new one to connect your comments with this page.',
+          suggestion: 'Retry loading comments, or check GitHub for an existing discussion about this page.',
           discussionLink: 'Find Related Discussions',
-          newDiscussionLink: 'Start New Discussion'
+          retryLink: 'Retry Comments'
         },
         zh: {
           title: '💬 参与讨论',
           message: '评论暂时无法加载。',
-          suggestion: '请先查找是否有关于此页面的相关讨论。如果找不到相关讨论，再发起新的讨论以便将评论与此页面关联。',
+          suggestion: '请重试加载评论，或前往 GitHub 查找此页面已有的讨论。',
           discussionLink: '查找相关讨论',
-          newDiscussionLink: '发起新讨论'
+          retryLink: '重试评论'
         },
         ja: {
           title: '💬 ディスカッションに参加',
           message: 'コメントを読み込めませんでした。',
-          suggestion: 'まず、このページに関連するディスカッションがあるか確認してください。関連するディスカッションが見つからない場合は、新しいディスカッションを作成してコメントとこのページを関連付けてください。',
+          suggestion: 'コメントの再読み込みを試すか、GitHub でこのページに関する既存のディスカッションを確認してください。',
           discussionLink: '関連ディスカッションを検索',
-          newDiscussionLink: '新しいディスカッションを開始'
+          retryLink: 'コメントを再読み込み'
         },
         ko: {
           title: '💬 토론에 참여하기',
           message: '지금은 댓글을 불러올 수 없습니다.',
-          suggestion: '먼저 이 페이지에 대한 관련 토론이 있는지 확인해 주세요. 관련 토론이 없으면 새 토론을 시작해 댓글을 이 페이지와 연결할 수 있습니다.',
+          suggestion: '댓글을 다시 불러오거나 GitHub에서 이 페이지의 기존 토론을 확인해 주세요.',
           discussionLink: '관련 토론 찾기',
-          newDiscussionLink: '새 토론 시작'
+          retryLink: '댓글 다시 불러오기'
         }
       }
     };
@@ -649,9 +619,13 @@
       <div style="margin-top: 0.5rem; opacity: 0.8;">${notice.suggestion}</div>
       <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <a href="${discussionUrl}" target="_blank" class="giscus-notice-button">${notice.discussionLink}</a>
-        <a href="${newDiscussionUrl}" target="_blank" class="giscus-notice-button secondary">${notice.newDiscussionLink}</a>
+        <button type="button" class="giscus-notice-button secondary" data-giscus-retry>${notice.retryLink}</button>
       </div>
     `;
+
+    noticeDiv.querySelector('[data-giscus-retry]').addEventListener('click', () => {
+      window.retryGiscus();
+    });
     
     // Remove any previously inserted notice to avoid duplicates, but keep the
     // original giscus iframe/content intact so false-positive detections don't
@@ -973,11 +947,9 @@
     // Test URL generation
     testUrls: () => {
       const searchUrl = generateDiscussionUrl();
-      const newUrl = generateNewDiscussionUrl();
       console.log('Current page path:', window.location.pathname);
       console.log('Search URL:', searchUrl);
-      console.log('New Discussion URL:', newUrl);
-      return { searchUrl, newUrl };
+      return { searchUrl };
     }
   };
 

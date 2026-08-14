@@ -153,6 +153,10 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--fresh") options.fresh = true;
     else if (arg === "--incremental") options.incremental = true;
     else if (arg === "--resume") options.resume = true;
+    else if (arg === "--fast") {
+      options.pageDelayMs = 5_000;
+      options.pageLimit = 100;
+    }
     else if (arg === "--page-limit") {
       const value = Number(argv[++i]);
       if (!Number.isFinite(value) || value < 1 || value > 1000) {

@@ -6,8 +6,8 @@
  * - heading_sections: long pages — split on level-2 `##` headings
  *
  * Incremental sync stores per-block English hashes in frontmatter
- * (`translationBlockHashes`) keyed by stable English labels. Target files
- * are split by section index (headings are translated, so labels differ).
+ * (`translationBlockHashes`) keyed by stable English labels. Target headings
+ * are translated, so stored label order maps them back to their English keys.
  */
 
 import { createHash } from "crypto";
@@ -28,7 +28,15 @@ export interface AutoChunkConfig {
   min_body_chars?: number;
   /** Minimum number of `##` sections required for auto-chunking. */
   min_sections?: number;
+  /**
+   * Max English chars per API call when translating a heading_sections block.
+   * Oversized blocks are sub-chunked (Tabs → ### → fence-safe size).
+   */
+  max_block_chars?: number;
 }
+
+/** Default max English chars sent in one translation API call for a H2 block. */
+export const DEFAULT_MAX_BLOCK_CHARS = 6000;
 
 export interface ContentBlock {
   /** Stable sync key from English (section title or `_intro`). */
@@ -224,6 +232,20 @@ export function stripTranslationMetaFromFrontmatter(body: string): string {
   return out;
 }
 
+/**
+ * Reassemble the opening `---` plus whatever frontmatter survived meta
+ * stripping, ready for a translation meta block to be appended.
+ *
+ * When the frontmatter held nothing but translation metadata, `cleaned` is
+ * empty and the naive `${open}${cleaned}\n` leaves a blank first line inside
+ * the frontmatter that the next run cannot remove — the write stops being
+ * idempotent. See https://github.com/Comfy-Org/docs/issues/1358.
+ */
+export function frontmatterMetaPrefix(open: string, cleaned: string): string {
+  const head = cleaned.replace(/\n+$/, "");
+  return head ? `${open}${head}\n` : open;
+}
+
 export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
@@ -245,7 +267,7 @@ export function setChunkedTranslationMeta(
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripTranslationMetaFromFrontmatter(body);
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +279,27 @@ const FENCE_RE = /^(```|~~~)/;
 
 function toggleFence(line: string, inFence: boolean): boolean {
   return FENCE_RE.test(line.trim()) ? !inFence : inFence;
+}
+
+/** Extract fenced code blocks exactly as written, including fence markers. */
+function extractCodeFences(content: string): string[] {
+  const lines = content.split("\n");
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (FENCE_RE.test(line.trim())) {
+      if (current) {
+        current.push(line);
+        blocks.push(current.join("\n"));
+        current = null;
+      } else {
+        current = [line];
+      }
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  return blocks;
 }
 
 function isH2SectionLine(line: string, inFence: boolean): boolean {
@@ -351,6 +394,34 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
     sections.push("");
   }
   return sections.slice(0, enBlockCount);
+}
+
+/**
+ * Map localized target sections back to their stable English labels.
+ *
+ * Target H2 text is translated, so the labels stored in frontmatter are the
+ * only reliable identity. Refuse a partial positional mapping when the target
+ * section count differs from the stored label count. In that case, callers
+ * must treat the structure as incomplete and re-translate instead of borrowing
+ * content from a neighboring section.
+ */
+export function mapTargetSectionsByStoredLabels(
+  body: string,
+  storedLabels: string[]
+): Map<string, string> {
+  const targetSections = parseHeadingSections(body);
+  if (targetSections.length !== storedLabels.length) {
+    return new Map();
+  }
+
+  const introIndex = storedLabels.indexOf("_intro");
+  if (introIndex !== -1 && targetSections[introIndex]?.label !== "_intro") {
+    return new Map();
+  }
+
+  return new Map(
+    storedLabels.map((label, index) => [label, targetSections[index]!.content])
+  );
 }
 
 export function countH2Sections(body: string): number {
@@ -646,19 +717,36 @@ export function getSectionSyncStatus(
   }
 
   const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
+  const targetByStoredLabel = mapTargetSectionsByStoredLabels(
+    parseFrontmatterAndBody(existingContent).body,
+    storedLabels
+  );
+  const targetStructureComplete =
+    storedLabels.length > 0 && targetByStoredLabel.size === storedLabels.length;
 
   const pendingBlocks = enDoc.blocks
-    .filter((b) => storedHashes[b.label] !== enHashes[b.label])
+    .filter(
+      (b) =>
+        !targetStructureComplete ||
+        !targetByStoredLabel.get(b.label)?.trim() ||
+        storedHashes[b.label] !== enHashes[b.label]
+    )
     .map((b) => b.label);
 
   const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
 
   return {
-    upToDate: pendingBlocks.length === 0 && !hasStructureDrift && !hasOrderDrift,
+    upToDate:
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      !hasStructureDrift &&
+      !hasOrderDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
     needsReserialize:
-      pendingBlocks.length === 0 && (hasStructureDrift || hasOrderDrift),
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      (hasStructureDrift || hasOrderDrift),
   };
 }
 
@@ -675,23 +763,225 @@ export function resolveChunkStrategy(
   return null;
 }
 
+export function countTagOpens(content: string, tag: string): number {
+  const re = new RegExp(`<${tag}\\b`, "g");
+  return (content.match(re) ?? []).length;
+}
+
+export function countTagCloses(content: string, tag: string): number {
+  const re = new RegExp(`</${tag}>`, "g");
+  return (content.match(re) ?? []).length;
+}
+
+export function hasUnclosedCodeFence(content: string): boolean {
+  let inFence = false;
+  for (const line of content.split("\n")) {
+    inFence = toggleFence(line, inFence);
+  }
+  return inFence;
+}
+
+export function countNonEmptyLines(content: string): number {
+  return content.split("\n").filter((l) => l.trim().length > 0).length;
+}
+
+/**
+ * Split a Mintlify `<Tabs>` region into pieces that concatenate to `content`.
+ * Returns null when fewer than two `<Tab>` children are present.
+ */
+export function splitByMintlifyTabs(content: string): string[] | null {
+  const openMatch = content.match(/<Tabs\b[^>]*>/);
+  if (!openMatch || openMatch.index === undefined) return null;
+  const openEnd = openMatch.index + openMatch[0].length;
+  const closeIdx = content.indexOf("</Tabs>", openEnd);
+  if (closeIdx < 0) return null;
+
+  const prefix = content.slice(0, openEnd);
+  const inner = content.slice(openEnd, closeIdx);
+  const suffix = content.slice(closeIdx);
+
+  const tabRe = /[ \t]*<Tab\b[^>]*>[\s\S]*?<\/Tab>/g;
+  const matches = [...inner.matchAll(tabRe)];
+  if (matches.length < 2) return null;
+
+  const firstIdx = matches[0]!.index!;
+  const pieces: string[] = [prefix + inner.slice(0, firstIdx)];
+
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i]!;
+    const start = m.index!;
+    const nextStart = i + 1 < matches.length ? matches[i + 1]!.index! : inner.length;
+    pieces.push(inner.slice(start, nextStart));
+  }
+
+  pieces[pieces.length - 1] = pieces[pieces.length - 1]! + suffix;
+
+  if (pieces.join("") !== content) return null;
+  return pieces;
+}
+
+const H3_HEADING_RE = /^### (?![#])/;
+
+function isH3SectionLine(line: string, inFence: boolean): boolean {
+  return !inFence && H3_HEADING_RE.test(line);
+}
+
+/**
+ * Split on `###` subheadings. First piece keeps everything before the first `###`
+ * (including a leading `##`). Returns null when fewer than two `###` exist.
+ * Pieces concatenate with `""` back to `content`.
+ */
+export function splitByH3Subheadings(content: string): string[] | null {
+  const lines = content.split("\n");
+  let h3Count = 0;
+  let inFence = false;
+  for (const line of lines) {
+    inFence = toggleFence(line, inFence);
+    if (isH3SectionLine(line, inFence)) h3Count++;
+  }
+  if (h3Count < 2) return null;
+
+  const pieces: string[] = [];
+  let current: string[] = [];
+  inFence = false;
+  let seenH3 = false;
+
+  for (const line of lines) {
+    inFence = toggleFence(line, inFence);
+    if (isH3SectionLine(line, inFence) && seenH3) {
+      // Keep the newline that separated the previous last line from this heading.
+      pieces.push(current.join("\n") + "\n");
+      current = [line];
+    } else {
+      if (isH3SectionLine(line, inFence)) seenH3 = true;
+      current.push(line);
+    }
+  }
+  if (current.length > 0) pieces.push(current.join("\n"));
+  if (pieces.length < 2) return null;
+  if (pieces.join("") !== content) return null;
+  return pieces;
+}
+
+/**
+ * Soft-split without cutting inside fenced code. Prefer blank-line boundaries.
+ * Pieces concatenate with `""` back to `content`.
+ */
+export function softSplitByBudget(content: string, maxChars: number): string[] {
+  if (content.length <= maxChars) return [content];
+
+  const lines = content.split("\n");
+  const pieces: string[] = [];
+  let current: string[] = [];
+  let currentLen = 0;
+  let inFence = false;
+
+  const flush = (withTrailingNewline: boolean) => {
+    if (current.length === 0) return;
+    const joined = current.join("\n");
+    pieces.push(withTrailingNewline ? `${joined}\n` : joined);
+    current = [];
+    currentLen = 0;
+  };
+
+  for (const line of lines) {
+    const extra = current.length > 0 ? 1 : 0;
+    const lineLen = line.length + extra;
+    if (!inFence && currentLen > 0 && currentLen + lineLen > maxChars) {
+      flush(true);
+    }
+    current.push(line);
+    currentLen = current.length === 1 ? line.length : currentLen + 1 + line.length;
+    inFence = toggleFence(line, inFence);
+  }
+  flush(false);
+  if (pieces.length === 0) return [content];
+  if (pieces.join("") !== content) {
+    // Fallback: avoid corrupting content if accounting drifts.
+    return [content];
+  }
+  return pieces;
+}
+
+function splitOversizedWithoutTabs(content: string, maxChars: number): string[] {
+  const byH3 = splitByH3Subheadings(content);
+  if (byH3 && byH3.length > 1) {
+    return byH3.flatMap((p) =>
+      p.length > maxChars ? softSplitByBudget(p, maxChars) : [p]
+    );
+  }
+  return softSplitByBudget(content, maxChars);
+}
+
+/**
+ * Split an oversized H2 block for API calls only. Pieces concatenate to `content`.
+ * Prefer Mintlify Tabs, then `###`, then fence-safe size splits.
+ */
+export function splitOversizedBlock(
+  content: string,
+  maxChars: number = DEFAULT_MAX_BLOCK_CHARS
+): string[] {
+  if (content.length <= maxChars) return [content];
+
+  const byTabs = splitByMintlifyTabs(content);
+  if (byTabs && byTabs.length > 1) {
+    return byTabs.flatMap((p) =>
+      p.length > maxChars ? splitOversizedWithoutTabs(p, maxChars) : [p]
+    );
+  }
+  return splitOversizedWithoutTabs(content, maxChars);
+}
+
 export function validateTranslatedBlock(
   strategy: ChunkStrategy,
   enBlock: ContentBlock,
-  translated: string
+  translated: string,
+  options?: { finishReason?: string | null }
 ): boolean {
   if (!translated.trim()) return false;
+  if (options?.finishReason === "length") return false;
 
   if (strategy === "update_blocks") {
     return translated.includes("<Update");
   }
 
-  if (enBlock.label === "_intro") {
-    return true;
+  if (enBlock.label !== "_intro") {
+    // Section blocks must remain level-2 headings (text may be localized).
+    if (!/^## (?![#])/.test(translated.trimStart())) return false;
   }
 
-  // Section blocks must remain level-2 headings (text may be translated).
-  return /^## (?![#])/.test(translated.trimStart());
+  if (hasUnclosedCodeFence(translated)) return false;
+
+  // Code is executable documentation. Never accept a translation that
+  // changes, drops, or truncates a fenced code block.
+  const enCode = extractCodeFences(enBlock.content);
+  const translatedCode = extractCodeFences(translated);
+  if (
+    enCode.length !== translatedCode.length ||
+    enCode.some((block, index) => block !== translatedCode[index])
+  ) {
+    return false;
+  }
+
+  const enTabs = countTagOpens(enBlock.content, "Tab");
+  const trTabs = countTagOpens(translated, "Tab");
+  if (enTabs >= 2 && trTabs !== enTabs) return false;
+
+  const enTabsWrappers = countTagOpens(enBlock.content, "Tabs");
+  if (enTabsWrappers > 0 && countTagCloses(translated, "Tabs") < enTabsWrappers) {
+    return false;
+  }
+  if (enTabs > 0 && countTagCloses(translated, "Tab") !== trTabs) return false;
+
+  const enLines = countNonEmptyLines(enBlock.content);
+  const trLines = countNonEmptyLines(translated);
+  // A stopped model response can be syntactically valid but still be severely
+  // truncated. Apply the guard to ordinary-sized sections too, not only very
+  // long ones. Short sections are exempt because localization can legitimately
+  // reduce their line count.
+  if (enLines >= 20 && trLines < enLines * 0.6) return false;
+
+  return true;
 }
 
 export function missingSectionLabels(

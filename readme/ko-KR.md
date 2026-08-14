@@ -180,11 +180,14 @@ npm run glossary:sync -- --lang ko    # 단일 언어
 npm run glossary:sync:dry-run         # 개수만 보고, 쓰기 없음
 ```
 
-프론트엔드 locale 경로는 다음 순서로 해석됩니다: `--frontend <path>` → `FRONTEND_LOCALES_PATH` 환경 변수 → `translation-config.json`의 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`.
+프론트엔드 locale 소스는 다음 순서로 해석됩니다:
+
+- **원격(기본):** `translation-config.json`의 `frontend_locales_url`(GitHub raw `main` 브랜치). `FRONTEND_LOCALES_URL` 또는 `--frontend-url <url>`로 덮어쓸 수 있습니다.
+- **로컬(선택):** 오프라인 또는 fork checkout이 필요할 때 `--frontend <path>` 또는 `FRONTEND_LOCALES_PATH`.
 
 #### 새 언어 추가
 
-위 [새 언어 요청](#새-언어-요청) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
+위 [새 언어 요청](#새-언어-추가) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
 
 메인테이너: `.github/scripts/i18n/translation-config.json`의 `languages`에 항목 추가（`code`, `name`, `dir`, `snippets_dir`）. 경로 제외, 링크 현지화, 영문 파일 스캔은 같은 폴더의 `i18n-config.mjs`에서 자동으로 파생되므로 로케일 추가 시 번역 스크립트를 언어별로 수정할 필요가 없습니다. 그다음 `docs.json`에 내비게이션 추가（[Mintlify 로컬라이제이션](https://mintlify.com/docs/navigation/localization) 참고） 후 일괄 번역:
 

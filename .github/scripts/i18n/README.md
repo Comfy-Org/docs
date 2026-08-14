@@ -39,13 +39,20 @@ pnpm translate:dry-run               # list what would be translated
 pnpm translate:force                 # re-translate everything
 pnpm translate -- --lang zh,ja       # specific languages
 pnpm translate -- installation/x.mdx # specific files
+pnpm translate -- --with-docs-json   # also sync docs.json nav after translate (opt-in)
 pnpm translate:snippets              # snippets only
 pnpm translate:check-truncation      # scan for truncated output
 pnpm translate:repair-fences         # append missing closing ```
 pnpm translate:repair-truncated -- --lang ko
 pnpm translate:sync-hash             # update hashes after manual translation edits
-pnpm translate:sync-docs-json        # sync docs.json navigation paths
+pnpm translate:sync-docs-json        # sync docs.json navigation paths (standalone)
 ```
+
+**`docs.json` is not rewritten by `pnpm translate` by default.** Nav sync used to run
+after every page translate and would also normalize EN path casing against on-disk
+MDX filenames, so a changelog-only run could produce a large unrelated `docs.json`
+diff. When you add, move, or rename pages in the English nav, run
+`pnpm translate:sync-docs-json` (or `pnpm translate -- --with-docs-json`) separately.
 
 Quality controls during/after a run write to `.github/i18n-logs/translate/`
 (gitignored): semantic mismatches reported by the model, and a truncation scan
@@ -66,6 +73,29 @@ pnpm translate:repair-truncated -- --lang ko # re-translate via API when content
 restore code lines lost inside the block. Use `repair-truncated` when the block
 body itself was truncated.
 
+### Anchor fragments (automatic)
+
+Translation localizes heading text, and Mintlify derives heading slugs from the
+**localized** text. Links inside translated files keep the English anchor
+fragment: the link text is translated but the `#...` fragment still points at
+the English slug (e.g. `#feedback` while the heading is `## フィードバック`,
+whose real anchor is `#フィードバック`). Those anchors are dead on the
+translated page and make the `check-anchors` CI job fail. `translate` therefore
+**automatically rewrites anchor fragments after every run** to the localized
+slug of the target page (English-order alignment against the source page, with
+a hyphen/underscore fallback; links whose target structure drifted are reported
+for manual review).
+
+```bash
+pnpm translate:fix-anchors                 # fix all translated pages + snippets
+pnpm translate:fix-anchors -- --lang ko    # one language
+pnpm translate:fix-anchors -- --dry-run    # report only (no writes)
+pnpm translate:fix-anchors -- path/to/page.mdx
+```
+
+`fix-anchor-slugs.ts` mirrors `check-anchors.py`'s slug rules and fence
+handling, so it never rewrites links the checker would consider valid.
+
 ### Long pages (chunked translation)
 
 Very long MDX files (e.g. `tutorials/partner-nodes/pricing.mdx`) exceed model
@@ -80,6 +110,27 @@ Configure explicit paths in `translation-config.json` → `chunked_files`, or re
 on `auto_chunk` (default: body ≥ 3k chars and ≥ 2 `##` sections) to auto-enable
 `heading_sections`.
 
+**Oversized H2 blocks:** a single `##` section can still be too large for one API
+call (e.g. Install tabs with many Mintlify `<Tab>` children). When an English
+block exceeds `auto_chunk.max_block_chars` (default **6000**), the translator
+sub-chunks it for the API only:
+
+1. Mintlify `<Tab title="…">…</Tab>` pieces (preferred)
+2. Else `###` subheadings
+3. Else fence-safe soft splits by character budget
+
+Pieces are translated separately and concatenated. Sync hashes stay keyed by the
+H2 label (no frontmatter schema change).
+
+API calls use `max_tokens: 16384` and inspect `finish_reason`. Truncated or
+structurally invalid block output (wrong Tab count, unclosed fences, short line
+ratio, `finish_reason === "length"`) is **rejected**: previous target content is
+kept and that block’s hash is left pending so the next run retries. A file with
+failed blocks is reported as failed, not silently marked up-to-date.
+
+Truncation scan also flags per-block problems (`truncated_block`) when whole-file
+line count still looks acceptable but a Tab-heavy section is cut.
+
 Changelog `<Update description="…">` dates are **derived from English** and
 localized automatically (`ja`/`zh`: `YYYY年M月D日`, `ko`: `YYYY년 M월 D일`) after
 each block is translated or re-serialized — English month names should not
@@ -89,7 +140,7 @@ During a chunked run the script:
 
 1. Parses English into blocks (intro + each `##` section).
 2. Compares each block’s hash to `translationBlockHashes` in the target frontmatter.
-3. Translates only pending blocks (plus frontmatter when needed).
+3. Translates only pending blocks (plus frontmatter when needed), sub-chunking oversized blocks.
 4. Checkpoints after every block so a failed run can resume.
 
 `translationBlockHashes` keys are written in **descending semver order** for
@@ -210,9 +261,10 @@ pnpm glossary:sync -- --lang ko    # one language
 pnpm glossary:sync:dry-run         # report counts without writing
 ```
 
-Frontend path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH`
-env → `frontend_locales_path` in `translation-config.json` →
-`../ComfyUI_frontend/src/locales`.
+Frontend path resolves in order:
+
+- **Remote (default):** `frontend_locales_url` in `translation-config.json` (GitHub raw `main` branch). Override with `FRONTEND_LOCALES_URL` or `--frontend-url <url>`.
+- **Local (optional):** `--frontend <path>` or `FRONTEND_LOCALES_PATH` when you need an offline or forked checkout.
 
 ### Design notes
 
