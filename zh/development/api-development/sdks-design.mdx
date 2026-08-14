@@ -1,0 +1,78 @@
+---
+title: "设计说明"
+description: "Comfy API v2 存在的原因、它与现有 ComfyUI API 的关系，以及后续的规划"
+sidebarTitle: "设计说明"
+icon: "compass"
+translationSourceHash: 59469458
+translationFrom: development/api-development/sdks-design.mdx
+translationBlockHashes:
+  "_intro": 2ba7fb25
+  "Why a new API": 2b749140
+  "Why not wrap the endpoints that already exist": 29068809
+  "Poll first, stream for progress": a30e855f
+  "Relationship to the existing APIs": 6f2eb045
+  "Scope of the first version": 5978d997
+  "The local proxy": c7062412
+  "Why Python and TypeScript first": 2d0132b9
+  "What we want from you": d2dd50a0
+---
+这是关于 [Comfy SDKs](/zh/development/api-development/sdks) 及其所调用的 [Comfy API v2](/zh/api-reference/v2/overview) 的背景介绍。使用 SDK 并不需要了解这些内容。如果你正在决定是基于新 API 还是现有 API 进行构建，请阅读本文。
+
+## 为什么需要新 API
+
+你已经可以通过 HTTP 调用 `/prompt` 和 `/history` 来驱动 ComfyUI。这些端点的存在是为了服务 ComfyUI 网页界面，在它们之上构建意味着依赖那些从未向你承诺过的内部实现。v2 API 新增了三项它们无法提供的能力。
+
+**一项承诺。** v2 是有版本、有文档且受支持的。v2 内的变更是增量式的；任何破坏性变更都会以 v3 的形式发布。ComfyUI 的新版本不会破坏你的集成。
+
+**可移植性。** 无论面向本地 ComfyUI、Comfy Cloud，还是我们之后推出的任何其他产品，行为都完全一致。相同的代码，不同的 base URL。
+
+**一种能经受生产环境考验的形态。** 持久化的任务 ID、幂等的提交、类型化错误、标准化输出，以及真正的背压，而不是让每个集成都在 `prompt_id` 和 `/history` 之上重新发明这五样东西。
+
+## 为什么不包装那些已经存在的端点
+
+因为它们假设一个 ComfyUI 实例一次只运行一个工作流，而且这个假设被焊接在 `prompt_id`、`/history` 和 websocket 协议中。
+
+v2 API 并不做这种假设。多个工作流同时进行，每个都通过持久的任务ID来寻址，这应是默认情况，而非例外。
+
+## 先轮询，再流式获取进度
+
+v2 中的每项能力都可以通过普通的 GET 请求访问。`GET /api/v2/jobs/{id}` 返回当前状态、最新进度快照以及截至目前已提交的所有输出。它是任务的权威视图，在任务的 `expires_at` 之前始终可用。
+
+位于 `GET /api/v2/jobs/{id}/events` 的 SSE 流（在两个 SDK 中均以 `job.events()` 形式提供）是在此基础上的实时增强。使用它来驱动进度条。不要把它当作你的权威来源：它不携带事件 ID，也没有恢复游标，并且在你已断开连接期间发出的帧会丢失。
+
+权威路径选择轮询而非流式传输或 webhook，原因有二：
+
+- 工作流可能会运行很长时间。连接中断三秒绝不应让你损失结果。
+- Webhook 非常适合拥有公网地址的服务。它们并不适用于某人桌面上未监听端口的 Blender 插件，也不应当适用于这种情况。
+
+实际效果是每一步都可恢复。如果你的进程在任务中途崩溃，你可以一小时后回来，`GET /api/v2/jobs/{id}` 仍然保留着状态和输出。未来可能还会针对适合的场景添加其他传输方式；而这种方式在任何地方都适用。
+
+## 与现有 API 的关系
+
+没有任何内容被弃用。`/prompt`、`/history`、`/ws` 等接口继续正常工作，[Cloud API](/zh/development/cloud/overview) 也继续工作。如果你的集成现在能正常工作，这一切都不会破坏它。两者可以共存。
+
+| | Comfy API v2 | 现有 API |
+|---|---|---|
+| **兼容性** | 版本化。v2 内仅做增量更改 | 跨版本不保证兼容性 |
+| **并发模型** | 多个任务同时进行，每个任务都有持久的 ID | 一个实例一次只能运行一个工作流 |
+| **运行平台** | Comfy Cloud 和自托管的 ComfyUI 使用相同的契约 | Cloud API 与 ComfyUI Server API 不同 |
+| **官方客户端** | Python 和 TypeScript SDK | 无 |
+| **适用场景** | 新的集成 | 已经可以正常工作的集成 |
+
+## 首个版本的范围
+
+只需做好一件事：运行工作流并取回结果。上传输入，提交 API 格式的节点图，观察其执行过程，然后下载输出。
+
+这个范围是刻意如此设定的。已保存的工作流、模型库管理、节点内省和命名工作流参数目前还不在这里。我们宁愿交付一个较小的功能面，并能在 ComfyUI 的各种部署方式中真正兑现，也不愿交付一个庞大的功能面，却只能在其中一种部署方式中成立。它将以此为起点继续扩展。
+
+## 本地代理
+
+在测试版期间，自托管的 ComfyUI 通过 [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) 使用 v2 协议进行通信，该代理与你的实例并行运行，并在其前端提供 v2 契约。它是开源的，并且明确只是权宜之计。一旦 API 稳定，该功能将移入 ComfyUI 核心，代理就不再必要了。
+
+## 为什么首先选择 Python 和 TypeScript
+
+这正是我们询问已经大规模运行 ComfyUI 的用户时，需求所在之处。两个 SDK 都基于相同的、有文档记录的 HTTP 契约，因此任何语言现在都能直接与该 API 通信。如果你希望有其他语言的官方 SDK，请在 [我们的 Discord](https://discord.com/invite/comfyorg) 的 `#developer-platform` 频道中告诉我们。
+
+## 我们希望你提供什么
+
+API 版本为 `0.1.x` 是有原因的。我们计划在未来几周内锁定其接口。方法名称、客户端形状、事件目录、错误分类以及资源处理在实际使用中的体验，目前修改起来成本仍然很低。参见[反馈](/zh/development/api-development/sdks#feedback)。
