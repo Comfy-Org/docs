@@ -319,17 +319,20 @@ export interface FixStats {
 export async function fixAnchorSlugs(opts: {
   langs?: LangConfig[];
   snippetsMode?: boolean;
+  pagesOnly?: boolean;
   fileArgs?: string[];
   dryRun?: boolean;
 }): Promise<FixStats> {
-  const { dryRun = false, snippetsMode = false, fileArgs = [] } = opts;
+  const { dryRun = false, snippetsMode = false, pagesOnly = false, fileArgs = [] } = opts;
   const langs = opts.langs ?? config.languages;
 
   // collect translated files to scan
   const files: string[] = [];
   const dirs: string[] = [];
   for (const lang of langs) {
-    dirs.push(snippetsMode ? lang.snippets_dir : lang.dir);
+    if (snippetsMode) dirs.push(lang.snippets_dir);
+    else if (pagesOnly) dirs.push(lang.dir);
+    else dirs.push(lang.dir, lang.snippets_dir); // default: pages + snippets
   }
   const explicit = fileArgs
     .map((f) => f.replace(/^\//, ""))
@@ -425,10 +428,11 @@ async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
   const snippetsMode = args.includes("--snippets") || args.includes("--snippets-only");
+  const pagesOnly = args.includes("--pages-only") || args.includes("--no-snippets");
   const langs = parseLangArg(args);
   const fileArgs = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--lang");
 
-  const stats = await fixAnchorSlugs({ langs, snippetsMode, fileArgs, dryRun });
+  const stats = await fixAnchorSlugs({ langs, snippetsMode, pagesOnly, fileArgs, dryRun });
   console.log(
     `\nAnchor fix: ${stats.fixed} fixed, ${stats.unresolved} need manual review, ${stats.scanned} file(s) scanned.`
   );
