@@ -85,14 +85,16 @@ export function slugify(text: string): string {
 
 const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/;
 const EXPLICIT_ANCHOR_RE = /\{#([^}]+)\}$/;
+// All of these are used with String.prototype.matchAll / Symbol.matchAll,
+// which requires the global flag to return every match on a line.
 const ID_ATTR_RE =
-  /<(?:a|span|div|section|h[1-6]|li|p|td|th)[^>]*\bid\s*=\s*["']([^"']+)["']/;
+  /<(?:a|span|div|section|h[1-6]|li|p|td|th)[^>]*\bid\s*=\s*["']([^"']+)["']/g;
 const COMPONENT_TITLE_RE =
-  /<(Tab|Accordion|Step|TabItem|Card)[^>]*\btitle\s*=\s*["']([^"']+)["']/;
+  /<(Tab|Accordion|Step|TabItem|Card)[^>]*\btitle\s*=\s*["']([^"']+)["']/g;
 const SNIPPET_IMPORT_RE =
-  /import\s+[^"']+\s+from\s+["'](\/snippets\/[^"']+)["']/;
-const MD_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/;
-const HTML_HREF_RE = /<a[^>]*\bhref\s*=\s*["']([^"']+)["']/;
+  /import\s+[^"']+\s+from\s+["'](\/snippets\/[^"']+)["']/g;
+const MD_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+const HTML_HREF_RE = /<a[^>]*\bhref\s*=\s*["']([^"']+)["']/g;
 
 /** Ordered anchors a page provides: heading slugs, {#..} ids, id attrs,
  *  component titles, and anchors from imported snippets. */
@@ -109,9 +111,29 @@ export function collectAnchors(path: string): string[] {
     } catch {
       return;
     }
+    let inFence = false;
+    let fenceMarker = "";
     for (const line of content.split("\n")) {
       const stripped = line.trimStart();
-      if (stripped.startsWith("```") || stripped.startsWith("~~~")) continue;
+      if (stripped.startsWith("```") || stripped.startsWith("~~~")) {
+        const fenceMatch = /^(```+|~~~+)/.exec(stripped);
+        if (fenceMatch) {
+          const marker = fenceMatch[1];
+          if (!inFence) {
+            inFence = true;
+            fenceMarker = marker;
+          } else if (
+            marker[0] === fenceMarker[0] &&
+            marker.length >= fenceMarker.length &&
+            !stripped.slice(marker.length).trim()
+          ) {
+            inFence = false;
+            fenceMarker = "";
+          }
+        }
+        continue;
+      }
+      if (inFence) continue; // anchors inside fenced blocks are not page anchors
       const hm = HEADING_RE.exec(stripped);
       if (hm) {
         const ht = hm[2].trim();
@@ -277,14 +299,13 @@ export function suggestAnchorFix(target: string, anchor: string): string | null 
   }
 
   // Fallback: hyphen/underscore drift (e.g. link `#validate-inputs` but the
-  // heading `VALIDATE_INPUTS` slugs to `validate_inputs`). Only accept when a
-  // single target anchor normalizes to the same token sequence.
+  // heading `VALIDATE_INPUTS` slugs to `validate_inputs`). Only accept when
+  // exactly one target anchor normalizes to the same token sequence; multiple
+  // candidates (e.g. both `foo-bar` and `foo_bar` exist) are ambiguous.
   const norm = (s: string) => s.replace(/_/g, "-");
   const want = norm(anchor);
-  for (const cand of targetAnchors) {
-    if (norm(cand) === want) return cand;
-  }
-  return null;
+  const matches = targetAnchors.filter((cand) => norm(cand) === want);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export interface FixStats {
@@ -417,7 +438,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

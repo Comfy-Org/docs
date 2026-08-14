@@ -97,7 +97,15 @@ describe("scanFileForAnchorIssues", () => {
     const file = join(dir, "fake-ja.mdx");
     writeFileSync(
       file,
-      `## 概要\n\n[フィードバック](/zh/custom-nodes/js/javascript_hooks.mdx#feedback)\n\n[カテゴリ](/zh/custom-nodes/js/javascript_hooks.mdx#categories)\n\n[よいリンク](/zh/custom-nodes/js/javascript_hooks.mdx#调用顺序)\n`
+      [
+        "## 概要",
+        "",
+        // two broken fragments on the SAME line: both must be flagged
+        "[フィードバック](/zh/custom-nodes/js/javascript_hooks.mdx#feedback) [カテゴリ](/zh/custom-nodes/js/javascript_hooks.mdx#categories)",
+        "",
+        "[よいリンク](/zh/custom-nodes/js/javascript_hooks.mdx#调用顺序)",
+        "",
+      ].join("\n")
     );
     try {
       const issues = scanFileForAnchorIssues(file);
@@ -114,7 +122,17 @@ describe("scanFileForAnchorIssues", () => {
     const file = join(dir, "fake.mdx");
     writeFileSync(
       file,
-      "## 見出し\n\n```\n[リンク](#broken-anchor)\n```\n\n[よいリンク](#見出し)\n"
+      [
+        "## 見出し",
+        "",
+        "```",
+        // inside a fence: must NOT be flagged even though the fragment is broken
+        "[リンク](/zh/custom-nodes/js/javascript_hooks.mdx#broken-anchor)",
+        "```",
+        "",
+        "[よいリンク](/zh/custom-nodes/js/javascript_hooks.mdx#调用顺序)",
+        "",
+      ].join("\n")
     );
     try {
       const issues = scanFileForAnchorIssues(file);
