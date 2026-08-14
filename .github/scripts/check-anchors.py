@@ -86,7 +86,13 @@ def iter_prose_segments(content: str):
                     chunk = []
                 in_fence = True
                 fence_marker = marker
-            elif marker == fence_marker:
+            elif (
+                marker[0] == fence_marker[0]
+                and len(marker) >= len(fence_marker)
+                and not stripped[len(marker):].strip()
+            ):
+                # CommonMark: a closing fence uses the same character, has
+                # length >= the opening fence, and only whitespace after it.
                 in_fence = False
             continue
         if in_fence:
@@ -205,17 +211,43 @@ def collect_doc_files(root: str) -> list:
 
 
 def git_changed_files(root: str) -> list:
-    """Files changed vs origin/main (fallback: HEAD~1 for direct pushes)."""
+    """Files changed vs origin/main (fallback: HEAD~1 for direct pushes).
+
+    Returns both sides of a rename (pre- and post-image paths) so inbound
+    links to the old path are still validated after a file move.
+    """
     out = subprocess.run(
-        ['git', 'diff', '--name-only', 'origin/main...HEAD'],
+        ['git', 'diff', '--name-status', '-M', 'origin/main...HEAD'],
         capture_output=True, text=True, cwd=root)
-    changed = out.stdout.split()
+    changed = parse_name_status(out.stdout)
     if not changed:
         out = subprocess.run(
-            ['git', 'diff', '--name-only', 'HEAD~1...HEAD'],
+            ['git', 'diff', '--name-status', '-M', 'HEAD~1...HEAD'],
             capture_output=True, text=True, cwd=root)
-        changed = out.stdout.split()
+        changed = parse_name_status(out.stdout)
     return changed
+
+
+def parse_name_status(output: str) -> list:
+    """Parse `git diff --name-status` output into a flat path list.
+
+    Handles status codes with optional similarity, rename lines
+    ('R100\told\tnew'), and copied lines ('C\told\tnew').
+    """
+    paths = []
+    for line in output.splitlines():
+        parts = line.split('\t')
+        if not parts:
+            continue
+        status = parts[0]
+        if status.startswith(('R', 'C')):
+            # rename/copy: old path and new path both matter
+            if len(parts) >= 3:
+                paths.append(parts[1])
+                paths.append(parts[2])
+        elif len(parts) >= 2:
+            paths.append(parts[1])
+    return paths
 
 
 def main():
