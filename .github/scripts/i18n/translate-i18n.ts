@@ -1469,10 +1469,21 @@ async function main() {
   // link to a heading whose localized slug changed in this run.
   if (translatedTargets.length > 0) {
     const { fixAnchorSlugs } = await import("./fix-anchor-slugs.ts");
-    const stats = await fixAnchorSlugs({});
-    console.log(
-      `Anchor fragments: ${stats.fixed} fixed, ${stats.unresolved} need manual review (${stats.scanned} file(s) affected).`
-    );
+    // Keep the language and content scope the user asked for; a full scan
+    // would rewrite files outside the requested --lang / --snippets scope.
+    const stats = await fixAnchorSlugs({
+      langs: selectedLangs,
+      snippetsMode: snippetsOnly,
+      pagesOnly,
+    });
+    if (stats.unresolved > 0) {
+      console.warn(
+        `⚠️ Anchor repair: ${stats.fixed} fixed, ${stats.unresolved} need manual review ` +
+          `(target structure drifted; check-anchors may still fail for those).`
+      );
+    } else {
+      console.log(`Anchor repair: ${stats.fixed} fixed, 0 unresolved.`);
+    }
   }
 
   if (repairTruncated && totalFailed === 0) {
