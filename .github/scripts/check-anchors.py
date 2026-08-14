@@ -221,34 +221,40 @@ def collect_doc_files(root: str) -> list:
 
 
 def git_changed_files(root: str) -> list:
-    """Files changed vs origin/main (fallback: HEAD~1 for direct pushes).
+    """Files changed vs the event's base commit (fallback: HEAD~1).
+
+    The base comes from the ANCHOR_CHECK_BASE env var, which the CI workflow
+    sets from the event context (github.event.before for pushes,
+    github.event.pull_request.base.sha for PRs). Locally it falls back to
+    origin/main, then HEAD~1 for direct pushes.
 
     Returns both sides of a rename (pre- and post-image paths) so inbound
     links to the old path are still validated after a file move.
 
     A successful diff with no changes returns an empty list (no fallback);
-    the HEAD~1 fallback only runs when origin/main is unavailable. Raises
-    RuntimeError if both diffs fail.
+    the next fallback only runs when the previous base is unavailable.
+    Raises RuntimeError if every base fails.
     """
-    origin_result = subprocess.run(
-        ['git', 'diff', '--name-status', '-M', 'origin/main...HEAD'],
-        capture_output=True, text=True, cwd=root)
-    if origin_result.returncode == 0:
-        return parse_name_status(origin_result.stdout)
+    bases = []
+    env_base = os.environ.get('ANCHOR_CHECK_BASE', '').strip()
+    if env_base:
+        bases.append(env_base)
+    bases += ['origin/main', 'HEAD~1']
 
-    # origin/main unavailable (e.g. shallow direct push): fall back to HEAD~1
-    fallback_result = subprocess.run(
-        ['git', 'diff', '--name-status', '-M', 'HEAD~1...HEAD'],
-        capture_output=True, text=True, cwd=root)
-    if fallback_result.returncode == 0:
-        return parse_name_status(fallback_result.stdout)
+    last_result = None
+    for base in bases:
+        result = subprocess.run(
+            ['git', 'diff', '--name-status', '-M', f'{base}...HEAD'],
+            capture_output=True, text=True, cwd=root)
+        last_result = result
+        if result.returncode == 0:
+            return parse_name_status(result.stdout)
 
+    assert last_result is not None
     raise RuntimeError(
-        f'git diff failed: origin/main...HEAD '
-        f'rc={origin_result.returncode}: '
-        f'{origin_result.stderr.strip()[:200]}; '
-        f'HEAD~1...HEAD rc={fallback_result.returncode}: '
-        f'{fallback_result.stderr.strip()[:200]}')
+        f'git diff failed against all bases ({", ".join(bases)}): '
+        f'last rc={last_result.returncode}: '
+        f'{last_result.stderr.strip()[:300]}')
 
 
 def parse_name_status(output: str) -> list:
