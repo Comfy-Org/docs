@@ -77,12 +77,14 @@ body itself was truncated.
 
 Translation localizes heading text, and Mintlify derives heading slugs from the
 **localized** text. Links inside translated files keep the English anchor
-fragment (`[フィードバック](#feedback)` while the heading is `## フィードバック`,
-real anchor `#フィードバック`). Those anchors are dead on the translated page
-and make the `check-anchors` CI job fail. `translate` therefore **automatically
-rewrites anchor fragments after every run** to the localized slug of the target
-page (English-order alignment against the source page, with a hyphen/underscore
-fallback; links whose target structure drifted are reported for manual review).
+fragment: the link text is translated but the `#...` fragment still points at
+the English slug (e.g. `#feedback` while the heading is `## フィードバック`,
+whose real anchor is `#フィードバック`). Those anchors are dead on the
+translated page and make the `check-anchors` CI job fail. `translate` therefore
+**automatically rewrites anchor fragments after every run** to the localized
+slug of the target page (English-order alignment against the source page, with
+a hyphen/underscore fallback; links whose target structure drifted are reported
+for manual review).
 
 ```bash
 pnpm translate:fix-anchors                 # fix all translated pages + snippets
