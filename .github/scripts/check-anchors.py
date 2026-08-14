@@ -76,6 +76,16 @@ def iter_prose_segments(content: str):
     in_fence = False
     fence_marker = ''
     for i, line in enumerate(lines, 1):
+        # CommonMark: a fence marker may be indented up to 3 spaces; 4+
+        # spaces means it is indented code, not a fence. Count the original
+        # leading whitespace before lstrip'ing.
+        indent = len(line) - len(line.lstrip(' '))
+        if indent >= 4:
+            if not in_fence:
+                if not chunk:
+                    chunk_start = i
+                chunk.append(line)
+            continue
         stripped = line.lstrip()
         m = FENCE_RE.match(stripped)
         if m:
@@ -215,17 +225,27 @@ def git_changed_files(root: str) -> list:
 
     Returns both sides of a rename (pre- and post-image paths) so inbound
     links to the old path are still validated after a file move.
+
+    A successful diff with no changes returns an empty list (no fallback);
+    the HEAD~1 fallback only runs when origin/main is unavailable. Raises
+    RuntimeError if both diffs fail.
     """
     out = subprocess.run(
         ['git', 'diff', '--name-status', '-M', 'origin/main...HEAD'],
         capture_output=True, text=True, cwd=root)
-    changed = parse_name_status(out.stdout)
-    if not changed:
-        out = subprocess.run(
-            ['git', 'diff', '--name-status', '-M', 'HEAD~1...HEAD'],
-            capture_output=True, text=True, cwd=root)
-        changed = parse_name_status(out.stdout)
-    return changed
+    if out.returncode == 0:
+        return parse_name_status(out.stdout)
+
+    # origin/main unavailable (e.g. shallow direct push): fall back to HEAD~1
+    out = subprocess.run(
+        ['git', 'diff', '--name-status', '-M', 'HEAD~1...HEAD'],
+        capture_output=True, text=True, cwd=root)
+    if out.returncode == 0:
+        return parse_name_status(out.stdout)
+
+    raise RuntimeError(
+        f'git diff failed: origin/main...HEAD rc={out.returncode}; '
+        f'HEAD~1...HEAD rc={out.returncode}: {out.stderr.strip()[:300]}')
 
 
 def parse_name_status(output: str) -> list:
@@ -265,7 +285,11 @@ def main():
     if args.file:
         files = [os.path.abspath(f) for f in args.file]
     elif args.only_changed:
-        changed = git_changed_files(root)
+        try:
+            changed = git_changed_files(root)
+        except RuntimeError as e:
+            print(f'❌ {e}', file=sys.stderr)
+            return 1
         files = [os.path.join(root, f) for f in changed
                  if f.endswith(('.mdx', '.md'))]
         # If a PR renames/removes a heading on a changed page, unchanged pages
