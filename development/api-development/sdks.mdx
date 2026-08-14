@@ -81,14 +81,38 @@ Asset handles are lazy. `photo.png` is hashed locally and only uploaded if the s
 
 `run()` submits the job and waits for it to reach a terminal state. To do work while it executes, use `submit()` instead and watch the [event stream](#watching-a-job-run).
 
-To run against your own ComfyUI instead, change one line and drop the key: `Comfy("http://127.0.0.1:8189")`. See below.
+To run against your own ComfyUI instead, set `COMFY_BASE_URL` and drop the key. See below.
 
 ## Choosing a base URL
 
 | Surface | Base URL | API key |
 |---|---|---|
 | **Comfy Cloud** | `https://cloud.comfy.org` (the default) | Required |
+| **Serverless deployment** | `https://<deployment>.run.comfy.app` | Required |
 | **Your own ComfyUI** | `http://127.0.0.1:8189` (the local proxy) | None by default. Optional static bearer token |
+
+The base URL comes from the `COMFY_BASE_URL` environment variable, not a constructor argument:
+
+```bash
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # serverless
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # self-hosted proxy
+```
+
+It is read each time a client is constructed, must be an `http(s)` URL, and unset or blank means Comfy Cloud. So the client itself is the same everywhere:
+
+<CodeGroup>
+```python Python
+client = Comfy(api_key="comfyui-...")
+```
+
+```typescript TypeScript
+const client = new Comfy({ apiKey: "comfyui-..." });
+```
+</CodeGroup>
+
+<Note>
+  Upgrading from an early build? `Comfy("<url>", "<key>")` is now `Comfy(api_key="<key>")` with `COMFY_BASE_URL` set. `api_key` is keyword-only, so the old positional call raises `TypeError` rather than quietly reading a URL as a key.
+</Note>
 
 ### Comfy Cloud
 
@@ -97,6 +121,12 @@ Works out of the box. Create an [API key](/development/api-development/getting-a
 <Note>
   API access requires a paid Comfy Cloud subscription. The free tier does not include it. How many jobs you can run at once depends on your tier. See [Cloud API Overview](/development/cloud/overview#parallel-execution-concurrent-jobs).
 </Note>
+
+### Serverless deployment
+
+A workflow you deployed through the [developer platform](https://platform.comfy.org) gets its own endpoint. Point `COMFY_BASE_URL` at it and use your API key, exactly as with Comfy Cloud. Everything in this guide works the same way.
+
+Serverless deployments run one pinned workflow, so `get_workflow()` returns the executed graph (`format: "api"`).
 
 ### Your own ComfyUI
 
@@ -109,7 +139,7 @@ comfy-api-proxy
 
 By default it proxies the ComfyUI on `127.0.0.1:8188` and serves the v2 API on `127.0.0.1:8189`. Use `--comfyui` and `--port` to change either.
 
-Then point the SDK at `http://127.0.0.1:8189`. Authentication is not required by default. If the proxy is configured with a static bearer token, pass that token as the SDK API key: `Comfy("http://127.0.0.1:8189", api_key="...")`. The proxy binds to loopback only by default. Run it with `--comfyui-base-dir /path/to/ComfyUI` if you also want to upload model files into your install.
+Then set `COMFY_BASE_URL="http://127.0.0.1:8189"`. Authentication is not required by default. If the proxy is configured with a static bearer token, pass that token as the SDK API key: `Comfy(api_key="...")`. The proxy binds to loopback only by default. Run it with `--comfyui-base-dir /path/to/ComfyUI` if you also want to upload model files into your install.
 
 The proxy is a stopgap. Once the v2 API stabilizes it moves into ComfyUI core and the proxy is no longer needed.
 
@@ -140,7 +170,9 @@ result = job.result()
 ```typescript TypeScript
 const job = await client.submit(wf);
 
-for await (const event of job.events()) {
+// The label is required: a bare `break` inside a switch leaves the switch,
+// not the loop.
+eventLoop: for await (const event of job.events()) {
   switch (event.kind) {
     case "progress":
       console.log(event.value);
@@ -149,7 +181,7 @@ for await (const event of job.events()) {
       await event.output.toFile(`${event.output.name}`);
       break;
     case "statusChange":
-      if (event.status === "succeeded") break;
+      if (event.status === "succeeded") break eventLoop;
   }
 }
 ```
@@ -161,6 +193,56 @@ for await (const event of job.events()) {
 
 The stream is a live feed, not a replayable log. It exists so you can render progress, not so you can rely on it for results. Polling the job is what is authoritative, and `run()`, `wait()`, and `result()` fall back to polling automatically. See [Design Notes](/development/api-development/sdks-design#poll-first-stream-for-progress) for why.
 
+## Tracing an output back to its workflow
+
+Outputs carry the id of the job that produced them, so you can start from a file and work backwards without keeping a side table.
+
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # the job that produced this file
+```
+
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // the job that produced this file
+```
+</CodeGroup>
+
+The same id is on an asset fetched on its own, so a file you found later still leads back to its job. It is `None` (TypeScript: `undefined`) for an asset you uploaded, which has no producing job.
+
+From the job you can ask for the workflow behind it. This works for a job you did not submit in this process, rehydrated by id:
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # the workflow as authored, canvas layout and Note nodes intact
+else:
+    ...  # the executed API-format graph
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // the workflow as authored, canvas layout and Note nodes intact
+} else {
+  // the executed API-format graph
+}
+```
+</CodeGroup>
+
+**Always branch on `format`.** Which shape comes back depends on how the job was submitted, not on anything you control per request:
+
+| `format` | What you get | When |
+|---|---|---|
+| `save` | The authoring workflow at the version the job ran, with canvas layout and editor-only nodes such as Note | Jobs submitted from the Comfy Cloud editor, which pins a workflow version |
+| `api` | The executed graph. Editor-only constructs are gone and Get/Set nodes are expanded | Everything else, including every job submitted through these SDKs today |
+
+Jobs you submit through the SDK always return `api`, because v2 submission has no version-pinning fields yet. That will change; the discriminator is there so your code does not have to.
+
 ## What the SDKs cover today
 
 The first version does one thing properly: run a workflow and get the results back.
@@ -169,6 +251,8 @@ The first version does one thing properly: run a workflow and get the results ba
 - **Submission.** Submit an API-format graph. Submission is idempotent, and a full queue is retried for you within a bounded budget.
 - **Execution.** Poll with `wait()`, or follow `events()` for live progress.
 - **Outputs.** Write to disk, buffer into memory, fetch a byte range, or get a short-lived download URL.
+- **Traceability.** Every output carries the id of the job that produced it, and a job can hand back the workflow behind it.
+- **Deleting assets.** Remove an asset you uploaded, by handle or by id.
 - **Errors.** Typed exceptions such as `JobFailed`, `Unauthorized`, `InsufficientCredits`, and `QueueFull`, rather than raw status codes.
 - **Cancellation.** Jobs can be canceled while running. TypeScript additionally accepts an `AbortSignal` on any call.
 
