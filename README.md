@@ -145,7 +145,7 @@ npm run translate:repair-truncated -- --lang ko
 - **Input**: English MDX (primary) + existing target-language file as context (if present)
 - **Output**: Updated files under `zh/`, `ja/`, `ko/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
 - **Review notes (mismatch)**: When the model reports semantic issues via `=== MISMATCHES ===`, they go to `.github/i18n-logs/translate/mismatches.json` and `mismatches.txt` (gitignored), not into MDX. Only produced during `npm run translate`, not by the truncation scanner.
-- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#truncated-translations) above.
+- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#automated-translation) above.
 - **Skipped paths**: `built-in-nodes/` (configured in `translation-config.json` → `skip_paths`)
 - **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand
@@ -203,7 +203,7 @@ Configure a dedicated cheap judge model via `REVIEW_API_KEY` / `REVIEW_API_BASE_
 
 #### Adding a new language
 
-See [Request a new language](#request-a-new-language) above — please open an issue rather than adding a language in a PR yourself.
+See [Request a new language](#adding-a-new-language) above — please open an issue rather than adding a language in a PR yourself.
 
 Maintainers: add one entry under `languages` in `.github/scripts/i18n/translation-config.json` (`code`, `name`, `dir`, `snippets_dir`). Path exclusion, link localization, and English-file scanning are derived automatically by `i18n-config.mjs` in the same folder — no per-language edits in translate scripts when adding a locale. Then add navigation in `docs.json` (see [Mintlify Localization](https://mintlify.com/docs/navigation/localization)), and batch-translate:
 

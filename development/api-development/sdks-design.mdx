@@ -1,0 +1,67 @@
+---
+title: "Design Notes"
+description: "Why the Comfy API v2 exists, how it relates to the existing ComfyUI APIs, and what is coming next"
+sidebarTitle: "Design Notes"
+icon: "compass"
+---
+
+Background for the [Comfy SDKs](/development/api-development/sdks) and the [Comfy API v2](/api-reference/v2/overview) they call. You do not need any of this to use the SDKs. Read it if you are deciding whether to build on the new API or the existing ones.
+
+## Why a new API
+
+You can already drive ComfyUI over HTTP by calling `/prompt` and `/history`. Those endpoints exist to serve the ComfyUI web UI, and building on them means depending on internals that were never promised to you. The v2 API adds three things they cannot give you.
+
+**A commitment.** v2 is versioned, documented, and supported. Changes within v2 are additive; anything breaking would ship as v3. New releases of ComfyUI will not break your integration.
+
+**Portability.** The same behavior against local ComfyUI, against Comfy Cloud, and against a serverless deployment. Same code, different base URL.
+
+**A shape that survives production.** Durable job IDs, idempotent submission, typed errors, normalized outputs, and real backpressure, instead of every integration reinventing all five on top of `prompt_id` and `/history`.
+
+## Why not wrap the endpoints that already exist
+
+Because they assume one ComfyUI instance running one workflow at a time, and that assumption is welded into `prompt_id`, `/history`, and the websocket protocol.
+
+The v2 API does not assume it. Many workflows in flight at once, each addressed by a durable job ID, is the default case rather than the exception.
+
+## Poll first, stream for progress
+
+Every capability in v2 is reachable with plain GET requests. `GET /api/v2/jobs/{id}` returns the current status, the latest progress snapshot, and every output committed so far. It is the authoritative view of a job, and it stays available until the job's `expires_at`.
+
+The SSE stream at `GET /api/v2/jobs/{id}/events`, exposed as `job.events()` in both SDKs, is a live enhancement on top of that. Use it to drive a progress bar. Do not use it as your source of truth: it carries no event IDs, has no resume cursor, and frames emitted while you were disconnected are gone.
+
+Two reasons the authoritative path is a poll rather than a stream or a webhook:
+
+- Workflows can run for a long time. A connection that blips for three seconds should never cost you a result.
+- Webhooks work well for a service with a public address. They do not work for a Blender plugin on someone's desktop that is not listening on a port, and should not be.
+
+The practical effect is that every step is resumable. If your process crashes mid-job, you can come back an hour later and `GET /api/v2/jobs/{id}` still has the status and the outputs. Other transports may be added later for cases that suit them; this is the one that works everywhere.
+
+## Relationship to the existing APIs
+
+Nothing is deprecated. `/prompt`, `/history`, `/ws`, and the rest keep working, and the [Cloud API](/development/cloud/overview) keeps working. If your integration works today, none of this breaks it. The two live side by side.
+
+| | Comfy API v2 | Existing APIs |
+|---|---|---|
+| **Compatibility** | Versioned. Additive changes only within v2 | No compatibility guarantee across releases |
+| **Concurrency model** | Many jobs in flight, each with a durable ID | One instance, one workflow at a time |
+| **Runs against** | Comfy Cloud, serverless deployments, and self-hosted ComfyUI, same contract | Cloud API and ComfyUI Server API differ |
+| **Official clients** | Python and TypeScript SDKs | None |
+| **Best for** | New integrations | Integrations that already work |
+
+## Scope of the first version
+
+One thing, properly: run a workflow and get the results back. Upload inputs, submit an API-format graph, watch it execute, pull down outputs.
+
+That is the whole scope on purpose. Saved workflows, model library management, node introspection, and named workflow parameters are not here yet. We would rather ship a small surface we can genuinely commit to across every way ComfyUI gets deployed than a large one that only holds together in one of them. It will grow from here.
+
+## The local proxy
+
+During the beta, self-hosted ComfyUI speaks v2 through [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), which runs alongside your instance and serves the v2 contract in front of it. It is open source and explicitly a stopgap. Once the API stabilizes this moves into ComfyUI core and the proxy stops being necessary.
+
+## Why Python and TypeScript first
+
+That is where the demand was when we asked people already running ComfyUI at scale. Both SDKs sit on the same documented HTTP contract, so any language can talk to the API right now. If you want a first-party SDK in another language, tell us in the `#developer-platform` channel in [our Discord](https://discord.com/invite/comfyorg).
+
+## What we want from you
+
+The API is at `0.1.x` for a reason, and we plan to lock the surface down over the next few weeks. Method names, the client shape, the event catalog, the error taxonomy, and how asset handling feels in practice are all still cheap to change right now. See [Feedback](/development/api-development/sdks#feedback).

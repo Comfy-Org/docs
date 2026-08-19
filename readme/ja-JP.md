@@ -187,7 +187,7 @@ npm run glossary:sync:dry-run         # 件数のみ報告、書き込みなし
 
 #### 新しい言語の追加
 
-上記 [新しい言語のリクエスト](#新しい言語のリクエスト) を参照 — Issue で申請してください。PR で言語を自分で追加しないでください。
+上記 [新しい言語のリクエスト](#新しい言語の追加) を参照 — Issue で申請してください。PR で言語を自分で追加しないでください。
 
 メンテナー：`.github/scripts/i18n/translation-config.json` の `languages` にエントリを追加（`code`、`name`、`dir`、`snippets_dir`）。パス除外、リンクのローカライズ、英語ファイルのスキャンは同フォルダの `i18n-config.mjs` から自動導出されるため、ロケール追加時に翻訳スクリプトを言語ごとに編集する必要はありません。次に `docs.json` にナビゲーションを追加（[Mintlify ローカライゼーション](https://mintlify.com/docs/navigation/localization) 参照）し、一括翻訳を実行：
 

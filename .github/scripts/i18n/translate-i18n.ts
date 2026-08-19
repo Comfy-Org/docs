@@ -1433,6 +1433,7 @@ async function main() {
   );
 
   let totalFailed = 0;
+  const translatedTargets: string[] = [];
   for (const phase of phases) {
     const result = await runTranslatePhase({
       snippetsMode: phase.snippetsMode,
@@ -1444,6 +1445,10 @@ async function main() {
       repairTruncated,
     });
     totalFailed += result.failed;
+    for (const job of result.translatedJobs) {
+      const { targetPath } = makeMapping(job.lang, job.relPath, phase.snippetsMode);
+      translatedTargets.push(targetPath);
+    }
   }
 
   if (dryRun) {
@@ -1454,6 +1459,31 @@ async function main() {
       });
     }
     return;
+  }
+
+  // Auto-fix anchor fragments after translation: translation localizes
+  // heading text but keeps the English anchor fragment in links, so those
+  // anchors die on the translated page. fixAnchorSlugs rewrites them to the
+  // localized slug (see fix-anchor-slugs.ts). A full scan keeps check-anchors
+  // green: not only this run's files but also untouched translated pages can
+  // link to a heading whose localized slug changed in this run.
+  if (translatedTargets.length > 0) {
+    const { fixAnchorSlugs } = await import("./fix-anchor-slugs.ts");
+    // Keep the language and content scope the user asked for; a full scan
+    // would rewrite files outside the requested --lang / --snippets scope.
+    const stats = await fixAnchorSlugs({
+      langs: selectedLangs,
+      snippetsMode: snippetsOnly,
+      pagesOnly,
+    });
+    if (stats.unresolved > 0) {
+      console.warn(
+        `⚠️ Anchor repair: ${stats.fixed} fixed, ${stats.unresolved} need manual review ` +
+          `(target structure drifted; check-anchors may still fail for those).`
+      );
+    } else {
+      console.log(`Anchor repair: ${stats.fixed} fixed, 0 unresolved.`);
+    }
   }
 
   if (repairTruncated && totalFailed === 0) {
