@@ -60,6 +60,8 @@ Strapi drafts → publish → published-versions.json
 
 Each version is **saved immediately** after simplify/translate (safe to resume).
 
+After prepare, secondary projects (cloud) **merge only the prepared `<Update>` blocks** from comfyui. Older cloud blocks (including project-specific tracking shortlinks) are left untouched. Do not full-file overwrite `staging/cloud/`.
+
 ## Projects & attention
 
 | Project | CLI | Default attention |
@@ -98,13 +100,13 @@ Configured in `cms-config.json` → `simplify`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → optional `**New Node Updates**` (bold labels, not `##`) |
 
-- Section order is **fixed**: open-source models first, node updates second, partner nodes last
-- Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)
+- Section order is **fixed** when present: open-source models first, partner nodes second, node updates last
+- **New Node Updates is optional by default.** Omit from the CMS popup even if docs has New Nodes; include only when a human explicitly asks
 - Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
-- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping
+- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and New Nodes unless requested
 - English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
 - Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
 

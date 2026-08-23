@@ -35,7 +35,8 @@ Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged 
 | `TRANSLATE_API_BASE_URL` | OpenAI-compatible endpoint |
 | `TRANSLATE_API_MODEL` | e.g. `deepseek-v4-pro`, `qwen-mt-plus` |
 | `TRANSLATE_CONCURRENCY` | Parallel requests (default 5) |
-| `FRONTEND_LOCALES_PATH` | Optional; ComfyUI frontend locales for glossary sync |
+| `FRONTEND_LOCALES_URL` | Optional; override remote locale URL for glossary sync |
+| `FRONTEND_LOCALES_PATH` | Optional; use a local frontend checkout instead of remote |
 
 Requires **Bun**.
 

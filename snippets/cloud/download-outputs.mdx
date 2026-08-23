@@ -1,12 +1,18 @@
 <CodeGroup>
 ```bash curl
-# Download a single output file (follow 302 redirect with -L)
-curl -L "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
-  -o output.png
+# Step 1: read the 302 target. Do not use -L here: following the redirect
+# would resend your API key to the storage host.
+SIGNED_URL=$(curl -s -o /dev/null -w '%{redirect_url}' \
+  "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY")
+
+# Step 2: the signed URL carries its own authorization, so send no headers.
+curl -s "$SIGNED_URL" -o output.png
 ```
 
 ```typescript TypeScript
+import { writeFile } from "fs/promises";
+
 async function downloadOutput(
   filename: string,
   subfolder: string = "",
@@ -69,13 +75,22 @@ def download_output(filename: str, subfolder: str = "", output_type: str = "outp
         "type": output_type
     }
 
+    # Do not follow the redirect. requests drops Authorization on a cross-host
+    # redirect but keeps custom headers, so X-API-Key would reach the storage
+    # host. The signed URL carries its own authorization.
     response = requests.get(
         f"{BASE_URL}/api/view",
         headers=get_headers(),
-        params=params
+        params=params,
+        allow_redirects=False
     )
-    response.raise_for_status()
-    return response.content
+    if response.status_code != 302:
+        raise RuntimeError(f"Expected a 302 redirect, got {response.status_code}")
+    signed_url = response.headers["Location"]
+
+    file_response = requests.get(signed_url)
+    file_response.raise_for_status()
+    return file_response.content
 
 def save_outputs(outputs: dict, output_dir: str = "."):
     """Save all outputs from a job to disk.

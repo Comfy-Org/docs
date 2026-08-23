@@ -9,7 +9,6 @@ translationBlockHashes:
   "Migration Steps": 3b155e8e
 ---
 
-
 ## 개요
 
 ComfyUI V3 스키마는 노드를 정의하는 방식을 보다 체계적으로 개선했으며, 향후 노드 기능 확장은 오직 V3 스키마에만 추가됩니다. 이 가이드를 사용해 기존 V1 노드를 새 V3 스키마로 마이그레이션할 수 있습니다.
@@ -25,7 +24,6 @@ from comfy_api.latest import ComfyExtension, io, ui
 # 특정 버전의 ComfyUI API 사용
 from comfy_api.v0_0_2 import ComfyExtension, io, ui
 ```
-
 ### V1 vs V3 아키텍처
 
 V3 스키마에서 가장 큰 변화는 다음과 같습니다:
@@ -289,7 +287,7 @@ def fingerprint_inputs(cls, **kwargs):
 
 향후 ```get_node_list```를 통해 노드만 등록하는 것 이상의 기능을 등록하기 위해 ComfyExtension에 더 많은 함수가 추가될 수 있습니다.
 
-`comfy_entrypoint`는 비동기이거나 아니어도 되지만, ```get_node_list```는 반드시 비동기로 정의해야 합니다.
+```comfy_entrypoint```는 비동기이거나 아니어도 되지만, ```get_node_list```는 반드시 비동기로 정의해야 합니다.
 
 **V1:**
 ```python
@@ -512,17 +510,471 @@ return io.NodeOutput(ui=ui.PreviewUI3D(model_file, camera_info))
 
 #### 저장 헬퍼
 
-저장 헬퍼는 적절한 메타데이터를 포함하여 파일을 출력 디렉토리에 저장하는 메서드를 제공합니다. 일반적으로 출력 노드에서 사용됩니다.
+저장 헬퍼는 적절한 메타데이터를 포함하여 파일을 출력 디렉터리에 저장하는 메서드를 제공합니다. 일반적으로 출력 노드에서 사용합니다.
 
 ```python
 from comfy_api.latest import ui, io
 
-# 이미지 저장 및 UI 데이터 반환 (가장 일반적인 패턴)
+# Save images and return UI data (most common pattern)
 return io.NodeOutput(
     ui=ui.ImageSaveHelper.get_save_images_ui(
         images=images,
         filename_prefix=filename_prefix,
-        cls=cls,  # 메타데이터를 위한 히든 prompt/extra_pnginfo
+        cls=cls,  # passes hidden prompt/extra_pnginfo for metadata
+    )
+)
+
+# Save animated PNG
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_png_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        compress_level=4,
+    )
+)
+
+# Save animated WebP
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_webp_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        lossless=True,
+        quality=80,
+        method=4,
+    )
+)
+
+# Save audio (supports flac, mp3, opus)
+return io.NodeOutput(
+    ui=ui.AudioSaveHelper.get_save_audio_ui(
+        audio=audio,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        format="flac",
+    )
+)
+```
+
+<Tip>
+저장 또는 미리보기 헬퍼에 `cls=cls`를 전달하면 저장 파일에 워크플로 메타데이터(prompt, extra_pnginfo)를 자동으로 포함할 수 있습니다. 스키마의 hidden 목록에 `io.Hidden.prompt`와 `io.Hidden.extra_pnginfo`를 포함하거나, 두 항목을 자동으로 추가하는 `is_output_node=True`를 설정하세요.
+</Tip>
+
+#### 원시 UI 딕셔너리 반환
+
+헬퍼가 없는 UI 데이터를 반환해야 한다면 딕셔너리를 직접 전달할 수 있습니다.
+
+```python
+return io.NodeOutput(ui={"images": results})
+```
+
+### 출력 노드
+
+파일 저장처럼 부작용을 만드는 노드에 사용합니다. V1과 마찬가지로 노드를 출력 노드로 표시하면 노드의 컨텍스트 창에 `run` 재생 버튼이 표시되어 그래프를 부분적으로 실행할 수 있습니다.
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # Does not need to be empty.
+        is_output_node=True  # Mark as output node
+    )
+```
+
+### 사용자 정의 유형
+
+클래스를 정의하거나 ```Custom``` 헬퍼 함수를 사용하여 사용자 정의 입력/출력 유형을 만들 수 있습니다.
+
+```python
+from comfy_api.latest import io
+
+# Method 1: Using decorator with class
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Python type hint
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# Method 2: Using Custom helper
+# The helper can be used directly without saving to a variable first for convenience as well
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```
+
+### MultiType 입력
+
+`MultiType` allows an input to accept more than one type. This is useful when a node can operate on different data types through the same input slot.
+
+첫 번째 인수(`id`)가 문자열이 아니라 `Input` 클래스의 인스턴스이면 해당 입력의 재정의된 값으로 위젯을 만듭니다. 그렇지 않으면 소켓 전용 입력입니다.
+
+```python
+# Socket-only multi-type input (no widget)
+io.MultiType.Input("input", types=[io.Image, io.Mask])
+
+# Multi-type input with a widget fallback (String widget shown when nothing is connected)
+io.MultiType.Input(
+    io.String.Input("model_file", default="", multiline=False),
+    types=[io.File3DGLB, io.File3DGLTF, io.File3DOBJ],
+    tooltip="3D model file or path string",
+)
+```
+
+### MatchType (일반 유형 매칭)
+
+`MatchType` creates type-linked inputs and outputs. When a user connects a specific type to a MatchType input, all other inputs and outputs sharing the same template automatically constrain to that type. This is how nodes like Switch and Create List work with any type.
+
+```python
+@classmethod
+def define_schema(cls):
+    # Create a template - all inputs/outputs sharing the same template will match types
+    template = io.MatchType.Template("switch")
+    return io.Schema(
+        node_id="SwitchNode",
+        display_name="Switch",
+        category="logic",
+        inputs=[
+            io.Boolean.Input("switch"),
+            io.MatchType.Input("on_false", template=template, lazy=True),
+            io.MatchType.Input("on_true", template=template, lazy=True),
+        ],
+        outputs=[
+            io.MatchType.Output(template=template, display_name="output"),
+        ],
+    )
+```
+
+You can also restrict which types are allowed:
+
+```python
+# Only allow Image, Mask, or Latent types
+template = io.MatchType.Template("input_type", allowed_types=[io.Image, io.Mask, io.Latent])
+```
+
+### 동적 입력
+
+V3에서는 사용자 상호작용에 따라 사용 가능한 입력이 변경되는 동적 입력 유형을 도입합니다. V1에는 이에 해당하는 기능이 없습니다.
+
+#### Autogrow
+
+`Autogrow` creates a variable number of inputs that automatically grow as the user connects more. There are two template types:
+
+**TemplatePrefix** generates inputs with a numbered prefix (e.g. `image0`, `image1`, `image2`...):
+
+```python
+@classmethod
+def define_schema(cls):
+    autogrow_template = io.Autogrow.TemplatePrefix(
+        input=io.Image.Input("image"),  # template for each input
+        prefix="image",                  # prefix for generated input names
+        min=2,                           # minimum number of inputs shown
+        max=50,                          # maximum number of inputs allowed
+    )
+    return io.Schema(
+        node_id="BatchImagesNode",
+        display_name="Batch Images",
+        category="image",
+        inputs=[io.Autogrow.Input("images", template=autogrow_template)],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, images: io.Autogrow.Type) -> io.NodeOutput:
+    # 'images' is a dict mapping input names to their values
+    image_list = list(images.values())
+    return io.NodeOutput(batch(image_list))
+```
+
+**TemplateNames** generates inputs with specific names:
+
+```python
+template = io.Autogrow.TemplateNames(
+    input=io.Float.Input("float"),
+    names=["x", "y", "z"],  # explicit names for each input
+    min=1,                    # minimum number of inputs shown
+)
+```
+
+Autogrow can be combined with MatchType to create lists of type-matched inputs:
+
+```python
+@classmethod
+def define_schema(cls):
+    template_matchtype = io.MatchType.Template("type")
+    template_autogrow = io.Autogrow.TemplatePrefix(
+        input=io.MatchType.Input("input", template=template_matchtype),
+        prefix="input",
+    )
+    return io.Schema(
+        node_id="CreateList",
+        display_name="Create List",
+        category="logic",
+        is_input_list=True,
+        inputs=[io.Autogrow.Input("inputs", template=template_autogrow)],
+        outputs=[
+            io.MatchType.Output(
+                template=template_matchtype,
+                is_output_list=True,
+                display_name="list",
+            ),
+        ],
+    )
+```
+
+#### DynamicCombo
+
+`DynamicCombo` creates a dropdown that shows/hides different inputs depending on the selected option. This is useful for nodes where different modes require different parameters.
+
+```python
+@classmethod
+def define_schema(cls):
+    return io.Schema(
+        node_id="ResizeNode",
+        display_name="Resize",
+        category="transform",
+        inputs=[
+            io.Image.Input("image"),
+            io.DynamicCombo.Input("resize_type", options=[
+                io.DynamicCombo.Option("scale by dimensions", [
+                    io.Int.Input("width", default=512, min=0, max=8192),
+                    io.Int.Input("height", default=512, min=0, max=8192),
+                ]),
+                io.DynamicCombo.Option("scale by multiplier", [
+                    io.Float.Input("multiplier", default=1.0, min=0.01, max=8.0),
+                ]),
+                io.DynamicCombo.Option("scale to megapixels", [
+                    io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0),
+                ]),
+            ]),
+        ],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, image, resize_type: dict) -> io.NodeOutput:
+    # resize_type is a dict containing the selected option key and its inputs
+    selected = resize_type["resize_type"]
+    if selected == "scale by dimensions":
+        width = resize_type["width"]
+        height = resize_type["height"]
+        # ...
+    elif selected == "scale by multiplier":
+        multiplier = resize_type["multiplier"]
+        # ...
+```
+
+DynamicCombo 옵션은 중첩할 수도 있습니다.
+
+```python
+io.DynamicCombo.Input("combo", options=[
+    io.DynamicCombo.Option("option1", [io.String.Input("string")]),
+    io.DynamicCombo.Option("option2", [
+        io.DynamicCombo.Input("subcombo", options=[
+            io.DynamicCombo.Option("sub_opt1", [io.Float.Input("x"), io.Float.Input("y")]),
+            io.DynamicCombo.Option("sub_opt2", [io.Mask.Input("mask", optional=True)]),
+        ])
+    ]),
+])
+```
+
+### 비동기 Execute
+
+V3는 비동기 `execute` 메서드를 지원합니다. I/O 작업, API 호출 또는 기타 비동기 작업을 수행하는 노드에 유용합니다. `execute`를 `async`로 선언하기만 하면 됩니다.
+
+```python
+@classmethod
+async def execute(cls, prompt, **kwargs) -> io.NodeOutput:
+    result = await some_async_operation(prompt)
+    return io.NodeOutput(result)
+```
+
+### ComfyAPI
+
+`ComfyAPI` 클래스는 진행률 보고 및 노드 교체 등록과 같은 ComfyUI 런타임 서비스에 접근할 수 있게 합니다. 가져온 후 인스턴스를 생성하세요.
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+```
+
+#### 진행률 보고
+
+노드의 `execute` 메서드 안에서 실행 진행률을 보고합니다. 진행률 표시줄은 ComfyUI 인터페이스에 표시됩니다. 이는 V1에서 `comfy.utils.PROGRESS_BAR_HOOK`를 사용하던 방식을 대체합니다.
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+
+@classmethod
+async def execute(cls, images, **kwargs) -> io.NodeOutput:
+    total = len(images)
+    for i, image in enumerate(images):
+        process(image)
+        await api.execution.set_progress(
+            value=i + 1,
+            max_value=total,
+            preview_image=image,  # optional: show preview during progress
+        )
+    return io.NodeOutput(result)
+```
+
+<Note>
+`set_progress` can accept a PIL Image, an `ImageInput` tensor, or `None` for the `preview_image` parameter. When called from within `execute`, the `node_id` is automatically determined from the executing context.
+</Note>
+
+#### 노드 교체
+
+노드 교체를 사용하면 이전 노드나 더 이상 사용되지 않는 노드를 새 노드에 매핑하여 기존 워크플로를 자동으로 업그레이드할 수 있습니다. 확장의 `on_load` 메서드에서 `ComfyAPI`를 사용해 교체를 등록하세요.
+
+```python
+from comfy_api.latest import ComfyAPI, ComfyExtension, io
+
+api = ComfyAPI()
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await api.node_replacement.register(io.NodeReplace(
+            new_node_id="MyNewNode",
+            old_node_id="MyOldNode",
+            old_widget_ids=["param1", "param2"],  # ordered widget IDs for positional mapping
+            input_mapping=[
+                {"new_id": "image", "old_id": "input_image"},       # rename input
+                {"new_id": "method", "set_value": "lanczos"},       # set a fixed value
+            ],
+            output_mapping=[
+                {"new_idx": 0, "old_idx": 0},  # map output by index
+            ],
+        ))
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNewNode]
+```
+
+The `old_widget_ids` parameter is important: workflow JSON stores widget values by position index, not by name. This list maps those positional indexes to input IDs so the replacement system can correctly identify widget values during migration.
+
+For nodes using dynamic inputs (like Autogrow), use dotted paths in the mapping:
+
+```python
+input_mapping=[
+    {"new_id": "images.image0", "old_id": "image1"},
+    {"new_id": "images.image1", "old_id": "image2"},
+]
+```
+
+### 확장 수명 주기
+
+`ComfyExtension` 클래스는 `get_node_list` 외에도 다음 수명 주기 훅을 지원합니다.
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        """Called when the extension is loaded.
+        Use for one-time initialization: registering node replacements,
+        setting up global resources, etc.
+        """
+        pass
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        """Return the list of node classes this extension provides."""
+        return [MyNode]
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+### NodeOutput
+
+`NodeOutput` 클래스는 `execute`의 표준 반환 값입니다. 다음과 같은 여러 패턴을 지원합니다.
+
+```python
+# Return a single output value
+return io.NodeOutput(image)
+
+# Return multiple output values (order matches outputs list in schema)
+return io.NodeOutput(width, height, batch_size)
+
+# Return only UI data (no output values)
+return io.NodeOutput(ui=ui.PreviewImage(images, cls=cls))
+
+# Return both output values and UI data
+return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+
+# Return None/empty (for nodes with no outputs)
+return io.NodeOutput()
+```
+
+## 전체 예시
+
+다음은 여러 노드를 포함하는 V3 확장 파일의 전체 예시입니다.
+
+```python
+from comfy_api.latest import ComfyExtension, io, ui
+
+class InvertImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_InvertImage",  # prefixed to avoid clashes
+            display_name="Invert Image",
+            category="my_pack/image",
+            description="Inverts the colors of an image.",
+            inputs=[
+                io.Image.Input("image"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="inverted"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image) -> io.NodeOutput:
+        inverted = 1.0 - image
+        return io.NodeOutput(inverted, ui=ui.PreviewImage(inverted, cls=cls))
 
 
+class SaveImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_SaveImage",
+            display_name="Save Image",
+            category="my_pack/image",
+            is_output_node=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.String.Input("filename_prefix", default="ComfyUI"),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls, images, filename_prefix) -> io.NodeOutput:
+        return io.NodeOutput(
+            ui=ui.ImageSaveHelper.get_save_images_ui(
+                images=images,
+                filename_prefix=filename_prefix,
+                cls=cls,
+            )
+        )
+
+
+class MyPackExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [InvertImage, SaveImage]
+
+async def comfy_entrypoint() -> MyPackExtension:
+    return MyPackExtension()
 ```

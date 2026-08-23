@@ -232,6 +232,20 @@ export function stripTranslationMetaFromFrontmatter(body: string): string {
   return out;
 }
 
+/**
+ * Reassemble the opening `---` plus whatever frontmatter survived meta
+ * stripping, ready for a translation meta block to be appended.
+ *
+ * When the frontmatter held nothing but translation metadata, `cleaned` is
+ * empty and the naive `${open}${cleaned}\n` leaves a blank first line inside
+ * the frontmatter that the next run cannot remove — the write stops being
+ * idempotent. See https://github.com/Comfy-Org/docs/issues/1358.
+ */
+export function frontmatterMetaPrefix(open: string, cleaned: string): string {
+  const head = cleaned.replace(/\n+$/, "");
+  return head ? `${open}${head}\n` : open;
+}
+
 export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
@@ -253,7 +267,7 @@ export function setChunkedTranslationMeta(
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripTranslationMetaFromFrontmatter(body);
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +279,27 @@ const FENCE_RE = /^(```|~~~)/;
 
 function toggleFence(line: string, inFence: boolean): boolean {
   return FENCE_RE.test(line.trim()) ? !inFence : inFence;
+}
+
+/** Extract fenced code blocks exactly as written, including fence markers. */
+function extractCodeFences(content: string): string[] {
+  const lines = content.split("\n");
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (FENCE_RE.test(line.trim())) {
+      if (current) {
+        current.push(line);
+        blocks.push(current.join("\n"));
+        current = null;
+      } else {
+        current = [line];
+      }
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  return blocks;
 }
 
 function isH2SectionLine(line: string, inFence: boolean): boolean {
@@ -917,6 +952,17 @@ export function validateTranslatedBlock(
 
   if (hasUnclosedCodeFence(translated)) return false;
 
+  // Code is executable documentation. Never accept a translation that
+  // changes, drops, or truncates a fenced code block.
+  const enCode = extractCodeFences(enBlock.content);
+  const translatedCode = extractCodeFences(translated);
+  if (
+    enCode.length !== translatedCode.length ||
+    enCode.some((block, index) => block !== translatedCode[index])
+  ) {
+    return false;
+  }
+
   const enTabs = countTagOpens(enBlock.content, "Tab");
   const trTabs = countTagOpens(translated, "Tab");
   if (enTabs >= 2 && trTabs !== enTabs) return false;
@@ -929,7 +975,11 @@ export function validateTranslatedBlock(
 
   const enLines = countNonEmptyLines(enBlock.content);
   const trLines = countNonEmptyLines(translated);
-  if (enLines >= 80 && trLines < enLines * 0.6) return false;
+  // A stopped model response can be syntactically valid but still be severely
+  // truncated. Apply the guard to ordinary-sized sections too, not only very
+  // long ones. Short sections are exempt because localization can legitimately
+  // reduce their line count.
+  if (enLines >= 20 && trLines < enLines * 0.6) return false;
 
   return true;
 }
