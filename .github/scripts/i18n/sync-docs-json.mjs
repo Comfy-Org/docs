@@ -118,8 +118,14 @@ export function normalizeNavTree(nodes, options = {}) {
     }
     if (node && typeof node === "object" && Array.isArray(node.pages)) {
       const pages = normalizeNavTree(node.pages, options);
-      if (pages.length === 0 && pruneMissing) continue;
+      if (pages.length === 0 && pruneMissing && node.openapi == null) continue;
       out.push({ ...node, pages });
+      continue;
+    }
+    // OpenAPI-only groups have `openapi` and no `pages`; dropping them
+    // removes the API reference from the sidebar.
+    if (node && typeof node === "object" && node.openapi != null) {
+      out.push(node);
     }
   }
   return out;
@@ -156,11 +162,15 @@ export function localizeNavTree(nodes, langDir, langDirs) {
     if (typeof node === "string") {
       return localizePagePath(node, langDir, langDirs);
     }
-    if (node && typeof node === "object" && Array.isArray(node.pages)) {
-      return {
-        ...node,
-        pages: localizeNavTree(node.pages, langDir, langDirs),
-      };
+    if (node && typeof node === "object") {
+      const next = { ...node };
+      if (node.openapi != null) {
+        next.openapi = localizeOpenApi(node.openapi, langDir);
+      }
+      if (Array.isArray(node.pages)) {
+        next.pages = localizeNavTree(node.pages, langDir, langDirs);
+      }
+      return next;
     }
     return node;
   });
@@ -247,10 +257,25 @@ function findGroupMatch(existingPages, newChild, langDirs) {
  * @param {unknown[]} existingPages
  * @param {string[]} langDirs
  */
+function findOpenApiMatch(existingPages, newChild) {
+  const source = newChild?.openapi?.source;
+  if (!source || !Array.isArray(existingPages)) return null;
+  return (
+    existingPages.find(
+      (node) => node && typeof node === "object" && node.openapi?.source === source
+    ) ?? null
+  );
+}
+
 export function mergeNavPages(newPages, existingPages, langDirs) {
   if (!Array.isArray(newPages)) return [];
   return newPages.map((newChild) => {
     if (typeof newChild === "string") return newChild;
+    if (newChild?.openapi != null && !Array.isArray(newChild.pages)) {
+      const match = findOpenApiMatch(existingPages, newChild);
+      if (match?.group) return { ...newChild, group: match.group };
+      return newChild;
+    }
     if (!newChild?.pages) return newChild;
 
     const match = findGroupMatch(existingPages, newChild, langDirs);
