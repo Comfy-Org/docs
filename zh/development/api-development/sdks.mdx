@@ -1,20 +1,22 @@
 ---
 title: "Comfy SDKs"
 description: "用于在您自己的应用程序中运行 ComfyUI 工作流的官方 Python 和 TypeScript SDK"
-sidebarTitle: "概述"
+sidebarTitle: "SDK 概述"
 icon: "code"
-translationSourceHash: 4b01fa84
+translationSourceHash: f64d3545
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": 0df68ad9
   "Install": 6bcd1ccf
-  "Quickstart": 47f1a4c5
-  "Choosing a base URL": 46f88061
-  "Watching a job run": d41efc9a
-  "What the SDKs cover today": 6151cc1e
+  "Quickstart": 02297586
+  "Choosing a base URL": 13035ca9
+  "Watching a job run": a1c73d9b
+  "Tracing an output back to its workflow": b01886a3
+  "What the SDKs cover today": 3f918c7b
   "Reference": 5fc97b4a
   "Feedback": f8553211
 ---
+
 <Warning>
   **测试版。** 这些 SDK 及其调用的 Comfy API v2 目前均为 `0.1.x` 版本。在我们将其锁定之前，API 的结构仍可能发生变化。现在告诉我们哪里有问题，成本最低。参见[反馈](#反馈)。
 </Warning>
@@ -91,14 +93,38 @@ await job.getOutputs("9")[0].toFile("out.png");
 
 `run()` 提交任务并等待其达到终端状态。如要在其执行期间进行其他操作，请改用 `submit()`，并观察 [事件流](#查看任务运行)。
 
-若要改为在你自己的 ComfyUI 上运行，只需更改一行代码并去掉密钥：`Comfy("http://127.0.0.1:8189")`。请参阅下文。
+若要改为在你自己的 ComfyUI 上运行，请设置 `COMFY_BASE_URL` 并去掉密钥。请参阅下文。
 
 ## 选择基础 URL
 
 | 使用环境 | 基础 URL | API 密钥 |
 |---|---|---|
 | **Comfy Cloud** | `https://cloud.comfy.org`（默认） | 必填 |
-| **您自己的 ComfyUI** | `http://127.0.0.1:8189`（本地代理） | 默认不使用。可选静态 bearer 令牌 |
+| **Serverless 部署** | `https://<deployment>.run.comfy.app` | 必填 |
+| **您自己的 ComfyUI** | `http://127.0.0.1:8189`（本地代理） | 默认无。可选静态 bearer 令牌 |
+
+基础 URL 来自 `COMFY_BASE_URL` 环境变量，而不是构造函数参数：
+
+```bash
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # serverless
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # self-hosted proxy
+```
+
+客户端每次构造时都会读取该变量，它必须是 `http(s)` URL，未设置或为空则默认为 Comfy Cloud。因此客户端本身在所有环境下都是相同的：
+
+<CodeGroup>
+```python Python
+client = Comfy(api_key="comfyui-...")
+```
+
+```typescript TypeScript
+const client = new Comfy({ apiKey: "comfyui-..." });
+```
+</CodeGroup>
+
+<Note>
+  从早期版本升级？`Comfy("<url>", "<key>")` 现在是设置 `COMFY_BASE_URL` 后的 `Comfy(api_key="<key>")`。`api_key` 是仅限关键字参数，因此旧的位置参数调用会抛出 `TypeError`，而不会将 URL 静默当作 API 密钥读取。
+</Note>
 
 ### Comfy Cloud
 
@@ -107,6 +133,12 @@ await job.getOutputs("9")[0].toFile("out.png");
 <Note>
   API 访问需要付费的 Comfy Cloud 订阅。免费版不包含此权限。一次可执行的任务数取决于您的层级。请参阅 [Cloud API 概览](/zh/development/cloud/overview#并行执行（并发任务）)。
 </Note>
+
+### Serverless 部署
+
+通过 [开发者平台](https://platform.comfy.org) 部署的工作流会有自己的端点。将 `COMFY_BASE_URL` 指向该端点并使用您的 API 密钥，与 Comfy Cloud 完全相同。本指南中的所有内容都以相同的方式工作。
+
+Serverless 部署运行一个固定工作流，因此 `get_workflow()` 返回执行后的图（`format: "api"`）。
 
 ### 您自己的 ComfyUI
 
@@ -119,7 +151,7 @@ comfy-api-proxy
 
 默认情况下，它代理 `127.0.0.1:8188` 上的 ComfyUI，并在 `127.0.0.1:8189` 上提供 v2 API。使用 `--comfyui` 和 `--port` 可更改其中任一配置。
 
-然后将 SDK 指向 `http://127.0.0.1:8189`。默认不需要身份验证。如果代理配置了静态 bearer 令牌，请将该令牌作为 SDK 的 API 密钥传入：`Comfy("http://127.0.0.1:8189", api_key="...")`。默认情况下，代理仅绑定到回环地址。如果您还想将模型文件上传到您的安装中，请使用 `--comfyui-base-dir /path/to/ComfyUI` 运行它。
+然后设置 `COMFY_BASE_URL="http://127.0.0.1:8189"`。默认不需要身份验证。如果代理配置了静态 bearer 令牌，请将该令牌作为 SDK 的 API 密钥传入：`Comfy(api_key="...")`。默认情况下，代理仅绑定到回环地址。如果您还想将模型文件上传到您的安装中，请使用 `--comfyui-base-dir /path/to/ComfyUI` 运行它。
 
 该代理只是一个权宜之计。一旦 v2 API 稳定下来，它就会移入 ComfyUI 核心，届时就不再需要代理了。
 
@@ -150,7 +182,9 @@ result = job.result()
 ```typescript TypeScript
 const job = await client.submit(wf);
 
-for await (const event of job.events()) {
+// The label is required: a bare `break` inside a switch leaves the switch,
+// not the loop.
+eventLoop: for await (const event of job.events()) {
   switch (event.kind) {
     case "progress":
       console.log(event.value);
@@ -159,7 +193,7 @@ for await (const event of job.events()) {
       await event.output.toFile(`${event.output.name}`);
       break;
     case "statusChange":
-      if (event.status === "succeeded") break;
+      if (event.status === "succeeded") break eventLoop;
   }
 }
 ```
@@ -171,44 +205,96 @@ for await (const event of job.events()) {
 
 该流是实时馈送，而非可重放的日志。它的存在是为了让您能够呈现进度，而不是依赖它来获取结果。轮询任务才是权威的，`run()`、`wait()` 和 `result()` 会自动回退到轮询。原因请参阅 [设计说明](/zh/development/api-development/sdks-design#先轮询再流式获取进度)。
 
+## 将输出回溯到其工作流
+
+输出带有生成它们的任务的 ID，因此您可以以文件为起点反向追溯，而无需额外维护一张对应表。
+
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # the job that produced this file
+```
+
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // the job that produced this file
+```
+</CodeGroup>
+
+单独获取的资源也带有相同的 ID，因此您之后找到的文件依然能回溯到生成它的任务。对于您上传的资源，该 ID 为 `None`（TypeScript 中为 `undefined`），因为上传的资源没有对应的生成任务。
+
+您可以向任务查询其背后的工作流。即使该任务不是在当前进程中提交的，只要通过 ID 重新加载，同样可以做到：
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # the workflow as authored, canvas layout and Note nodes intact
+else:
+    ...  # the executed API-format graph
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // the workflow as authored, canvas layout and Note nodes intact
+} else {
+  // the executed API-format graph
+}
+```
+</CodeGroup>
+
+**始终根据 `format` 进行分支判断。** 返回哪种形状取决于任务的提交方式，而不是您在每次请求中能控制的任何因素：
+
+| `format` | 您获得的内容 | 适用情况 |
+|---|---|---|
+| `save` | 任务运行时所使用的版本对应的创作工作流，包含画布布局和仅编辑器可见的节点（如 Note） | 从 Comfy Cloud 编辑器提交的任务，此类任务会固定工作流版本 |
+| `api` | 已执行的图。仅编辑器可见的结构已消失，Get/Set 节点已展开 | 其他所有情况，包括目前通过这些 SDK 提交的每个任务 |
+
+您通过 SDK 提交的任务始终返回 `api`，因为 v2 提交目前还没有版本固定字段。这种情况将来会改变；判别字段的存在就是为了让您的代码无需随之改变。
+
 ## SDK 目前涵盖的内容
 
-第一个版本只做好了一件事：运行工作流并取回结果。
+第一个版本只做好一件事：运行工作流并取回结果。
 
-- **资产。** 从文件、字节、流或 URL 创建输入句柄。句柄是惰性的且基于内容寻址，因此使用相同输入重新运行时不会重复上传。
-- **提交。** 提交 API 格式的图。提交是幂等的，并且完整的队列会在有限的预算内为您重试。
-- **执行。** 使用 `wait()` 轮询，或通过 `events()` 跟踪实时进度。
+- **资产。** 从文件、字节、流或 URL 创建输入句柄。句柄是惰性的，并按内容寻址，因此使用相同输入重新运行时不会再次上传。
+- **提交。** 提交 API 格式的节点图。提交是幂等的，完整的队列会在有限的预算内自动重试。
+- **执行。** 使用 `wait()` 轮询，或通过 `events()` 获取实时进度。
 - **输出。** 写入磁盘、缓冲到内存、获取字节范围，或获取短期有效的下载 URL。
-- **错误。** 提供类型化的异常，例如 `JobFailed`、`Unauthorized`、`InsufficientCredits` 和 `QueueFull`，而不是原始状态码。
-- **取消。** 作业可以在运行过程中取消。此外，TypeScript 的任何调用都可以接受 `AbortSignal`。
+- **可追溯性。** 每个输出都带有生成它的任务的 ID，并且任务可以返回其背后的工作流。
+- **删除资产。** 通过句柄或 ID 移除你上传的资产。
+- **错误。** 提供类型化异常，如 `JobFailed`、`Unauthorized`、`InsufficientCredits` 和 `QueueFull`，而不是原始状态码。
+- **取消。** 任务可以在运行时取消。TypeScript 还在任何调用上接受 `AbortSignal`。
 
-Python 同时提供同步的 `Comfy` 客户端和具有相同接口的 `AsyncComfy` 客户端。TypeScript 仅支持异步。
+Python 同时提供同步的 `Comfy` 客户端和接口相同的 `AsyncComfy` 客户端。TypeScript 仅支持异步。
 
-此版本暂不包含：管理已保存的工作流、模型库、节点内省和命名工作流参数。[设计说明](/zh/development/api-development/sdks-design#首个版本的范围) 解释了为什么接口一开始就如此精简。
+此版本不包含：管理已保存的工作流、模型库、节点内省，以及命名工作流参数。[设计说明](/zh/development/api-development/sdks-design#首个版本的范围) 解释了为何接口从如此小的范围起步。
 
 ## 参考
 
-SDK 的 README 是每种语言的完整参考，涵盖认证、资产、错误以及底层逃生通道。
+SDK 的 README 是每种语言的完整参考，涵盖认证、资产、错误处理以及低层逃生通道。
 
 <CardGroup cols={2}>
   <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
-    <code>comfy-sdk</code>，位于 PyPI。提供同步与异步客户端。
+    <code>comfy-sdk</code> 位于 PyPI。提供同步和异步客户端。
   </Card>
   <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
-    <code>@comfyorg/sdk</code>，位于 npm。带类型定义、异步，并附带底层客户端。
+    <code>@comfyorg/sdk</code> 位于 npm。带类型、异步，并提供低层客户端。
   </Card>
   <Card title="Comfy API v2 参考" icon="code" href="/zh/api-reference/v2/overview">
-    两个 SDK 底层的 HTTP API。可直接从任何语言使用。
+    两个 SDK 底层的 HTTP API。任何语言都可以直接使用。
   </Card>
   <Card title="设计说明" icon="compass" href="/zh/development/api-development/sdks-design">
-    这个 API 为何存在、它与现有 ComfyUI API 的关系，以及后续的演进方向。
+    这个 API 存在的原因、它与现有 ComfyUI API 的关系，以及未来的发展方向。
   </Card>
 </CardGroup>
 
 ## 反馈
 
-这有意保持为 `0.1.x` 版本。方法名称、客户端形状、事件目录、错误分类体系，以及资产处理在实际使用中的体验，这些目前的改动成本都还很低，我们计划在接下来几周内将这一对外接口固定下来。之后，"我们提供长期支持" 就开始意味着我们无法再为你修复这些问题了。
+这是特意采用 `0.1.x` 版本的。方法名称、客户端形状、事件目录、错误分类法，以及资产管理在实际使用中的体验，这些目前都还很容易更改。我们计划在未来几周内将接口锁定下来。之后，“长期支持”就意味着我们无法再为你修复这些问题了。
 
-所以，请告诉我们哪些地方用起来别扭、你期望找到却没有找到的东西，以及你最终是如何绕开这些问题的。[我们的 Discord](https://discord.com/invite/comfyorg) 中的 `#developer-platform` 频道就是反馈这些内容的地方。
+所以，请告诉我们哪些地方让你觉得别扭、你期望找到却没有找到的功能，以及你最终是如何绕行解决的。[我们的 Discord](https://discord.com/invite/comfyorg) 中的 `#developer-platform` 通道就是讨论这些的地方。
 
-如果你想要其他语言的第一方 SDK，也可以在那里告诉我们。两个 SDK 都建立在同一份有文档记录的 HTTP 契约之上，因此任何语言目前都可以直接与 API 通信，但我们更想知道需求在哪里。
+如果你想要其他语言的第一方 SDK，也可以在那里告诉我们。两个 SDK 都建立在相同的文档化 HTTP 契约上，所以任何语言现在都可以与 API 通信，但我们更希望知道需求在哪里。
