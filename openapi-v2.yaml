@@ -556,7 +556,7 @@ paths:
           description: 'Emitted the moment each output asset is committed, carrying the same `Output` object that appears on `job.outputs[]`. A latency optimization only: it lets a client render each result as it lands instead of waiting for the terminal `status` event. It is delivered best-effort over the live broadcast path — an output whose durable asset record is not yet resolvable when its node finishes may be delivered on a slightly later event or, failing that, only in the terminal `status` snapshot — so the authoritative, complete set of outputs is always `job.outputs[]` on `GET /api/v2/jobs/{id}` and on the terminal `status` event. A client must therefore treat these as additive hints and must not assume it receives one per output.'
           schema: '#/components/schemas/Output'
         log:
-          description: Selected execution log lines. Best-effort diagnostics; the one event type with no snapshot equivalent. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet.
+          description: 'Selected execution log lines. Best-effort diagnostics. Its snapshot equivalent is `job.logs` on `GET /api/v2/jobs/{id}`, which carries the whole log the run produced, read back once the run has finished; this event is the live view of that same output, carrying lines while the run is still going. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet: to get a log today, stream to a terminal status and re-read the job.'
           x-sse-not-yet-emitted: true
           schema: '#/components/schemas/LogEvent'
       parameters:
@@ -810,6 +810,10 @@ components:
           allOf:
           - $ref: '#/components/schemas/JobError'
           nullable: true
+        logs:
+          allOf:
+          - $ref: '#/components/schemas/JobLogs'
+          description: 'What the run printed. **Only jobs run on the serverless platform** (a `{deployment}.run.comfy.app` host) carry it. Comfy Cloud and self-hosted callers never receive it, so on those surfaces the field is always absent and a client should not wait for one. Where it is populated it is captured for every job, success and failure alike, since a job that succeeds while producing the wrong thing is exactly what a failure-only log cannot explain. It lives as long as the job it belongs to: nothing ages it out ahead of the job''s own `expires_at`, so a job never outlives its log. **Absent, not null**, when there is none: the surface does not populate it at all, the job has not finished, the job predates log capture, or the job ran on the public demo deployment, which captures and stores the log like every other serverless deployment but withholds it on read, because that surface takes callers with no credential and a job id would otherwise be the only thing between one anonymous caller and another''s run. Those cases are deliberately not distinguished, because a caller''s next action is the same in all of them, which is to stop expecting a log. Returned by `GET /api/v2/jobs/{id}` only. It is deliberately absent from the job object on `POST /api/v2/jobs`, on `POST /api/v2/jobs/{id}/cancel`, and on the SSE `status` event: the last is pushed on every transition to every open stream, and a log on each frame would pay for the whole thing repeatedly to deliver it once. A client that streams to a terminal status and wants the log re-reads the job.'
         metrics:
           type: object
           description: 'Values are nullable (a metric not yet available — e.g. `execution_ms` before a job starts running — is `null`, not omitted); the example below is deliberately all-non-null purely to work around a Spectral/nimma lint-tooling crash on a literal `null` inside a schema `example` combined with `additionalProperties.nullable: true` — the schema itself is unchanged and still allows null values at runtime.'
@@ -821,6 +825,24 @@ components:
             execution_ms: 42000
         urls:
           $ref: '#/components/schemas/JobUrls'
+    JobLogs:
+      type: object
+      description: 'A job''s captured execution log. Diagnostics, not a contract on content: this is whatever the workflow''s own code and nodes wrote to standard output, in the order they wrote it, so nothing about its shape is stable between runs or between versions of a distribution. It is **untrusted text** — a workflow chooses what goes in it — and must be rendered as plain text rather than interpreted.'
+      required:
+      - text
+      - truncated
+      - captured_at
+      properties:
+        text:
+          type: string
+          description: The captured output.
+        truncated:
+          type: boolean
+          description: '`text` is the TAIL of a longer run. Implementations bound what they capture and store, so a workflow that prints megabytes keeps its last lines — where a failure normally is — instead of being dropped whole. True with an empty `text` means the log was captured and then shed entirely to fit.'
+        captured_at:
+          type: string
+          format: date-time
+          description: When the run's output was read back off the worker.
     JobWorkflowResponse:
       type: object
       description: The workflow behind a job. See GET /api/v2/jobs/{id}/workflow's description for exactly when `format` is `save` vs `api`.
