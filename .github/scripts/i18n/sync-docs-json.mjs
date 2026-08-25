@@ -252,17 +252,26 @@ function findGroupMatch(existingPages, newChild, langDirs) {
   return best;
 }
 
+/** @param {unknown} openapi @returns {string | null} */
+export function openApiSourceKey(openapi) {
+  if (typeof openapi === "string") return openapi;
+  if (openapi && typeof openapi === "object" && typeof openapi.source === "string") {
+    return openapi.source;
+  }
+  return null;
+}
+
 /**
- * @param {unknown[]} newPages
  * @param {unknown[]} existingPages
- * @param {string[]} langDirs
+ * @param {object} newChild
  */
 function findOpenApiMatch(existingPages, newChild) {
-  const source = newChild?.openapi?.source;
+  const source = openApiSourceKey(newChild?.openapi);
   if (!source || !Array.isArray(existingPages)) return null;
   return (
     existingPages.find(
-      (node) => node && typeof node === "object" && node.openapi?.source === source
+      (node) =>
+        node && typeof node === "object" && openApiSourceKey(node.openapi) === source
     ) ?? null
   );
 }
@@ -273,8 +282,11 @@ export function mergeNavPages(newPages, existingPages, langDirs) {
     if (typeof newChild === "string") return newChild;
     if (newChild?.openapi != null && !Array.isArray(newChild.pages)) {
       const match = findOpenApiMatch(existingPages, newChild);
-      if (match?.group) return { ...newChild, group: match.group };
-      return newChild;
+      if (!match) return newChild;
+      const merged = { ...newChild };
+      if (match.group) merged.group = match.group;
+      if (match.icon) merged.icon = match.icon;
+      return merged;
     }
     if (!newChild?.pages) return newChild;
 
