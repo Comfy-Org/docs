@@ -1,0 +1,172 @@
+---
+title: "Pixal3D & TRELLIS.2 이미지 투 모델 ComfyUI 워크플로 예제"
+description: "단일 ComfyUI 워크플로에서 하나의 전환으로 Pixal3D 또는 TRELLIS.2 중 하나를 선택해, 단일 이미지에서 PBR 텍스처가 포함된 3D 모델을 생성합니다."
+sidebarTitle: "Pixal3D & TRELLIS.2"
+translationSourceHash: a9933f06
+translationFrom: tutorials/3d/pixal3d-trellis2.mdx
+translationBlockHashes:
+  "_intro": 5074d78c
+  "How the model switch works": 951d692b
+  "How it works": 470ae1b2
+  "Workflow node guide": 9b81795b
+  "Steps to run": cf7ccb2b
+  "Model downloads": f187a36d
+---
+
+import UpdateReminder from "/snippets/ko/tutorials/update-reminder.mdx"
+
+이 워크플로는 하나의 그래프에 두 가지 오픈소스 이미지 기반 3D 생성 모델을 포함합니다: **Pixal3D** (Tencent ARC, MoGe 카메라 추정을 사용한 픽셀 정렬 생성) 및 **TRELLIS.2** (Microsoft Research, O-Voxel 희소 복셀 기반 40억 매개변수 모델). 두 모델은 동일한 DINOv3 이미지 인코더, 동일한 형태 및 텍스처 VAE, 그리고 동일한 구조, 형태, 텍스처 생성 단계를 공유합니다.
+
+단일 논리값 전환이 조건화를 두 모델 중 하나로 보냅니다. 워크플로는 기본적으로 Pixal3D 파이프라인을 사용하며, 전환을 토글하면 TRELLIS.2 파이프라인이 사용됩니다.
+
+### Pixal3D & TRELLIS.2: 이미지 기반 모델 생성 {#3d_pixal3d_trellis2_image_to_model}
+
+이미지를 하나 업로드하세요. 하나의 전환으로 Pixal3D 또는 TRELLIS.2 파이프라인을 선택하여, 전체 PBR 텍스처가 적용된 고품질 3D 모델을 생성할 수 있습니다.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_pixal3d_trellis2_image_to_model-1.webp" alt="Pixal3D & TRELLIS.2 워크플로 미리보기" />
+
+<UpdateReminder />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloud에서 실행" icon="cloud" href="https://cloud.comfy.org/?template=3d_pixal3d_trellis2_image_to_model&utm_source=docs&utm_medium=referral&utm_campaign=pixal3d-trellis2">
+    이 워크플로를 Comfy Cloud에서 즉시 실행하세요.
+  </Card>
+  <Card title="워크플로 다운로드" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_pixal3d_trellis2_image_to_model.json">
+    템플릿 라이브러리에서 &quot;Pixal3D &amp; TRELLIS.2: Image to Model&quot;을(를) 검색하거나 JSON을 다운로드하세요.
+  </Card>
+</CardGroup>
+
+**입력 자료**
+
+이 파일을 `LoadImage` 노드에 업로드하세요:
+
+<CardGroup cols={1}>
+  <Card title="viking_wolf_rune_axe.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png">
+    `LoadImage` 노드 122 · `viking_wolf_rune_axe.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png" alt="입력 이미지" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+## 모델 전환 작동 방식
+
+`Boolean (Switch to Trellis2)` 노드는 파이프라인 선택을 제어합니다:
+
+- **`false`(기본값)**: 워크플로는 Pixal3D 파이프라인을 사용합니다. MoGe가 카메라 시야각을 추정하고, `Pixal3DConditioning`이 이미지, CLIP 비전 특징, 시야각으로부터 픽셀 정렬 조건화를 구성합니다.
+- **`true`**: 워크플로는 TRELLIS.2 파이프라인을 사용합니다. `Trellis2Conditioning`은 CLIP 비전 특징과 크롭된 이미지로만 조건화를 구성합니다.
+
+TRELLIS.2 파이프라인으로 전환할 때는 `UNETLoader` 노드에서 `trellis_2_bf16.safetensors`도 함께 로드하세요. 체크포인트가 기본적으로 `pixal3d_bf16.safetensors`로 설정되어 있기 때문입니다.
+
+나머지 파이프라인은 공유됩니다: 배경 제거, 구조 생성, 형태 정제, 텍스처 생성, 전체 메시 후처리 체인.
+
+## 작동 방식
+
+1. **배경 제거**: BiRefNet이 입력 이미지에서 배경을 제거하고, 워크플로가 피사체를 중앙 정렬된 1024×1024 캔버스로 크롭합니다. 전환을 통해 배경 제거를 건너뛸 수 있습니다
+2. **카메라 추정(Pixal3D 전용)**: MoGe가 지오메트리와 카메라 화각을 추정하여 픽셀 정렬 조건화를 구동합니다
+3. **구조 생성**: 희소 구조 잠재 데이터가 샘플링되어 복셀로 디코딩된 다음, 대략적인 메시로 변환됩니다
+4. **형태 정제**: 형태 단계와 업샘플링 단계가 메시를 목표 해상도(1536)까지 정제합니다
+5. **텍스처 생성**: 텍스처 diffusion 단계가 PBR 재질 복셀(기본 색상, 금속성, 거칠기)을 생성합니다
+6. **후처리**: DC 리메시, QEM 데시메이션, UV 언랩핑, 그리고 기본 색상, 노멀(normal), 앰비언트 오클루전 맵을 최종 텍스처 메시에 베이킹합니다
+
+## 워크플로 노드 가이드
+
+### LoadImage
+- 입력 이미지(PNG/JPG)를 로드합니다
+- 샘플 이미지: `viking_wolf_rune_axe.png`(템플릿 라이브러리에서 사용 가능)
+
+### RemoveBackground / ImageCropToMask
+- BiRefNet으로 배경을 제거하고 피사체를 중앙 정렬된 1024×1024 캔버스로 크롭합니다
+- `ComfySwitchNode`가 배경 제거를 켜거나 끕니다.
+
+### Boolean (Switch to Trellis2)
+- 파이프라인을 선택합니다: Pixal3D(기본값)는 `false`, TRELLIS.2는 `true`.
+
+### MoGeInference / MoGeGeometryToFOV
+- 깊이, 노멀(normal), 카메라 시야각을 추정합니다. Pixal3D 파이프라인에서만 사용됩니다.
+
+### Pixal3DConditioning / Trellis2Conditioning
+- 각 파이프라인에 대한 조건화를 구성합니다. 두 개의 `ComfySwitchNode` 노드가 선택된 조건화를 구조 샘플러와 형태 단계로 전달합니다.
+
+### EmptyTrellis2LatentStructure + KSampler (structure)
+- 희소 구조 잠재 데이터를 샘플링합니다(12스텝, CFG 7.5)
+
+### Trellis2ShapeStage + KSampler (shape)
+- 형태 잠재 데이터를 정제합니다(20스텝, CFG 7.5)
+
+### Trellis2UpsampleStage + KSampler (upsample)
+- 형태를 대상 해상도로 업스케일합니다(12스텝, CFG 7.5)
+
+### Trellis2TextureStage + KSampler (texture)
+- 텍스처 잠재 데이터를 생성합니다(12스텝, CFG 1)
+
+### VaeDecodeStructureTrellis2 / VaeDecodeShapeTrellis / VaeDecodeTextureTrellis
+- 구조, 형태, 텍스처 잠재 데이터를 복셀과 메시로 디코딩합니다
+
+### RemeshMesh / DecimateMesh / MeshSmoothNormals / UnwrapMesh
+- 메시를 재구성하고(768 해상도에서 DC 리메시), 대상 면 수(700,000)로 줄이고, 노멀(normal)을 부드럽게 하고, 설정된 텍스처 크기로 UV를 언랩합니다.
+
+### BakeTextureFromVoxel / BakeNormalMapFromMesh / BakeAmbientOcclusion
+- 베이스 색상, 메탈릭, 러프니스, 노멀(normal), 앰비언트 오클루전 맵을 베이크합니다
+
+### ApplyTextureToMesh / PaintMesh
+- 베이크된 맵을 저폴리 메시에 적용하고 버텍스 색상을 페인팅합니다.
+
+### SaveGLB / Preview3DAdvanced
+- 결과를 GLB 파일로 저장하고 3D로 미리보기합니다.
+
+## 실행 단계
+
+1. **이미지 로드**: `LoadImage` 노드를 사용하여 객체의 단일 이미지를 로드합니다.
+2. **파이프라인 선택**: Pixal3D를 사용하려면 `Boolean (Switch to Trellis2)`을 `false`(거짓)로 두고, TRELLIS.2를 사용하려면 `true`(참)로 설정한 후 `UNETLoader` 노드에서 `trellis_2_bf16.safetensors`를 로드합니다.
+3. **워크플로 실행 대기열에 추가**: Ctrl(macOS에서는 Cmd) + Enter를 누릅니다.
+4. **파이프라인 대기**: 구조, 형태, 텍스처 단계가 순서대로 실행된 후 후처리가 진행됩니다.
+5. **결과 확인**: `Preview3DAdvanced` 노드에서 메시를 검사합니다. GLB 파일은 `ComfyUI/output/3d/pixal3d/`에 저장됩니다.
+
+## 모델 다운로드
+
+실행하려는 파이프라인에 필요한 모델을 다운로드하여 해당 `models/` 하위 디렉터리에 배치합니다.
+
+<CardGroup cols={2}>
+  <Card title="Pixal3D UNet 모델" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/diffusion_models/pixal3d_bf16.safetensors">
+    pixal3d_bf16.safetensors: Pixal3D 확산 모델 (기본 체크포인트)
+  </Card>
+  <Card title="TRELLIS.2 UNet 모델" icon="download" href="https://huggingface.co/Comfy-Org/TRELLIS.2/blob/main/diffusion_models/trellis_2_bf16.safetensors">
+    trellis_2_bf16.safetensors: TRELLIS.2 확산 모델
+  </Card>
+  <Card title="셰이프 VAE" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/vae/trellis_2_shape_vae_bf16.safetensors">
+    trellis_2_shape_vae_bf16.safetensors: 구조 및 셰이프 디코딩용 VAE
+  </Card>
+  <Card title="텍스처 VAE" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/vae/trellis_2_texture_vae_bf16.safetensors">
+    trellis_2_texture_vae_bf16.safetensors: 텍스처 디코딩용 VAE
+  </Card>
+  <Card title="DINOv3 CLIP 비전" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/clip_vision/dino_v3_L_naf_fp32.safetensors">
+    dino_v3_L_naf_fp32.safetensors: 이미지 컨디셔닝용 CLIP 비전 인코더
+  </Card>
+  <Card title="MoGe 지오메트리" icon="download" href="https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors">
+    moge_2_vitl_normal_fp16.safetensors: 깊이 및 카메라 추정. Pixal3D 파이프라인에서 사용
+  </Card>
+  <Card title="BiRefNet 배경 제거" icon="download" href="https://huggingface.co/Comfy-Org/BiRefNet/blob/main/background_removal/birefnet.safetensors">
+    birefnet.safetensors: 전처리용 배경 제거 모델
+  </Card>
+</CardGroup>
+
+### 모델 저장 위치
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │      ├── pixal3d_bf16.safetensors
+│   │      └── trellis_2_bf16.safetensors
+│   ├── 📂 vae/
+│   │      ├── trellis_2_shape_vae_bf16.safetensors
+│   │      └── trellis_2_texture_vae_bf16.safetensors
+│   ├── 📂 clip_vision/
+│   │      └── dino_v3_L_naf_fp32.safetensors
+│   ├── 📂 geometry_estimation/
+│   │      └── moge_2_vitl_normal_fp16.safetensors
+│   └── 📂 background_removal/
+│          └── birefnet.safetensors
+```

@@ -1,0 +1,152 @@
+---
+title: "Pixal3D 画像からモデルへの ComfyUI ワークフロー例"
+description: "Pixal3D を使用して、1枚の画像からフル PBR テクスチャ付きの高忠実度 3Dモデルを生成します。Pixal3D は、Tencent ARC によるピクセル位置合わせ型の画像から 3Dモデルへの変換モデルです。"
+sidebarTitle: "Pixal3D"
+translationSourceHash: ca1b58b7
+translationFrom: tutorials/3d/pixal3d.mdx
+translationBlockHashes:
+  "_intro": 5f9b463f
+  "How it works": 3650c7ea
+  "Workflow node guide": ed18954d
+  "Steps to run": ef1a68d5
+  "Model downloads": 68d44529
+---
+import UpdateReminder from "/snippets/ja/tutorials/update-reminder.mdx"
+
+**Pixal3D** は、Tencent ARC が開発したオープンソースの画像-to-3Dモデルで、SIGGRAPH 2026 で発表されました。単一の画像を、完全なPBRマテリアルを備えた高忠実度の3Dアセットに変換します。
+
+ほとんどの3Dネイティブジェネレーターは、正準空間で形を合成し、アテンションを通じて画像の手がかりを注入するため、ピクセルと3Dの対応関係があいまいになります。一方、Pixal3D はピクセル整合生成を採用しています。バックプロジェクションによってピクセルと3Dの直接的な対応関係を確立するため、生成済みモデルの正面は入力画像と1:1で一致し、テクスチャのゆがみやずれが発生しません。
+
+### Pixal3D: 画像からモデルへ {#3d_pixal3d_image_to_model}
+
+単一の画像をアップロードします。入力ビューに合わせて、完全なPBRテクスチャを持つ高忠実度の3Dモデルを生成します。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_pixal3d_image_to_model-1.webp" alt="Pixal3Dワークフローのプレビュー" />
+
+<UpdateReminder />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloudで実行" icon="cloud" href="https://cloud.comfy.org/?template=3d_pixal3d_image_to_model&utm_source=docs&utm_medium=referral&utm_campaign=pixal3d">
+    このワークフローをComfy Cloudで即座に実行
+  </Card>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_pixal3d_image_to_model.json">
+    JSONをダウンロードするか、テンプレートライブラリで「Pixal3D: Image to Model」を検索してください
+  </Card>
+</CardGroup>
+
+**入力マテリアル**
+
+このファイルを `LoadImage` ノードにアップロードしてください：
+
+<CardGroup cols={1}>
+  <Card title="viking_wolf_rune_axe.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png">
+    `LoadImage` ノード122 · `viking_wolf_rune_axe.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png" alt="入力画像" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+## 仕組み
+
+Pixal3D は、カメラ対応のピクセルアライン生成と、完全なメッシュ後処理パイプラインを組み合わせます:
+
+1. **背景除去**: BiRefNet が入力画像の背景を除去し、ワークフローは被写体を中央の 1024×1024 キャンバスに切り取ります。スイッチで背景除去をスキップできます
+2. **カメラ推定**: MoGe が画像からジオメトリとカメラの画角を推定します。画角がピクセルアライン条件付けを駆動します
+3. **構造生成**: スパースな構造潜在変数がサンプリングされ、ボクセルにデコードされて、粗いメッシュに変換されます
+4. **シェイプの精緻化**: シェイプステージとアップサンプルステージが、ターゲット解像度 (1536) までメッシュを精緻化します
+5. **テクスチャ生成**: テクスチャ拡散ステージが PBR マテリアルのボクセル (ベースカラー、メタリック、ラフネス) を生成します
+6. **後処理**: DC リメッシュ、QEM デシメーション、UV アンラップ、ベースカラー・法線・アンビエントオクルージョンマップのベイクを行い、最終的なテクスチャ付きメッシュを作成します
+## ワークフローのノードガイド
+
+### LoadImage
+- 入力画像（PNG/JPG）を読み込みます
+- サンプル画像: `viking_wolf_rune_axe.png`（テンプレートライブラリで利用可能）
+
+### RemoveBackground / ImageCropToMask
+- BiRefNet で背景を除去し、被写体を中央の 1024×1024 キャンバスにトリミングします
+- `ComfySwitchNode` で背景除去のオン・オフを切り替えます
+
+### MoGeInference / MoGeGeometryToFOV
+- ピクセル整合の条件付けに使用する深度、ノーマル、カメラの視野角（FOV）を推定します
+
+### Pixal3DConditioning
+- CLIP ビジョン特徴、トリミング済み画像、カメラの視野角（FOV）からピクセル整合の条件付けを構築します
+
+### EmptyTrellis2LatentStructure + KSampler（構造）
+- スパースな構造潜在をサンプリングします（12 ステップ、CFG 7.5）
+
+### Trellis2ShapeStage + KSampler（形状）
+- 形状潜在を精緻化します（20 ステップ、CFG 7.5）
+
+### Trellis2UpsampleStage + KSampler（アップサンプル）
+- 形状をターゲット解像度にアップサンプリングします（12 ステップ、CFG 7.5）
+
+### Trellis2TextureStage + KSampler（テクスチャ）
+- テクスチャ潜在を生成します（12 ステップ、CFG 1）
+
+### VaeDecodeStructureTrellis2 / VaeDecodeShapeTrellis / VaeDecodeTextureTrellis
+- 構造、形状、テクスチャの潜在をボクセルとメッシュにデコードします
+
+### RemeshMesh / DecimateMesh / MeshSmoothNormals / UnwrapMesh
+- メッシュを再構築し（768 解像度で DC リメッシュ）、ターゲットの面数（700,000）に削減し、ノーマルをスムーズにして、設定されたテクスチャサイズで UV を展開します
+
+### BakeTextureFromVoxel / BakeNormalMapFromMesh / BakeAmbientOcclusion
+- ベースカラー、メタリック、ラフネス、ノーマル、アンビエントオクルージョンのマップをベイクします
+
+### ApplyTextureToMesh / PaintMesh
+- ベイクしたマップをローポリメッシュに適用し、頂点色をペイントします
+
+### SaveGLB / Preview3DAdvanced
+- 結果を GLB ファイルとして保存し、3D でプレビューします
+
+## 実行手順
+
+1. **画像を読み込む**: `LoadImage` ノードを使用して、オブジェクトの画像を1枚読み込みます
+2. **ワークフローをキューに投入する**: Ctrl（macOS では Cmd）+ Enter キーを押します
+3. **パイプラインを待つ**: 構造、形状、テクスチャの各ステージが順番に実行され、その後、後処理が続きます
+4. **結果を確認する**: `Preview3DAdvanced` ノードでメッシュを確認します。GLB は `ComfyUI/output/3d/pixal3d/` に保存されます
+
+## モデルのダウンロード
+
+Pixal3D モデルと必要なファイルをダウンロードし、対応する `models/` サブディレクトリに配置します。
+
+<CardGroup cols={2}>
+  <Card title="Pixal3D UNet モデル" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/diffusion_models/pixal3d_bf16.safetensors">
+    pixal3d_bf16.safetensors: Pixal3D 拡散モデル。int8_convrot 版も利用可能です
+  </Card>
+  <Card title="シェイプ VAE" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/vae/trellis_2_shape_vae_bf16.safetensors">
+    trellis_2_shape_vae_bf16.safetensors: 構造とシェイプのデコード用 VAE
+  </Card>
+  <Card title="テクスチャ VAE" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/vae/trellis_2_texture_vae_bf16.safetensors">
+    trellis_2_texture_vae_bf16.safetensors: テクスチャのデコード用 VAE
+  </Card>
+  <Card title="DINOv3 CLIP ビジョン" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/clip_vision/dino_v3_L_naf_fp32.safetensors">
+    dino_v3_L_naf_fp32.safetensors: 画像条件付け用の CLIP ビジョンエンコーダー
+  </Card>
+  <Card title="MoGe ジオメトリ" icon="download" href="https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors">
+    moge_2_vitl_normal_fp16.safetensors: ピクセルアライン条件付け用の深度・カメラ推定
+  </Card>
+  <Card title="BiRefNet 背景除去" icon="download" href="https://huggingface.co/Comfy-Org/BiRefNet/blob/main/background_removal/birefnet.safetensors">
+    birefnet.safetensors: 前処理用の背景除去モデル
+  </Card>
+</CardGroup>
+
+### モデルの保存場所
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │      └── pixal3d_bf16.safetensors
+│   ├── 📂 vae/
+│   │      ├── trellis_2_shape_vae_bf16.safetensors
+│   │      └── trellis_2_texture_vae_bf16.safetensors
+│   ├── 📂 clip_vision/
+│   │      └── dino_v3_L_naf_fp32.safetensors
+│   ├── 📂 geometry_estimation/
+│   │      └── moge_2_vitl_normal_fp16.safetensors
+│   └── 📂 background_removal/
+│          └── birefnet.safetensors
+```

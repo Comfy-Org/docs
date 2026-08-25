@@ -1,0 +1,145 @@
+---
+title: "TRELLIS.2 画像からモデルへの ComfyUI ワークフロー例"
+description: "Microsoft のオープンソースである 4B パラメータの画像から 3D モデルへの変換モデル TRELLIS.2 を使用して、1 枚の画像からフル PBR テクスチャ付きの高忠実度 3D モデルを生成します。"
+sidebarTitle: "TRELLIS.2"
+translationSourceHash: 1a2057ed
+translationFrom: tutorials/3d/trellis2.mdx
+translationBlockHashes:
+  "_intro": 8e653642
+  "How it works": 3531db89
+  "Workflow node guide": 58d7d6af
+  "Steps to run": 234b0cea
+  "Model downloads": b305c0d6
+---
+
+import UpdateReminder from '/snippets/ja/tutorials/update-reminder.mdx'
+
+**TRELLIS.2** は、Microsoft Research が開発したオープンソースの画像から3Dモデルを生成するモデルで、TRELLIS の後継です。16倍の空間圧縮を備えたネイティブな3D VAE と、O-Voxel と呼ばれるスパースなボクセル表現に基づいて構築された 4B パラメータのモデルであり、単一の画像からフルPBRマテリアルを備えた高精細な3Dアセットを生成します。
+
+TRELLIS.2 は Pixal3D と基本アーキテクチャを共有しています。両方とも同じ DINOv3 画像エンコーダ、同じ形状・テクスチャ VAE、同じ構造・形状・テクスチャ生成ステージを使用します。異なるのはメインの diffusion モデルと条件付けの形式のみです。[Pixal3D ワークフロー](pixal3d) を実行したことがあれば、モデルのセットアップはほぼ同じです。
+
+### TRELLIS.2: 画像から3Dモデルへ {#3d_trellis2_image_to_model}
+
+単一の画像をアップロードします。TRELLIS.2 を使用して、フルPBRテクスチャ付きの忠実度の高い3Dモデルを生成します。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_trellis2_image_to_model-1.webp" alt="TRELLIS.2 ワークフローのプレビュー" />
+
+<UpdateReminder />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloud で実行" icon="cloud" href="https://cloud.comfy.org/?template=3d_trellis2_image_to_model&utm_source=docs&utm_medium=referral&utm_campaign=trellis2">
+    このワークフローを Comfy Cloud で即座に実行します
+  </Card>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_trellis2_image_to_model.json">
+    JSON をダウンロードするか、テンプレートライブラリで &quot;TRELLIS.2: Image to Model&quot; を検索してください
+  </Card>
+</CardGroup>
+
+**入力マテリアル**
+
+このファイルを `LoadImage` ノードにアップロードします:
+
+<CardGroup cols={1}>
+  <Card title="viking_wolf_rune_axe.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png">
+    `LoadImage` ノード 122 ・ `viking_wolf_rune_axe.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/viking_wolf_rune_axe.png" alt="入力画像" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+## 仕組み
+
+TRELLIS.2は、3つのdiffusionステージで3Dアセットを生成し、その後、完全なメッシュ後処理パイプラインを実行します。
+
+1. **背景除去**: BiRefNetが入力画像から背景を除去し、ワークフローが被写体を中央配置の1024×1024キャンバスにクロップします。切り替えで背景除去をスキップできます
+2. **構造生成**: スパース構造latentがサンプリングされ、ボクセルにデコードされてから、ラフなメッシュに変換されます
+3. **形状リファイン**: 形状ステージとアップサンプリングステージが、メッシュをターゲット解像度(1536)までリファインします
+4. **テクスチャ生成**: テクスチャdiffusionステージがPBRマテリアルボクセル(ベース色、メタリック、ラフネス)を生成します
+5. **後処理**: DCリメッシュ、QEMデシメーション、UV展開、およびベース色・ノーマル・アンビエントオクルージョンマップの最終テクスチャ付きメッシュへのベイクを実行します
+
+## ワークフローノードガイド
+
+### LoadImage
+- 入力画像（PNG/JPG）を読み込みます
+- サンプル画像: `viking_wolf_rune_axe.png`（テンプレートライブラリで利用可能）
+
+### RemoveBackground / ImageCropToMask
+- BiRefNetで背景を除去し、被写体を中央寄せの1024×1024キャンバスにクロップします
+- `ComfySwitchNode`で背景除去のオン/オフを切り替えます
+
+### Trellis2Conditioning
+- CLIPビジョン特徴量とクロップされた画像から条件付けを構築します
+
+### EmptyTrellis2LatentStructure + Kサンプラー（構造）
+- スパースな構造潜在表現をサンプリングします（12ステップ、CFG 7.5）
+
+### Trellis2ShapeStage + Kサンプラー（形状）
+- 形状潜在表現をリファインします（20ステップ、CFG 7.5）
+
+### Trellis2UpsampleStage + Kサンプラー（アップサンプル）
+- 形状を目標解像度にアップサンプリングします（12ステップ、CFG 7.5）
+
+### Trellis2TextureStage + Kサンプラー（テクスチャ）
+- テクスチャ潜在表現を生成します（12ステップ、CFG 1）
+
+### VaeDecodeStructureTrellis2 / VaeDecodeShapeTrellis / VaeDecodeTextureTrellis
+- 構造、形状、テクスチャの潜在表現をボクセルとメッシュにデコードします
+
+### RemeshMesh / DecimateMesh / MeshSmoothNormals / UnwrapMesh
+- メッシュを再構築し（768解像度でDCリメッシュ）、目標面数（700,000）に削減し、ノーマルをスムーズ化し、設定されたテクスチャサイズでUVをアンラップします
+
+### BakeTextureFromVoxel / BakeNormalMapFromMesh / BakeAmbientOcclusion
+- ベースカラー、メタリック、ラフネス、ノーマル、アンビエントオクルージョンマップをベイクします
+
+### ApplyTextureToMesh / PaintMesh
+- ベイクされたマップをローポリメッシュに適用し、頂点色をペイントします
+
+### SaveGLB / Preview3DAdvanced
+- 結果をGLBファイルとして保存し、3Dでプレビューします
+
+## 実行手順
+
+1. **画像を読み込む**：`LoadImage` ノードを使用して、オブジェクトの画像を1枚読み込みます。
+2. **ワークフローをキューに入れる**：Ctrl（macOSではCmd）+ Enter を押します。
+3. **パイプラインの完了を待つ**：構造、形状、テクスチャの各ステージが順番に実行され、続いてポストプロセッシングが行われます。
+4. **結果を表示する**：`Preview3DAdvanced` ノードでメッシュを確認します。GLBは `ComfyUI/output/3d/trellis2/` に保存されます。
+
+## モデルのダウンロード
+
+TRELLIS.2 モデルと必要なファイルをダウンロードし、対応する `models/` サブディレクトリに配置します。
+
+<CardGroup cols={2}>
+  <Card title="TRELLIS.2 UNet モデル" icon="download" href="https://huggingface.co/Comfy-Org/TRELLIS.2/blob/main/diffusion_models/trellis_2_bf16.safetensors">
+    trellis_2_bf16.safetensors: TRELLIS.2 拡散モデル。int8_convrot 版も利用可能です
+  </Card>
+  <Card title="シェイプ VAE" icon="download" href="https://huggingface.co/Comfy-Org/TRELLIS.2/blob/main/vae/trellis_2_shape_vae_bf16.safetensors">
+    trellis_2_shape_vae_bf16.safetensors: 構造とシェイプのデコード用 VAE
+  </Card>
+  <Card title="テクスチャ VAE" icon="download" href="https://huggingface.co/Comfy-Org/TRELLIS.2/blob/main/vae/trellis_2_texture_vae_bf16.safetensors">
+    trellis_2_texture_vae_bf16.safetensors: テクスチャのデコード用 VAE
+  </Card>
+  <Card title="DINOv3 CLIP ビジョン" icon="download" href="https://huggingface.co/Comfy-Org/Pixal3D/blob/main/clip_vision/dino_v3_L_naf_fp32.safetensors">
+    dino_v3_L_naf_fp32.safetensors: 画像条件付け用の CLIP ビジョンエンコーダー。TRELLIS.2 リポジトリの同等の dino_v3_vit_l.safetensors も利用できます
+  </Card>
+  <Card title="BiRefNet 背景除去" icon="download" href="https://huggingface.co/Comfy-Org/BiRefNet/blob/main/background_removal/birefnet.safetensors">
+    birefnet.safetensors: 前処理用の背景除去モデル
+  </Card>
+</CardGroup>
+
+### モデルの保存場所
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │      └── trellis_2_bf16.safetensors
+│   ├── 📂 vae/
+│   │      ├── trellis_2_shape_vae_bf16.safetensors
+│   │      └── trellis_2_texture_vae_bf16.safetensors
+│   ├── 📂 clip_vision/
+│   │      └── dino_v3_L_naf_fp32.safetensors
+│   └── 📂 background_removal/
+│          └── birefnet.safetensors
+```
