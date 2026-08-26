@@ -4,27 +4,27 @@ description: "From nothing to a generated image in about five minutes, in Python
 ---
 
 <Note>
-**Comfy Router is not generally available yet.** The routes below —
-`POST /v1/models/{provider}/{model}` and its catalog and schema siblings — are
+**Comfy Router is not generally available yet.** The routes below
+(`POST /v1/models/{provider}/{model}` and its catalog and schema siblings) are
 not serving requests yet: an authenticated call answers `404` today. This page
 documents the contract they will serve, and is published ahead of that rollout so
 the integration is ready to write against. It is not a description of behaviour
 you can exercise right now.
 </Note>
 
-Comfy Router runs partner models behind one host, one credential and one route shape. This page is the shortest complete path to a generated image: install a client, set a key, send one request, read the result — and see what the first failure looks like before you hit it.
+Comfy Router runs partner models behind one host, one credential and one route shape. This page is the shortest complete path to a generated image: install a client, set a key, send one request, read the result, and see what the first failure looks like before you hit it.
 
 Base URL: `https://api.comfy.org`. The route is `POST /v1/models/{provider}/{model}`, the request body is the model's own native JSON input, and a `200` carries the model's own native JSON output. Router does not wrap either, so a call you already have written against the partner's API becomes a Router call by changing the host.
 
 ## Why this page uses `bfl/flux-2-pro`
 
-`bfl/flux-2-pro` returns in about 3.1s at p50, which is the fastest measured path on the Router and is what makes a five-minute first result realistic — a slower model would spend that budget waiting rather than reading.
+`bfl/flux-2-pro` returns in about 3.1s at p50, which is the fastest measured path on the Router and is what makes a five-minute first result realistic: a slower model would spend that budget waiting rather than reading.
 
-It is a convenience, not a requirement. Every other model on the Router is called exactly the same way: same route, same credential header, same error buckets, same `X-Comfy-Request-Id`. Only the model ID, the fields inside the request body, and the shape of the result you read back change. Gemini, for instance, clears comfortably at 72.8s p95 — Router holds the connection for the whole generation rather than returning a job handle to poll. There is no edge ceiling cutting a long call short, but Router does bound the call itself: its own server deadline (10 minutes by default) is the longest it will hold a connection, after which it answers `504` / `deadline_exceeded` and does not bill. Swap the ID and read that model's fields from its own schema (below).
+It is a convenience, not a requirement. Every other model on the Router is called exactly the same way: same route, same credential header, same error buckets, same `X-Comfy-Request-Id`. Only the model ID, the fields inside the request body, and the shape of the result you read back change. Gemini, for instance, clears comfortably at 72.8s p95; Router holds the connection for the whole generation rather than returning a job handle to poll. There is no edge ceiling cutting a long call short, but Router does bound the call itself: its own server deadline (10 minutes by default) is the longest it will hold a connection, after which it answers `504` / `deadline_exceeded` and does not bill. Swap the ID and read that model's fields from its own schema (below).
 
 ## Get a key
 
-Router authenticates with a Comfy API key. Create one at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys), then put it in the environment — both samples below read `COMFY_API_KEY` and neither takes a key as a literal, so a copy-pasted snippet cannot carry your credential into a commit.
+Router authenticates with a Comfy API key. Create one at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys), then put it in the environment: both samples below read `COMFY_API_KEY` and neither takes a key as a literal, so a copy-pasted snippet cannot carry your credential into a commit.
 
 ```bash
 export COMFY_API_KEY="comfyui-..."
@@ -35,8 +35,8 @@ Send a `comfyui-` key in the **`X-API-Key`** header, not `Authorization: Bearer`
 The two headers select different validators: `X-API-Key` is the only inbound
 reader of a `comfyui-` key, while a value in `Authorization` is routed to the JWT
 branch, where a non-JWT token is a terminal `401 Invalid token` and the key is
-never looked up. (`Authorization: Bearer` is correct for a Cloud/Firebase **JWT**
-— that is what the generated
+never looked up. (`Authorization: Bearer` is correct for a Cloud/Firebase **JWT**:
+that is what the generated
 [API reference](/api-reference/comfy-router/reference) means by "bearer token".)
 </Warning>
 
@@ -164,9 +164,12 @@ Requires Node 18+ (for built-in `fetch`, `AbortSignal.timeout` and `crypto.rando
 npm install --save-dev tsx
 ```
 
-Save as `quickstart.mts` — the `.mts` extension is load-bearing, because the file uses top-level `await` and that needs an ES module — and run it with `npx tsx quickstart.mts`:
+Save as `quickstart.mts`. The `.mts` extension is load-bearing, because the file uses top-level `await` and that needs an ES module. Run it with `npx tsx quickstart.mts`:
 
 ```typescript
+const API_KEY = process.env.COMFY_API_KEY;
+if (!API_KEY) throw new Error("Set COMFY_API_KEY before running this sample.");
+
 const BASE_URL = process.env.COMFY_ROUTER_BASE_URL ?? "https://api.comfy.org";
 const MODEL = "bfl/flux-2-pro";
 
@@ -188,7 +191,7 @@ class RouterError extends Error {
   readonly errorType: string;
   readonly requestId: string | null;
   readonly status: number;
-  /** A 422 carries a `detail[]` array — one entry per rejected field, each
+  /** A 422 carries a `detail[]` array: one entry per rejected field, each
    * keeping its own `loc`, `msg` and `type`. Every other bucket carries a
    * plain `detail` string. */
   readonly errors: ValidationEntry[];
@@ -228,15 +231,16 @@ async function run<T>(
   const response = await fetch(`${BASE_URL}/v1/models/${model}`, {
     method: "POST",
     headers: {
-      "X-API-Key": process.env.COMFY_API_KEY ?? "",
+      "X-API-Key": API_KEY,
       "Idempotency-Key": idempotencyKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(args),
     signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
   });
-  // Branch on `ok` FIRST: an HTML 502, a plain-text 429 or an empty body must
-  // still surface the status, the bucket and the request id.
+  // Read the body without letting it decide the outcome: an HTML 502, a
+  // plain-text 429 or an empty body still yields the status, the bucket and
+  // the request id, because `parseBody` returns `undefined` on a parse failure.
   const body = await parseBody(response);
   if (!response.ok) throw new RouterError(response, body);
   return body as T;
@@ -272,9 +276,9 @@ invalid_input (HTTP 422), request id 6f1c...
 
 ## Reading the `422`
 
-The `422` is the one error worth understanding before your first real call, because it is the one you cause. It means Router checked your body against the model's own input schema and rejected it — a required field missing, a value outside a bound, an image too small. That check runs BEFORE any provider call, so a `422` costs nothing: no partner spend, no billing question to answer afterwards. It is not the same as a `400`, which is a request-level failure (a malformed cursor, an unreadable envelope) rather than a per-field one.
+The `422` is the one error worth understanding before your first real call, because it is the one you cause. It means Router checked your body against the model's own input schema and rejected it: a required field missing, a value outside a bound, an image too small. That check runs BEFORE any provider call, so a `422` costs nothing: no partner spend, no billing question to answer afterwards. It is not the same as a `400`, which is a request-level failure (a malformed cursor, an unreadable envelope) rather than a per-field one.
 
-Its body is the fal/FastAPI `detail[]` shape: an array with one entry per offending field, each keeping its own `loc` (the path to the field), `msg`, `type` (the specific, provider-level reason — `missing`, `value_error`, `image_too_small`) and, where the reason carries a bound, `ctx`. That per-field granularity is why the samples above keep the array as data instead of flattening it into the exception message.
+Its body is the fal/FastAPI `detail[]` shape: an array with one entry per offending field, each keeping its own `loc` (the path to the field), `msg`, `type` (the specific, provider-level reason, e.g. `missing`, `value_error`, `image_too_small`) and, where the reason carries a bound, `ctx`. That per-field granularity is why the samples above keep the array as data instead of flattening it into the exception message.
 
 <Note>
 A model whose input schema has not been authored yet resolves to a documented
@@ -286,7 +290,7 @@ response to that particular body.
 
 That body carries no `error_type` field of its own, so on a `422` the `X-Comfy-Error-Type` header is the *only* machine-readable bucket. Both samples read the bucket from the header first for exactly that reason, which is also what makes one error class enough to cover every failure Router can return.
 
-`X-Comfy-Request-Id` is on every response — success, `4xx` and `5xx` alike — and is the id to quote in a support request. Both samples attach it to the exception rather than making you re-run with header logging on to find it.
+`X-Comfy-Request-Id` is on every response (success, `4xx` and `5xx` alike) and is the id to quote in a support request. Both samples attach it to the exception rather than making you re-run with header logging on to find it.
 
 ## Where the model's fields come from
 
@@ -301,5 +305,5 @@ That is the same document the server validates your call against, served as a st
 
 ## Next
 
-- [Comfy Router API reference](/api-reference/comfy-router/reference) — every endpoint, every parameter, and all fifteen error buckets.
-- [Comfy Router limitations](/api-reference/comfy-router/limitations) — what Router does not do today, and what to use instead.
+- [Comfy Router API reference](/api-reference/comfy-router/reference): every endpoint, every parameter, and all fifteen error buckets.
+- [Comfy Router limitations](/api-reference/comfy-router/limitations): what Router does not do today, and what to use instead.
