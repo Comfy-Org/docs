@@ -5,10 +5,10 @@
 // happens here in a small JS hook that reads the PostHog flag. Mintlify
 // inlines every root-level .js file on all pages, so this runs site-wide.
 //
-// Flag: docs_nav_cta_copy_v1 (string flag)
-//   - "try_cloud_free" -> label becomes "Try Cloud Free" (homepage-style copy)
-//   - "control"        -> keep "Comfy Cloud" (the docs.json default)
-//   - unset/undefined  -> "Comfy Cloud" (control)
+// Flag: docs-cta-copy (string flag, experiment #448700 "Docs CTA copy")
+//   - "test"    -> label becomes "Try Cloud for free" (homepage-style copy)
+//   - "control" -> keep "Comfy Cloud" (the docs.json default)
+//   - unset     -> "Comfy Cloud" (control)
 //
 // The href is intentionally unchanged in both variants. Clicks to
 // comfy.org/cloud already convert well (27% of clickers sign up); the test
@@ -23,14 +23,14 @@
 (function () {
   "use strict";
 
-  var FLAG_KEY = "docs_nav_cta_copy_v1";
+  var FLAG_KEY = "docs-cta-copy";
   var CTA_HREF = "https://comfy.org/cloud?utm_source=docs";
   var VARIANTS = {
     control: { label: "Comfy Cloud" },
-    try_cloud_free: { label: "Try Cloud Free" }
+    test: { label: "Try Cloud for free" }
   };
   // Labels we are allowed to swap, so re-renders and flag flips stay idempotent.
-  var KNOWN_LABELS = ["Comfy Cloud", "Try Cloud Free"];
+  var KNOWN_LABELS = ["Comfy Cloud", "Try Cloud for free"];
   var assignedVariant = "control";
 
   function variantLabel(variant) {
@@ -61,7 +61,7 @@
     try {
       if (window.posthog) {
         var raw = window.posthog.getFeatureFlag(FLAG_KEY);
-        if (raw === "control" || raw === "try_cloud_free") {
+        if (raw === "control" || raw === "test") {
           variant = raw;
         }
       }
