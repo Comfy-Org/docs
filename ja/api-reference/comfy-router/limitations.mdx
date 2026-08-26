@@ -1,0 +1,113 @@
+---
+title: "Comfy Router の制限事項"
+description: "Comfy Router が現在できないこと、代替手段が存在する場合に代わりに使用すべきもの、およびこれらの制限のうち変更される見込みのあるものについて説明します。"
+translationSourceHash: d49d86b7
+translationFrom: api-reference/comfy-router/limitations.mdx
+translationBlockHashes:
+  "_intro": c72d3766
+  "At a glance": dd3cde31
+  "No queued submission": f24e2b9d
+  "No cost or credit figures on a response": 0d8505a9
+  "No way to resume a call you lost": 99da3819
+  "Calls are cut off at a server deadline": 29b27f1c
+  "No progress while a call runs": 40667680
+  "Three forecast buckets are not in the vocabulary": 6f256b4e
+  "Router does not cover every partner operation": 069b148a
+  "Next": c839d9e8
+---
+<Note>
+**Comfy Router はまだ一般提供されていません。** 以下で参照されるルート（`POST /v1/models/{provider}/{model}` と、そのカタログおよびスキーマ関連ルート）は、まだリクエストを処理していません。現時点では、認証済みの呼び出しでも `404` が返ります。このページは、それらのルートが提供する予定の契約について説明したものであり、既知の形状に対して統合を記述できるよう、その展開に先立って公開されています。以下の内容はすべて、その契約に関する記述であり、現在実際に試すことができる動作に関するものではありません。
+</Note>
+
+Comfy Router は1回の同期呼び出しです。パートナーモデルのネイティブな入力を、1つの認証情報で1つのホストに送信し、接続は開いたままになり、`200` がそのモデルのネイティブな出力を運びます。この形状こそが最初の統合を短くするものであり、また、このページに記載されたすべての制限の由来でもあります。Router を中心に設計する前に、このページを読んでください。後ではなく前です。以下に続く内容のほとんどには単純明快な代替手段があり、代替手段のないものは、Router が保持しない前提に基づいて構築する前に知っておく価値があります。
+
+## 概要
+
+各行は、その制限を説明するセクションへのリンクになっています。**Deliberate（意図的）** は、その制限がRouterの動作の一部であり、今後の実装を待つものではないことを意味します。**Not yet（未対応）** は、Routerがこの機能を獲得する見込みがあることを意味しますが、このページは時期についての約束をするものではありません。
+
+| 制限 | 代替手段 | ステータス |
+| --- | --- | --- |
+| [キュー中の送信はない: 呼び出しは同期](#no-queued-submission) | 接続を開いたままにするか、送信とポーリングを行うパートナープロキシルートを使用してください | 未対応 |
+| [レスポンスにコストやクレジットの情報がない](#no-cost-or-credit-figures-on-a-response) | Comfyプラットフォームで残高と使用量を確認してください。呼び出し前にモデルのカタログエントリの`billing`を確認してください | 未対応 |
+| [失った呼び出しを再開する方法がない](#no-way-to-resume-a-call-you-lost) | `Idempotency-Key`を送信すると、リトライの課金が最大でも1回に抑えられます。ただし、失われた結果を回復することはできません | 未対応 |
+| [サーバーの期限で呼び出しが切断される](#calls-are-cut-off-at-a-server-deadline) | クライアントに期限を超えるタイムアウトを設定してください。期限内に完了できない作業は分割してください | 意図的 |
+| [呼び出し実行中に進行状況がない](#no-progress-while-a-call-runs) | 現在Routerにはありません。パートナープロキシルートが独自の進行状況を公開する場合があります | 未対応 |
+| [3つの予測バケットが語彙にない](#three-forecast-buckets-are-not-in-the-vocabulary) | Routerが公開する15のバケットを処理してください。認識できないものはすべて`internal_error`として扱ってください | 未対応 |
+| [Routerはすべてのパートナー操作をカバーしていない](#router-does-not-cover-every-partner-operation) | 同じホストの`/proxy/…`配下にあるパートナープロキシルートを使用してください | 意図的 |
+
+## キュー投入はありません
+
+モデルの実行方法は1つだけです。`POST /v1/models/{provider}/{model}` は、生成が完了するまで接続を保持し、レスポンスで結果を返します。ジョブを受け付けて識別子を返し、後で結果を取得できるようにするエンドポイントはなく、完了時のコールバックやウェブフックもありません。キュー投入に対応する同等のエンドポイントは計画されており、APIリファレンスでは `/v1/queue/models/{provider}/{model}` として記載されています。ただし、これは現時点では契約の一部ではなく、このエンドポイントへの呼び出しは処理されません。
+
+**代わりにすべきこと。** ほとんどのモデルではこれは問題になりません。接続を開いたままにして結果を読み取ってください。高速な画像モデルは数秒で結果を返します。長時間のビデオ生成は数分かかることもありますが、Routerはその間接続を保持します。クライアントの読み取りタイムアウトは、[Router自身の期限](#calls-are-cut-off-at-a-server-deadline) よりも長い余裕のある値に設定し、この呼び出しを高速なリクエストではなく長時間実行として扱ってください。アーキテクチャ上、どうしても接続を開いたままにできない場合（実行時間の上限が短いサーバーレス関数や、ユーザーが閉じることを想定しているブラウザタブなど）は、接続を保持できる自分が管理するワーカーから呼び出しを実行するか、独自の送信・ポーリングのペアを備えたプロバイダー向けのパートナープロキシルートを使用してください。[最後のセクション](#router-does-not-cover-every-partner-operation) を参照してください。
+
+**ステータス: 未実装。** キュー投入のパスは予定されていますが、このページでは時期については何も約束していません。
+
+## No cost or credit figures on a response
+
+A Router response tells you what the model produced, and its contract says nothing about what it cost. There is no charge amount, no credit balance and no usage figure in the body, and the route declares no cost header. One caveat, so it does not surprise you: Router shares a billing path with the partner-proxy routes, and that path stamps `X-Comfy-Credits-Used` on a billed response for an allowlist of providers, so the header can appear on a Router call to one of them. It is not part of Router's contract — it is absent for every provider outside that allowlist, and it is deliberately *not* replayed on an idempotent retry, precisely so a client summing it cannot double-count a call that was only paid for once. Do not build reconciliation on it. The model catalog is the same: it carries billing *facts* a caller needs before invoking, never prices. So you cannot reconcile spend from a Router response alone, and you cannot show a user "this call cost X" without getting X from somewhere else.
+
+**What to do instead.** Your balance, your usage and your invoices live on the Comfy platform at [platform.comfy.org](https://platform.comfy.org) — that is the source of truth for what you have spent and what you have left, and it is unaffected by anything on this page. Two things Router does tell you at call time are worth using: a call refused for lack of credit comes back as `insufficient_credits`, so you can handle exhaustion as a typed error rather than by pre-checking a balance; and each model's catalog entry carries `billing.charges_on_policy_rejection`, which says whether that specific model charges you for a generation it then refuses on content-policy grounds. It is a **string with three values**, not a boolean: `yes`, `no` and `unknown`. Read `unknown` as "this might charge you" — it means nobody has established that model's behaviour yet, and it exists precisely so an unchecked model is not published as a `no`, which is a claim. The field is deliberately not an `enum`, so treat any value you do not recognize as `unknown` too, and do not write a truthiness check over it: the string `"no"` is truthy in most languages, and that check gets backwards the one case it exists to catch. Providers differ on that, the difference is invisible at call time, and reading it before you call is how you avoid a charge you cannot explain afterwards.
+
+**Status: not yet** for per-call figures. Note that the *catalog* deliberately carries no prices — pricing belongs where pricing is maintained, not duplicated into a model listing that would drift from it.
+
+## No way to resume a call you lost
+
+Router does not keep a resumable record of an in-flight call. There is no status route, no job identifier, and nothing to reconnect to: if the connection drops mid-call — a client crash, a network partition, a deploy that restarts your process — the response is gone, and the call is not something you can ask about afterwards. Whether the *generation* completed and was charged is a separate question from whether you received it, and losing the connection does not reliably answer either.
+
+**What to do instead.** Send an `Idempotency-Key` header on every call. It does not make a lost call resumable, but it makes retrying one safe. Router reserves the key for the duration of the call, and when the call actually reached you with an answer it records that response against the key for 24 hours; retrying with the **same** key then replays the recorded response instead of dispatching — and re-charging — the provider a second time, marked `Idempotent-Replayed: true` so you can tell a replay from a fresh run. Generate a fresh key per logical call, not per attempt; the same key presented with a *different* request body is a `409` rather than a silent overwrite.
+
+Be precise about what that buys you, because it is a **billing** property and not a delivery one: **a key is charged at most once.** It is not a promise that a key is dispatched to the provider at most once. Router holds a key against an answer you actually received; the outcomes that charged you nothing release it so the call can be made again. A `5xx`, a `408`/`425`/`429`, and — this is the one that matters here — a call where nothing reached you at all: each of those releases the key, and a retry with it genuinely re-runs and re-dispatches the provider.
+
+**So a dropped connection is the case idempotency does *not* rescue.** A connection lost mid-call usually means no response was ever committed to you, which is exactly the release path above: retrying with the same key starts a fresh run rather than handing you the result you missed, and if the original generation had already been dispatched the provider may run it a second time. That is the right default — an unbilled call you never received should be re-runnable — but plan for "retry produces a new run", not "retry collects the lost one".
+
+When Router *does* hold something for the key, the retry is answered rather than re-run: either the original response replayed, or a `409` explaining why it cannot be. A retry sent while the original is still in flight is a `409` carrying `Retry-After`, so wait and re-send the same key. A retry against a call that completed but whose response Router could not keep a faithful copy of is also a `409` — and that is not only the oversized-response case: a response past the replay cap, a handler that failed or panicked after answering, and a write to you that failed or came up short all record the key as consumed-but-not-replayable and return the same `409`. Do not go hunting for a size problem when you see it. The guidance in every one of those cases is the same: use a **new** key. The original completed and was charged, and Router will neither invent its response nor re-run it under the old key.
+
+<Note>
+**Not yet in the generated contract.** The `Idempotency-Key` request header, the `409` response and the `Idempotent-Replayed` and `Retry-After` response headers described here are not declared on `POST /v1/models/{provider}/{model}` in the OpenAPI contract the reference is generated from, so they do not appear in the generated API reference and the SDKs do not model them. Send and read them yourself until they do.
+</Note>
+
+**Status: not yet.** Durable, resumable execution is expected to arrive with the queued path, which is where a request record has somewhere to live. Idempotent retry is the answer today and is not a stopgap — it is worth wiring in regardless.
+
+## 呼び出しはサーバーの期限で打ち切られる
+
+Router の1回の呼び出しは、接続を **10分間** 保持することがあります。これがデフォルト値です。これは固定定数ではなく、サーバー側の設定値であるため、契約に刻まれた保証ではなく、設計上の想定値として扱ってください。これを過ぎると、Router は待機を停止し、プロバイダーへの進行中のリクエストをキャンセルして、`X-Comfy-Error-Type: deadline_exceeded` を伴う `504` を返します。**`deadline_exceeded` の呼び出しは課金されません**: 制限は当社側のものであり、そのコストも当社側が負担します。
+
+キャンセルが行わないことが2つあり、どちらも再試行する前に知っておく価値があります。キャンセルは、プロバイダーがすでに受け付けた生成を取り消すことはありません。Router がジョブを送信してポーリングする方式で駆動するパートナーの場合、期限の満了は Router 自身の待機を終了させるだけで、プロバイダーの作業は終了しません。そのため、そのジョブは完了まで実行され、再試行によって **2回目の生成** が発生する可能性があります(その場合も、タイムアウトした呼び出しに対しては課金されません)。また、送信済みの回答を取り消すこともできません。ハンドラーが競争に勝ち、期限が切れるちょうどその瞬間に応答をコミットした場合、`504` ではなくその応答が保持されます。
+
+これを、もう一方の `504` と混同しないでください。`provider_timeout` はパートナーが時間内に応答しなかったことを意味し、こちら **は** 課金されます。一方、`deadline_exceeded` は Router 自身の制限が満了したことを意味します。原因が2つ、課金結果も2つあるからこそ、同じステータスコード上に2つのバケットが存在します。`X-Comfy-Error-Type` で分岐し、ステータスコードのみで判断してはいけません。
+
+**代わりにすべきこと。** クライアントの読み取りタイムアウトは、期限より *上* に余裕を持って設定してください。期限より下に設定してはいけません。先に諦めるクライアントは、リクエスト識別子を伴う型付きの `504` を不透明なローカル中断に変えてしまい、サポートが追跡できる唯一の証跡を失うことになります。単一の生成が期限内にどうしても完了できない場合、Router は現時点ではその用途に適していません。その場合は、ジョブを送信してポーリングするパートナープロキシルート経由で実行するか、作業を、それぞれが期限内に完了する複数の呼び出しに分割してください。
+
+**ステータス: 意図的な設計。** 制限は存在しなければなりません。制限がなければ、スタックしたアップストリームが接続と並行処理スロットを無期限に保持することになります。具体的な数値は調整される可能性がありますが、期限の存在自体がなくなることはありません。
+
+## 呼び出し実行中は進捗がありません
+
+`POST /v1/models/{provider}/{model}` は、最後に一度だけ応答を返します。ストリーミング応答も、サーバー送信イベントも、進捗率も、部分的なフレームやプレビューフレームもありません。これは、自社のAPIが送信とポーリング方式であるパートナーについても当てはまります。Routerはそのポーリングを、あなたの1回の呼び出しの中で内部的に実行し、そこで見られる中間状態はあなたには転送されません。外から見ると、3秒の画像と6分のビデオは同じ形状です。つまり、1つのリクエスト、1つのレスポンス、その間に何もない、ということです。
+
+**代わりにできること。** 現在のRouterでは、何もできません。取得できないパーセンテージの代わりに、不確定な進捗状態を表示してください。特定のプロバイダーで進捗が必須要件である場合は、そのプロバイダーのパートナープロキシルートが独自のポーリングやストリーミングを公開しているかどうかを確認し、それらを直接使用してください。実際にいくつかのプロバイダーは対応しており、それらは変更されておらず、完全にサポートされています。
+
+**ステータス: 未対応。** これはキュー中パスに結びついています。進捗を報告するための場所が必要ですが、それを提供するのはキュー中の送信であり、単一の同期呼び出しではありません。
+
+## 3つの予測バケットは語彙に含まれていない
+
+Routerの`error_type`語彙は**15個のバケットからなる閉じた集合**です。その15個とは、[APIリファレンス](/ja/api-reference/comfy-router/reference)が列挙し、クイックスタートが指し示すものです。さらに3つが、そのリファレンスの本文で追加が見込まれるものとして名指しされています：`file_download_error`、`cancelled`、`queue_timeout` です。それらは名指しされているだけで、それ以上のものではありません。それらは**現在の集合のメンバーではありません**。Routerのレスポンスがそのいずれかを運ぶことはなく、コントラクトから生成されたクライアントはこれらを認識せず、Routerが内部的にそのいずれかを受け取った場合、レスポンスとして送信する代わりに`internal_error`に置き換えます。したがって、今日これらに対して書く分岐は決して実行されない分岐であり、リファレンスに登場することは、Routerが呼び出しをキャンセルしたりキューに入れたりする証拠ではありません。Routerはどちらも行いません。
+
+これらが完全に省かれるのではなく文書で予測されているのは、`error_type`が意図的に単なる文字列であり`enum`ではないためです。認識できないバケットを厳格に拒否するクライアントは、何かがすでにうまくいかなくなったまさにそのときに、最も深刻な失敗をします。追加分を前もって名指しすることで、読者はこの集合が設計上オープンエンドであることを知ることができます。
+
+**代わりにすべきこと。** Routerが実際に公開する15個のバケットを処理してください。その完全なリストは[APIリファレンス](/ja/api-reference/comfy-router/reference)にあります。そして、認識できない値を`internal_error`として扱うフォールバック分岐を1つ書いてください。そのフォールバックが仕組み全体です。これにより、この3つと、クライアント作成後に追加される任意のバケットが、あなたを壊さずに届きます。制御フローには大まかなバケットで分岐し、具体的な理由が必要な場合は`422`ボディ内のフィールドごとの`type`を読んでください。
+
+**ステータス：未実装。** この3つのそれぞれは、Routerがまだ持っていない動作に対応しており、それぞれがそれを出力し始めるのと同じ変更で語彙に加わります。それより前には決して加わりません。
+
+## Router does not cover every partner operation
+
+Routerはパートナーの*モデル*を実行します。Routerは、パートナーが公開するすべての操作をカバーするわけではありません。ファイルのアップロード、アカウントとアセットの読み取り、プロバイダー固有の管理呼び出し、ストリーミングチャットエンドポイント、一部のパートナーが公開する送信とポーリングのペアなどは対象外です。また、Routerはそれらを再形成することもありません。モデルのネイティブな入力を転送し、ネイティブな出力をそのまま返すため、サポートされていない操作を移植するための統一エンベロープはありません。
+
+**代わりにすべきこと。** `/proxy/…` のパートナープロキシルートは、同じホスト上で同じ認証情報を使い、引き続き完全にサポートされています。Routerがカバーしないものには、このルートが答えです。これらは非推奨でも、廃止予定でもありません。同じ統合内でRouterと併用することは、回避策ではなく想定された使い方です。多くのモデルにわたって1つのルート形状と1つの認証情報を使いたい場合はRouterを選んでください。特定のパートナー操作、プロバイダー独自のストリーミング応答、またはRouterが意図的に隠している送信・ポーリング制御が必要な場合は、`/proxy/…` を選んでください。
+
+**ステータス: 意図的な設計です。** Routerは対象範囲を意図的に絞っています。1つのルート形状がその機能です。プロキシの対象範囲は現状のままです。
+
+## 次のステップ
+
+- [Comfy Router クイックスタート](/ja/api-reference/comfy-router/quickstart): Python または TypeScript で最初に動作する呼び出しを紹介します。
+- [Comfy Router API リファレンス](/ja/api-reference/comfy-router/reference): Router が送信するすべてのエンドポイント、すべてのパラメータ、すべてのエラーバケットを網羅しています。

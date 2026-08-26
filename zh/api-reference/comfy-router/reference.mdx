@@ -1,0 +1,267 @@
+---
+title: "Comfy Router API 参考"
+description: "每个 Comfy Router 端点、参数、响应体和错误分类，均由 Comfy API 契约生成。"
+translationSourceHash: 1e8777df
+translationFrom: api-reference/comfy-router/reference.mdx
+translationBlockHashes:
+  "_intro": 0114a881
+  "Endpoints": 6bc355f0
+  "Error buckets": 04a58305
+  "Response headers": 2a099bc2
+  "Per-model input schemas": ae73e63b
+  "Schemas": a14d076e
+---
+
+{/*
+  GENERATED FILE -- DO NOT HAND-EDIT.
+
+  Produced from the Comfy API contract by gen_router_reference.py. Edit the
+  contract and regenerate; an edit made here is overwritten by the next run and
+  is rejected by the drift gate in the meantime.
+*/}
+
+Comfy Router 的规范路由，以模型 ID 寻址。
+
+基础 URL：`https://api.comfy.org`
+
+以下每个端点均需身份验证。请发送 `Authorization: Bearer <jwt>`。
+
+## 端点
+
+### `GET /v1/models`
+
+**列出 Comfy Router 可以运行的模型。**
+
+Comfy Router 的模型目录：`POST /v1/models/{provider}/{model}` 所接受的规范模型 ID 的一页。SDK 在冷启动时调用此接口以发现可运行的模型，`model_not_found` 的建议也来自同一目录，因此，此处列出的 ID 在调用时返回 404 会比单独任一失败更糟糕。这种一致是结构性的，而非承诺：条目的 `provider` 和 `model` 是调用路由的两个路径段，引用与该路由路径参数相同的 schema 组件，而 `id` 是这两个段用 `/` 连接的结果。
+
+**参数**
+
+| 名称 | 位置 | 必填 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+| `cursor` | query | 否 | [`RouterPageCursor`](#routerpagecursor) | `pattern: ^[A-Za-z0-9._~+/=-]+$`, `minLength: 1`, `maxLength: 512` | 不透明的分页游标。传入上一页的 `next_cursor` 以获取下一页；获取第一页时省略该参数。有关该值为何不透明以及此路由为何按游标而非偏移量分页，请参阅 `RouterPageCursor`。 |
+| `limit` | query | 否 | integer | `maximum: 100`, `default: 20` | 单页返回的模型数量。超过声明最大值的值不在契约范围内，但此路由不会拒绝它们：它会改为提供最大值，且实际提供的页面大小会在响应的 `limit` 字段中回显，因此调用方始终能检测到钳制行为。请将最大值视为实际的页面步长：请求更多且假定自己收到更多的客户端会漏掉行。0 和负值同样会被接受并选择默认值，这就是为什么没有声明 `minimum`：小于 1 的值在此处是有意义的，而非无效。 |
+
+**响应**
+
+| 状态 | 响应体 | 响应头 | 描述 |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelListResponse`](#routermodellistresponse) | `X-Comfy-Request-Id` | OK：模型目录的一页。 |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型本身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误类别会在 `X-Comfy-Error-Type` 中重复。 |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型本身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误类别会在 `X-Comfy-Error-Type` 中重复。 |### `GET /v1/models/{provider}/{model}`
+
+**按规范模型 ID 读取单个合作伙伴模型的目录条目。**
+
+单个 Comfy Router 模型的逐模型详情，调用方无需遍历整个分页目录即可查看某个模型。SDK 会在调用模型之前立即使用此端点来查找模型。
+
+**参数**
+
+| 名称 | 位置 | 必填 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | 是 | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 的小写提供商段：表示正在运行其模型的合作伙伴。 |
+| `model` | path | 是 | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 的小写模型段：表示该提供商内要运行的模型。 |
+
+**响应**
+
+| 状态 | 响应体 | 响应头 | 描述 |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelDetail`](#routermodeldetail) | `X-Comfy-Request-Id` | OK：该模型的目录条目。 |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级错误：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误类别在 `X-Comfy-Error-Type` 中重复。 |### `POST /v1/models/{provider}/{model}`
+
+**通过规范模型 ID 同步运行合作伙伴模型。**
+
+Comfy Router 的规范入口点，以模型 ID 寻址。请求体是合作伙伴模型自身的原生 JSON 输入，成功响应也是该模型自身的原生 JSON 输出：Router 原样转发两者，而非强加 Comfy 式封装，因此调用方只需更改主机即可在合作伙伴的 API 与 Router 之间切换。这是同步路径，与 `POST https://fal.run/{id}` 对应。响应携带已完成的结果。对应的队列端点 `/v1/queue/models/{provider}/{model}` 已在计划中，将把 fal 的 `fal.run` / `queue.fal.run` 拆分端点统一到同一主机上；该端点尚不属本契约的一部分。
+
+**参数**
+
+| 名称 | 位置 | 必填 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | 是 | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 的小写提供商段：即正在运行其模型的合作伙伴。 |
+| `model` | path | 是 | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 的小写模型段：即该提供商内要运行的模型。 |
+
+**请求体**
+
+`application/json` -- [`RouterModelInput`](#routermodelinput)（必填）
+
+合作伙伴模型的原生 JSON 输入，原样转发给提供商。
+
+**响应**
+
+| 状态 | 响应体 | 响应头 | 描述 |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id` | OK：合作伙伴模型的原生 JSON 输出，原样返回。 |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类会重复出现在 `X-Comfy-Error-Type` 中。 |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类会重复出现在 `X-Comfy-Error-Type` 中。 |
+| `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | 请求已到达模型，但模型拒绝了其内容。响应体为 `RouterValidationErrorResponse`，即 fal/FastAPI 的 `detail[]` 形状，因此每个有问题的字段都保留自己的特定 `type` 和 `ctx`。`X-Comfy-Error-Type` 携带整个响应的粗粒度错误分类。 |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类会重复出现在 `X-Comfy-Error-Type` 中。 |
+| `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类会重复出现在 `X-Comfy-Error-Type` 中。 |### `GET /v1/models/{provider}/{model}/openapi.json`
+
+**以 OpenAPI 文档形式读取单个合作伙伴模型的输入模式。**
+
+单个 Comfy Router 模型的输入模式，以独立的 OpenAPI 文档形式提供，使调用方（SDK、代码生成工具或智能体）无需阅读 Comfy 的文字说明文档即可发现模型的启动参数。它与 fal 的逐模型模式端点相对应，并且是 SDK 快速入门所依赖的发现机制。
+
+**参数**
+
+| 名称 | 位置 | 必填 | 类型 | 约束 | 描述 |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 中的小写提供商段：即其模型正在被运行的合作伙伴。 |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | 规范 `{provider}/{model}[/{variant}]` 模型 ID 中的小写模型段：即在该提供商内要运行的模型。 |
+
+**响应**
+
+| 状态 | 响应体 | 响应头 | 描述 |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelInputSchemaDocument`](#routermodelinputschemadocument) | `X-Comfy-Request-Id`, `ETag`, `Cache-Control` | 成功：模型的输入模式，以独立的 OpenAPI 文档形式提供。 |
+| `304` | - | `X-Comfy-Request-Id`, `ETag`, `Cache-Control` | 未修改：文档与调用方在 `If-None-Match` 中发送的 `ETag` 相比未发生变化。不返回响应体。 |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类同样体现在 `X-Comfy-Error-Type` 响应头中。 |
+| `500` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router 请求级失败：请求从未到达模型，或因模型自身未反馈的原因而失败。响应体为 `RouterErrorResponse`，错误分类同样体现在 `X-Comfy-Error-Type` 响应头中。 |
+
+## 错误分类桶
+
+Router 失败的粗粒度机器可读分类桶，同时反映在 `X-Comfy-Error-Type` 响应头中，以便调用方无需解析响应体即可进行分支处理。该集合固定为十五个值：六个请求级分类桶 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，以及传输级 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable` 和 `rate_limited`。
+
+### 请求级分类桶
+
+针对 Router 已接受但随后无法完成的请求抛出。
+
+| `error_type` | 含义 |
+| --- | --- |
+| `invalid_input` | 请求在到达模型之前就被拒绝：请求体格式错误、分页游标格式错误或已过期，或包含模型自身 schema 不接受的输入。 |
+| `content_policy_violation` | 提供商基于内容政策理由拒绝了请求。该拒绝是确定性的：重新发送相同的输入仍会被拒绝。 |
+| `provider_error` | 合作伙伴提供商报告了其自身的故障，或返回了 Router 无法解释为结果的响应。 |
+| `provider_timeout` | 合作伙伴提供商未在其截止时间内应答。此分类桶表示提供商（PROVIDER）超时，绝不是 Router 自身的服务器截止时间，后者报告为 `deadline_exceeded`。二者同为 `504`，但被分开，因为它们指代不同的原因：前者表示合作伙伴失败，后者表示 Comfy 停止保持连接。 |
+| `insufficient_credits` | 发起调用的工作区没有足够的积分来运行该模型。 |
+| `model_not_found` | `{provider}/{model}` ID 指向 Router 无法运行的模型；未知提供商也归入此类。`detail` 最多携带三条建议，这些建议取自调用方有权查看的模型。 |
+
+### 传输级分类桶
+
+由 Router 自身抛出，发生在调用模型之前或调用过程之中。
+
+| `error_type` | 含义 |
+| --- | --- |
+| `unauthorized` | 请求未携带可用的凭据。 |
+| `forbidden` | 凭据有效，但无权访问此模型或执行此操作。 |
+| `concurrency_limit_exceeded` | 工作区已在进行中的调用数量已达到允许的上限；等待其中一项调用完成后重试。 |
+| `client_disconnected` | 调用方在 Router 返回结果之前关闭了连接。该错误会被记录而非投递，因为已没有可写入的 socket。它属于归因，而非计费结果：提供商已完成的生成任务都会计费，无论调用方是否收到响应。 |
+| `internal_error` | Router 自身失败。客户端也应当将任何无法识别的分类桶视为该值，这样以后再向集合中新增分类也不会破坏早先生成的客户端。 |
+| `deadline_exceeded` | 在答案到达之前，Comfy 在自身配置的时限处停止了保持连接。它与 `provider_timeout` 同为 `504`，这一对值表明是哪一方超时；此值是 Comfy 自身的时限，因此请求没有任何部分被拒绝，可以重试同一请求。它不涉及费用：提供商已完成的生成任务都会计费，无论调用方是否收到响应。 |
+| `not_enabled` | Comfy Router 尚未为该调用方启用。请求本身没有任何问题，模型也存在，这正是它不是 `model_not_found` 的原因。它与 `forbidden` 同为 `403`，但绝非同一回事：`forbidden` 是对调用方的权限判定，而此值是发布（rollout）的状态。它是终端（TERMINAL）状态：不要重试，也不要将其视为服务中断。 |
+| `service_unavailable` | Comfy Router 依赖的某个服务暂时不可用，调用方没有任何过错。使用退避（backoff）策略重试：它是此处唯一一个条件会自动清除的分类桶，调用方无需更改请求，也无需释放并发槽位，这正是它与其它可重试响应（`concurrency_limit_exceeded`、`deadline_exceeded`）的区别。它与 `internal_error` 不同，后者是 `500`，表示 Router 自身失败，因此客户端可以区分“稍后再来”和“这次调用不会成功”。 |
+| `rate_limited` | 调用方已用尽按窗口（WINDOW）计量的配额，必须等待该窗口滚动过去。它与 `concurrency_limit_exceeded` 同为 `429`，但并非同一回事：后者在调用方自己的某个进行中调用完成的那一刻即会解除，因此在几秒后重试是正确的；而前者无论调用方做什么都无法提前解除。`detail` 会指明该窗口。 |
+
+## 响应头
+
+| 响应头 | 类型 | 描述 |
+| --- | --- | --- |
+| `Cache-Control` | 字符串 | 所提供的架构文档的新鲜度指令。`private` 是因为该路由经过身份验证：文档本身并不特定于调用方，但共享缓存不得保存对已认证请求的响应；`must-revalidate` 则用于让过期副本根据 `ETag` 重新验证，而不是继续将其提供出去。 |
+| `ETag` | 字符串 | 基于所提供文档字节的强实体标签，用于 `GET /v1/models/{provider}/{model}/openapi.json`。每个模型的架构很少变更，而 SDK 会频繁重新获取它，因此调用方应存储此值，并将其作为 `If-None-Match` 发送回去，以获得 `304` 而不是整个文档。 |
+| `X-Comfy-Error-Type` | [`RouterErrorType`](#routererrortype) | 失败原因的粗粒度、机器可读分类，由 Router 在每个错误响应上设置。其值与 `RouterErrorResponse.error_type` 相同；在 `422` 响应上，它是唯一的机器可读分类，因为该响应体是 fal/FastAPI 的 `detail[]` 形状，本身没有 `error_type` 字段。因此，客户端可以仅根据此响应头进行分支判断，再决定收到的是两种 Router 错误体中的哪一种。 |
+| `X-Comfy-Request-Id` | 字符串 | 服务器为此次调用生成的标识符，存在于每个 Router 响应上：成功、4xx 和 5xx 响应均如此，因为错误响应恰恰是用户需要在支持请求中引用该 ID 的时候。相同的值会写入调用的使用/审计事件中，这使得关于费用的投诉可以直接关联到该费用本身，而无需按时间戳搜索。 |
+
+## 各模型的输入模式
+
+模型自身的输入字段不在此处重复列出。请通过 `GET /v1/models/{provider}/{model}/openapi.json` 实时读取这些字段，该端点提供与服务器校验调用时所依据的同一份文档，因此对外发布的内容与强制执行的内容不会出现偏差。从 `GET /v1/models` 获取模型 ID，在其调用路径后附加 `/openapi.json`，然后根据返回的文档进行生成。
+
+## 模式
+
+### RouterChargesOnPolicyRejection
+
+模型因内容政策而拒绝的调用，是否仍会向调用方收费。各提供商的做法不同，这种差异在调用时不可见。用户看到同一次调用出现错误和扣费时，也无从事先知晓，因此该信息会在调用之前按模型逐一说明，而不是留给各提供商的口口相传。
+
+类型：`string`### RouterErrorResponse
+
+Router 的请求级错误体：当请求从未到达模型，或因模型本身未反馈的原因（认证、配额、未知模型 ID 或提供商传输）而失败时返回的内容。模型级验证失败具有自身的形状 `RouterValidationErrorResponse`，因为将 FastAPI 的 `detail[]` 数组扁平化为此 `detail` 字符串会破坏 SDK 所依赖的逐字段粒度。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `detail` | 字符串 | 是 | - | 失败的人类可读描述，可安全展示给最终用户。不可由机器解析。请改用 `error_type` 进行分支判断。 |
+| `error_type` | [`RouterErrorType`](#routererrortype) | 是 | - | Router 失败的粗粒度、机器可读分类，镜像在 `X-Comfy-Error-Type` 响应头中，使调用方无需解析响应体即可进行分支判断。该集合固定包含十五个值：六个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，以及传输级分类 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable` 和 `rate_limited`。 |### RouterErrorType
+
+粗粒度、机器可读的 Router 失败分类，同时镜像在 `X-Comfy-Error-Type` 响应头中，调用方无需解析响应体即可进行分支处理。该集合固定为十五个值：六个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，以及传输级 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable` 和 `rate_limited`。
+
+类型：`string`### RouterModelBilling
+
+调用方在发起调用之前需要了解的按模型计费的**事实**，而非价格。此处从不出现用量和费用数字。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `charges_on_policy_rejection` | [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection) | 是 | - | 此模型因内容政策原因拒绝的调用是否仍会向调用方收费。不同提供商的处理方式不同，且调用时无法看出差异；用户看到同一调用既报错又被收费时，无从事先得知。因此这一点会在调用之前按模型说明，而不是留给各家提供商的惯例去猜测。 |### RouterModelDetail
+
+某个 Comfy Router 模型的逐模型详细信息：目录列表为其报告的所有内容，外加仅单模型路由才包含的逐模型字段。
+
+由 [`RouterModelListEntry`](#routermodellistentry) 和 [`RouterModelDetailFields`](#routermodeldetailfields) 组成。
+
+类型：`object`### RouterModelDetailFields
+
+`RouterModelDetail` 中目录列表并不包含的另一半：按模型区分的字段，值得单独查询一次，但无需在分页目录页面的每个条目上重复列出。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `input_schema_url` | 字符串 | 否 | `format: uri`, `pattern: ^https://`, `maxLength: 2048` | 指向此模型输入模式文档的指针，该文档描述 `POST /v1/models/{provider}/{model}` 为此模型接受的请求正文。只有指针属于此契约的一部分：其指向的文档是单独编写的。当模型尚未编写任何模式时，此字段不存在。 |### RouterModelId
+
+Comfy Router 模型的规范 ID 为 `{provider}/{model}`，这正是 `POST /v1/models/{provider}/{model}` 上用于寻址该模型的值，因此调用方可以将其直接插入该路径，而无需从任何其他内容重新推导。其 `pattern` 由 `RouterProviderSegment` 和 `RouterModelSegment` 通过单个 `/` 连接而成，`maxLength` 为两者之和再加上该分隔符。
+
+类型：`string`，`pattern: ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$`，`maxLength: 193`### RouterModelInput
+
+合作伙伴模型的原生 JSON 输入文档，按原样转发给提供商。其具体形状由合作伙伴而非 Comfy 拥有，因此这是一个开放对象：Router 不会缩窄、重命名或重新封装这些字段。它是一个命名组件（绝不会是内联匿名对象），因为 ComfyUI 的规范驱动代码生成需要一个类来生成。
+
+类型：`object`### RouterModelInputSchemaDocument
+
+一个独立的 OpenAPI 文档，描述单个 Comfy Router 模型的输入：即 `POST /v1/models/{provider}/{model}` 针对该模型接受的请求体。它正是 `GET /v1/models/{provider}/{model}/openapi.json` 所返回的内容。
+
+类型：`object`### RouterModelListEntry
+
+Router 模型目录中的一条条目：可运行模型的身份标识，仅此而已。按模型的详情路由会复用这条相同的条目，而不是重新陈述，这正是名称使用 `...ListEntry` 而非 `...Summary` 的原因：目录条目的定义必须唯一。按模型的详情以及按模型的输入/输出模式（schema）各有独立的路由，因此此形状保持为调用方调用模型所需的最小信息。这是有意为之，因为这是 SDK 在冷启动时获取的负载。`id` 是 `provider` 和 `model` 以 `/` 连接而成；这两个字段也分别携带，以便调用方无需拆分字符串即可拼出调用路径。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `id` | [`RouterModelId`](#routermodelid) | 是 | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 193` | 一个规范的 Comfy Router 模型 ID，`{provider}/{model}`：正是 `POST /v1/models/{provider}/{model}` 上寻址该模型所使用的值，因此调用方可以将其直接插入该路径，而无需从任何内容重新推导。其 `pattern` 是 `RouterProviderSegment` 和 `RouterModelSegment` 以单个 `/` 连接而成，`maxLength` 是两者之和再加上该分隔符。 |
+| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | 是 | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | 规范的 `{provider}/{model}[/{variant}]` 模型 ID 中的小写 `provider` 段：也就是其模型正被寻址的那个合作伙伴。调用路由的 `provider` 路径参数和目录条目的 `provider` 字段都引用这同一个模式（schema），这正是保证所列出的 ID 与所接受的 ID 不会发生偏离的原因。 |
+| `model` | [`RouterModelSegment`](#routermodelsegment) | 是 | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | 规范的 `{provider}/{model}[/{variant}]` 模型 ID 中的小写 `model` 段：即在该提供商内要运行的模型。该模式（schema）同时被调用路由的 `model` 路径参数和目录条目的 `model` 字段引用，出于与 `RouterProviderSegment` 相同的防偏离原因。 |
+| `billing` | [`RouterModelBilling`](#routermodelbilling) | 是 | - | 调用方在调用之前所需的按模型计费事实，而非价格。使用量和成本数字绝不会出现在此处。 |### RouterModelListResponse
+
+Router 模型目录中的一页。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `data` | [`RouterModelListEntry`](#routermodellistentry) 的数组 | 是 | - | 此页上的模型，最多 `limit` 个。 |
+| `has_more` | 布尔 | 是 | - | 此页之后是否还存在下一页。只要该值为真，就继续遍历；不要因为 `data` 数据较少或为空就推断目录已结束。 |
+| `next_cursor` | [`RouterPageCursor`](#routerpagecursor) | 否 | `pattern: ^[A-Za-z0-9._~+/=-]+$`、`minLength: 1`、`maxLength: 512` | 指向 Router 列表的不透明游标。它由服务器生成，且只会被原样往返传递：它不是偏移量，不是模型 ID，不保证有序，也不会在目录重建后保持稳定。因此，解析游标、对游标进行递增，或将游标保留到超出其来源遍历范围之外，都不在约定范围之内。采用游标而非偏移量，是因为目录是一个不断变动的列表：当条目在遍历途中被添加或删除时，基于偏移量的遍历会静默地跳过或重复条目，而调用方无法察觉这一点。 |
+| `limit` | 整数 | 是 | `minimum: 1`、`maximum: 100` | 实际返回的页面大小。请求的 `limit` 超过最大值时会被向下钳制到最大值，而不是被拒绝，因此该值可能小于你请求的值。请使用此数值进行分页，而不是使用你发送的数值；否则你会误以为收到了实际并未获取的记录。 |### RouterModelOutput
+
+合作伙伴模型的原生 JSON 输出文档，原样返回给调用方。其具体形状由合作伙伴而非 Comfy 定义，因此这是一个开放对象：Router 不会对字段进行收窄、重命名或重新封装。它是一个命名组件（绝不是内联匿名对象），因为 ComfyUI 的规范驱动代码生成需要一个类来生成。
+
+类型：`object`### RouterModelSegment
+
+规范的 `{provider}/{model}[/{variant}]` 模型 ID 中的小写 `model` 段，表示要在该提供商内运行的模型。调用路由的 `model` 路径参数与目录条目的 `model` 字段共享此段，原因与 `RouterProviderSegment` 相同，即防止漂移。
+
+类型：`字符串`，`pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`，`maxLength: 128`### RouterPageCursor
+
+Router 列表的一个不透明游标。它由服务器生成，且仅用于往返传递：它不是偏移量，不是模型 ID，不保证有序，也不会在目录重建后保持稳定。因此，解析游标、递增游标，或将游标持久化到超出其来源遍历的范围之外，均不在契约范围之内。之所以使用游标而非偏移量，是因为目录是一个动态变化的列表：在遍历过程中添加或删除条目时，基于偏移量的遍历会静默跳过或重复条目，而调用方无法察觉这种情况的发生。
+
+类型：`string`（`pattern: ^[A-Za-z0-9._~+/=-]+$`、`minLength: 1`、`maxLength: 512`）### RouterProviderSegment
+
+规范模型 ID `{provider}/{model}[/{variant}]` 中的小写 `provider` 段，表示其模型正被寻址的合作伙伴。调用路由的 `provider` 路径参数和目录条目的 `provider` 字段均引用此同一模式，这正是确保所列 ID 与所接受 ID 不会发生偏离的原因。
+
+类型：`string`。`pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`，`maxLength: 64`### RouterValidationErrorContext
+
+某个 `RouterValidationErrorDetail` 的违规边界，由提供商原样传递。例如，`{"limit_value": 8}` 对应 `greater_than`，`{"min_width": 512}` 对应 `image_too_small`，或 `{"max_size_bytes": 10485760}` 对应 `file_too_large`。键集因提供商和错误类型而异，因此该对象刻意设计为开放对象。将其收窄为固定字段列表，或将其并入 `msg` 字符串，正是移植集成得以编译通过、却随后悄然丢失读取该边界的代码分支的方式。当错误类型不携带边界时，此字段缺失。
+
+类型：`object`### RouterValidationErrorDetail
+
+以 fal/FastAPI 形式表示的单次模型级验证失败。`type` 携带的是提供商的特定原因，例如 `value_error`、`missing`、`image_too_small`、`unsupported_audio_format`、`greater_than`、`file_too_large` 等等，这是 `RouterErrorType` 的粗粒度分类所无法表达的细节层次。出于同样的原因，它是一个开放字符串而非 `enum`：提供商的词汇表跨越两个层级，约有 48 个值，并随提供商的发布周期增长，而不是我们的发布周期。未建模的值必须能够到达调用方，而不是在反序列化时失败。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `loc` | 任意类型数组 | 是 | - | 指向出错字段的路径，最外层段在前，例如 `["body", "image_url"]` 或 `["body", "images", 0]`，其中整数表示对数组的索引。 |
+| `msg` | 字符串 | 是 | - | 针对该单次失败的可读描述。 |
+| `type` | 字符串 | 是 | - | 该失败的具体、机器可读原因，由提供商原样透传。类型化 SDK 的异常层次结构正是根据此值进行分支判断的；响应头中的 `error_type` 只是它的粗粒度分类。 |
+| `ctx` | [`RouterValidationErrorContext`](#routervalidationerrorcontext) | 否 | - | 单个 `RouterValidationErrorDetail` 中被违反的约束值，由提供商原样携带，例如 `greater_than` 附带的 `{"limit_value": 8}`、`image_too_small` 附带的 `{"min_width": 512}`，或 `file_too_large` 附带的 `{"max_size_bytes": 10485760}`。键集合取决于提供商和错误类型，因此这里有意采用开放对象：若将其收窄为固定字段列表，或将其并入 `msg` 字符串，恰恰会导致移植后的集成能够编译通过，却静默丢失读取该约束值的分支。当错误类型不携带约束值时，此字段不存在。 |
+| `input` | [`RouterValidationErrorInput`](#routervalidationerrorinput) | 否 | - | 出错时的输入值，原样回显，以便调用方无需从 `loc` 重新推导即可看到被拒绝的内容。它可以是任意 JSON 类型：字符串、数字、布尔、数组、对象或 null，因此此模式有意保持不限定类型，而不是收窄为对象。当提供商不回显输入时，此字段不存在。 |### RouterValidationErrorInput
+
+违规的输入值，原样回显，以便调用方无需从 `loc` 重新推导即可看到被拒绝的内容。可以是任何 JSON 类型：字符串、数字、布尔、数组、对象或 null。因此此 schema 特意保持无类型，而不是限定为对象。当提供商不回显输入时，此字段不存在。### RouterValidationErrorResponse
+
+Router 的模型级 `422` 响应体，采用 fal/FastAPI 形式：请求格式良好，足以到达模型，但模型拒绝了其内容。请注意，它本身不携带 `error_type` 字段，这正是响应中的 `X-Comfy-Error-Type` 标头的用途：客户端无需先判断收到的是两个 Router 错误响应体中的哪一个，即可从标头读取粗略的错误分类。
+
+| 字段 | 类型 | 必填 | 约束 | 描述 |
+| --- | --- | --- | --- | --- |
+| `detail` | [`RouterValidationErrorDetail`](#routervalidationerrordetail) 的数组 | 是 | - | 请求中发现的每个验证失败，每个违规字段对应一个条目。 |
