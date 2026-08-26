@@ -262,10 +262,16 @@ async function fetchPaginated<TItem>(
       );
       break;
     }
-    // After page 1, cursor encodes the window — omit dateFrom/dateTo to keep the URL short.
-    const queryParams = cursor
-      ? { limit, cursor }
-      : { dateFrom: range.dateFrom, dateTo: range.dateTo, limit };
+    // Mintlify's cursor is a global pagination token: it does NOT encode the
+    // date window, so dropping dateFrom/dateTo after page 1 lets pagination
+    // escape the requested range and pull the ENTIRE dataset. Keep the date
+    // window on every page (plus cursor once we have one).
+    const queryParams = {
+      dateFrom: range.dateFrom,
+      dateTo: range.dateTo,
+      limit,
+      ...(cursor ? { cursor } : {}),
+    };
 
     const raw = await mintlifyGet<unknown>(config, path, queryParams, options);
     const items = readItems(raw);
