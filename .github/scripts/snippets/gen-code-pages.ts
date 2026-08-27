@@ -21,7 +21,7 @@ const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 const CLIENT_TIMEOUT_S = 660; // above Router's 10 minute server deadline
 
-type Variant = { title: string; model: string };
+type Variant = { title: string; model: string; example?: Record<string, unknown> };
 type Spec = {
   name: string;
   provider: string;
@@ -31,6 +31,7 @@ type Spec = {
   example: Record<string, unknown>;
   fields: string;
   result: { path: string; label: string; example: unknown; note?: string };
+  intro?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -45,16 +46,6 @@ function fileInputs(example: Record<string, unknown>): FileInput[] {
     .map(([key, v]) => ({ key, path: (v as string).slice("@file:".length), varName: key }));
 }
 
-function pyValue(key: string, v: unknown, files: FileInput[]): string {
-  const f = files.find((x) => x.key === key);
-  return f ? f.varName : JSON.stringify(v);
-}
-
-function tsValue(key: string, v: unknown, files: FileInput[]): string {
-  const f = files.find((x) => x.key === key);
-  return f ? camel(f.varName) : JSON.stringify(v);
-}
-
 function camel(s: string): string {
   return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 }
@@ -63,12 +54,73 @@ function shellVar(s: string): string {
   return s.toUpperCase();
 }
 
-function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string): string {
+/** Result path like `candidates[0].content.parts[0].inlineData.data` -> segments. */
+function pathSegments(path: string): (string | number)[] {
+  const out: (string | number)[] = [];
+  for (const part of path.split(".")) {
+    const m = part.match(/^([^[]+)((?:\[\d+\])*)$/);
+    if (!m) throw new Error(`bad result path segment: ${part}`);
+    out.push(m[1]);
+    for (const idx of m[2].matchAll(/\[(\d+)\]/g)) out.push(Number(idx[1]));
+  }
+  return out;
+}
+
+function pyPath(path: string): string {
+  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `[${JSON.stringify(p)}]`)).join("");
+}
+
+function tsPath(path: string): string {
+  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
+}
+
+function tsResultType(path: string): string {
+  const segs = pathSegments(path);
+  let t = "string";
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const p = segs[i];
+    t = typeof p === "number" ? `${t}[]` : `{ ${p}: ${t} }`;
+  }
+  return t;
+}
+
+/** JSON value -> Python literal, multi-line, at the given indent. */
+function pyLiteral(v: unknown, indent: number, files: FileInput[], topKey?: string): string {
+  const pad = " ".repeat(indent);
+  const f = topKey !== undefined ? files.find((x) => x.key === topKey) : undefined;
+  if (f) return f.varName;
+  if (v === null) return "None";
+  if (typeof v === "boolean") return v ? "True" : "False";
+  if (typeof v === "number" || typeof v === "string") return JSON.stringify(v);
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x !== "object" || x === null)) return `[${v.map((x) => pyLiteral(x, indent, files)).join(", ")}]`;
+    return `[\n${v.map((x) => `${pad}    ${pyLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
+  }
+  const entries = Object.entries(v as Record<string, unknown>);
+  return `{\n${entries.map(([k, x]) => `${pad}    ${JSON.stringify(k)}: ${pyLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}}`;
+}
+
+/** JSON value -> TypeScript object literal, multi-line, at the given indent. */
+function tsLiteral(v: unknown, indent: number, files: FileInput[], topKey?: string): string {
+  const pad = " ".repeat(indent);
+  const f = topKey !== undefined ? files.find((x) => x.key === topKey) : undefined;
+  if (f) return camel(f.varName);
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x !== "object" || x === null)) return `[${v.map((x) => tsLiteral(x, indent, files)).join(", ")}]`;
+    return `[\n${v.map((x) => `${pad}  ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}]`;
+  }
+  const entries = Object.entries(v as Record<string, unknown>);
+  const key = (k: string) => (/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k));
+  return `{\n${entries.map(([k, x]) => `${pad}  ${key(k)}: ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}}`;
+}
+
+function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `        ${JSON.stringify(k)}: ${pyValue(k, v, files)},`)
+    .map(([k, v]) => `        ${JSON.stringify(k)}: ${pyLiteral(v, 8, files, k)},`)
     .join("\n");
   return `import ${files.length ? "base64\nimport " : ""}os
 import uuid
@@ -88,25 +140,17 @@ ${body}
 )
 response.raise_for_status()
 result = response.json()
-print("image:", result${pyPath(resultPath)})`;
+print("${label}:", result${pyPath(resultPath)})`;
 }
 
-function pyPath(path: string): string {
-  return path.split(".").map((p) => `[${JSON.stringify(p)}]`).join("");
-}
-
-function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string): string {
+function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
   const imports = files.length ? `import { readFile } from "node:fs/promises";\n\n` : "";
   const reads = files
     .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
     .join("\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `    ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsValue(k, v, files)},`)
+    .map(([k, v]) => `    ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 4, files, k)},`)
     .join("\n");
-  const resultType = resultPath
-    .split(".")
-    .reverse()
-    .reduce((acc, p) => `{ ${p}: ${acc} }`, "string");
   return `${imports}${reads ? `${reads}\n\n` : ""}const response = await fetch("${BASE_URL}${ROUTE}/${model}", {
   method: "POST",
   headers: {
@@ -121,8 +165,8 @@ ${body}
 });
 if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
 
-const result = (await response.json()) as ${resultType};
-console.log("image:", result.${resultPath});`;
+const result = (await response.json()) as ${tsResultType(resultPath)};
+console.log("${label}:", result${tsPath(resultPath)});`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -141,26 +185,32 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
   -d "${json}"`;
 }
 
+function possessive(name: string): string {
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+}
+
 // ---------------------------------------------------------------------------
 // Page template
 // ---------------------------------------------------------------------------
 
 function variantBlock(v: Variant, spec: Spec): string {
-  const files = fileInputs(spec.example);
+  const example = v.example ?? spec.example;
+  const files = fileInputs(example);
+  const label = spec.result.label;
   return `  <Tab title="${v.title}">
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`  **Model ID:** \`${v.model}\`
 
 <CodeGroup>
 \`\`\`python
-${pythonSnippet(v.model, spec.example, files, spec.result.path)}
+${pythonSnippet(v.model, example, files, spec.result.path, label)}
 \`\`\`
 
 \`\`\`typescript
-${typescriptSnippet(v.model, spec.example, files, spec.result.path)}
+${typescriptSnippet(v.model, example, files, spec.result.path, label)}
 \`\`\`
 
 \`\`\`bash
-${curlSnippet(v.model, spec.example, files)}
+${curlSnippet(v.model, example, files)}
 \`\`\`
 </CodeGroup>
   </Tab>`;
@@ -185,15 +235,15 @@ sidebarTitle: "Code"
 import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
 import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-This page shows how to call ${spec.name} from your own code. For what the model is and what it does best, see the [${spec.name} overview](${overview}). To run it interactively in ComfyUI instead, see the [workflows](${overview}/workflow).
+${spec.intro ?? `This page shows how to call ${spec.name} from your own code.`} For what the model is and what it does best, see the [${spec.name} overview](${overview}). To run it interactively in ComfyUI instead, see the [workflows](${overview}/workflow).
 
 <RouterPreviewNotice />
 
-Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${spec.provider}' own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\` before running any snippet.
+Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${possessive(spec.provider)} own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\` before running any snippet.
 
 ## Quick start
 ${both ? `
-The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call.
+${spec.variants.some((v) => v.example) ? "Pick the tab for the model you want to call. The model ID in the path changes, and so does the request body where the models take different inputs." : "The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call."}
 ` : ""}
 <Tabs>
 ${spec.variants.map((v) => variantBlock(v, spec)).join("\n")}
@@ -210,7 +260,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \\
 
 ## Read the result
 
-Router holds the connection until the ${spec.task ?? "generation"} is finished and returns ${spec.provider}' native result. The ${spec.result.label} is at \`${spec.result.path}\`:
+Router holds the connection until the ${spec.task ?? "generation"} is finished and returns ${possessive(spec.provider)} native result. The ${spec.result.label} is at \`${spec.result.path}\`:
 
 \`\`\`json
 ${resultJson}
