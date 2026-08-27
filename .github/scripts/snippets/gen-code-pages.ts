@@ -382,7 +382,7 @@ Comfy Router runs ${modelsPhrase} behind one host, one credential and one route.
 
 ## Quick start
 ${both ? `
-${spec.variants.some((v) => v.example) ? "Pick the tab for the model you want to call. The model ID in the path changes, and so does the request body where the models take different inputs." : "The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call."}
+${spec.variants.some((v) => v.example) ? "Pick the tab for the model you want to call. The model ID in the path changes, and so does the request body where the models take different inputs." : "The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call."} Your choice here applies to every section on this page: the Schema and Examples tabs below follow it.
 ` : ""}
 <Tabs>
 ${spec.variants.map((v) => variantBlock(v, spec)).join("\n")}
