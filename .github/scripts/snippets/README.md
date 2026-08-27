@@ -27,8 +27,8 @@ page, the shared Router snippets or the generator.
 
 ## Schema sections
 
-Every Code page ends with Input schema, Input example, Output schema and
-Output example. They render from `router-schemas/<provider>/<model>.json`,
+Every Code page ends with a Schema section (Input, Output) and an Examples
+section (Input, Output). They render from `router-schemas/<provider>/<model>.json`,
 which is the exact body of `GET https://api.comfy.org/v2/models/<provider>/<model>/openapi.json`
 (a standalone OpenAPI document; the spec-sync bot drops these in, do not hand
 write them). When the file is absent, or reports

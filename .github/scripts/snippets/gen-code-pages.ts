@@ -342,16 +342,18 @@ function schemaSections(spec: Spec): string {
     return { input, inputExample, output, outputExample };
   };
 
-  const render = (title: string, body: (b: ReturnType<typeof block>) => string) => {
-    if (groups.length === 1) return `## ${title}\n\n${body(block(groups[0]))}\n`;
-    return `## ${title}\n\n<Tabs>\n${groups.map((g) => `  <Tab title="${g.variants.map((v) => v.title).join(" / ")}">\n${body(block(g))}\n  </Tab>`).join("\n")}\n</Tabs>\n`;
+  const render = (level: string, title: string, body: (b: ReturnType<typeof block>) => string) => {
+    if (groups.length === 1) return `${level} ${title}\n\n${body(block(groups[0]))}\n`;
+    return `${level} ${title}\n\n<Tabs>\n${groups.map((g) => `  <Tab title="${g.variants.map((v) => v.title).join(" / ")}">\n${body(block(g))}\n  </Tab>`).join("\n")}\n</Tabs>\n`;
   };
 
   return [
-    render("Input schema", (b) => b.input),
-    render("Input example", (b) => `\`\`\`json\n${b.inputExample}\n\`\`\``),
-    render("Output schema", (b) => b.output),
-    render("Output example", (b) => `\`\`\`json\n${b.outputExample}\n\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`),
+    "## Schema\n",
+    render("###", "Input", (b) => b.input),
+    render("###", "Output", (b) => b.output),
+    "## Examples\n",
+    render("###", "Input", (b) => `\`\`\`json\n${b.inputExample}\n\`\`\``),
+    render("###", "Output", (b) => `\`\`\`json\n${b.outputExample}\n\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`),
   ].join("\n");
 }
 
