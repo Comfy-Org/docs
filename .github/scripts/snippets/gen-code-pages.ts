@@ -198,7 +198,9 @@ function variantBlock(v: Variant, spec: Spec): string {
   const files = fileInputs(example);
   const label = spec.result.label;
   return `  <Tab title="${v.title}">
-**Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`  **Model ID:** \`${v.model}\`
+**Model ID:** \`${v.model}\`
+
+**Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
 
 <CodeGroup>
 \`\`\`python Python
