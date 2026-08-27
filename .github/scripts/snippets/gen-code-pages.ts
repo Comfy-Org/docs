@@ -120,53 +120,40 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `        ${JSON.stringify(k)}: ${pyLiteral(v, 8, files, k)},`)
+    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
-  return `import ${files.length ? "base64\nimport " : ""}os
-import uuid
-
-import httpx
+  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-response = httpx.post(
-    "${BASE_URL}${ROUTE}/${model}",
-    headers={
-        "X-API-Key": os.environ["COMFY_API_KEY"],
-        "Idempotency-Key": str(uuid.uuid4()),
-    },
-    json={
+# Reads COMFY_API_KEY from the environment. Each call sends a fresh
+# Idempotency-Key and waits up to 10 minutes for the finished result.
+with Comfy() as client:
+    result = client.models.run(
+        "${model}",
+        {
 ${body}
-    },
-    timeout=httpx.Timeout(${CLIENT_TIMEOUT_S.toFixed(1)}, connect=10.0),
-)
-response.raise_for_status()
-result = response.json()
+        },
+    )
+
 print("${label}:", result${pyPath(resultPath)})`;
 }
 
 function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
-  const imports = files.length ? `import { readFile } from "node:fs/promises";\n\n` : "";
+  const imports = `import { comfy } from "@comfyorg/sdk";\n${files.length ? `import { readFile } from "node:fs/promises";\n` : ""}`;
   const reads = files
     .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
     .join("\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `    ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 4, files, k)},`)
+    .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
-  return `${imports}${reads ? `${reads}\n\n` : ""}const response = await fetch("${BASE_URL}${ROUTE}/${model}", {
-  method: "POST",
-  headers: {
-    "X-API-Key": process.env.COMFY_API_KEY!,
-    "Idempotency-Key": crypto.randomUUID(),
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
+  return `${imports}
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
+// Idempotency-Key and waits up to 10 minutes for the finished result.
+type Result = ${tsResultType(resultPath)};
+const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
-  }),
-  signal: AbortSignal.timeout(${CLIENT_TIMEOUT_S}_000),
 });
-if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
 
-const result = (await response.json()) as ${tsResultType(resultPath)};
-console.log("${label}:", result${tsPath(resultPath)});`;
+console.log("${label}:", data${tsPath(resultPath)});`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -241,7 +228,7 @@ ${spec.intro ?? `This page shows how to call ${spec.name} from your own code.`} 
 
 <RouterPreviewNotice />
 
-Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${possessive(spec.provider)} own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\` before running any snippet.
+Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${possessive(spec.provider)} own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`; every snippet below reads it from the environment. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`), which send an \`Idempotency-Key\` on every call, wait up to Router's 10 minute deadline, and surface \`X-Comfy-Request-Id\` on results and errors. The cURL snippet is the same call over raw HTTP.
 
 ## Quick start
 ${both ? `
