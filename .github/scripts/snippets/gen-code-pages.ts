@@ -300,14 +300,45 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
 // Page template
 // ---------------------------------------------------------------------------
 
-function variantBlock(v: Variant, spec: Spec): string {
+function sectionBlocks(v: Variant, spec: Spec) {
+  const s = loadModelSchema(v.model);
+  const example = v.example ?? spec.example;
+  const specInput = v.input ?? spec.input;
+  const specOutput = v.output ?? spec.output;
+  const fields = (spec.fields ?? "").replace(/\s+/g, " ").trim();
+  const notPublished = `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
+  let input: string;
+  if (s?.authored && s.input) {
+    input = `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
+  } else if (specInput) {
+    input = `${notPublished}\n\n${schemaFields(specInput, {}, "param")}`;
+  } else {
+    input = `${notPublished}\n\n${fields}`;
+  }
+  const inputExample = JSON.stringify(s?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
+  let output: string;
+  if (s?.output) {
+    output = schemaFields(s.output, s.components, "response");
+  } else if (specOutput) {
+    output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response")}`;
+  } else {
+    output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
+  }
+  const outputExample = JSON.stringify(s?.outputExample ?? spec.result.example, null, 2);
+  return { input, inputExample, output, outputExample };
+}
+
+/** Everything on the page that depends on which variant is selected. */
+function variantBody(v: Variant, spec: Spec): string {
   const example = v.example ?? spec.example;
   const files = fileInputs(example);
   const label = spec.result.label;
-  return `  <Tab title="${v.title}">
-**Model ID:** \`${v.model}\`
+  const b = sectionBlocks(v, spec);
+  return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
+
+## Quick start
 
 <CodeGroup>
 \`\`\`python Python
@@ -322,72 +353,39 @@ ${typescriptSnippet(v.model, example, files, spec.result.path, label)}
 ${curlSnippet(v.model, example, files)}
 \`\`\`
 </CodeGroup>
-  </Tab>`;
-}
 
+## Schema
 
-function schemaSections(spec: Spec): string {
-  // Group variants by the schema document they resolve to, so Kontext Pro and
-  // Max (same schema) render one block while Ultra and 1.1 (different) render two.
-  type Group = { variants: Variant[]; schema: ModelSchema | null };
-  const groups: Group[] = [];
-  for (const v of spec.variants) {
-    const schema = loadModelSchema(v.model);
-    const key = schema ? JSON.stringify({ i: schema.input, o: schema.output }) : `none:${JSON.stringify([v.input ?? spec.input, v.output ?? spec.output, v.example ?? spec.example])}`;
-    const g = groups.find((x) => (x.schema ? JSON.stringify({ i: x.schema.input, o: x.schema.output }) : `none:${JSON.stringify([x.variants[0].input ?? spec.input, x.variants[0].output ?? spec.output, x.variants[0].example ?? spec.example])}`) === key);
-    if (g) g.variants.push(v); else groups.push({ variants: [v], schema });
-  }
-  const fields = (spec.fields ?? "").replace(/\s+/g, " ").trim();
+### Input
 
-  const block = (g: Group) => {
-    const first = g.variants[0];
-    const example = first.example ?? spec.example;
-    const s = g.schema;
-    const specInput = first.input ?? spec.input;
-    const specOutput = first.output ?? spec.output;
-    const notPublished = `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${first.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
-    let input: string;
-    if (s?.authored && s.input) {
-      input = `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${first.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
-    } else if (specInput) {
-      input = `${notPublished}\n\n${schemaFields(specInput, {}, "param")}`;
-    } else {
-      input = `${notPublished}\n\n${fields}`;
-    }
-    const inputExample = JSON.stringify(s?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
-    let output: string;
-    if (s?.output) {
-      output = schemaFields(s.output, s.components, "response");
-    } else if (specOutput) {
-      output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response")}`;
-    } else {
-      output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
-    }
-    const outputExample = JSON.stringify(s?.outputExample ?? spec.result.example, null, 2);
-    return { input, inputExample, output, outputExample };
-  };
+${b.input}
 
-  const render = (level: string, title: string, body: (b: ReturnType<typeof block>) => string) => {
-    if (groups.length === 1) return `${level} ${title}\n\n${body(block(groups[0]))}\n`;
-    return `${level} ${title}\n\n<Tabs>\n${groups.map((g) => `  <Tab title="${g.variants.map((v) => v.title).join(" / ")}">\n${body(block(g))}\n  </Tab>`).join("\n")}\n</Tabs>\n`;
-  };
+### Output
 
-  return [
-    "## Schema\n",
-    render("###", "Input", (b) => b.input),
-    render("###", "Output", (b) => b.output),
-    "## Examples\n",
-    render("###", "Input", (b) => `\`\`\`json\n${b.inputExample}\n\`\`\``),
-    render("###", "Output", (b) => `\`\`\`json\n${b.outputExample}\n\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`),
-  ].join("\n");
+${b.output}
+
+## Examples
+
+### Input
+
+\`\`\`json
+${b.inputExample}
+\`\`\`
+
+### Output
+
+\`\`\`json
+${b.outputExample}
+\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`;
 }
 
 function renderPage(spec: Spec, dir: string): string {
   const overview = "/" + dir; // tutorials/partner-nodes/<provider>/<model>
   const both = spec.variants.length > 1;
-  const modelsPhrase = both
-    ? `both ${spec.name} models`
-    : `${spec.name}`;
+  const modelsPhrase = both ? `both ${spec.name} models` : `${spec.name}`;
+  const body = both
+    ? `Pick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${variantBody(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>`
+    : variantBody(spec.variants[0], spec);
   return `---
 title: "Call ${spec.name} from code with Comfy Router"
 description: "${spec.description.replace(/\s+/g, " ").trim()}"
@@ -405,15 +403,8 @@ ${spec.intro ?? `This page shows how to call ${spec.name} from your own code.`} 
 
 Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${possessive(spec.provider)} own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`; every snippet below reads it from the environment. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`), which send an \`Idempotency-Key\` on every call, wait up to Router's 10 minute deadline, and surface \`X-Comfy-Request-Id\` on results and errors. The cURL snippet is the same call over raw HTTP.
 
-## Quick start
-${both ? `
-${spec.variants.some((v) => v.example) ? "Pick the tab for the model you want to call. The model ID in the path changes, and so does the request body where the models take different inputs." : "The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call."} Your choice here applies to every section on this page: the Schema and Examples tabs below follow it.
-` : ""}
-<Tabs>
-${spec.variants.map((v) => variantBlock(v, spec)).join("\n")}
-</Tabs>
+${body}
 
-${schemaSections(spec)}
 <RouterCodeFooter />
 `;
 }
