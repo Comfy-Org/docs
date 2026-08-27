@@ -24,13 +24,14 @@ Each row links to the section that explains it. **Deliberate** means the limit i
 | [No cost or credit figures on a response](#no-cost-or-credit-figures-on-a-response) | Read your balance and usage on the Comfy platform; check `billing` on the model's catalog entry before calling | Not yet |
 | [No way to resume a call you lost](#no-way-to-resume-a-call-you-lost) | Send `Idempotency-Key`, so a retry is charged at most once; it does not recover the lost result | Not yet |
 | [Calls are cut off at a server deadline](#calls-are-cut-off-at-a-server-deadline) | Give your client a timeout above the deadline; split work that cannot finish inside it | Deliberate |
+| [Requests are rate limited per caller](#requests-are-rate-limited-per-caller) | Back off for `Retry-After` on a `429` `rate_limited`; cache the catalog reads rather than re-fetching them per call | Deliberate |
 | [No progress while a call runs](#no-progress-while-a-call-runs) | Nothing on Router today; a partner-proxy route may expose its own progress | Not yet |
 | [Three forecast buckets are not in the vocabulary](#three-forecast-buckets-are-not-in-the-vocabulary) | Handle the fifteen buckets Router publishes; treat anything unrecognized as `internal_error` | Not yet |
 | [Router does not cover every partner operation](#router-does-not-cover-every-partner-operation) | The partner-proxy routes under `/proxy/…` on the same host | Deliberate |
 
 ## No queued submission
 
-There is one way to run a model: `POST /v1/models/{provider}/{model}`, which holds the connection until the generation finishes and returns the result in the response. There is no endpoint that accepts a job, hands you an identifier and lets you collect the result later, and no callback or webhook on completion. A queued counterpart is planned and is referenced in the API reference as `/v1/queue/models/{provider}/{model}`; it is not part of the contract today, and a call to it is not served.
+There is one way to run a model: `POST /v1/models/{provider}/{model}`, which holds the connection until the generation finishes and returns the result in the response. There is no endpoint that accepts a job, hands you an identifier and lets you collect the result later, and no callback or webhook on completion.
 
 **What to do instead.** For most models this is a non-issue: keep the connection open and read the result. A fast image model returns in a few seconds; a long video generation can run for minutes, and Router will hold the connection for it. Set a generous client read timeout, above [Router's own deadline](#calls-are-cut-off-at-a-server-deadline), and treat the call as long-running rather than as a fast request. If your architecture genuinely cannot hold a connection open (a serverless function with a short execution ceiling, a browser tab you expect the user to close), then run the call from a worker you control that can, or use a partner-proxy route for a provider that exposes its own submit-and-poll pair. See [the last section](#router-does-not-cover-every-partner-operation).
 
@@ -73,6 +74,16 @@ Do not confuse it with the other `504`. `provider_timeout` is the partner failin
 **What to do instead.** Set your client's read timeout comfortably *above* the deadline, not below it. A client that gives up first turns a typed `504` with a request identifier into an opaque local abort, and you lose the one artifact support can trace. If a single generation genuinely cannot finish inside the deadline, Router is not the right shape for it today: run it through a partner-proxy route that submits and polls, or break the work into calls that each finish inside the bound.
 
 **Status: deliberate.** A bound has to exist: without one, a stuck upstream holds a connection and a concurrency slot indefinitely. The specific number may be tuned; the existence of a deadline will not go away.
+
+## Requests are rate limited per caller
+
+Router bounds two different things about your traffic, and they answer with two different buckets on the same `429`. The concurrency limit caps how many calls you have **in flight** at once and answers `concurrency_limit_exceeded`; it clears the moment one of your own calls finishes, so retrying in seconds is right. The rate limit caps how **often** you may hit the Router surface at all (`POST /v1/models/{provider}/{model}` and the three catalog reads under `/v1/models` alike, whether the call ran a model or was refused before it could) and answers `rate_limited`. That one is an allowance that refills continuously over a one-minute window, so nothing you do drains it early: the response carries a `Retry-After` header with the seconds to wait, and `detail` names the window. Branch on `X-Comfy-Error-Type`, never on the status alone.
+
+The limit is keyed on the authenticated caller, not on the source address, so it follows your credential across hosts. A call that runs on your own provider key (bring-your-own-key) is exempt: you own that throughput. The allowance is a server-side configuration value rather than a published constant, and this page deliberately does not quote it; design for backoff, not for a number.
+
+**What to do instead.** Honour `Retry-After`: a retry inside it lands on the same refusal. Fetch `GET /v1/models` and a model's `openapi.json` once and cache them for the life of your process rather than re-reading them ahead of every call; they change only on a deploy. A client that keeps a request identifier from a `429` has the artifact support can trace.
+
+**Status: deliberate.** A per-caller bound on request rate has to exist for the same reason the deadline does. The number is tunable; the existence of the limit will not go away.
 
 ## No progress while a call runs
 

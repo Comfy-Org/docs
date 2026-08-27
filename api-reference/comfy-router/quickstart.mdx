@@ -30,15 +30,16 @@ Router authenticates with a Comfy API key. Create one at [platform.comfy.org/pro
 export COMFY_API_KEY="comfyui-..."
 ```
 
-<Warning>
-Send a `comfyui-` key in the **`X-API-Key`** header, not `Authorization: Bearer`.
-The two headers select different validators: `X-API-Key` is the only inbound
-reader of a `comfyui-` key, while a value in `Authorization` is routed to the JWT
-branch, where a non-JWT token is a terminal `401 Invalid token` and the key is
-never looked up. (`Authorization: Bearer` is correct for a Cloud/Firebase **JWT**:
-that is what the generated
-[API reference](/api-reference/comfy-router/reference) means by "bearer token".)
-</Warning>
+<Note>
+A `comfyui-` key is accepted in either the **`X-API-Key`** header or
+**`Authorization: Bearer`**: the `comfyui-` prefix, not the header, tells the
+service it is an API key, so both forms are looked up identically. The examples
+below use `X-API-Key`; `Authorization: Bearer $COMFY_API_KEY` is equivalent.
+If both headers are sent, a key in `X-API-Key` takes precedence. A value in
+`Authorization: Bearer` WITHOUT the `comfyui-` prefix is treated as a
+Cloud/Firebase **JWT** (that is what the generated
+[API reference](/api-reference/comfy-router/reference) means by "bearer token").
+</Note>
 
 Keys are per workspace and carry that workspace's model entitlements and credit balance. A request with no usable credential comes back `401` with `X-Comfy-Error-Type: unauthorized`; one whose workspace cannot run the model comes back `403` / `forbidden`.
 
@@ -278,7 +279,7 @@ invalid_input (HTTP 422), request id 6f1c...
 
 The `422` is the one error worth understanding before your first real call, because it is the one you cause. It means Router checked your body against the model's own input schema and rejected it: a required field missing, a value outside a bound, an image too small. That check runs BEFORE any provider call, so a `422` costs nothing: no partner spend, no billing question to answer afterwards. It is not the same as a `400`, which is a request-level failure (a malformed cursor, an unreadable envelope) rather than a per-field one.
 
-Its body is the fal/FastAPI `detail[]` shape: an array with one entry per offending field, each keeping its own `loc` (the path to the field), `msg`, `type` (the specific, provider-level reason, e.g. `missing`, `value_error`, `image_too_small`) and, where the reason carries a bound, `ctx`. That per-field granularity is why the samples above keep the array as data instead of flattening it into the exception message.
+Its body is the FastAPI `detail[]` shape: an array with one entry per offending field, each keeping its own `loc` (the path to the field), `msg`, `type` (the specific, provider-level reason, e.g. `missing`, `value_error`, `image_too_small`) and, where the reason carries a bound, `ctx`. That per-field granularity is why the samples above keep the array as data instead of flattening it into the exception message.
 
 <Note>
 A model whose input schema has not been authored yet resolves to a documented
@@ -292,6 +293,28 @@ That body carries no `error_type` field of its own, so on a `422` the `X-Comfy-E
 
 `X-Comfy-Request-Id` is on every response (success, `4xx` and `5xx` alike) and is the id to quote in a support request. Both samples attach it to the exception rather than making you re-run with header logging on to find it.
 
+## Find a model
+
+`bfl/flux-2-pro` is one ID; the catalog is the rest. `GET /v1/models` lists every model Router can run, one page at a time, and each entry is exactly what you need to call it: the `id` you put in the path, its `provider` and `model` segments carried separately, and a `billing` block you can branch on before you spend anything.
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v1/models?limit=50"
+```
+
+```json
+{
+  "data": [
+    { "id": "bfl/flux-2-pro", "provider": "bfl", "model": "flux-2-pro", "billing": { "charges_on_policy_rejection": "no" } }
+  ],
+  "has_more": true,
+  "next_cursor": "q7Fm2xTn9pLd4RsV",
+  "limit": 50
+}
+```
+
+Walk it with the cursor, not with an offset: pass `next_cursor` back as `?cursor=` and stop when `has_more` is `false`, not when a page comes back short. The cursor is opaque and only ever round-tripped; a cursor Router does not accept is a `400` / `invalid_input`, never a silent restart at page one. A cursor is a position in the catalog's sorted order, so it stays valid across a deploy that adds or removes models; a model added behind your position is simply not visited on that walk. A `503` / `service_unavailable` on the list means Router could not answer yet (a pod still loading its release state); retry it, do not read it as an empty catalog. `limit` on the response is the page size actually served: a request above the cap is clamped rather than rejected, so paginate with the number you got back. A model that is deployed but not yet released is simply absent from every page.
+
 ## Where the model's fields come from
 
 `prompt` is the only field `bfl/flux-2-pro` requires; `width`, `height`, `seed` and `output_format` are the ones you will reach for next. Rather than reproducing a field list that can drift, read the model's schema live:
@@ -301,7 +324,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
   https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
 ```
 
-That is the same document the server validates your call against, served as a standalone OpenAPI document, so what is published and what is enforced cannot disagree. Take any model ID, append `/openapi.json` to its invocation path, and generate against what comes back.
+That is the same document the server validates your call against, served as a standalone OpenAPI document, so what is published and what is enforced cannot disagree. Take any `id` from the catalog above, append `/openapi.json` to its invocation path, and generate against what comes back.
 
 ## Next
 

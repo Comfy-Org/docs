@@ -1,17 +1,18 @@
 ---
 title: "Comfy Router 快速入门"
 description: "从零开始，大约五分钟内，使用 Python 和 TypeScript，在 Comfy Router 上生成一张图像。"
-translationSourceHash: 413cf910
+translationSourceHash: 50fc5524
 translationFrom: api-reference/comfy-router/quickstart.mdx
 translationBlockHashes:
   "_intro": 46050c92
   "Why this page uses `bfl/flux-2-pro`": 0eaf0bb3
-  "Get a key": d00641d0
+  "Get a key": 843d281f
   "cURL": bc3e1e4c
   "Python": 059e95b8
   "TypeScript": 1053430f
-  "Reading the `422`": 0373382f
-  "Where the model's fields come from": 157d882f
+  "Reading the `422`": 602cd505
+  "Find a model": 9b7855c1
+  "Where the model's fields come from": 7861bd52
   "Next": 6aa641e1
 ---
 <Note>
@@ -36,14 +37,9 @@ Router 使用 Comfy API 密钥进行身份验证。你可以在 [platform.comfy.
 export COMFY_API_KEY="comfyui-..."
 ```
 
-<Warning>
-在 **`X-API-Key`** 请求头中发送 `comfyui-` 密钥，而不是 `Authorization: Bearer`。
-这两个请求头会选择不同的验证器：`X-API-Key` 是唯一能读取 `comfyui-` 密钥的
-入站请求头，而 `Authorization` 中的值会被路由到 JWT 分支，非 JWT 令牌在
-该分支会直接返回 `401 Invalid token`，密钥根本不会被查找。
-（对于 Cloud/Firebase **JWT**，使用 `Authorization: Bearer` 是正确的，这也是
-已生成的 [API 参考](/zh/api-reference/comfy-router/reference) 中“bearer token”的含义。）
-</Warning>
+<Note>
+`comfyui-` 密钥既可以放在 **`X-API-Key`** 请求头中，也可以放在 **`Authorization: Bearer`** 中：告诉服务“这是一个 API 密钥”的是 `comfyui-` 前缀而不是请求头，因此两种形式的查找方式完全相同。下面的示例使用 `X-API-Key`；`Authorization: Bearer $COMFY_API_KEY` 与之等价。如果同时发送了两个请求头，则以 `X-API-Key` 中的密钥为准。`Authorization: Bearer` 中**不带** `comfyui-` 前缀的值会被视为 Cloud/Firebase **JWT**（这也是已生成的 [API 参考](/zh/api-reference/comfy-router/reference) 中“bearer token”的含义）。
+</Note>
 
 密钥按工作区分属，并携带该工作区的模型权益和信用余额。没有可用凭据的请求会返回 `401`，并带有 `X-Comfy-Error-Type: unauthorized`；工作区无法运行该模型的请求会返回 `403` / `forbidden`。
 
@@ -283,7 +279,7 @@ invalid_input (HTTP 422), request id 6f1c...
 
 `422` 是最值得在第一次真正调用之前理解的一个错误，因为它是你引发的。它表示 Router 已根据模型自身的输入模式检查了你的请求体并拒绝了它：必填字段缺失、值超出边界、图像太小。该检查在任何提供商调用之前执行，因此 `422` 不会产生任何成本：没有合作伙伴支出，之后也无需解答计费疑问。它不同于 `400`，后者是请求级失败（格式错误的游标、无法读取的信封），而不是字段级失败。
 
-其响应体是 fal/FastAPI 的 `detail[]` 形状：一个数组，每个违规字段对应一个条目，每个条目保留自己的 `loc`（字段路径）、`msg`、`type`（具体的提供商级原因：`missing`、`value_error`、`image_too_small`），以及原因带有边界时的 `ctx`。正是这种字段级粒度，使得上面的示例将数组作为数据保留，而不是将其扁平化到异常消息中。
+其响应体是 FastAPI 的 `detail[]` 形状：一个数组，每个违规字段对应一个条目，每个条目保留自己的 `loc`（字段路径）、`msg`、`type`（具体的提供商级原因：`missing`、`value_error`、`image_too_small`），以及原因带有边界时的 `ctx`。正是这种字段级粒度，使得上面的示例将数组作为数据保留，而不是将其扁平化到异常消息中。
 
 <Note>
 输入模式尚未创建的模型会解析为文档中所述的宽松回退方案，该方案接受任何 JSON 对象，因此它会转发请求体，而不会返回 `422`。上面的示例展示了模式存在后你需要处理的形状；请将 `422` 块视为错误路径，而不是对特定请求体的保证响应。
@@ -292,6 +288,28 @@ invalid_input (HTTP 422), request id 6f1c...
 该响应体本身不携带 `error_type` 字段，因此在 `422` 上，`X-Comfy-Error-Type` 响应头是*唯一*机器可读的类别。两个示例都正因如此才首先从响应头中读取该类别，这也使得一个错误类就足以涵盖 Router 可能返回的所有失败。
 
 `X-Comfy-Request-Id` 出现在每个响应上，成功、`4xx` 和 `5xx` 均如此，并且是在支持请求中引用的 ID。两个示例都将其附加到异常中，而不是让你在启用响应头日志的情况下重新运行来找到它。
+
+## 查找模型
+
+`bfl/flux-2-pro` 只是其中一个 ID；其余的都在目录里。`GET /v1/models` 会逐页列出 Router 能运行的每一个模型，每个条目正好就是调用它所需的全部信息：放进路径的 `id`、分别给出的 `provider` 和 `model` 段，以及一个可以在花费任何费用之前据以分支判断的 `billing` 块。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v1/models?limit=50"
+```
+
+```json
+{
+  "data": [
+    { "id": "bfl/flux-2-pro", "provider": "bfl", "model": "flux-2-pro", "billing": { "charges_on_policy_rejection": "no" } }
+  ],
+  "has_more": true,
+  "next_cursor": "q7Fm2xTn9pLd4RsV",
+  "limit": 50
+}
+```
+
+用游标而不是偏移量来遍历：把 `next_cursor` 作为 `?cursor=` 原样传回，并在 `has_more` 为 `false` 时停止，而不是在某一页返回得较短时停止。游标是不透明的，只用于原样往返；Router 不接受的游标会返回 `400` / `invalid_input`，绝不会悄悄从第一页重新开始。游标是目录排序顺序中的一个位置，因此在新增或移除模型的部署之后依然有效；添加在你已经走过的位置之前的模型，只是在这一次遍历中不会被访问到。列表返回 `503` / `service_unavailable` 表示 Router 暂时还无法应答（某个 pod 仍在加载其发布状态）；请重试，不要把它当成空目录。响应中的 `limit` 是实际提供的页面大小：超过上限的请求会被截断到上限而不是拒绝，因此请按返回的数字进行分页。已部署但尚未发布的模型只是不会出现在任何一页中。
 
 ## 模型字段的来源
 
@@ -302,7 +320,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
   https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
 ```
 
-这份文档与服务器校验您的请求时所依据的文档是同一份，以独立的 OpenAPI 文档形式提供，因此所发布的内容与所执行的内容不可能不一致。取任意模型 ID，在其调用路径后追加 `/openapi.json`，然后根据返回的内容进行生成。
+这份文档与服务器校验您的请求时所依据的文档是同一份，以独立的 OpenAPI 文档形式提供，因此所发布的内容与所执行的内容不可能不一致。从上面的目录中取任意 `id`，在其调用路径后追加 `/openapi.json`，然后根据返回的内容进行生成。
 
 ## 下一步
 
