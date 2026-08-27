@@ -5,7 +5,7 @@ description: "From nothing to a generated image in about five minutes, in Python
 
 <Note>
 **Comfy Router is not generally available yet.** The routes below
-(`POST /v1/models/{provider}/{model}` and its catalog and schema siblings) are
+(`POST /v2/models/{provider}/{model}` and its catalog and schema siblings) are
 not serving requests yet: an authenticated call answers `404` today. This page
 documents the contract they will serve, and is published ahead of that rollout so
 the integration is ready to write against. It is not a description of behaviour
@@ -14,7 +14,7 @@ you can exercise right now.
 
 Comfy Router runs partner models behind one host, one credential and one route shape. This page is the shortest complete path to a generated image: install a client, set a key, send one request, read the result, and see what the first failure looks like before you hit it.
 
-Base URL: `https://api.comfy.org`. The route is `POST /v1/models/{provider}/{model}`, the request body is the model's own native JSON input, and a `200` carries the model's own native JSON output. Router does not wrap either, so a call you already have written against the partner's API becomes a Router call by changing the host.
+Base URL: `https://api.comfy.org`. The route is `POST /v2/models/{provider}/{model}`, the request body is the model's own native JSON input, and a `200` carries the model's own native JSON output. Router does not wrap either, so a call you already have written against the partner's API becomes a Router call by changing the host.
 
 ## Why this page uses `bfl/flux-2-pro`
 
@@ -48,7 +48,7 @@ Keys are per workspace and carry that workspace's model entitlements and credit 
 The shortest possible call, for scripts, smoke tests and copy-paste into a terminal:
 
 ```bash
-curl https://api.comfy.org/v1/models/bfl/flux-2-pro \
+curl https://api.comfy.org/v2/models/bfl/flux-2-pro \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
@@ -117,7 +117,7 @@ def run(model: str, arguments: dict, idempotency_key: str) -> dict:
     # provider a second time. Reuse the SAME key when retrying one logical
     # call; generate a new one for a new call.
     response = httpx.post(
-        f"{BASE_URL}/v1/models/{model}",
+        f"{BASE_URL}/v2/models/{model}",
         headers={
             "X-API-Key": os.environ["COMFY_API_KEY"],
             "Idempotency-Key": idempotency_key,
@@ -229,7 +229,7 @@ async function run<T>(
   // Idempotency-Key makes a retry safe on a PAID call: Router replays the
   // original response for 24h instead of dispatching (and billing) the provider
   // a second time. Reuse the SAME key when retrying one logical call.
-  const response = await fetch(`${BASE_URL}/v1/models/${model}`, {
+  const response = await fetch(`${BASE_URL}/v2/models/${model}`, {
     method: "POST",
     headers: {
       "X-API-Key": API_KEY,
@@ -293,13 +293,66 @@ That body carries no `error_type` field of its own, so on a `422` the `X-Comfy-E
 
 `X-Comfy-Request-Id` is on every response (success, `4xx` and `5xx` alike) and is the id to quote in a support request. Both samples attach it to the exception rather than making you re-run with header logging on to find it.
 
+## Retrying safely with your own key
+
+Both samples above send an `Idempotency-Key`. It is worth a section of its own, because the header only does its job if you handle the key correctly, and the step that makes the difference happens before the request is even sent.
+
+**Bring your own key.** Router does not mint one for you. Generate a fresh key per *logical call* (a UUID is the intended shape) and reuse that same key for every retry *of that call*. A new key per attempt buys you nothing; a key reused across two genuinely different calls is a `409`, because the same key with a different request (a different body, but also a different model path, query string or method) is a conflict rather than a silent overwrite.
+
+**Persist it before you send.** Write the key somewhere that outlives the request (the row you are generating for, your job record, your queue message) *before* the `POST` goes out, not after the response comes back. A key that only ever existed in the memory of the process that crashed cannot be resent, and the retry that would have been answered from Router's record becomes a fresh, separately charged run instead. This is the one step that is easy to skip and expensive to skip.
+
+**Retry with it.** On a retry, Router answers rather than re-runs whenever it still holds state for the key:
+
+| What you get back | What it means | What to do |
+| --- | --- | --- |
+| `200` with `Idempotent-Replayed: true` | Router replayed the original response. Not billed again. | Use it: it is the original result. |
+| `409` / `concurrency_limit_exceeded` | The original call is still running. | Wait `Retry-After` seconds, re-send **the same key**. |
+| `409` / `invalid_input` | The key cannot serve this request: a different request (body, model path, query or method) under the same key, or the original completed and its response cannot be replayed. | Use a **new** key. Do not re-send this one. |
+| `504` / `deadline_exceeded` with `Retry-After` | Router stopped holding the connection but still holds a handle to a generation the provider is running. | Wait `Retry-After` seconds, re-send **the same key** to collect it. |
+
+Continuing the Python sample above: a file stands in for whatever durable store
+you already have; the ORDERING is the part that matters, not the mechanism. Persist
+the whole request next to the key, not the key alone: a retry has to re-send the
+*same* model and arguments, and one rebuilt from memory after a restart that differs
+by so much as a whitespace is a `409`, while one sent under a fresh key is a second
+billed generation.
+
+```python
+import json
+import uuid
+
+# Persist BEFORE the request, so a crash between here and the response still
+# leaves a key (and the exact request it belongs to) you can retry with.
+request = {
+    "model": MODEL,
+    "arguments": {"prompt": "a red teapot on a windowsill, morning light"},
+    "idempotency_key": str(uuid.uuid4()),
+}
+with open("pending-call.json", "w") as f:
+    json.dump(request, f)
+
+result = run(request["model"], request["arguments"], idempotency_key=request["idempotency_key"])
+```
+
+<Note>
+**What the key guarantees is billing, not delivery.** A key is charged **at most
+once**. It is not a promise that the key is dispatched at most once, and it does
+not make a lost call recoverable: if your connection drops mid-call and nothing
+was ever committed to you, the key is released and retrying with it starts a
+**fresh run** rather than handing you the result you missed. Plan for "retry
+produces a new run" and treat the replay as the happy case, not the guarantee.
+Durable, resumable "reconnect and collect" is the queued path Router does not
+have yet: see
+[limitations](/api-reference/comfy-router/limitations#no-way-to-resume-a-call-you-lost).
+</Note>
+
 ## Find a model
 
-`bfl/flux-2-pro` is one ID; the catalog is the rest. `GET /v1/models` lists every model Router can run, one page at a time, and each entry is exactly what you need to call it: the `id` you put in the path, its `provider` and `model` segments carried separately, and a `billing` block you can branch on before you spend anything.
+`bfl/flux-2-pro` is one ID; the catalog is the rest. `GET /v2/models` lists every model Router can run, one page at a time, and each entry is exactly what you need to call it: the `id` you put in the path, its `provider` and `model` segments carried separately, and a `billing` block you can branch on before you spend anything.
 
 ```bash
 curl -H "X-API-Key: $COMFY_API_KEY" \
-  "https://api.comfy.org/v1/models?limit=50"
+  "https://api.comfy.org/v2/models?limit=50"
 ```
 
 ```json
@@ -321,7 +374,7 @@ Walk it with the cursor, not with an offset: pass `next_cursor` back as `?cursor
 
 ```bash
 curl -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
 ```
 
 That is the same document the server validates your call against, served as a standalone OpenAPI document, so what is published and what is enforced cannot disagree. Take any `id` from the catalog above, append `/openapi.json` to its invocation path, and generate against what comes back.
