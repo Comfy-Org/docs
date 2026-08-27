@@ -201,15 +201,15 @@ function variantBlock(v: Variant, spec: Spec): string {
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`  **Model ID:** \`${v.model}\`
 
 <CodeGroup>
-\`\`\`python
+\`\`\`python Python
 ${pythonSnippet(v.model, example, files, spec.result.path, label)}
 \`\`\`
 
-\`\`\`typescript
+\`\`\`typescript TypeScript
 ${typescriptSnippet(v.model, example, files, spec.result.path, label)}
 \`\`\`
 
-\`\`\`bash
+\`\`\`bash cURL
 ${curlSnippet(v.model, example, files)}
 \`\`\`
 </CodeGroup>
@@ -278,7 +278,7 @@ function validate(page: string, rel: string): string[] {
   const problems: string[] = [];
   const tmp = mkdtempSync(join(tmpdir(), "code-pages-"));
   try {
-    const fences = [...page.matchAll(/```(python|typescript|bash)\n([\s\S]*?)```/g)];
+    const fences = [...page.matchAll(/```(python|typescript|bash)[^\n]*\n([\s\S]*?)```/g)];
     fences.forEach((m, i) => {
       const [, lang, code] = m;
       const file = join(tmp, `s${i}.${lang === "python" ? "py" : lang === "typescript" ? "ts" : "sh"}`);
