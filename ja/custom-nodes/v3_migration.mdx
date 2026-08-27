@@ -1,8 +1,12 @@
 ---
 title: "V3 移行ガイド"
 description: "既存の V1 ノードを新しい V3 スキーマに移行する方法。"
-translationSourceHash: c74419d4
+translationSourceHash: b8caa4dc
 translationFrom: custom-nodes/v3_migration.mdx
+translationBlockHashes:
+  "Overview": 109e87b3
+  "Core Concepts": 85282582
+  "Migration Steps": 3b155e8e
 ---
 
 ## 概要
@@ -832,4 +836,146 @@ async def execute(cls, images, **kwargs) -> io.NodeOutput:
 
 #### ノード置換
 
-ノ
+ノード置換を使用すると、古いノードや非推奨ノードを新しいノードに対応付け、既存のワークフローを自動的に更新できます。拡張機能の `on_load` メソッドで `ComfyAPI` を使って置換を登録します。
+
+```python
+from comfy_api.latest import ComfyAPI, ComfyExtension, io
+
+api = ComfyAPI()
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await api.node_replacement.register(io.NodeReplace(
+            new_node_id="MyNewNode",
+            old_node_id="MyOldNode",
+            old_widget_ids=["param1", "param2"],
+            input_mapping=[
+                {"new_id": "image", "old_id": "input_image"},
+                {"new_id": "method", "set_value": "lanczos"},
+            ],
+            output_mapping=[
+                {"new_idx": 0, "old_idx": 0},
+            ],
+        ))
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNewNode]
+```
+
+`old_widget_ids` は重要です。ワークフロー JSON はウィジェットの値を名前ではなく位置インデックスで保存します。このリストは位置インデックスを入力 ID に対応付け、移行時に値を正しく識別できるようにします。
+
+動的入力（Autogrow など）では、対応付けにドット区切りのパスを使用します。
+
+```python
+input_mapping=[
+    {"new_id": "images.image0", "old_id": "image1"},
+    {"new_id": "images.image1", "old_id": "image2"},
+]
+```
+
+### 拡張機能のライフサイクル
+
+`ComfyExtension` クラスは、`get_node_list` 以外のライフサイクルフックもサポートします。
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        """拡張機能の読み込み時に呼び出されます。
+        ノード置換の登録やグローバルリソースの準備など、
+        一度だけ行う初期化に使用します。
+        """
+        pass
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        """この拡張機能が提供するノードクラスのリストを返します。"""
+        return [MyNode]
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+### NodeOutput
+
+`NodeOutput` クラスは、`execute` の標準的な戻り値です。
+
+```python
+# 単一の出力値を返す
+return io.NodeOutput(image)
+
+# 複数の出力値を返す
+return io.NodeOutput(width, height, batch_size)
+
+# UI データのみを返す
+return io.NodeOutput(ui=ui.PreviewImage(images, cls=cls))
+
+# 出力値と UI データの両方を返す
+return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+
+# 出力のないノードの場合
+return io.NodeOutput()
+```
+
+## 完全な例
+
+複数のノードを含む V3 拡張機能ファイルの完全な例を示します。
+
+```python
+from comfy_api.latest import ComfyExtension, io, ui
+
+class InvertImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_InvertImage",
+            display_name="Invert Image",
+            category="my_pack/image",
+            description="Inverts the colors of an image.",
+            inputs=[
+                io.Image.Input("image"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="inverted"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image) -> io.NodeOutput:
+        inverted = 1.0 - image
+        return io.NodeOutput(inverted, ui=ui.PreviewImage(inverted, cls=cls))
+
+
+class SaveImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_SaveImage",
+            display_name="Save Image",
+            category="my_pack/image",
+            is_output_node=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.String.Input("filename_prefix", default="ComfyUI"),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls, images, filename_prefix) -> io.NodeOutput:
+        return io.NodeOutput(
+            ui=ui.ImageSaveHelper.get_save_images_ui(
+                images=images,
+                filename_prefix=filename_prefix,
+                cls=cls,
+            )
+        )
+
+
+class MyPackExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [InvertImage, SaveImage]
+
+async def comfy_entrypoint() -> MyPackExtension:
+    return MyPackExtension()
+```

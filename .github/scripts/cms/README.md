@@ -2,6 +2,25 @@
 
 Push **draft** release notes to Strapi CMS. Content is **simplified for end users** in staging, separate from full docs changelog.
 
+## Relationship to docs translation
+
+`changelog/index.mdx` is the single English source. **Do not shorten it for CMS** — Step 1 (LLM simplify) produces popup copy in `staging/en/`.
+
+| | Docs translation ([i18n/README.md](../i18n/README.md)) | CMS sync (this doc) |
+|--|--|--|
+| Command | `pnpm translate` | `pnpm cms:prepare:en` / `cms:prepare:locales` / `cms:sync` |
+| Output | `{lang}/**/*.mdx` on Mintlify | `.github/scripts/cms/staging/` → Strapi |
+| Input | Full docs MDX | LLM-simplified popup copy |
+| Locales | ja, zh, ko | en, zh, ja, ko, fr, ru, es |
+
+## Agent rules
+
+- Do **not** use `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
+- Get user approval on **staging EN** before `cms:prepare:locales`; on **all staging** before `cms:sync`.
+- Sync and publish **comfyui only** by default (`--project comfyui`). Use `--project cloud` only after explicit user confirmation.
+- Strapi publish is **manual by default** — run `pnpm cms:publish` after review (not automatic on sync).
+- Do commit `.github/scripts/cms/staging/` and `published-versions.json` after Strapi publish.
+
 ## Architecture
 
 Three separate steps — review between each; sync only after confirmation:
@@ -41,6 +60,8 @@ Strapi drafts → publish → published-versions.json
 
 Each version is **saved immediately** after simplify/translate (safe to resume).
 
+After prepare, secondary projects (cloud) **merge only the prepared `<Update>` blocks** from comfyui. Older cloud blocks (including project-specific tracking shortlinks) are left untouched. Do not full-file overwrite `staging/cloud/`.
+
 ## Projects & attention
 
 | Project | CLI | Default attention |
@@ -66,7 +87,7 @@ pnpm cms:sync -- v0.25.1                    # Step 3: push drafts (after staging
 pnpm cms:publish -- v0.25.1                 # publish + refresh published-versions.json
 ```
 
-Default: **comfyui + cloud** on prepare / sync / publish. Single project: `--project cloud`.
+Default: **comfyui + cloud** on prepare. **Sync/publish default for agents: comfyui only** — add `--project cloud` only when the user confirms.
 
 Local default (no args): **all unpublished EN versions** (from `published-versions.json`). Full backfill: `CMS_SYNC_ALL=1`.
 
@@ -79,13 +100,13 @@ Configured in `cms-config.json` → `simplify`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → optional `**New Node Updates**` (bold labels, not `##`) |
 
-- Section order is **fixed**: open-source models first, node updates second, partner nodes last
-- Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)
+- Section order is **fixed** when present: open-source models first, partner nodes second, node updates last
+- **New Node Updates is optional by default.** Omit from the CMS popup even if docs has New Nodes; include only when a human explicitly asks
 - Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
-- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping
+- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and New Nodes unless requested
 - English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
 - Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
 
@@ -99,7 +120,7 @@ Configured in `cms-config.json` → `simplify`:
 
 ## API tokens
 
-See `.env.local.example`: `TRANSLATE_API_KEY` (prepare), `CMS_API_TOKEN` (sync).
+See [`.env.local.example`](../../../.env.local.example) (`TRANSLATE_*` for prepare, `CMS_*` for sync).
 
 ## Publish (draft → live)
 

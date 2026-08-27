@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Set attention level (low | high) for a release note in Strapi CMS.
+ * Set attention level (low | medium | high) for a release note in Strapi CMS.
  *
  * Usage:
  *   pnpm cms:set-attention -- cloud v0.24.0 high
@@ -50,7 +50,7 @@ function parseArgs(
   for (const arg of rest) {
     if (arg === "--dry-run" || arg === "--preview") dryRun = true;
     else if (arg === "--save") save = true;
-    else if (arg === "low" || arg === "high") attention = arg;
+    else if (arg === "low" || arg === "medium" || arg === "high") attention = arg;
     else if (!arg.startsWith("-")) positional.push(arg);
   }
 

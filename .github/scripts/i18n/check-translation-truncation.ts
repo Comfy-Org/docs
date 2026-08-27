@@ -25,8 +25,13 @@ import {
   TRUNCATION_ISSUES_TXT,
 } from "./i18n-config.mjs";
 import {
+  countNonEmptyLines,
+  countTagCloses,
+  countTagOpens,
   missingSectionLabels,
   parseFrontmatterAndBody,
+  parseHeadingSections,
+  parseTargetSectionsByIndex,
   resolveChunkStrategy,
   type ChunkedFileConfig,
 } from "./chunked-translate.ts";
@@ -46,7 +51,7 @@ interface LangConfig {
 interface TranslationConfig {
   skip_paths: string[];
   chunked_files?: ChunkedFileConfig[];
-  auto_chunk?: { min_body_chars?: number; min_sections?: number };
+  auto_chunk?: { min_body_chars?: number; min_sections?: number; max_block_chars?: number };
   languages: LangConfig[];
 }
 
@@ -105,6 +110,53 @@ function enFenceCount(enBody: string): number {
   return countFencePairs(enBody);
 }
 
+/** True when body has an odd number of ``` line markers (unclosed block). */
+export function hasUnclosedCodeFence(body: string): boolean {
+  return countCodeFences(body).open;
+}
+
+/** Append a closing ``` when the body ends inside a code block. */
+export function repairUnclosedCodeFence(body: string): {
+  body: string;
+  repaired: boolean;
+  openLang: string;
+  openLine: number;
+} {
+  const fence = countCodeFences(body);
+  if (!fence.open) {
+    return { body, repaired: false, openLang: "", openLine: 0 };
+  }
+  const trimmed = body.endsWith("\n") ? body : `${body}\n`;
+  return {
+    body: `${trimmed}\`\`\`\n`,
+    repaired: true,
+    openLang: fence.openLang,
+    openLine: fence.openLine,
+  };
+}
+
+/** Fix an MDX file whose body ends with an unclosed ``` block. Frontmatter is preserved. */
+export function repairTargetContent(targetContent: string): {
+  content: string;
+  repaired: boolean;
+  detail: string;
+} {
+  const { frontmatter, body } = parseFrontmatterAndBody(targetContent);
+  const result = repairUnclosedCodeFence(body);
+  if (!result.repaired) {
+    return { content: targetContent, repaired: false, detail: "" };
+  }
+  const newBody = result.body;
+  const raw = frontmatter ? `${frontmatter}\n${newBody}` : newBody;
+  const content = raw.endsWith("\n") ? raw : `${raw}\n`;
+  const langHint = result.openLang ? `\`${result.openLang}\` ` : "";
+  return {
+    content,
+    repaired: true,
+    detail: `appended closing \`\`\` for ${langHint}block opened near line ${result.openLine}`,
+  };
+}
+
 function targetPath(enRel: string, lang: LangConfig): string {
   if (enRel.startsWith("snippets/")) {
     return join(ROOT, lang.snippets_dir, enRel.slice("snippets/".length));
@@ -138,6 +190,42 @@ async function collectEnglishFiles(snippetsMode: boolean): Promise<string[]> {
   return all
     .map((f) => relative(ROOT, f))
     .filter((f) => isEnglishPagePath(f, pathFilterOpts));
+}
+
+function findTruncatedHeadingBlocks(
+  enBody: string,
+  targetBody: string
+): string[] {
+  const enBlocks = parseHeadingSections(enBody);
+  const targetSections = parseTargetSectionsByIndex(targetBody, enBlocks.length);
+  const bad: string[] = [];
+
+  for (let i = 0; i < enBlocks.length; i++) {
+    const en = enBlocks[i]!;
+    const tr = targetSections[i] ?? "";
+    if (!tr.trim()) continue;
+
+    const enTabs = countTagOpens(en.content, "Tab");
+    const trTabs = countTagOpens(tr, "Tab");
+    if (enTabs >= 2 && trTabs !== enTabs) {
+      bad.push(en.label);
+      continue;
+    }
+
+    const enWrappers = countTagOpens(en.content, "Tabs");
+    if (enWrappers > 0 && countTagCloses(tr, "Tabs") < enWrappers) {
+      bad.push(en.label);
+      continue;
+    }
+
+    const enLines = countNonEmptyLines(en.content);
+    const trLines = countNonEmptyLines(tr);
+    if (enLines >= 80 && trLines < enLines * 0.6) {
+      bad.push(en.label);
+    }
+  }
+
+  return bad;
 }
 
 export function detectTruncation(
@@ -186,6 +274,10 @@ export function detectTruncation(
     if (missingSections.length > 0) {
       reasons.push("missing_sections");
     }
+    const truncatedBlocks = findTruncatedHeadingBlocks(enBody, targetBody);
+    if (truncatedBlocks.length > 0) {
+      reasons.push("truncated_block");
+    }
   }
 
   return reasons;
@@ -230,6 +322,12 @@ function formatDetail(
     const missing = missingSectionLabels(enBody, targetBody, "heading_sections");
     parts.push(
       `missing sections: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "..." : ""}`
+    );
+  }
+  if (reasons.includes("truncated_block")) {
+    const bad = findTruncatedHeadingBlocks(enBody, targetBody);
+    parts.push(
+      `truncated block(s): ${bad.slice(0, 5).join(", ")}${bad.length > 5 ? "..." : ""}`
     );
   }
   return parts.join("; ");
@@ -354,7 +452,8 @@ export async function writeTruncationReport(
     "changelog missing <Update> blocks.",
     "",
     "Repair:",
-    "  npm run translate:repair-truncated -- --lang ko",
+    "  npm run translate:repair-fences              # append missing closing ```",
+    "  npm run translate:repair-truncated -- --lang ko  # re-translate truncated files",
     "",
     `Note: semantic AI review notes (mismatch) are separate — see ${TRANSLATE_LOG_REL}/mismatches.txt`,
     "      (only written when `npm run translate` runs and the model reports issues).",
@@ -416,7 +515,9 @@ async function main() {
   console.log(`\nLog: ${TXT_PATH}`);
   console.log(`JSON: ${JSON_PATH}`);
   if (issues.length > 0) {
-    console.log("\nRepair: npm run translate:repair-truncated -- --lang <code>");
+    console.log("\nRepair:");
+    console.log("  npm run translate:repair-fences");
+    console.log("  npm run translate:repair-truncated -- --lang <code>");
   }
 }
 

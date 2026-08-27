@@ -4,7 +4,7 @@ import type { CmsConfig } from "./cms-config.ts";
 import { getProjectConfig } from "./cms-config.ts";
 import { isEnoent } from "./cms-env.ts";
 
-export type AttentionLevel = "low" | "high";
+export type AttentionLevel = "low" | "medium" | "high";
 
 export interface AttentionOverrides {
   [project: string]: Record<string, AttentionLevel>;
