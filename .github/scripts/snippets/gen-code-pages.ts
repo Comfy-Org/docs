@@ -176,6 +176,113 @@ function possessive(name: string): string {
   return name.endsWith("s") ? `${name}'` : `${name}'s`;
 }
 
+
+// ---------------------------------------------------------------------------
+// Per-model schema documents. `router-schemas/<provider>/<model>.json` is the
+// exact body of `GET /v2/models/<provider>/<model>/openapi.json` (a standalone
+// OpenAPI document), dropped in by the spec-sync bot. When present and
+// authored, the Input schema / Input example sections render from it; when
+// absent or unauthored, the page falls back to the spec's hand-written fields.
+// ---------------------------------------------------------------------------
+
+type SchemaDoc = {
+  paths: Record<string, { post?: { requestBody?: { content?: Record<string, { schema?: any; example?: unknown }> }; responses?: Record<string, { content?: Record<string, { schema?: any; example?: unknown }> }> } }>;
+  components?: { schemas?: Record<string, any> };
+  "x-comfy-router-model-id"?: string;
+  "x-comfy-input-schema-authored"?: boolean;
+};
+
+type ModelSchema = {
+  authored: boolean;
+  input?: any;
+  inputExample?: unknown;
+  output?: any;
+  outputExample?: unknown;
+  components: Record<string, any>;
+};
+
+function loadModelSchema(model: string): ModelSchema | null {
+  const file = join(ROOT, "router-schemas", `${model}.json`);
+  if (!existsSync(file)) return null;
+  let doc: SchemaDoc;
+  try {
+    doc = JSON.parse(readFileSync(file, "utf8")) as SchemaDoc;
+  } catch (e) {
+    throw new Error(`router-schemas/${model}.json: cannot parse JSON: ${(e as Error).message}`);
+  }
+  const op = doc.paths?.[`${ROUTE}/${model}`]?.post;
+  if (!op) throw new Error(`router-schemas/${model}.json: no POST ${ROUTE}/${model} operation`);
+  const req = op.requestBody?.content?.["application/json"];
+  const res = op.responses?.["200"]?.content?.["application/json"];
+  return {
+    authored: doc["x-comfy-input-schema-authored"] !== false,
+    input: req?.schema,
+    inputExample: req?.example ?? req?.schema?.example,
+    output: res?.schema,
+    outputExample: res?.example ?? res?.schema?.example,
+    components: doc.components?.schemas ?? {},
+  };
+}
+
+function deref(schema: any, components: Record<string, any>, depth = 0): any {
+  if (!schema || depth > 8) return schema ?? {};
+  if (schema.$ref) {
+    const name = String(schema.$ref).split("/").pop()!;
+    return deref(components[name], components, depth + 1);
+  }
+  if (schema.allOf) {
+    return schema.allOf.reduce((acc: any, part: any) => {
+      const d = deref(part, components, depth + 1);
+      return { ...acc, ...d, properties: { ...(acc.properties ?? {}), ...(d.properties ?? {}) }, required: [...(acc.required ?? []), ...(d.required ?? [])] };
+    }, {});
+  }
+  return schema;
+}
+
+function typeLabel(schema: any, components: Record<string, any>): string {
+  const s = deref(schema, components);
+  if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" \\| ");
+  if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
+  if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
+  if (s.type === "string" && s.format) return `string (${s.format})`;
+  return s.type ?? "object";
+}
+
+function constraints(s: any): string {
+  const out: string[] = [];
+  if (s.default !== undefined) out.push(`default \`${JSON.stringify(s.default)}\``);
+  if (s.minimum !== undefined || s.maximum !== undefined) out.push(`${s.minimum ?? ""}..${s.maximum ?? ""}`);
+  if (s.minLength !== undefined || s.maxLength !== undefined) out.push(`length ${s.minLength ?? ""}..${s.maxLength ?? ""}`);
+  if (s.minItems !== undefined || s.maxItems !== undefined) out.push(`items ${s.minItems ?? ""}..${s.maxItems ?? ""}`);
+  return out.join(", ");
+}
+
+const cell = (v: unknown) => String(v ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+
+function schemaTable(schema: any, components: Record<string, any>): string {
+  const rows: string[] = [];
+  const walk = (s: any, prefix: string, depth: number) => {
+    s = deref(s, components);
+    const required = new Set<string>(s.required ?? []);
+    for (const [name, raw] of Object.entries<any>(s.properties ?? {})) {
+      const prop = deref(raw, components);
+      const path = prefix ? `${prefix}.${name}` : name;
+      const extra = constraints(prop);
+      rows.push(`| \`${path}\` | ${typeLabel(prop, components)} | ${required.has(name) ? "yes" : "no"} | ${cell(prop.description)}${extra ? ` ${cell(extra)}` : ""} |`);
+      if (depth < 3) {
+        if (prop.type === "object" || prop.properties) walk(prop, path, depth + 1);
+        else if (prop.type === "array") {
+          const items = deref(prop.items ?? {}, components);
+          if (items.properties) walk(items, `${path}[]`, depth + 1);
+        }
+      }
+    }
+  };
+  walk(schema, "", 0);
+  if (!rows.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
+  return ["| Field | Type | Required | Description |", "| --- | --- | --- | --- |", ...rows].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Page template
 // ---------------------------------------------------------------------------
@@ -205,14 +312,55 @@ ${curlSnippet(v.model, example, files)}
   </Tab>`;
 }
 
+
+function schemaSections(spec: Spec): string {
+  // Group variants by the schema document they resolve to, so Kontext Pro and
+  // Max (same schema) render one block while Ultra and 1.1 (different) render two.
+  type Group = { variants: Variant[]; schema: ModelSchema | null };
+  const groups: Group[] = [];
+  for (const v of spec.variants) {
+    const schema = loadModelSchema(v.model);
+    const key = schema ? JSON.stringify({ i: schema.input, o: schema.output }) : `none:${JSON.stringify(v.example ?? spec.example)}`;
+    const g = groups.find((x) => (x.schema ? JSON.stringify({ i: x.schema.input, o: x.schema.output }) : `none:${JSON.stringify(x.variants[0].example ?? spec.example)}`) === key);
+    if (g) g.variants.push(v); else groups.push({ variants: [v], schema });
+  }
+  const fields = spec.fields.replace(/\s+/g, " ").trim();
+  const schemaCurl = (model: string) => `\`\`\`bash\ncurl -H "X-API-Key: $COMFY_API_KEY" \\\n  ${BASE_URL}${ROUTE}/${model}/openapi.json\n\`\`\``;
+
+  const block = (g: Group) => {
+    const first = g.variants[0];
+    const example = first.example ?? spec.example;
+    const s = g.schema;
+    const input = s?.authored && s.input
+      ? `${schemaTable(s.input, s.components)}\n\nThis table is generated from the schema Router serves at \`GET ${ROUTE}/${first.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
+      : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${first.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below are from the provider's own API documentation and are not yet validated server side.\n</Note>\n\n${fields}\n\n${schemaCurl(first.model)}`;
+    const inputExample = JSON.stringify(s?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
+    const output = s?.output
+      ? schemaTable(s.output, s.components)
+      : `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
+    const outputExample = JSON.stringify(s?.outputExample ?? spec.result.example, null, 2);
+    return { input, inputExample, output, outputExample };
+  };
+
+  const render = (title: string, body: (b: ReturnType<typeof block>) => string) => {
+    if (groups.length === 1) return `## ${title}\n\n${body(block(groups[0]))}\n`;
+    return `## ${title}\n\n<Tabs>\n${groups.map((g) => `  <Tab title="${g.variants.map((v) => v.title).join(" / ")}">\n${body(block(g))}\n  </Tab>`).join("\n")}\n</Tabs>\n`;
+  };
+
+  return [
+    render("Input schema", (b) => b.input),
+    render("Input example", (b) => `\`\`\`json\n${b.inputExample}\n\`\`\``),
+    render("Output schema", (b) => b.output),
+    render("Output example", (b) => `\`\`\`json\n${b.outputExample}\n\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`),
+  ].join("\n");
+}
+
 function renderPage(spec: Spec, dir: string): string {
   const overview = "/" + dir; // tutorials/partner-nodes/<provider>/<model>
   const both = spec.variants.length > 1;
   const modelsPhrase = both
     ? `both ${spec.name} models`
     : `${spec.name}`;
-  const fields = spec.fields.replace(/\s+/g, " ").trim();
-  const resultJson = JSON.stringify(spec.result.example, null, 2);
   return `---
 title: "Call ${spec.name} from code with Comfy Router"
 description: "${spec.description.replace(/\s+/g, " ").trim()}"
@@ -238,23 +386,7 @@ ${spec.variants.some((v) => v.example) ? "Pick the tab for the model you want to
 ${spec.variants.map((v) => variantBlock(v, spec)).join("\n")}
 </Tabs>
 
-## Request fields
-
-${fields} This list is a convenience: the authoritative schema is served live, and it is the same document Router validates your call against.
-
-\`\`\`bash
-curl -H "X-API-Key: $COMFY_API_KEY" \\
-  ${BASE_URL}${ROUTE}/${spec.variants[0].model}/openapi.json
-\`\`\`
-
-## Read the result
-
-Router holds the connection until the ${spec.task ?? "generation"} is finished and returns ${possessive(spec.provider)} native result. The ${spec.result.label} is at \`${spec.result.path}\`:
-
-\`\`\`json
-${resultJson}
-\`\`\`
-${spec.result.note ? `\n${spec.result.note}\n` : ""}
+${schemaSections(spec)}
 <RouterCodeFooter />
 `;
 }

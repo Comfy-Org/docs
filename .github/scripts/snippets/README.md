@@ -25,6 +25,18 @@ pnpm code-pages:check   # CI: fail if any code.mdx is stale, and syntax-check th
 `code-pages-check.yml` runs the check on any PR touching a spec, a generated
 page, the shared Router snippets or the generator.
 
+## Schema sections
+
+Every Code page ends with Input schema, Input example, Output schema and
+Output example. They render from `router-schemas/<provider>/<model>.json`,
+which is the exact body of `GET https://api.comfy.org/v2/models/<provider>/<model>/openapi.json`
+(a standalone OpenAPI document; the spec-sync bot drops these in, do not hand
+write them). When the file is absent, or reports
+`x-comfy-input-schema-authored: false`, the page falls back to the spec's
+hand-written `fields` prose and `example` / `result.example`, with a note that
+Router has not published the schema yet. Variants that resolve to the same
+schema share one block; variants with different schemas get tabs.
+
 ## Adding a model
 
 1. Create `code.yaml` in the model's directory (copy the Kontext one).
