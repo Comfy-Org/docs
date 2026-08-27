@@ -1,0 +1,234 @@
+---
+title: "Serverless API"
+description: "버전 관리되는 ComfyUI 환경을 빌드하고, 관리형 엔드포인트로 배포한 뒤 API를 통해 워크플로를 실행합니다."
+icon: "cloud-arrow-up"
+translationSourceHash: 011b0f78
+translationFrom: development/serverless/overview.mdx
+translationBlockHashes:
+  "_intro": 61dfd25a
+  "Quick start": 60f7fe62
+  "The build file": fc8f3702
+  "1. Initialize a Build": 3e2f5628
+  "2. Update and release": 79f5a9a4
+  "Regions and GPU availability": 3cf9a951
+  "3. Deploy a release": 2052f8d5
+  "4. Run a workflow": 30eca3a8
+  "Operate a deployment": de5e72b5
+  "Inspect and clean up": 0033fd9b
+  "Next steps": 8765dc11
+---
+
+<Warning>
+  Serverless API는 현재 베타 버전입니다. [platform.comfy.org](https://platform.comfy.org)에서 가입하여 액세스를 신청하세요.
+</Warning>
+
+Serverless API는 ComfyUI 워크플로에 관리형 URL과 온디맨드 GPU 용량을 제공합니다. 새로운 Build and Deploy CLI는 빌드 정의를 프로젝트 안에 보관하고, 그 정의로부터 릴리스를 생성하며, 트래픽을 처리할 준비가 되면 릴리스를 배포합니다.
+
+<CardGroup cols={2}>
+  <Card title="1. 빌드(Build)" icon="box">
+    로컬 ComfyUI 설치로부터 빌드 사양을 생성합니다.
+  </Card>
+  <Card title="2. 릴리스(Release)" icon="tag">
+    Build에서 변경 불가능한 Linux/NVIDIA 릴리스를 만듭니다.
+  </Card>
+  <Card title="3. 배포(Deploy)" icon="cloud-arrow-up">
+    릴리스에 URL과 관리형 GPU 용량을 부여합니다.
+  </Card>
+  <Card title="4. 실행(Run)" icon="code">
+    활성 배포에 API 형식 워크플로를 제출합니다.
+  </Card>
+</CardGroup>
+
+## 빠른 시작
+
+로컬 설치와 API 형식 워크플로가 준비되면 다음 명령을 사용하세요.
+
+compute 출력 결과를 참고해 유효한 리전과 GPU를 선택하세요. 필요하면 `<region>`과 `l4`를 바꿉니다. `deploy up`이 출력하는 배포 ID를 마지막 명령에 복사하세요.
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+
+comfy build push --release --target linux/nvidia
+comfy deploy refs compute # 사용 가능한 리전과 GPU 클래스 확인
+comfy deploy up --gpu l4 --region <region> --min 1 --max 4 --watch # 배포 ID 출력
+comfy deploy run --workflow workflow_api.json --deployment <deployment-id> --output-dir ./results
+```
+
+<Steps>
+  <Step title="초기화">
+    ```bash
+    comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+    ```
+  </Step>
+  <Step title="릴리스 생성">
+    ```bash
+    comfy build push --release --target linux/nvidia
+    ```
+    이 명령은 Build를 동기화하고 지정한 타깃에 대한 릴리스를 생성합니다.
+  </Step>
+  <Step title="배포 시작">
+    선택한 GPU를 어디에서 사용할 수 있는지 모른다면 먼저 확인하세요.
+
+    ```bash
+    comfy deploy refs compute --region <region>
+    ```
+
+    그런 다음 배포를 생성하거나 조정(reconcile)합니다.
+
+    ```bash
+    comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+    ```
+    `deploy up`은 새 배포 ID를 출력합니다. 나중에 다시 확인해야 한다면 현재 Build의 준비 상태 배포를 나열하세요.
+
+    ```bash
+    comfy deploy ls --status ready
+    ```
+
+    반환된 `dep_...` 값을 `--deployment`에 사용합니다.
+  </Step>
+  <Step title="워크플로 실행">
+    ```bash
+    comfy deploy run \
+      --workflow workflow_api.json \
+      --deployment <deployment-id> \
+      --output-dir ./results
+    ```
+    CLI가 API 형식 워크플로를 제출하고 그 출력을 `./results`에 다운로드합니다.
+  </Step>
+</Steps>
+
+## 빌드 파일
+
+`comfy-build.yaml`은 Build의 로컬 원본 정보(source of truth)입니다. 빌드 정의와 마지막으로 확인한 원격 상태를 저장하므로, CLI가 올바른 Build를 자동으로 선택하고 로컬 변경이 더 최신의 원격 정의를 덮어쓰기 전에 경고할 수 있습니다.
+
+이 파일은 프로젝트와 함께 보관하세요. Build를 설명하는 파일일 뿐, 모델 데이터 자체는 포함하지 않습니다.
+
+## 1. Build 초기화
+
+로컬 ComfyUI 설치에서 시작합니다. 이 명령은 모델과 커스텀 노드를 스캔한 뒤 `comfy-build.yaml`을 작성합니다.
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+```
+
+푸시하기 전에 로컬 사양이 설치본 및 원격 Build와 어떻게 다른지 확인하세요.
+
+```bash
+comfy build status
+```
+
+## 2. 업데이트와 릴리스
+
+로컬 ComfyUI 설치를 변경한 후 로컬 빌드 정의를 새로 고칩니다.
+
+```bash
+comfy build update --yes
+```
+
+빠른 방법으로, 한 번의 명령으로 정의를 푸시하고 타깃에 대해 릴리스할 수 있습니다.
+
+```bash
+comfy build push --release --target linux/nvidia
+```
+
+기존 Build에서 또 다른 릴리스를 만들어야 한다면, 지원되는 타깃을 확인한 뒤 명시적으로 릴리스를 생성하세요.
+
+```bash
+comfy build refs build-targets
+comfy build release create --target linux/nvidia --watch
+```
+
+특정 릴리스의 빌드 로그를 따라가려면 다음을 사용합니다.
+
+```bash
+comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## 리전과 GPU 가용성
+
+리전 용량은 변하므로 스크립트에 정적 목록을 복사하지 마세요. 배포 대상을 선택할 때는 플랫폼 카탈로그를 조회하세요.
+
+```bash
+comfy deploy refs compute
+```
+
+결과를 필터링하려면 `--region <region>`을 사용하세요.
+
+```bash
+comfy deploy refs compute --region <region>
+```
+
+반환된 `region`과 `gpu` 쌍을 `comfy deploy up`에 복사합니다.
+
+```bash
+comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+```
+
+배포 시점에 각 리전에서 사용할 수 있는 GPU 클래스는 이 카탈로그가 원본 정보입니다.
+
+## 3. 릴리스 배포
+
+리전에서 사용 가능한 컴퓨트를 확인한 뒤, 선택한 릴리스에 대한 배포를 생성하거나 조정합니다.
+
+```bash
+comfy deploy refs compute --region US-MO-2
+
+comfy deploy up \
+  --gpu l4 \
+  --region US-MO-2 \
+  --min 1 \
+  --max 4 \
+  --watch
+```
+
+`--min`과 `--max`는 워커 수의 상한과 하한을 설정합니다. 배포 상태, 릴리스 최신 여부, 서빙 활동을 추적하려면 `comfy deploy status --watch`를 사용하세요.
+
+## 4. 워크플로 실행
+
+준비된 배포에 [API 형식 워크플로](/ko/development/api-development/workflow-api-format)를 제출합니다.
+
+```bash
+comfy deploy run \
+  --workflow workflow_api.json \
+  --deployment dep_123456 \
+  --output-dir ./results
+```
+
+`COMFY_BASE_URL`을 배포 URL로 설정하면 [Comfy SDK](/ko/development/api-development/sdks)에서도 이 엔드포인트를 호출할 수 있습니다. SDK 요청에는 여전히 API 키가 필요합니다. [기본 URL 선택](/ko/development/api-development/sdks#기본-url-선택)을 참조하세요.
+
+## 배포 운영
+
+```bash
+# 워커 수의 상한과 하한 변경
+comfy deploy scale --deployment dep_123456 --min 2 --max 5
+
+# 배포 레코드를 유지한 채 일시 중지 또는 재개
+comfy deploy stop --deployment dep_123456
+comfy deploy start --deployment dep_123456
+```
+
+## 확인 및 정리
+
+```bash
+# Build 상태
+comfy build ls
+comfy build show --id bld_123456
+comfy build release ls
+comfy build release show rel_123456
+
+# 배포 상태
+comfy deploy ls --workspace --status ready
+comfy deploy logs --deployment dep_123456
+comfy deploy events --deployment dep_123456
+```
+
+<Warning>
+  배포 삭제와 Build 삭제는 서로 별개인 되돌릴 수 없는 작업입니다. `comfy deploy delete --yes`나 `comfy build delete --id bld_123456 --yes`를 사용하기 전에 대상을 확인하세요.
+</Warning>
+
+## 다음 단계
+
+- [Comfy SDK](/ko/development/api-development/sdks)
+- [Comfy API v2 개요](/ko/api-reference/v2/overview)
+- [워크플로 API 형식](/ko/development/api-development/workflow-api-format)
+- [Comfy CLI 참조](/ko/comfy-cli/reference)
