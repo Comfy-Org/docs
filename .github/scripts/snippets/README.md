@@ -33,8 +33,9 @@ which is the exact body of `GET https://api.comfy.org/v2/models/<provider>/<mode
 (a standalone OpenAPI document; the spec-sync bot drops these in, do not hand
 write them). When the file is absent, or reports
 `x-comfy-input-schema-authored: false`, the page falls back to the spec's
-hand-written `fields` prose and `example` / `result.example`, with a note that
-Router has not published the schema yet. Variants that resolve to the same
+`input` / `output` JSON Schema blocks (rendered as the same ParamField /
+ResponseField list) and `example` / `result.example`, with a note that Router
+has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
 
 ## Adding a model

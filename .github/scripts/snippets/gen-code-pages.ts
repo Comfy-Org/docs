@@ -21,7 +21,7 @@ const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 const CLIENT_TIMEOUT_S = 660; // above Router's 10 minute server deadline
 
-type Variant = { title: string; model: string; example?: Record<string, unknown> };
+type Variant = { title: string; model: string; example?: Record<string, unknown>; input?: any; output?: any };
 type Spec = {
   name: string;
   provider: string;
@@ -29,7 +29,9 @@ type Spec = {
   task?: string;
   variants: Variant[];
   example: Record<string, unknown>;
-  fields: string;
+  fields?: string;
+  input?: any;
+  output?: any;
   result: { path: string; label: string; example: unknown; note?: string };
   intro?: string;
 };
@@ -257,19 +259,30 @@ function constraints(s: any): string {
   return out.join(", ");
 }
 
-const cell = (v: unknown) => String(v ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+const attr = (v: unknown) => String(v ?? "").replace(/"/g, "&quot;").replace(/\s+/g, " ").trim();
 
-function schemaTable(schema: any, components: Record<string, any>): string {
-  const rows: string[] = [];
+/** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
+function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response"): string {
+  const blocks: string[] = [];
   const walk = (s: any, prefix: string, depth: number) => {
     s = deref(s, components);
     const required = new Set<string>(s.required ?? []);
     for (const [name, raw] of Object.entries<any>(s.properties ?? {})) {
       const prop = deref(raw, components);
       const path = prefix ? `${prefix}.${name}` : name;
-      const extra = constraints(prop);
-      rows.push(`| \`${path}\` | ${typeLabel(prop, components)} | ${required.has(name) ? "yes" : "no"} | ${cell(prop.description)}${extra ? ` ${cell(extra)}` : ""} |`);
-      if (depth < 3) {
+      const tag = kind === "param" ? "ParamField" : "ResponseField";
+      const nameAttr = kind === "param" ? `body="${path}"` : `name="${path}"`;
+      const type = attr(typeLabel({ ...prop, enum: undefined }, components));
+      const attrs = [nameAttr, `type="${type}"`];
+      if (required.has(name)) attrs.push("required");
+      if (prop.default !== undefined) attrs.push(`default="${attr(JSON.stringify(prop.default))}"`);
+      const body: string[] = [];
+      if (prop.description) body.push(String(prop.description).trim());
+      if (prop.enum) body.push(`Possible values: ${prop.enum.map((v: unknown) => `\`${String(v)}\``).join(", ")}`);
+      if (prop.minimum !== undefined || prop.maximum !== undefined) body.push(`Range: \`${prop.minimum ?? "…"}\` to \`${prop.maximum ?? "…"}\``);
+      if (prop.format) body.push(`Format: \`${prop.format}\``);
+      blocks.push(`<${tag} ${attrs.join(" ")}>\n  ${body.join("\n\n  ") || " "}\n</${tag}>`);
+      if (depth < 4) {
         if (prop.type === "object" || prop.properties) walk(prop, path, depth + 1);
         else if (prop.type === "array") {
           const items = deref(prop.items ?? {}, components);
@@ -279,8 +292,8 @@ function schemaTable(schema: any, components: Record<string, any>): string {
     }
   };
   walk(schema, "", 0);
-  if (!rows.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
-  return ["| Field | Type | Required | Description |", "| --- | --- | --- | --- |", ...rows].join("\n");
+  if (!blocks.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
+  return blocks.join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -320,24 +333,36 @@ function schemaSections(spec: Spec): string {
   const groups: Group[] = [];
   for (const v of spec.variants) {
     const schema = loadModelSchema(v.model);
-    const key = schema ? JSON.stringify({ i: schema.input, o: schema.output }) : `none:${JSON.stringify(v.example ?? spec.example)}`;
-    const g = groups.find((x) => (x.schema ? JSON.stringify({ i: x.schema.input, o: x.schema.output }) : `none:${JSON.stringify(x.variants[0].example ?? spec.example)}`) === key);
+    const key = schema ? JSON.stringify({ i: schema.input, o: schema.output }) : `none:${JSON.stringify([v.input ?? spec.input, v.output ?? spec.output, v.example ?? spec.example])}`;
+    const g = groups.find((x) => (x.schema ? JSON.stringify({ i: x.schema.input, o: x.schema.output }) : `none:${JSON.stringify([x.variants[0].input ?? spec.input, x.variants[0].output ?? spec.output, x.variants[0].example ?? spec.example])}`) === key);
     if (g) g.variants.push(v); else groups.push({ variants: [v], schema });
   }
-  const fields = spec.fields.replace(/\s+/g, " ").trim();
-  const schemaCurl = (model: string) => `\`\`\`bash\ncurl -H "X-API-Key: $COMFY_API_KEY" \\\n  ${BASE_URL}${ROUTE}/${model}/openapi.json\n\`\`\``;
+  const fields = (spec.fields ?? "").replace(/\s+/g, " ").trim();
 
   const block = (g: Group) => {
     const first = g.variants[0];
     const example = first.example ?? spec.example;
     const s = g.schema;
-    const input = s?.authored && s.input
-      ? `${schemaTable(s.input, s.components)}\n\nThis table is generated from the schema Router serves at \`GET ${ROUTE}/${first.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
-      : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${first.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below are from the provider's own API documentation and are not yet validated server side.\n</Note>\n\n${fields}\n\n${schemaCurl(first.model)}`;
+    const specInput = first.input ?? spec.input;
+    const specOutput = first.output ?? spec.output;
+    const notPublished = `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${first.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
+    let input: string;
+    if (s?.authored && s.input) {
+      input = `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${first.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
+    } else if (specInput) {
+      input = `${notPublished}\n\n${schemaFields(specInput, {}, "param")}`;
+    } else {
+      input = `${notPublished}\n\n${fields}`;
+    }
     const inputExample = JSON.stringify(s?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
-    const output = s?.output
-      ? schemaTable(s.output, s.components)
-      : `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
+    let output: string;
+    if (s?.output) {
+      output = schemaFields(s.output, s.components, "response");
+    } else if (specOutput) {
+      output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response")}`;
+    } else {
+      output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
+    }
     const outputExample = JSON.stringify(s?.outputExample ?? spec.result.example, null, 2);
     return { input, inputExample, output, outputExample };
   };
@@ -438,7 +463,7 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
     problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
     continue;
   }
-  for (const key of ["name", "provider", "description", "variants", "example", "fields", "result"] as const) {
+  for (const key of ["name", "provider", "description", "variants", "example", "result"] as const) {
     if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
   }
   if (problems.some((m) => m.startsWith(specPath))) continue;
