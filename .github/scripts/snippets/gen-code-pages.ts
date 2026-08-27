@@ -1,0 +1,292 @@
+#!/usr/bin/env bun
+/**
+ * Generate the per-model "Code" pages (tutorials/partner-nodes/<provider>/<model>/code.mdx)
+ * from their code.yaml specs.
+ *
+ *   bun .github/scripts/snippets/gen-code-pages.ts            # write every code.mdx
+ *   bun .github/scripts/snippets/gen-code-pages.ts --check    # exit 1 if any code.mdx is stale
+ *   bun .github/scripts/snippets/gen-code-pages.ts --validate # also syntax-check the emitted snippets
+ *
+ * The template below is the only place the page shape lives. Python, TypeScript
+ * and cURL are all emitted from the same `example` object, so the three cannot
+ * disagree about the request body.
+ */
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { join, dirname, relative } from "node:path";
+import { tmpdir } from "node:os";
+
+const ROOT = join(import.meta.dir, "../../..");
+const SPEC_GLOB = "tutorials/partner-nodes/**/code.yaml";
+const BASE_URL = "https://api.comfy.org";
+const ROUTE = "/v2/models";
+const CLIENT_TIMEOUT_S = 660; // above Router's 10 minute server deadline
+
+type Variant = { title: string; model: string };
+type Spec = {
+  name: string;
+  provider: string;
+  description: string;
+  task?: string;
+  variants: Variant[];
+  example: Record<string, unknown>;
+  fields: string;
+  result: { path: string; label: string; example: unknown; note?: string };
+};
+
+// ---------------------------------------------------------------------------
+// Snippet emitters. `@file:<path>` values are read from disk and base64 encoded.
+// ---------------------------------------------------------------------------
+
+type FileInput = { key: string; path: string; varName: string };
+
+function fileInputs(example: Record<string, unknown>): FileInput[] {
+  return Object.entries(example)
+    .filter(([, v]) => typeof v === "string" && v.startsWith("@file:"))
+    .map(([key, v]) => ({ key, path: (v as string).slice("@file:".length), varName: key }));
+}
+
+function pyValue(key: string, v: unknown, files: FileInput[]): string {
+  const f = files.find((x) => x.key === key);
+  return f ? f.varName : JSON.stringify(v);
+}
+
+function tsValue(key: string, v: unknown, files: FileInput[]): string {
+  const f = files.find((x) => x.key === key);
+  return f ? camel(f.varName) : JSON.stringify(v);
+}
+
+function camel(s: string): string {
+  return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+function shellVar(s: string): string {
+  return s.toUpperCase();
+}
+
+function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string): string {
+  const reads = files
+    .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
+    .join("\n\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `        ${JSON.stringify(k)}: ${pyValue(k, v, files)},`)
+    .join("\n");
+  return `import ${files.length ? "base64\nimport " : ""}os
+import uuid
+
+import httpx
+${reads ? `\n${reads}\n` : ""}
+response = httpx.post(
+    "${BASE_URL}${ROUTE}/${model}",
+    headers={
+        "X-API-Key": os.environ["COMFY_API_KEY"],
+        "Idempotency-Key": str(uuid.uuid4()),
+    },
+    json={
+${body}
+    },
+    timeout=httpx.Timeout(${CLIENT_TIMEOUT_S.toFixed(1)}, connect=10.0),
+)
+response.raise_for_status()
+result = response.json()
+print("image:", result${pyPath(resultPath)})`;
+}
+
+function pyPath(path: string): string {
+  return path.split(".").map((p) => `[${JSON.stringify(p)}]`).join("");
+}
+
+function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string): string {
+  const imports = files.length ? `import { readFile } from "node:fs/promises";\n\n` : "";
+  const reads = files
+    .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `    ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsValue(k, v, files)},`)
+    .join("\n");
+  const resultType = resultPath
+    .split(".")
+    .reverse()
+    .reduce((acc, p) => `{ ${p}: ${acc} }`, "string");
+  return `${imports}${reads ? `${reads}\n\n` : ""}const response = await fetch("${BASE_URL}${ROUTE}/${model}", {
+  method: "POST",
+  headers: {
+    "X-API-Key": process.env.COMFY_API_KEY!,
+    "Idempotency-Key": crypto.randomUUID(),
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+${body}
+  }),
+  signal: AbortSignal.timeout(${CLIENT_TIMEOUT_S}_000),
+});
+if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+
+const result = (await response.json()) as ${resultType};
+console.log("image:", result.${resultPath});`;
+}
+
+function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
+  const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
+  const esc = (v: unknown) => JSON.stringify(v).replace(/"/g, '\\"');
+  const entries = Object.entries(example).map(([k, v]) => {
+    const f = files.find((x) => x.key === k);
+    const value = f ? `\\"$${shellVar(f.varName)}\\"` : esc(v);
+    return `${esc(k)}: ${value}`;
+  });
+  const json = `{${entries.join(", ")}}`;
+  return `${reads ? `${reads}\n\n` : ""}curl ${BASE_URL}${ROUTE}/${model} \\
+  -H "X-API-Key: $COMFY_API_KEY" \\
+  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Content-Type: application/json" \\
+  -d "${json}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Page template
+// ---------------------------------------------------------------------------
+
+function variantBlock(v: Variant, spec: Spec): string {
+  const files = fileInputs(spec.example);
+  return `  <Tab title="${v.title}">
+**Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`  **Model ID:** \`${v.model}\`
+
+<CodeGroup>
+\`\`\`python
+${pythonSnippet(v.model, spec.example, files, spec.result.path)}
+\`\`\`
+
+\`\`\`typescript
+${typescriptSnippet(v.model, spec.example, files, spec.result.path)}
+\`\`\`
+
+\`\`\`bash
+${curlSnippet(v.model, spec.example, files)}
+\`\`\`
+</CodeGroup>
+  </Tab>`;
+}
+
+function renderPage(spec: Spec, dir: string): string {
+  const overview = "/" + dir; // tutorials/partner-nodes/<provider>/<model>
+  const both = spec.variants.length > 1;
+  const modelsPhrase = both
+    ? `both ${spec.name} models`
+    : `${spec.name}`;
+  const fields = spec.fields.replace(/\s+/g, " ").trim();
+  const resultJson = JSON.stringify(spec.result.example, null, 2);
+  return `---
+title: "Call ${spec.name} from code with Comfy Router"
+description: "${spec.description.replace(/\s+/g, " ").trim()}"
+sidebarTitle: "Code"
+---
+
+{/* GENERATED FILE. Edit code.yaml in this directory and run \`pnpm code-pages:gen\`. */}
+
+import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
+import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+
+This page shows how to call ${spec.name} from your own code. For what the model is and what it does best, see the [${spec.name} overview](${overview}). To run it interactively in ComfyUI instead, see the [workflows](${overview}/workflow).
+
+<RouterPreviewNotice />
+
+Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${spec.provider}' own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\` before running any snippet.
+
+## Quick start
+${both ? `
+The only difference between the variants is the model ID in the path. Pick the tab for the model you want to call.
+` : ""}
+<Tabs>
+${spec.variants.map((v) => variantBlock(v, spec)).join("\n")}
+</Tabs>
+
+## Request fields
+
+${fields} This list is a convenience: the authoritative schema is served live, and it is the same document Router validates your call against.
+
+\`\`\`bash
+curl -H "X-API-Key: $COMFY_API_KEY" \\
+  ${BASE_URL}${ROUTE}/${spec.variants[0].model}/openapi.json
+\`\`\`
+
+## Read the result
+
+Router holds the connection until the ${spec.task ?? "generation"} is finished and returns ${spec.provider}' native result. The ${spec.result.label} is at \`${spec.result.path}\`:
+
+\`\`\`json
+${resultJson}
+\`\`\`
+${spec.result.note ? `\n${spec.result.note}\n` : ""}
+<RouterCodeFooter />
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Validation of emitted snippets (syntax only; nothing is executed or billed)
+// ---------------------------------------------------------------------------
+
+function validate(page: string, rel: string): string[] {
+  const problems: string[] = [];
+  const tmp = mkdtempSync(join(tmpdir(), "code-pages-"));
+  try {
+    const fences = [...page.matchAll(/```(python|typescript|bash)\n([\s\S]*?)```/g)];
+    fences.forEach((m, i) => {
+      const [, lang, code] = m;
+      const file = join(tmp, `s${i}.${lang === "python" ? "py" : lang === "typescript" ? "ts" : "sh"}`);
+      writeFileSync(file, code);
+      const cmd =
+        lang === "python"
+          ? ["python3", "-m", "py_compile", file]
+          : lang === "typescript"
+            ? ["bun", "build", "--target=node", "--no-bundle", file, "--outfile", `${file}.out.js`]
+            : ["bash", "-n", file];
+      const r = Bun.spawnSync(cmd, { stderr: "pipe", stdout: "pipe" });
+      if (r.exitCode !== 0) problems.push(`${rel}: ${lang} snippet #${i + 1} failed syntax check:\n${r.stderr.toString()}`);
+    });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------
+
+const check = process.argv.includes("--check");
+const doValidate = process.argv.includes("--validate");
+const glob = new Bun.Glob(SPEC_GLOB);
+let stale: string[] = [];
+let problems: string[] = [];
+let count = 0;
+for (const specPath of glob.scanSync({ cwd: ROOT })) {
+  count++;
+  let spec: Spec;
+  try {
+    spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
+  } catch (e) {
+    problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
+    continue;
+  }
+  for (const key of ["name", "provider", "description", "variants", "example", "fields", "result"] as const) {
+    if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+  }
+  if (problems.some((m) => m.startsWith(specPath))) continue;
+  const dir = dirname(specPath);
+  const out = join(ROOT, dir, "code.mdx");
+  const page = renderPage(spec, dir);
+  if (doValidate) problems.push(...validate(page, relative(ROOT, out)));
+  if (check) {
+    if (!existsSync(out) || readFileSync(out, "utf8") !== page) stale.push(relative(ROOT, out));
+  } else {
+    writeFileSync(out, page);
+    console.log(`wrote ${relative(ROOT, out)}`);
+  }
+}
+if (count === 0) {
+  console.error(`no specs matched ${SPEC_GLOB}`);
+  process.exit(1);
+}
+if (stale.length) {
+  console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
+}
+if (problems.length) console.error(problems.join("\n"));
+if (stale.length || problems.length) process.exit(1);
+if (check) console.log(`${count} code page(s) fresh`);
