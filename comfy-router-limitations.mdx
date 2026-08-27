@@ -1,0 +1,138 @@
+---
+title: "Comfy Router limitations"
+description: "What Comfy Router does not do today, what to use instead where an alternative exists, and which of those limits are expected to change."
+---
+
+<Note>
+**Comfy Router is not generally available yet.** The routes referenced below —
+`POST /v2/models/{provider}/{model}` and its catalog and schema siblings — are
+not serving requests yet: an authenticated call answers `404` today. This page
+describes the contract they will serve, published ahead of that rollout so an
+integration can be written against a known shape. Everything below is a
+statement about that contract, not about behaviour you can exercise right now.
+</Note>
+
+Comfy Router is one synchronous call: you send a partner model's native input to one host with one credential, the connection stays open, and a `200` carries that model's native output. That shape is what makes the first integration short, and it is also where every limit on this page comes from. Read this page before you design around Router, not after — most of what follows has a straightforward alternative, and the ones that do not are worth knowing before you build on an assumption Router does not hold.
+
+## At a glance
+
+Each row links to the section that explains it. **Deliberate** means the limit is part of how Router works and is not waiting on anything; **not yet** means Router is expected to gain the capability, though this page makes no commitment about when.
+
+| Limitation | Use instead | Status |
+| --- | --- | --- |
+| [No queued submission — the call is synchronous](#no-queued-submission) | Hold the connection open, or use a partner-proxy route that submits and polls | Not yet |
+| [No cost or credit figures on a response](#no-cost-or-credit-figures-on-a-response) | Read your balance and usage on the Comfy platform; check `billing` on the model's catalog entry before calling | Not yet |
+| [No way to resume a call you lost](#no-way-to-resume-a-call-you-lost) | Send `Idempotency-Key` on every call and keep it: re-sending it collects the original generation for 24h, or starts a fresh run when there is nothing to collect | Not yet |
+| [Calls are cut off at a server deadline](#calls-are-cut-off-at-a-server-deadline) | Give your client a timeout above the deadline; re-send the same `Idempotency-Key` to collect the generation that kept running; split work that cannot finish inside it | Deliberate |
+| [Requests are rate limited per caller](#requests-are-rate-limited-per-caller) | Back off for `Retry-After` on a `429` `rate_limited`; cache the catalog reads rather than re-fetching them per call | Deliberate |
+| [No progress while a call runs](#no-progress-while-a-call-runs) | Nothing on Router today; a partner-proxy route may expose its own progress | Not yet |
+| [Three forecast buckets are not in the vocabulary](#three-forecast-buckets-are-not-in-the-vocabulary) | Handle the fifteen buckets Router publishes; treat anything unrecognized as `internal_error` | Not yet |
+| [Router does not cover every partner operation](#router-does-not-cover-every-partner-operation) | The partner-proxy routes under `/proxy/…` on the same host | Deliberate |
+
+## No queued submission
+
+There is one way to run a model: `POST /v2/models/{provider}/{model}`, which holds the connection until the generation finishes and returns the result in the response. There is no endpoint that accepts a job, hands you an identifier and lets you collect the result later, and no callback or webhook on completion.
+
+**What to do instead.** For most models this is a non-issue: keep the connection open and read the result. A fast image model returns in a few seconds; a long video generation can run for minutes, and Router will hold the connection for it. Set a generous client read timeout — above [Router's own deadline](#calls-are-cut-off-at-a-server-deadline) — and treat the call as long-running rather than as a fast request. If your architecture genuinely cannot hold a connection open — a serverless function with a short execution ceiling, a browser tab you expect the user to close — then run the call from a worker you control that can, or use a partner-proxy route for a provider that exposes its own submit-and-poll pair. See [the last section](#router-does-not-cover-every-partner-operation).
+
+**Status: not yet.** The queued path is expected; nothing on this page commits to when.
+
+## No cost or credit figures on a response
+
+A Router response tells you what the model produced, and its contract says nothing about what it cost. There is no charge amount, no credit balance and no usage figure in the body, and the route declares no cost header. One caveat, so it does not surprise you: Router shares a billing path with the partner-proxy routes, and that path stamps `X-Comfy-Credits-Used` on a billed response for an allowlist of providers, so the header can appear on a Router call to one of them. It is not part of Router's contract — it is absent for every provider outside that allowlist, and it is deliberately *not* replayed on an idempotent retry, precisely so a client summing it cannot double-count a call that was only paid for once. Do not build reconciliation on it. The model catalog is the same: it carries billing *facts* a caller needs before invoking, never prices. So you cannot reconcile spend from a Router response alone, and you cannot show a user "this call cost X" without getting X from somewhere else.
+
+**What to do instead.** Your balance, your usage and your invoices live on the Comfy platform at [platform.comfy.org](https://platform.comfy.org) — that is the source of truth for what you have spent and what you have left, and it is unaffected by anything on this page. Two things Router does tell you at call time are worth using: a call refused for lack of credit comes back as `insufficient_credits`, so you can handle exhaustion as a typed error rather than by pre-checking a balance; and each model's catalog entry carries `billing.charges_on_policy_rejection`, which says whether that specific model charges you for a generation it then refuses on content-policy grounds. It is a **string with three values**, not a boolean: `yes`, `no` and `unknown`. Read `unknown` as "this might charge you" — it means nobody has established that model's behaviour yet, and it exists precisely so an unchecked model is not published as a `no`, which is a claim. The field is deliberately not an `enum`, so treat any value you do not recognize as `unknown` too, and do not write a truthiness check over it: the string `"no"` is truthy in most languages, and that check gets backwards the one case it exists to catch. Providers differ on that, the difference is invisible at call time, and reading it before you call is how you avoid a charge you cannot explain afterwards.
+
+**Status: not yet** for per-call figures. Note that the *catalog* deliberately carries no prices — pricing belongs where pricing is maintained, not duplicated into a model listing that would drift from it.
+
+## No way to resume a call you lost
+
+Router does not keep a *resumable* record of an in-flight call. There is no status route, no job identifier, and nothing to reconnect to: if the connection drops mid-call — a client crash, a network partition, a deploy that restarts your process — the response you were waiting for is gone. What Router keeps instead is keyed on something you supply, which is why the whole recovery story depends on your having supplied it.
+
+**What to do instead.** Send an `Idempotency-Key` header on every call, and keep the value. Router reserves the key for the duration of the call and holds it for **24 hours from the first request**; re-sending the same request — same model path, same body — under the same key is answered rather than re-run, and which answer you get depends on what Router is holding:
+
+- **The finished response** — replayed byte for byte, marked `Idempotent-Replayed: true`, and not charged a second time. The charge settled when the original call completed.
+- **A generation the provider is still running** — the `504` `deadline_exceeded` or the lost connection left Router holding the provider's handle, so your resend polls that same generation instead of submitting another. You get `504` again with `Retry-After` until it finishes, then the result.
+- **The original call, still in flight** — `409` `concurrency_limit_exceeded` with `Retry-After`. Exactly one resend collects at a time; wait and ask again.
+- **Nothing it can answer with** — no response was ever committed to you, or the call ended in a `5xx` or one of the explicitly transient refusals (`408`, `425`, `429`). None of those charged you, so Router releases the key and your resend is a genuine fresh call — the right default for an outcome nobody paid for.
+
+The key is what makes all four of those work, and Router never gives it back to you: **no Router response carries the `Idempotency-Key`** — not the `200`, not the `504`, not any error body. It is yours to mint, so mint it *before* the call and store it for as long as you would care about the result. A caller who generated one inline and did not keep it has no handle on a generation they may already have been billed for. The [quickstart](/comfy-router-quickstart) has the collect loop in Python and TypeScript, and the official SDKs mint and reuse the key for you — the Python SDK also surfaces it on every exception it raises; in TypeScript, keep it yourself.
+
+Two rules, because both are easy to get wrong and neither fails loudly:
+
+**One key per logical call, reused across every attempt of that call.** The same key with a *different* request — a different body, but also a different model path, query string or method — is refused `409` `invalid_input` rather than quietly replacing the first call — so a request you corrected and want to re-send needs a NEW key. That includes correcting a `422`: the validation failure is itself recorded against the key, so the fixed body under the old key is a `409`.
+
+**A `409` `invalid_input` is terminal for that key, whatever its `detail` says.** Beyond the different-body case it also covers a call that completed but whose response Router could not keep a faithful copy of — a response past the replay cap, a handler that failed after answering, a write to you that came up short, or a recorded body encoded in a way your resend did not accept. Do not go hunting for a size problem when you see it, and do not retry it: there is no `Retry-After` on any of them because waiting changes nothing, and the answer in every case is a **new** key. In the recorded-but-unservable cases the original call completed and, if it succeeded, was charged, so Router will neither invent its response nor re-run it under the old key. (The different-body case is the one exception to that reading: it only tells you the key belongs to another request, not how that request turned out.)
+
+<Note>
+**In the contract, with one gap.** The `Idempotency-Key` request header, the
+`409` response and the `Idempotent-Replayed` and `Retry-After` response headers
+described here are declared on `POST /v2/models/{provider}/{model}`, so they
+appear in the generated [API reference](/comfy-router-reference) and in the
+specification the SDKs vendor, so an SDK picks them up when it regenerates. The
+gap: `Retry-After` is
+declared on the `409` and the `504` but **not** on the `rate_limited` `429`
+described [below](#requests-are-rate-limited-per-caller), which sends it too —
+read it there without waiting for the contract to say so.
+</Note>
+
+**Status: not yet.** Durable, resumable execution — a status route you can poll for a call you never held a key for — is expected to arrive with the queued path, which is where a request record has somewhere to live. Idempotent retry is the answer today and is not a stopgap: it is worth wiring in regardless, because it is also what stops an ordinary retry from being billed twice.
+
+## Calls are cut off at a server deadline
+
+One Router call may hold its connection for **10 minutes**. That is the default; it is a server-side configuration value rather than a fixed constant, so treat it as the number to design against rather than a guarantee etched into the contract. Past it, Router stops waiting, cancels its own in-flight request to the provider and answers `504` with `X-Comfy-Error-Type: deadline_exceeded`.
+
+**The deadline bounds the connection, not the charge.** Cancelling ends Router's own wait; it does not recall a generation a provider has already accepted. For the partners Router drives by submitting a job and polling it, that job keeps running after the `504` and **is billed if it completes** — you pay for work that was done, not for having been present to receive it. The one thing cancellation also cannot do is un-send an answer: if the handler wins the race and commits a response just as the bound expires, you keep that response rather than the `504`.
+
+**What to do instead.** Two things, and the second is the one people miss.
+
+Set your client's read timeout comfortably *above* the deadline, not below it. A client that gives up first turns a typed `504` with a request identifier into an opaque local abort, and you lose the one artifact support can trace.
+
+Then **re-send the same `Idempotency-Key`** — the generation you are being billed for is still running, and the key is how you collect it. Router keeps the key for **24 hours from the first request** carrying the provider's handle, and a resend with it polls that same generation rather than submitting a second one: still running answers this same `504` again with `Retry-After` naming when to ask next, finished answers `200` with the result and `Idempotent-Replayed: true` and is not charged again, and a terminal provider failure answers with its own bucket and releases the key. Without a key — or when the bound expired before the provider had accepted anything, which is every direct-return model and any submit leg that never answered — a retry is a genuine fresh dispatch, which is correct because there is nothing paid for that it could duplicate. See [the section above](#no-way-to-resume-a-call-you-lost) for the full set of answers a resend can get, and the [quickstart](/comfy-router-quickstart) for the loop in Python and TypeScript.
+
+If a single generation genuinely cannot finish inside the deadline, collecting it across resends works but is not the shape to design for: run it through a partner-proxy route that submits and polls, or break the work into calls that each finish inside the bound.
+
+Do not confuse `deadline_exceeded` with the other `504`. `provider_timeout` is the partner failing to answer in time; `deadline_exceeded` is Router's own bound expiring. Two causes on one status code, acted on differently — a `deadline_exceeded` says nothing about the request was rejected and the same call is worth re-sending under its key, while a `provider_timeout` says the partner is the thing that failed. Branch on `X-Comfy-Error-Type`, never on the status alone.
+
+**Status: deliberate.** A bound has to exist — without one, a stuck upstream holds a connection and a concurrency slot indefinitely. The specific number may be tuned; the existence of a deadline will not go away.
+
+## Requests are rate limited per caller
+
+Router bounds two different things about your traffic, and they answer with two different buckets on the same `429`. The concurrency limit caps how many calls you have **in flight** at once and answers `concurrency_limit_exceeded`; it clears the moment one of your own calls finishes, so retrying in seconds is right. The rate limit caps how **often** you may hit the Router surface at all — `POST /v2/models/{provider}/{model}` and the three catalog reads under `/v2/models` alike, whether the call ran a model or was refused before it could — and answers `rate_limited`. That one is an allowance that refills continuously over a one-minute window, so nothing you do drains it early: the response carries a `Retry-After` header with the seconds to wait, and `detail` names the window. Branch on `X-Comfy-Error-Type`, never on the status alone.
+
+The limit is keyed on the authenticated caller, not on the source address, so it follows your credential across hosts. A call that runs on your own provider key (bring-your-own-key) is exempt: you own that throughput. The allowance is a server-side configuration value rather than a published constant, and this page deliberately does not quote it; design for backoff, not for a number.
+
+**What to do instead.** Honour `Retry-After` — a retry inside it lands on the same refusal. Fetch `GET /v2/models` and a model's `openapi.json` once and cache them for the life of your process rather than re-reading them ahead of every call; they change only on a deploy. A client that keeps a request identifier from a `429` has the artifact support can trace.
+
+**Status: deliberate.** A per-caller bound on request rate has to exist for the same reason the deadline does. The number is tunable; the existence of the limit will not go away.
+
+## No progress while a call runs
+
+`POST /v2/models/{provider}/{model}` returns exactly once, at the end. There is no streaming response, no server-sent events, no percentage, no partial or preview frame. This holds even for partners whose own API is submit-and-poll: Router does that polling internally, inside your one call, and the intermediate states it sees are not forwarded to you. From the outside, a three-second image and a six-minute video are the same shape — one request, one response, nothing in between.
+
+**What to do instead.** On Router today, nothing: show an indeterminate progress state rather than a percentage you cannot source. If progress is a hard requirement for a specific provider, check whether that provider's partner-proxy routes expose their own polling or streaming and use those directly — a few do, and they are unchanged and fully supported.
+
+**Status: not yet**, and tied to the queued path: progress needs somewhere to report *to*, which a queued submission provides and a single synchronous call does not.
+
+## Three forecast buckets are not in the vocabulary
+
+Router's `error_type` vocabulary is a **closed set of fifteen** buckets — the fifteen the [API reference](/comfy-router-reference) lists and the quickstart points at. Three more are named in that reference's prose as expected additions: `file_download_error`, `cancelled` and `queue_timeout`. They are named, and that is all they are. They are **not members of the set today**: no Router response carries one, a client generated from the contract does not know them, and if Router were handed one internally it substitutes `internal_error` rather than putting it on the wire. So a branch you write for them today is a branch that never runs, and their appearance in the reference is not evidence that Router cancels calls or queues them — it does neither.
+
+They are forecast in writing rather than left out entirely because `error_type` is deliberately a plain string and not an `enum`, and a client that hard-rejects an unrecognized bucket fails hardest exactly when something has already gone wrong. Naming the additions in advance is how a reader knows the set is open-ended by design.
+
+**What to do instead.** Handle the fifteen buckets Router actually publishes, listed in full in the [API reference](/comfy-router-reference), and write one fallback branch that treats any unrecognized value as `internal_error`. That fallback is the whole mechanism: it is what lets these three, and any bucket added after your client was written, arrive without breaking you. Branch on the coarse bucket for control flow, and read the per-field `type` inside a `422` body when you need the specific reason.
+
+**Status: not yet.** Each of the three corresponds to behaviour Router does not have yet, and each joins the vocabulary in the same change that starts emitting it — never before.
+
+## Router does not cover every partner operation
+
+Router runs partner *models*. It does not front every operation a partner exposes — the file uploads, the account and asset reads, the provider-specific management calls, the streaming chat endpoints and the submit-and-poll pairs that some partners publish. Nor does Router reshape any of them: it forwards a model's native input and returns its native output unchanged, so there is no unified envelope to port an unsupported operation onto.
+
+**What to do instead.** The partner-proxy routes under `/proxy/…` remain fully supported on the same host, with the same credential, and they are the answer for anything Router does not cover. They are not deprecated, they are not on a sunset path, and using them alongside Router in the same integration is expected rather than a workaround. Reach for Router when you want one route shape and one credential across many models; reach for `/proxy/…` when you need a specific partner operation, a provider's own streaming response, or the submit-and-poll control that Router deliberately hides.
+
+**Status: deliberate.** Router narrows the surface on purpose — one route shape is the feature. The proxy surface stays where it is.
+
+## Next
+
+- [Comfy Router quickstart](/comfy-router-quickstart) — a first working call in Python or TypeScript.
+- [Comfy Router API reference](/comfy-router-reference) — every endpoint, every parameter and every error bucket Router does send.
