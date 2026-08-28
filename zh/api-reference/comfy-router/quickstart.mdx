@@ -1,27 +1,28 @@
 ---
 title: "Comfy Router 快速入门"
 description: "从零开始，大约五分钟内，使用 Python 和 TypeScript，在 Comfy Router 上生成一张图像。"
-translationSourceHash: 50fc5524
+translationSourceHash: ead13a74
 translationFrom: api-reference/comfy-router/quickstart.mdx
 translationBlockHashes:
-  "_intro": 46050c92
+  "_intro": d9a651bf
   "Why this page uses `bfl/flux-2-pro`": 0eaf0bb3
   "Get a key": 843d281f
-  "cURL": bc3e1e4c
-  "Python": 059e95b8
-  "TypeScript": 1053430f
+  "cURL": 8ea9cb9f
+  "Python": f892ccc3
+  "TypeScript": d0117cbc
   "Reading the `422`": 602cd505
-  "Find a model": 9b7855c1
-  "Where the model's fields come from": 7861bd52
+  "Retrying safely with your own key": d1e75ba8
+  "Find a model": a4caa991
+  "Where the model's fields come from": 9cf8930c
   "Next": 6aa641e1
 ---
 <Note>
-**Comfy Router 尚未正式发布。** 以下路由：`POST /v1/models/{provider}/{model}` 及其目录与 schema 兄弟路由，目前均尚未处理请求：经过身份验证的调用目前会返回 `404`。本页面记录的是这些路由未来将提供的契约，并提前于该发布公开，以便集成可以据此进行编写。这不是对当前可执行行为的描述。
+**Comfy Router 尚未正式发布。** 以下路由：`POST /v2/models/{provider}/{model}` 及其目录与 schema 兄弟路由，目前均尚未处理请求：经过身份验证的调用目前会返回 `404`。本页面记录的是这些路由未来将提供的契约，并提前于该发布公开，以便集成可以据此进行编写。这不是对当前可执行行为的描述。
 </Note>
 
 Comfy Router 通过单一主机、单一凭据和单一路由形状来运行合作伙伴模型。本页面是通往已生成图像的最短完整路径：安装客户端、设置密钥、发送一个请求、读取结果，并在真正遇到第一次失败之前，先看清失败的样子。
 
-Base URL 为 `https://api.comfy.org`。路由为 `POST /v1/models/{provider}/{model}`，请求体是模型自身的原生 JSON 输入，`200` 响应携带模型自身的原生 JSON 输出。Router 不会对两者进行包装，因此，只需更改主机，您已针对合作伙伴 API 写好的调用即可变成 Router 调用。
+Base URL 为 `https://api.comfy.org`。路由为 `POST /v2/models/{provider}/{model}`，请求体是模型自身的原生 JSON 输入，`200` 响应携带模型自身的原生 JSON 输出。Router 不会对两者进行包装，因此，只需更改主机，您已针对合作伙伴 API 写好的调用即可变成 Router 调用。
 
 ## 为什么本页使用 `bfl/flux-2-pro`
 
@@ -48,7 +49,7 @@ export COMFY_API_KEY="comfyui-..."
 最短的调用方式，适用于脚本、冒烟测试以及直接复制粘贴到终端：
 
 ```bash
-curl https://api.comfy.org/v1/models/bfl/flux-2-pro \
+curl https://api.comfy.org/v2/models/bfl/flux-2-pro \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
@@ -117,7 +118,7 @@ def run(model: str, arguments: dict, idempotency_key: str) -> dict:
     # provider a second time. Reuse the SAME key when retrying one logical
     # call; generate a new one for a new call.
     response = httpx.post(
-        f"{BASE_URL}/v1/models/{model}",
+        f"{BASE_URL}/v2/models/{model}",
         headers={
             "X-API-Key": os.environ["COMFY_API_KEY"],
             "Idempotency-Key": idempotency_key,
@@ -229,7 +230,7 @@ async function run<T>(
   // Idempotency-Key makes a retry safe on a PAID call: Router replays the
   // original response for 24h instead of dispatching (and billing) the provider
   // a second time. Reuse the SAME key when retrying one logical call.
-  const response = await fetch(`${BASE_URL}/v1/models/${model}`, {
+  const response = await fetch(`${BASE_URL}/v2/models/${model}`, {
     method: "POST",
     headers: {
       "X-API-Key": API_KEY,
@@ -289,13 +290,53 @@ invalid_input (HTTP 422), request id 6f1c...
 
 `X-Comfy-Request-Id` 出现在每个响应上，成功、`4xx` 和 `5xx` 均如此，并且是在支持请求中引用的 ID。两个示例都将其附加到异常中，而不是让你在启用响应头日志的情况下重新运行来找到它。
 
+## 用自己的密钥安全地重试
+
+上面的两个示例都发送了 `Idempotency-Key`。它值得单独用一节来说明，因为只有正确处理密钥，这个请求头才能发挥作用，而真正起决定作用的那一步发生在请求发出之前。
+
+**自带密钥。** Router 不会替你生成密钥。请为每个*逻辑调用*生成一个新密钥（预期形式是 UUID），并在*该调用*的每一次重试中复用同一个密钥。每次尝试都换新密钥不会带来任何好处；而把同一个密钥用于两次确实不同的调用会得到 `409`，因为同一密钥搭配不同的请求（请求体不同，也包括模型路径、查询字符串或方法不同）属于冲突，而不是静默覆盖。
+
+**发送前先持久化。** 在 `POST` 发出*之前*，而不是响应返回之后，把密钥写到一个比请求本身存活更久的地方（你正在为其生成内容的那行记录、你的任务记录、你的队列消息）。只存在于已崩溃进程内存中的密钥无法再次发送，本可以由 Router 的记录直接应答的那次重试，就变成了一次全新的、单独计费的运行。这一步很容易被跳过，而跳过的代价很高。
+
+**带着它重试。** 重试时，只要 Router 仍持有该密钥的状态，就会直接应答而不是重新运行：
+
+| 你得到什么 | 含义 | 该怎么做 |
+| --- | --- | --- |
+| 带 `Idempotent-Replayed: true` 的 `200` | Router 重放了原始响应。不会再次计费。 | 直接使用：它就是原始结果。 |
+| `409` / `concurrency_limit_exceeded` | 原始调用仍在运行。 | 等待 `Retry-After` 秒，再用**同一个密钥**重新发送。 |
+| `409` / `invalid_input` | 该密钥无法服务这个请求：同一密钥下出现了不同的请求（请求体、模型路径、查询或方法不同），或者原始调用已完成但其响应无法重放。 | 使用**新**密钥。不要重新发送这个密钥。 |
+| 带 `Retry-After` 的 `504` / `deadline_exceeded` | Router 已停止保持连接，但仍持有提供商正在运行的那次生成的句柄。 | 等待 `Retry-After` 秒，再用**同一个密钥**重新发送以收取结果。 |
+
+接着上面的 Python 示例：这里用一个文件代替你已有的任何持久化存储；重要的是顺序，而不是具体机制。请把整个请求和密钥一起持久化，而不是只保存密钥：重试必须重新发送*相同的*模型和参数，重启后凭记忆重建的请求哪怕只差一个空格也会得到 `409`，而用新密钥发送的请求则是第二次计费的生成。
+
+```python
+import json
+import uuid
+
+# 在发出请求之前先持久化，这样即使在这里和收到响应之间发生崩溃，
+# 也仍然留有一个密钥（以及它所属的确切请求）可供重试。
+request = {
+    "model": MODEL,
+    "arguments": {"prompt": "a red teapot on a windowsill, morning light"},
+    "idempotency_key": str(uuid.uuid4()),
+}
+with open("pending-call.json", "w") as f:
+    json.dump(request, f)
+
+result = run(request["model"], request["arguments"], idempotency_key=request["idempotency_key"])
+```
+
+<Note>
+**密钥保证的是计费，而不是投递。** 一个密钥**最多计费一次**。它并不承诺该密钥最多只被分派一次，也不能让丢失的调用变得可恢复：如果连接在调用中途断开，且从未有任何内容提交给你，密钥就会被释放，用它重试会开启一次**全新运行**，而不是把你错过的结果交给你。请按“重试会产生新运行”来规划，把重放当作理想情况，而不是保证。持久、可恢复的“重新连接并收取”属于 Router 尚不具备的排队路径：参见[局限性](/zh/api-reference/comfy-router/limitations#无法恢复已丢失的调用)。
+</Note>
+
 ## 查找模型
 
-`bfl/flux-2-pro` 只是其中一个 ID；其余的都在目录里。`GET /v1/models` 会逐页列出 Router 能运行的每一个模型，每个条目正好就是调用它所需的全部信息：放进路径的 `id`、分别给出的 `provider` 和 `model` 段，以及一个可以在花费任何费用之前据以分支判断的 `billing` 块。
+`bfl/flux-2-pro` 只是其中一个 ID；其余的都在目录里。`GET /v2/models` 会逐页列出 Router 能运行的每一个模型，每个条目正好就是调用它所需的全部信息：放进路径的 `id`、分别给出的 `provider` 和 `model` 段，以及一个可以在花费任何费用之前据以分支判断的 `billing` 块。
 
 ```bash
 curl -H "X-API-Key: $COMFY_API_KEY" \
-  "https://api.comfy.org/v1/models?limit=50"
+  "https://api.comfy.org/v2/models?limit=50"
 ```
 
 ```json
@@ -317,7 +358,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
 
 ```bash
 curl -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
 ```
 
 这份文档与服务器校验您的请求时所依据的文档是同一份，以独立的 OpenAPI 文档形式提供，因此所发布的内容与所执行的内容不可能不一致。从上面的目录中取任意 `id`，在其调用路径后追加 `/openapi.json`，然后根据返回的内容进行生成。
