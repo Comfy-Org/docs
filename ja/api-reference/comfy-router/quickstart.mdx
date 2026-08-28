@@ -1,0 +1,335 @@
+---
+title: "Comfy Router クイックスタート"
+description: "Comfy Routerに対して、PythonとTypeScriptで、ゼロから約5分で生成済み画像まで到達する手順を説明します。"
+translationSourceHash: 50fc5524
+translationFrom: api-reference/comfy-router/quickstart.mdx
+translationBlockHashes:
+  "_intro": 46050c92
+  "Why this page uses `bfl/flux-2-pro`": 0eaf0bb3
+  "Get a key": 843d281f
+  "cURL": bc3e1e4c
+  "Python": 059e95b8
+  "TypeScript": 1053430f
+  "Reading the `422`": 602cd505
+  "Find a model": 9b7855c1
+  "Where the model's fields come from": 7861bd52
+  "Next": 6aa641e1
+---
+<Note>
+**Comfy Router はまだ一般提供されていません。** 以下のルート
+`POST /v1/models/{provider}/{model}` と、そのカタログおよびスキーマの関連ルートは、
+まだリクエストを処理していません。現在、認証付きの呼び出しは `404` を返します。このページは、
+これらのルートが将来提供する契約を文書化したものであり、ロールアウトに先立って公開されているため、
+統合をその契約に合わせて作成する準備ができます。これは、現在実際に試すことができる動作の説明ではありません。
+</Note>
+
+Comfy Router は、パートナーモデルを1つのホスト、1つの資格情報、1つのルート形状の背後で実行します。このページは、生成済み画像への最短の完全なパスです。クライアントをインストールし、キーを設定し、1つのリクエストを送信し、結果を読み取り、そして最初の失敗に遭遇する前に、その失敗がどのようなものかを確認できます。
+
+ベース URL: `https://api.comfy.org`。ルートは `POST /v1/models/{provider}/{model}` です。リクエストボディはモデル独自のネイティブ JSON 入力であり、`200` 応答にはモデル独自のネイティブ JSON 出力が含まれます。Router は入力と出力のどちらもラップしないため、パートナーの API に対して既に作成した呼び出しは、ホストを変更するだけで Router の呼び出しになります。
+
+## このページで `bfl/flux-2-pro` を使用する理由
+
+`bfl/flux-2-pro` は p50 で約 3.1 秒で応答を返します。これは Router 上で測定された中で最速の経路であり、5 分での最初の結果を現実的にするものです。より遅いモデルでは、その予算は読むことではなく待つことに費やされることになるでしょう。
+
+これは便宜上のものであり、必須ではありません。Router 上の他のすべてのモデルもまったく同じ方法で呼び出されます。同じルート、同じ認証情報ヘッダー、同じエラーバケット、同じ `X-Comfy-Request-Id` です。変更されるのは、モデル ID、リクエスト本文内のフィールド、そして読み取る結果の形状だけです。たとえば Gemini は、p95 の 72.8 秒を余裕を持ってクリアします。Router は、ポーリング用のジョブハンドルを返すのではなく、生成全体にわたって接続を保持します。長時間の呼び出しを途中で打ち切るエッジ側の上限はありませんが、Router は呼び出し自体に制限を設けています。Router 自身のサーバーデッドライン（デフォルトで 10 分）が接続を保持する最長の時間であり、それを過ぎると `504` / `deadline_exceeded` を返し、課金は行われません。ID を差し替えて、そのモデルのフィールドを（後述の）モデル自身のスキーマから読み取ってください。
+
+## APIキーを取得する
+
+RouterはComfy APIキーで認証します。[platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) で作成し、環境変数に設定してください。以下の2つのサンプルはどちらも `COMFY_API_KEY` を読み取り、キーをリテラルとして受け取らないため、コピー＆ペーストしたスニペットが認証情報をコミットに持ち込むことはありません。
+
+```bash
+export COMFY_API_KEY="comfyui-..."
+```
+
+<Note>
+`comfyui-` キーは **`X-API-Key`** ヘッダーと **`Authorization: Bearer`** のどちらでも受け付けられます。サービスが API キーだと判断する手がかりはヘッダーではなく `comfyui-` プレフィックスなので、どちらの形式でも同じように参照されます。以下の例では `X-API-Key` を使用していますが、`Authorization: Bearer $COMFY_API_KEY` でも同等です。両方のヘッダーが送信された場合は、`X-API-Key` のキーが優先されます。`comfyui-` プレフィックスの**ない**値を `Authorization: Bearer` で送ると、Cloud/Firebase の **JWT** として扱われます（生成済みの [APIリファレンス](/ja/api-reference/comfy-router/reference) が「bearer token」という言葉で意味しているのはこれです）。
+</Note>
+
+キーはワークスペースごとに作成され、そのワークスペースのモデル利用権限とクレジット残高を保持します。有効な認証情報のないリクエストは `401` と `X-Comfy-Error-Type: unauthorized` を返します。ワークスペースがモデルを実行できないリクエストは、`403` / `forbidden` を返します。
+
+## cURL
+
+スクリプト、スモークテスト、ターミナルへのコピー＆貼り付けに最適な、最短の呼び出し方法です：
+
+```bash
+curl https://api.comfy.org/v1/models/bfl/flux-2-pro \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+```
+
+レスポンスはモデルのネイティブ出力で、以下のサンプルがそのまま読み取る形式です。失敗時は、ボディにエラーが含まれ、`X-Comfy-Error-Type` ヘッダーがエラーの分類を示します。後で問い合わせる必要があるレスポンスからは、`X-Comfy-Request-Id` ヘッダーを保存しておいてください。macOS と Linux にはどちらも `uuidgen` が同梱されています。Windows では、`New-Guid` または任意の UUID ソースを使用して Idempotency-Key を生成してください。
+
+## Python
+
+Python 3.9+ と `httpx` が必要です：
+
+```bash
+pip install httpx
+```
+
+`quickstart.py` として保存し、`python quickstart.py` で実行します：
+
+```python
+import os
+import uuid
+
+import httpx
+
+BASE_URL = os.environ.get("COMFY_ROUTER_BASE_URL", "https://api.comfy.org")
+MODEL = "bfl/flux-2-pro"
+
+# Give the client headroom ABOVE Router's own server deadline (10 minutes by
+# default) so a call that reaches the server bound comes back as a typed 504
+# with a request id rather than as an opaque client abort. The deadline bounds
+# how long Router holds the connection, not whether the call is billed: if the
+# provider completed the generation, it is billed either way.
+READ_TIMEOUT_SECONDS = 660.0
+
+
+class RouterError(Exception):
+    """A Comfy Router failure, typed by its X-Comfy-Error-Type bucket."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self.error_type = response.headers.get("X-Comfy-Error-Type", "internal_error")
+        self.request_id = response.headers.get("X-Comfy-Request-Id")
+        self.status_code = response.status_code
+        # Parse defensively: an error can arrive as an HTML 502 from a load
+        # balancer, a plain-text 429, an empty body or a truncated JSON one. The
+        # status, the bucket and the request id above are the parts worth
+        # keeping, so a body that will not parse must not replace this exception
+        # with a JSONDecodeError and lose them.
+        body = None
+        if response.headers.get("content-type", "").startswith("application/json"):
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        # A 422 carries a detail[] array - one entry per rejected field, each
+        # keeping its own `loc`, `msg` and `type`. Every other bucket carries a
+        # plain `detail` string.
+        self.errors = detail if isinstance(detail, list) else []
+        self.detail = detail if isinstance(detail, str) else f"HTTP {response.status_code}"
+        super().__init__(self.detail)
+
+
+def run(model: str, arguments: dict, idempotency_key: str) -> dict:
+    # Idempotency-Key makes a retry safe on a PAID call: Router replays the
+    # original response for 24h instead of dispatching (and billing) the
+    # provider a second time. Reuse the SAME key when retrying one logical
+    # call; generate a new one for a new call.
+    response = httpx.post(
+        f"{BASE_URL}/v1/models/{model}",
+        headers={
+            "X-API-Key": os.environ["COMFY_API_KEY"],
+            "Idempotency-Key": idempotency_key,
+        },
+        json=arguments,
+        timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=10.0),
+    )
+    if response.is_error:
+        raise RouterError(response)
+    return response.json()
+
+
+result = run(
+    MODEL,
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    idempotency_key=str(uuid.uuid4()),
+)
+# Router forwards each provider's native output unchanged, so this path is
+# BFL's, not a Router envelope. Reading a different model means reading its own
+# output shape.
+print("image:", result["result"]["sample"])
+
+# The first failure most callers hit: a field the model's input schema requires
+# is missing, so Router rejects the request BEFORE any provider call - which is
+# why a 422 is never billed.
+try:
+    run(MODEL, {"width": 1024}, idempotency_key=str(uuid.uuid4()))
+except RouterError as exc:
+    print(f"{exc.error_type} (HTTP {exc.status_code}), request id {exc.request_id}")
+    for entry in exc.errors:
+        print("  ", ".".join(str(p) for p in entry["loc"]), "->", entry["msg"])
+```
+
+```text
+image: https://.../out.jpeg
+invalid_input (HTTP 422), request id 6f1c...
+   body.prompt -> Field required
+```
+
+## TypeScript
+
+Node 18+（組み込みの `fetch`、`AbortSignal.timeout`、`crypto.randomUUID` を使用）と、TypeScript を直接実行するための `tsx` が必要です：
+
+```bash
+npm install --save-dev tsx
+```
+
+`quickstart.mts` として保存します。`.mts` 拡張子は重要です。このファイルはトップレベルの `await` を使用するため ES モジュールが必要だからです。`npx tsx quickstart.mts` で実行します：
+
+```typescript
+const API_KEY = process.env.COMFY_API_KEY;
+if (!API_KEY) throw new Error("Set COMFY_API_KEY before running this sample.");
+
+const BASE_URL = process.env.COMFY_ROUTER_BASE_URL ?? "https://api.comfy.org";
+const MODEL = "bfl/flux-2-pro";
+
+// Headroom ABOVE Router's own server deadline (10 minutes by default), so a
+// call that reaches the server bound returns a typed 504 with a request id
+// rather than aborting locally at the same moment. The deadline bounds how
+// long Router holds the connection, not whether the call is billed: if the
+// provider completed the generation, it is billed either way.
+const CLIENT_TIMEOUT_MS = 660_000;
+
+interface ValidationEntry {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+}
+
+/** A Comfy Router failure, typed by its `X-Comfy-Error-Type` bucket. */
+class RouterError extends Error {
+  readonly errorType: string;
+  readonly requestId: string | null;
+  readonly status: number;
+  /** A 422 carries a `detail[]` array — one entry per rejected field, each
+   * keeping its own `loc`, `msg` and `type`. Every other bucket carries a
+   * plain `detail` string. */
+  readonly errors: ValidationEntry[];
+
+  constructor(response: Response, body: unknown) {
+    const detail =
+      typeof body === "object" && body !== null
+        ? (body as { detail?: unknown }).detail
+        : undefined;
+    super(typeof detail === "string" ? detail : `HTTP ${String(response.status)}`);
+    this.name = "RouterError";
+    this.errorType = response.headers.get("X-Comfy-Error-Type") ?? "internal_error";
+    this.requestId = response.headers.get("X-Comfy-Request-Id");
+    this.status = response.status;
+    this.errors = Array.isArray(detail) ? (detail as ValidationEntry[]) : [];
+  }
+}
+
+/** Read a body without letting a non-JSON error page mask the real failure. */
+async function parseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+async function run<T>(
+  model: string,
+  args: Record<string, unknown>,
+  idempotencyKey: string,
+): Promise<T> {
+  // Idempotency-Key makes a retry safe on a PAID call: Router replays the
+  // original response for 24h instead of dispatching (and billing) the provider
+  // a second time. Reuse the SAME key when retrying one logical call.
+  const response = await fetch(`${BASE_URL}/v1/models/${model}`, {
+    method: "POST",
+    headers: {
+      "X-API-Key": API_KEY,
+      "Idempotency-Key": idempotencyKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+  });
+  // Read the body without letting it decide the outcome: an HTML 502, a
+  // plain-text 429 or an empty body still yields the status, the bucket and
+  // the request id, because `parseBody` returns `undefined` on a parse failure.
+  const body = await parseBody(response);
+  if (!response.ok) throw new RouterError(response, body);
+  return body as T;
+}
+
+const result = await run<{ result: { sample: string } }>(
+  MODEL,
+  { prompt: "a red teapot on a windowsill, morning light" },
+  crypto.randomUUID(),
+);
+// Router forwards each provider's native output unchanged, so this path is
+// BFL's, not a Router envelope. Reading a different model means reading its own
+// output shape.
+console.log("image:", result.result.sample);
+
+// The first failure most callers hit: a field the model's input schema requires
+// is missing, so Router rejects the request BEFORE any provider call - which is
+// why a 422 is never billed.
+try {
+  await run(MODEL, { width: 1024 }, crypto.randomUUID());
+} catch (exc) {
+  if (!(exc instanceof RouterError)) throw exc;
+  console.log(`${exc.errorType} (HTTP ${String(exc.status)}), request id ${String(exc.requestId)}`);
+  for (const entry of exc.errors) console.log("  ", entry.loc.join("."), "->", entry.msg);
+}
+```
+
+```text
+image: https://.../out.jpeg
+invalid_input (HTTP 422), request id 6f1c...
+   body.prompt -> Field required
+```
+
+## `422` の読み方
+
+`422` は、最初の実呼び出しの前に理解しておく価値がある唯一のエラーです。なぜなら、それは自分自身が引き起こすエラーだからです。これは、Router がボディをモデル自身の入力スキーマに対して検証し、拒否したことを意味します。つまり、必須フィールドが不足している、値が範囲外、画像が小さすぎる、といったケースです。このチェックはプロバイダー呼び出しの前に実行されるため、`422` はコストがかかりません。パートナーの支出もなく、後で請求に関する質問に答える必要もありません。これは `400` とは異なります。`400` はリクエストレベルの失敗（不正なカーソル、読み取れないエンベロープ）であり、フィールド単位の失敗ではありません。
+
+そのボディは FastAPI の `detail[]` 形状です。問題のあるフィールドごとに1つのエントリを持つ配列で、各エントリは独自の `loc`（フィールドへのパス）、`msg`、`type`（プロバイダーレベルの具体的な理由: `missing`、`value_error`、`image_too_small`）、および理由に境界が含まれる場合は `ctx` を保持します。このフィールド単位の粒度こそが、上記のサンプルが配列を例外メッセージにフラット化せずにデータとして保持する理由です。
+
+<Note>
+入力スキーマがまだ作成されていないモデルは、任意の JSON オブジェクトを受け入れる文書化された
+寛容なフォールバックとして解決されるため、`422` を返す代わりにボディを転送します。
+上記のサンプルは、スキーマが存在する場合に処理する形状を示しています。`422` ブロックは、
+その特定のボディに対する保証された応答ではなく、エラーパスとして扱ってください。
+</Note>
+
+このボディには独自の `error_type` フィールドがないため、`422` では `X-Comfy-Error-Type` ヘッダーが*唯一の*機械可読なバケットになります。両方のサンプルはまさにその理由から、ヘッダーからバケットを最初に読み取ります。これにより、Router が返すすべての失敗を1つのエラークラスでカバーできます。
+
+`X-Comfy-Request-Id` は、成功、`4xx`、`5xx` を問わずすべてのレスポンスに含まれており、サポートリクエストで引用する ID です。両方のサンプルは、ヘッダーロギングを有効にして再実行する代わりに、例外に ID を添付します。
+
+## モデルを探す
+
+`bfl/flux-2-pro` は 1 つの ID にすぎず、残りはカタログにあります。`GET /v1/models` は Router が実行できるすべてのモデルを 1 ページずつ一覧表示し、各エントリには呼び出しに必要な情報がそのまま含まれています。パスに入れる `id`、個別に保持される `provider` と `model` のセグメント、そして何かを消費する前に分岐判断に使える `billing` ブロックです。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v1/models?limit=50"
+```
+
+```json
+{
+  "data": [
+    { "id": "bfl/flux-2-pro", "provider": "bfl", "model": "flux-2-pro", "billing": { "charges_on_policy_rejection": "no" } }
+  ],
+  "has_more": true,
+  "next_cursor": "q7Fm2xTn9pLd4RsV",
+  "limit": 50
+}
+```
+
+オフセットではなくカーソルで走査してください。`next_cursor` を `?cursor=` としてそのまま送り返し、ページが短く返ってきたときではなく、`has_more` が `false` になったときに停止します。カーソルは不透明な値で、往復させるだけのものです。Router が受け付けないカーソルは `400` / `invalid_input` になり、黙って 1 ページ目からやり直されることはありません。カーソルはカタログのソート順における位置なので、モデルを追加または削除するデプロイをまたいでも有効です。すでに通過した位置に追加されたモデルは、その走査では単に訪問されないだけです。一覧に対する `503` / `service_unavailable` は、Router がまだ応答できない（Pod がリリース状態をまだ読み込み中である）ことを意味します。再試行してください。空のカタログと解釈してはいけません。レスポンスの `limit` は実際に提供されたページサイズです。上限を超えるリクエストは拒否されるのではなく上限に丸められるため、返ってきた数値でページングしてください。デプロイ済みでも未リリースのモデルは、どのページにも単に現れません。
+
+## モデルのフィールドの由来
+
+`prompt` は `bfl/flux-2-pro` が必須とする唯一のフィールドです。次に必要になるのは `width`、`height`、`seed`、`output_format` です。時間とともにずれる可能性のあるフィールド一覧を再掲する代わりに、モデルのスキーマをライブで確認してください：
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
+```
+
+これは、サーバーがあなたの呼び出しの検証に使用するものと同じドキュメントで、スタンドアロンのOpenAPIドキュメントとして提供されます。そのため、公開されている仕様と実際に強制される仕様が食い違うことはありません。上のカタログから任意の `id` を選び、その呼び出しパスに `/openapi.json` を追加すれば、返ってきた内容に基づいて生成できます。
+
+## 次のステップ
+
+- [Comfy Router API リファレンス](/ja/api-reference/comfy-router/reference): すべてのエンドポイント、すべてのパラメータ、そして 15 種類すべてのエラー分類を網羅しています。
+- [Comfy Router の制限事項](/ja/api-reference/comfy-router/limitations): 現在 Router が対応していない機能と、その代わりに使用すべきものを説明しています。
