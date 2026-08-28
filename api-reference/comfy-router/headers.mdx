@@ -1,0 +1,100 @@
+---
+title: "Comfy Router headers"
+description: "The request headers you can send to Comfy Router and the response headers it returns, for every model: authentication, idempotency, request IDs, error buckets, retry pacing and spend limits."
+---
+
+import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
+
+<RouterPreviewNotice />
+
+Every model behind Comfy Router is called the same way: `POST /v2/models/{provider}/{model}` with the model's own JSON body. What is common to all of them lives in the headers, and this page is the one place they are described. The per-model Code pages link here instead of repeating it; the [API reference](/api-reference/comfy-router/reference) carries the same definitions in generated form.
+
+The Comfy SDKs (`comfy-sdk` for Python, `@comfyorg/sdk` for TypeScript) send the request headers for you and surface the response headers as fields on results and errors. If you call Router over raw HTTP, you send and read them yourself.
+
+## Request headers
+
+<ParamField header="X-API-Key" type="string">
+  A Comfy API key, `comfyui-...`, created at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). Keys are per workspace and carry that workspace's model entitlements and credit balance. The same key is also accepted as `Authorization: Bearer comfyui-...`; the `comfyui-` prefix, not the header, is what marks it as an API key. If both headers are sent, `X-API-Key` wins.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`. A `comfyui-` API key is accepted here exactly as in `X-API-Key`. A value without that prefix is treated as a Comfy Cloud JWT, which is what the generated reference means by "bearer token" and what the OAuth-based SDK clients send.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Your own key for one logical call, 1 to 255 characters; a UUID is the intended shape. A call that reached you with an answer is recorded against its key for 24 hours, and a retry carrying the same key is answered from that record instead of dispatching, and charging, the provider a second time. Send it on every paid call, reuse it for every retry of that call, and mint a new one for a new call. The same key with a different request (body, model path, query or method) is a `409` rather than a silent overwrite. The guarantee is a billing one: a key is charged at most once. It does not make a lost call resumable. The SDKs mint one per call and let you pass your own (`idempotency_key=` in Python, `idempotencyKey` in TypeScript).
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`. Router forwards the body to the provider unchanged, so the body is the provider's native JSON and nothing else is accepted.
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  On `GET /v2/models/{provider}/{model}/openapi.json` only. Send the `ETag` you hold from an earlier `200`; when it still matches, the answer is a bodyless `304` with the same `ETag`. Cache a model's schema for the life of your process and revalidate it this way rather than re-reading it before every call.
+</ParamField>
+
+## Response headers
+
+<ResponseField name="X-Comfy-Request-Id" type="string" required>
+  On every response, success and error alike. The ID to quote in a support request; the same value is written into the call's usage record, which is what lets a question about a charge be joined to the charge. The TypeScript SDK returns it as `requestId`; the Python SDK exposes `request_id` on every error.
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="string">
+  On every error response. One of fifteen buckets: `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits`, `model_not_found`, `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`. It repeats the body's `error_type`, and on a `422` it is the only machine-readable bucket, because that body is the per-field `detail[]` shape and has no `error_type` of its own. Branch on this header, never on the status alone: `409`, `429` and `504` each carry two different buckets that call for opposite actions. Treat an unrecognised value as `internal_error`. The SDKs raise a typed error per bucket.
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="boolean">
+  Present, and `true`, when the response was served from an `Idempotency-Key`'s record rather than by running the model again. It carries the original call's status, body and content type and is not billed a second time. Absent on a fresh run rather than sent as `false`, so branch on its presence.
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Seconds to wait before re-sending the same request with the same `Idempotency-Key`. Set on the two answers such a retry can actually collect from: a `409` with `concurrency_limit_exceeded` (the original call for that key is still running) and a `504` with `deadline_exceeded` (Router stopped holding the connection but still holds a handle to the running generation). Re-sending the same key after the wait collects that result instead of starting, and paying for, a second one. It is also sent on a `429` with `rate_limited`, where it says when the allowance window rolls. Absent when there is nothing to collect: an unkeyed call, or a `409` with `invalid_input` that refuses the key outright.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="integer">
+  USD cents. On a `429` refused by the in-flight spend ceiling rather than by the concurrent-call count: the ceiling on partner spend you may have committed to calls still running.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="integer">
+  USD cents currently committed to your calls still in flight, not counting the refused one. Sent alongside `X-Committed-Spend-Limit`.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="integer">
+  USD cents of headroom left under the ceiling, floored at zero. It can be positive on a refusal: the refused call cost more than what was left, and a cheaper call would still be admitted.
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  On `GET /v2/models/{provider}/{model}/openapi.json`. A strong validator over the document's bytes; store it and send it back as `If-None-Match`.
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="string">
+  On the schema route: `private, must-revalidate`. The document is not caller-specific, but the route is authenticated, so a shared cache must not hold it, and a stale copy is revalidated against the `ETag` rather than served on.
+</ResponseField>
+
+## Status codes that carry two meanings
+
+Three statuses are shared by two buckets, and the header is what tells them apart:
+
+| Status | `X-Comfy-Error-Type` | What to do |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | The original call for this key is still running. Wait `Retry-After`, re-send the same key. |
+| `409` | `invalid_input` | The key cannot serve this request: a different request under the same key, or an original that cannot be replayed. Use a new key; do not re-send this one. |
+| `429` | `concurrency_limit_exceeded` | Too many calls in flight, or the committed-spend ceiling (see the `X-Committed-Spend-*` headers). Clears when one of your own calls finishes. |
+| `429` | `rate_limited` | A windowed allowance is spent. Nothing you do drains it early; wait `Retry-After`. |
+| `504` | `deadline_exceeded` | Router's own 10 minute bound. With `Retry-After`, re-send the same key to collect the running generation. |
+| `504` | `provider_timeout` | The partner did not answer in time. The request itself was fine; a fresh call may succeed. |
+
+## What Router does not offer as headers
+
+Readers coming from other hosted-model APIs sometimes look for these; Router does not have them, by design.
+
+1. **No client-set timeout or priority.** Router holds the connection until the generation finishes, up to its own server deadline (10 minutes by default), and answers `504` / `deadline_exceeded` at that bound. Set your client timeout above it, as the SDKs do, so you keep the typed error and the request ID.
+2. **No retry or no-retry controls.** Retrying is the client's decision; the SDKs retry inside a bounded budget with the same `Idempotency-Key`, which is what makes a retry safe.
+3. **No output retention or storage knobs.** Router returns the provider's native response unchanged; result URLs are the provider's and expire on the provider's schedule.
+4. **No cost on the response.** Usage is reported through your workspace's billing, not per call. See [limitations](/api-reference/comfy-router/limitations).
+
+## Next
+
+- [Quickstart](/api-reference/comfy-router/quickstart): typed error handling in Python and TypeScript, reading the `422`, retrying safely with your own key.
+- [API reference](/api-reference/comfy-router/reference): the generated contract these headers are defined in.
+- [Limitations](/api-reference/comfy-router/limitations): what Router does not do today, and what to use instead.
