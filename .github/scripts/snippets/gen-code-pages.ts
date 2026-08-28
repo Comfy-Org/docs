@@ -245,7 +245,8 @@ function deref(schema: any, components: Record<string, any>, depth = 0): any {
 
 function typeLabel(schema: any, components: Record<string, any>): string {
   const s = deref(schema, components);
-  if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" \\| ");
+  if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" | ");
+  if (s.const !== undefined) return JSON.stringify(s.const);
   if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
   if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
   if (s.type === "string" && s.format) return `string (${s.format})`;
@@ -263,6 +264,10 @@ function constraints(s: any): string {
 
 const attr = (v: unknown) => String(v ?? "").replace(/"/g, "&quot;").replace(/\s+/g, " ").trim();
 
+/** Escape the characters MDX reads as syntax in prose, leaving `code spans` alone. */
+const mdxText = (v: unknown) =>
+  String(v).split(/(`[^`]*`)/).map((part, i) => (i % 2 ? part : part.replace(/[{<]/g, "\\$&"))).join("");
+
 /** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
 function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response"): string {
   const blocks: string[] = [];
@@ -279,9 +284,17 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
       if (required.has(name)) attrs.push("required");
       if (prop.default !== undefined) attrs.push(`default="${attr(JSON.stringify(prop.default))}"`);
       const body: string[] = [];
-      if (prop.description) body.push(String(prop.description).trim());
+      if (prop.description) body.push(mdxText(String(prop.description).trim()));
       if (prop.enum) body.push(`Possible values: ${prop.enum.map((v: unknown) => `\`${String(v)}\``).join(", ")}`);
-      if (prop.minimum !== undefined || prop.maximum !== undefined) body.push(`Range: \`${prop.minimum ?? "…"}\` to \`${prop.maximum ?? "…"}\``);
+      // A union (`integer | "auto"`) carries its bounds on the numeric branch, not on the field.
+      const alts: any[] = prop.anyOf ?? prop.oneOf ?? [];
+      const bound = (k: "minimum" | "maximum") => {
+        if (prop[k] !== undefined) return prop[k];
+        const ns = alts.map((a) => a[k]).filter((n) => n !== undefined).map(Number);
+        return ns.length ? (k === "minimum" ? Math.min(...ns) : Math.max(...ns)) : undefined;
+      };
+      const [min, max] = [bound("minimum"), bound("maximum")];
+      if (min !== undefined || max !== undefined) body.push(`Range: \`${min ?? "…"}\` to \`${max ?? "…"}\``);
       if (prop.format) body.push(`Format: \`${prop.format}\``);
       blocks.push(`<${tag} ${attrs.join(" ")}>\n  ${body.join("\n\n  ") || " "}\n</${tag}>`);
       if (depth < 4) {
@@ -312,24 +325,27 @@ function sectionBlocks(v: Variant, spec: Spec) {
   const notPublished = checked
     ? `_Fields follow ${possessive(spec.provider)} published API specification and are checked against it in CI. Router's own schema for this model is not published yet, so requests are forwarded to the provider unvalidated._`
     : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
+  // `x-comfy-input-schema-authored: false` disqualifies the whole served document, not just its input
+  // half: the page then reads its fields AND its examples from the spec, as the README describes.
+  const published = s?.authored ? s : null;
   let input: string;
-  if (s?.authored && s.input) {
-    input = `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
+  if (published?.input) {
+    input = `${schemaFields(published.input, published.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
   } else if (specInput) {
     input = `${notPublished}\n\n${schemaFields(specInput, {}, "param")}`;
   } else {
     input = `${notPublished}\n\n${fields}`;
   }
-  const inputExample = JSON.stringify(s?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
+  const inputExample = JSON.stringify(published?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
   let output: string;
-  if (s?.output) {
-    output = schemaFields(s.output, s.components, "response");
+  if (published?.output) {
+    output = schemaFields(published.output, published.components, "response");
   } else if (specOutput) {
     output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response")}`;
   } else {
     output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
   }
-  const outputExample = JSON.stringify(s?.outputExample ?? spec.result.example, null, 2);
+  const outputExample = JSON.stringify(published?.outputExample ?? spec.result.example, null, 2);
   return { input, inputExample, output, outputExample };
 }
 
@@ -480,7 +496,15 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
   if (problems.some((m) => m.startsWith(specPath))) continue;
   const dir = dirname(specPath);
   const out = join(ROOT, dir, "code.mdx");
-  const page = renderPage(spec, dir);
+  let page: string;
+  try {
+    // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
+    // remaining specs half written; report it against this spec and carry on, as YAML errors do.
+    page = renderPage(spec, dir);
+  } catch (e) {
+    problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
+    continue;
+  }
   if (doValidate) problems.push(...validate(page, relative(ROOT, out)));
   if (check) {
     if (!existsSync(out) || readFileSync(out, "utf8") !== page) stale.push(relative(ROOT, out));

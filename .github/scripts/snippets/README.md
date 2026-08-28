@@ -7,7 +7,7 @@ Router from Python, TypeScript and cURL.
 `code.mdx` is **generated**. The source of truth is the `code.yaml` next to it;
 the page shape lives in `gen-code-pages.ts` and nowhere else.
 
-```
+```text
 tutorials/partner-nodes/black-forest-labs/flux-1-kontext/
   flux-1-kontext.mdx   Overview (hand-written)
   workflow.mdx         Workflows (hand-written)

@@ -31,9 +31,18 @@ const verbose = process.argv.includes("--verbose");
 
 type ProviderSpec = { url: string; operation?: string; response_operation?: string; request?: string; response?: string; omit?: string[] };
 
+const FETCH_TIMEOUT_MS = 20_000;
 const cache = new Map<string, Promise<any>>();
+async function fetchOnce(url: string): Promise<any> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+  return r.json();
+}
+/** Transient = the request never produced an HTTP status (timeout, DNS, reset). Those are worth one retry; an HTTP error is not. */
+const transient = (e: unknown) => !(e instanceof Error) || !/: HTTP \d+$/.test(e.message);
 function fetchDoc(url: string): Promise<any> {
-  if (!cache.has(url)) cache.set(url, fetch(url).then(async (r) => { if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`); return r.json(); }));
+  // A provider that never answers would otherwise hold this promise open for the job's whole runner limit.
+  if (!cache.has(url)) cache.set(url, fetchOnce(url).catch((e) => { if (!transient(e)) throw e; return fetchOnce(url); }));
   return cache.get(url)!;
 }
 
@@ -87,9 +96,16 @@ async function providerShapes(ps: ProviderSpec): Promise<{ input: any; output: a
   const { norm, isDiscovery, comps } = normalizer(doc);
   if (isDiscovery) {
     // Google discovery documents do not express `required`, so required-ness cannot be checked against them.
-    return { input: { ...norm({ $ref: ps.request }), noRequiredInfo: true }, output: { ...norm({ $ref: ps.response }), noRequiredInfo: true } };
+    const pick = (key: "request" | "response") => {
+      const name = ps[key];
+      if (!name) throw new Error(`provider_spec.${key} is required: ${ps.url} is a discovery document, which names schemas rather than operations`);
+      if (!comps[name]) throw new Error(`provider_spec.${key}: \`${name}\` is not a schema in ${ps.url}`);
+      return { ...norm({ $ref: name }), noRequiredInfo: true };
+    };
+    return { input: pick("request"), output: pick("response") };
   }
-  const op = findOperation(doc, ps.operation!);
+  if (!ps.operation) throw new Error(`provider_spec.operation is required: ${ps.url} is an OpenAPI document, which names operations rather than schemas`);
+  const op = findOperation(doc, ps.operation);
   const req = op.requestBody?.content?.["application/json"]?.schema;
   const resOp = ps.response_operation ? findOperation(doc, ps.response_operation) : op;
   const res = resOp.responses?.["200"]?.content?.["application/json"]?.schema;
@@ -106,11 +122,38 @@ const compatible = (ours: unknown, theirs: unknown) => {
   return o.some((x) => t.includes(x) || (x === "integer" && t.includes("number")) || (x === "number" && t.includes("integer")));
 };
 
+/**
+ * Collapse a documented `anyOf` / `oneOf` (e.g. `integer | "auto"`) into one comparable shape,
+ * the way `norm` already collapses the provider's: union of types and properties, intersection
+ * of `required`, widest bounds. Without this a documented union reads as an untyped field.
+ */
+function flatten(s: any): any {
+  const alts: any[] = s?.anyOf ?? s?.oneOf;
+  if (!Array.isArray(alts) || !alts.length) return s;
+  const types = [...new Set(alts.flatMap((a) => (Array.isArray(a.type) ? a.type : [a.type])).filter(Boolean))];
+  const nums = (k: string) => alts.map((a) => a[k]).filter((n) => n !== undefined).map(Number);
+  const props: Record<string, any> = {}; let req: Set<string> | null = null;
+  for (const a of alts) {
+    Object.assign(props, a.properties ?? {});
+    const r = new Set<string>(a.required ?? []); req = req ? new Set([...req].filter((x) => r.has(x))) : r;
+  }
+  const [mins, maxs] = [nums("minimum"), nums("maximum")];
+  return {
+    ...s, anyOf: undefined, oneOf: undefined,
+    type: s.type ?? (types.length === 1 ? types[0] : types),
+    ...(mins.length ? { minimum: Math.min(...mins) } : {}),
+    ...(maxs.length ? { maximum: Math.max(...maxs) } : {}),
+    ...(Object.keys(props).length ? { properties: { ...props, ...(s.properties ?? {}) }, required: [...(req ?? [])] } : {}),
+  };
+}
+
 function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: Report, prefix = "", noRequired = false) {
+  ours = flatten(ours);
   noRequired = noRequired || !!theirs?.noRequiredInfo;
   if (!theirs || theirs.opaque) { if (ours?.properties && Object.keys(ours.properties).length) rep.warnings.push(`${where}: provider declares \`${prefix || "body"}\` as an opaque object; cannot verify ${Object.keys(ours.properties).length} documented field(s) beneath it`); return; }
   const ourReq = new Set<string>(ours.required ?? []); const theirReq = new Set<string>(theirs.required ?? []);
-  for (const [name, o] of Object.entries<any>(ours.properties ?? {})) {
+  for (const [name, raw] of Object.entries<any>(ours.properties ?? {})) {
+    const o = flatten(raw);
     const path = prefix ? `${prefix}.${name}` : name;
     const t = theirs.properties?.[name];
     if (!t) { rep.errors.push(`${where}: \`${path}\` is documented but the provider spec has no such field`); continue; }
@@ -123,7 +166,7 @@ function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: 
     if (t.enum && !o.enum && t.enum.length <= 12) rep.warnings.push(`${where}: \`${path}\` provider enumerates ${JSON.stringify(t.enum)} but we document a free ${o.type}`);
     for (const b of ["minimum", "maximum"] as const) if (o[b] !== undefined && t[b] !== undefined && Number(o[b]) !== Number(t[b])) rep.errors.push(`${where}: \`${path}\` ${b} ${o[b]} vs provider ${t[b]}`);
     if (o.properties) compare(o, t, where, omit, rep, path, noRequired);
-    if (o.items?.properties) compare(o.items, t.items ?? {}, where, omit, rep, `${path}[]`, noRequired);
+    if (o.items?.properties) compare(o.items, t.items, where, omit, rep, `${path}[]`, noRequired);
   }
   for (const name of Object.keys(theirs.properties ?? {})) {
     const path = prefix ? `${prefix}.${name}` : name;
