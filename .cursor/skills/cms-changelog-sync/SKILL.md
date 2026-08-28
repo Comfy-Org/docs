@@ -64,10 +64,11 @@ Strapi release-notes (draft)
 
 **Key points:**
 
-- `cms:prepare:locales` does **not** re-simplify English — it reads existing `staging/en/` only
+- `cms:prepare:locales` does **not** re-simplify English — it reads each project's own staging EN (`staging/en/` and `staging/cloud/en/`)
 - If staging EN is missing the version, translate fails — run `cms:prepare:en` first
 - Target locales: **zh, ja, ko, fr, ru, es** (see `cms-config.json`)
 - `--force` re-translates existing locale blocks (common after manual EN edits)
+- Never copy comfyui locale files onto cloud; cloud campaign shortlinks live on cloud EN
 
 ## Environment (`.env.local`)
 
@@ -142,7 +143,7 @@ Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI
 | `comfyui` | `staging/{locale}/…` | `# ComfyUI vX.Y.Z` |
 | `cloud` | `staging/cloud/{locale}/…` | `# Cloud vX.Y.Z` |
 
-When prepare targets both projects, it runs the LLM once on comfyui, then **merges only the prepared version blocks into cloud** (does not overwrite older cloud-only tracking shortlinks). With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
+When prepare:en targets both projects, it runs the LLM once on comfyui, then merges those version blocks into cloud while keeping any tracking shortlinks already on cloud EN for that version. `prepare:locales` translates each project from its own staging EN. It does not copy comfyui locale files onto cloud. With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
 
 Single project: `--project comfyui`, `--project cloud`, or `CMS_PROJECT=<project>`.
 
