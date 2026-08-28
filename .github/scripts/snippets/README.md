@@ -38,6 +38,17 @@ ResponseField list) and `example` / `result.example`, with a note that Router
 has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
 
+## Provider drift check
+
+`pnpm code-pages:check-providers` (`check-provider-schemas.ts`) fetches each
+provider's own published API specification (`provider_spec.url` in the
+`code.yaml`: BFL and Ideogram publish OpenAPI, Google a discovery document)
+and compares the documented `input` / `output` against it: unknown fields,
+type, default, enum, bound and required-ness mismatches fail; provider fields
+we leave undocumented are warnings (`--strict` makes them errors, `omit:` lists
+the deliberate ones). It runs in CI as the `provider-schemas` job, so the
+fallback schemas are tested rather than trusted until Router publishes its own.
+
 ## Adding a model
 
 1. Create `code.yaml` in the model's directory (copy the Kontext one).

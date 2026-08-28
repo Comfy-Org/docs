@@ -21,7 +21,7 @@ const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 const CLIENT_TIMEOUT_S = 660; // above Router's 10 minute server deadline
 
-type Variant = { title: string; model: string; example?: Record<string, unknown>; input?: any; output?: any };
+type Variant = { title: string; model: string; example?: Record<string, unknown>; input?: any; output?: any; provider_spec?: { url: string } };
 type Spec = {
   name: string;
   provider: string;
@@ -32,6 +32,7 @@ type Spec = {
   fields?: string;
   input?: any;
   output?: any;
+  provider_spec?: { url: string };
   result: { path: string; label: string; example: unknown; note?: string };
   intro?: string;
 };
@@ -306,7 +307,10 @@ function sectionBlocks(v: Variant, spec: Spec) {
   const specInput = v.input ?? spec.input;
   const specOutput = v.output ?? spec.output;
   const fields = (spec.fields ?? "").replace(/\s+/g, " ").trim();
-  const notPublished = `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
+  const checked = !!(v.provider_spec ?? spec.provider_spec);
+  const notPublished = checked
+    ? `_Fields follow ${possessive(spec.provider)} published API specification and are checked against it in CI. Router's own schema for this model is not published yet, so requests are forwarded to the provider unvalidated._`
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
   let input: string;
   if (s?.authored && s.input) {
     input = `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
@@ -328,17 +332,14 @@ function sectionBlocks(v: Variant, spec: Spec) {
   return { input, inputExample, output, outputExample };
 }
 
-/** Everything on the page that depends on which variant is selected. */
-function variantBody(v: Variant, spec: Spec): string {
+/** Model ID, endpoint and the three snippets for one variant. */
+function quickStart(v: Variant, spec: Spec): string {
   const example = v.example ?? spec.example;
   const files = fileInputs(example);
   const label = spec.result.label;
-  const b = sectionBlocks(v, spec);
   return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
-
-## Quick start
 
 <CodeGroup>
 \`\`\`python Python
@@ -352,40 +353,58 @@ ${typescriptSnippet(v.model, example, files, spec.result.path, label)}
 \`\`\`bash cURL
 ${curlSnippet(v.model, example, files)}
 \`\`\`
-</CodeGroup>
+</CodeGroup>`;
+}
 
-## Schema
+/** Schema + Examples for one variant. `html` headings keep them out of the TOC when rendered inside tabs. */
+function sections(v: Variant, spec: Spec, html: boolean): string {
+  const h2 = (t: string) => (html ? `<h2>${t}</h2>` : `## ${t}`);
+  const h3 = (t: string) => (html ? `<h3>${t}</h3>` : `### ${t}`);
+  const b = sectionBlocks(v, spec);
+  return `${h2("Schema")}
 
-### Input
+${h3("Input")}
 
 ${b.input}
 
-### Output
+${h3("Output")}
 
 ${b.output}
 
-## Examples
+${h2("Examples")}
 
-### Input
+${h3("Input")}
 
 \`\`\`json
 ${b.inputExample}
 \`\`\`
 
-### Output
+${h3("Output")}
 
 \`\`\`json
 ${b.outputExample}
 \`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`;
 }
 
+function variantsShareSections(spec: Spec): boolean {
+  const key = (v: Variant) => JSON.stringify([v.input ?? spec.input, v.output ?? spec.output, v.example ?? spec.example, loadModelSchema(v.model)]);
+  return spec.variants.every((v) => key(v) === key(spec.variants[0]));
+}
+
 function renderPage(spec: Spec, dir: string): string {
   const overview = "/" + dir; // tutorials/partner-nodes/<provider>/<model>
   const both = spec.variants.length > 1;
   const modelsPhrase = both ? `both ${spec.name} models` : `${spec.name}`;
-  const body = both
-    ? `Pick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${variantBody(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>`
-    : variantBody(spec.variants[0], spec);
+  let body: string;
+  if (!both) {
+    body = `## Quick start\n\n${quickStart(spec.variants[0], spec)}\n\n${sections(spec.variants[0], spec, false)}`;
+  } else if (variantsShareSections(spec)) {
+    // Only the snippets differ: one selector under Quick start, the shared schema and examples once below.
+    body = `## Quick start\n\nPick the model you want to call. The models share one request and response shape, documented once below.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>\n\n${sections(spec.variants[0], spec, false)}`;
+  } else {
+    // The models take different inputs: one selector switches the whole page.
+    body = `## Quick start\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>`;
+  }
   return `---
 title: "Call ${spec.name} from code with Comfy Router"
 description: "${spec.description.replace(/\s+/g, " ").trim()}"
