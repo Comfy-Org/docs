@@ -34,6 +34,7 @@ type Spec = {
   output?: any;
   provider_spec?: { url: string };
   result: { path: string; label: string; example: unknown; note?: string };
+  summary: string;
   intro?: string;
 };
 
@@ -392,21 +393,23 @@ function variantsShareSections(spec: Spec): boolean {
 }
 
 function renderPage(spec: Spec, dir: string): string {
-  const overview = "/" + dir; // tutorials/partner-nodes/<provider>/<model>
   const both = spec.variants.length > 1;
-  const modelsPhrase = both ? `both ${spec.name} models` : `${spec.name}`;
+  // The one-time setup a snippet cannot run without. Everything else that is
+  // shared across models (idempotency, deadline, request IDs) lives on the
+  // headers page the footer links to.
+  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
   let body: string;
   if (!both) {
-    body = `## Quick start\n\n${quickStart(spec.variants[0], spec)}\n\n${sections(spec.variants[0], spec, false)}`;
+    body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}\n\n${sections(spec.variants[0], spec, false)}`;
   } else if (variantsShareSections(spec)) {
     // Only the snippets differ: one selector under Quick start, the shared schema and examples once below.
-    body = `## Quick start\n\nPick the model you want to call. The models share one request and response shape, documented once below.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>\n\n${sections(spec.variants[0], spec, false)}`;
+    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. The models share one request and response shape, documented once below.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>\n\n${sections(spec.variants[0], spec, false)}`;
   } else {
     // The models take different inputs: one selector switches the whole page.
-    body = `## Quick start\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>`;
+    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>`;
   }
   return `---
-title: "Call ${spec.name} from code with Comfy Router"
+title: "Use ${spec.name} with Comfy Router"
 description: "${spec.description.replace(/\s+/g, " ").trim()}"
 sidebarTitle: "Code"
 ---
@@ -416,11 +419,9 @@ sidebarTitle: "Code"
 import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
 import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-${spec.intro ?? `This page shows how to call ${spec.name} from your own code.`} For what the model is and what it does best, see the [${spec.name} overview](${overview}). To run it interactively in ComfyUI instead, see the [workflows](${overview}/workflow).
+${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 
 <RouterPreviewNotice />
-
-Comfy Router runs ${modelsPhrase} behind one host, one credential and one route. The request body is ${possessive(spec.provider)} own native JSON input and the response is their native JSON output, unwrapped, so a call written against the ${spec.provider} API becomes a Router call by changing the host. Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`; every snippet below reads it from the environment. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`), which send an \`Idempotency-Key\` on every call, wait up to Router's 10 minute deadline, and surface \`X-Comfy-Request-Id\` on results and errors. The cURL snippet is the same call over raw HTTP.
 
 ${body}
 
@@ -473,7 +474,7 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
     problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
     continue;
   }
-  for (const key of ["name", "provider", "description", "variants", "example", "result"] as const) {
+  for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
     if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
   }
   if (problems.some((m) => m.startsWith(specPath))) continue;
