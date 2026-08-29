@@ -1,28 +1,32 @@
-{/* translationSourceHash: 35e4ad69 */}
+{/* translationSourceHash: 0a9acc20 */}
 **작업 상태 값:**
 
-API는 다음 상태 값을 반환합니다:
+API는 다음 상태 값 중 하나를 반환합니다:
 
 | 상태 | 설명 |
 |--------|-------------|
-| `pending` | 작업이 대기 중이며 시작을 기다리고 있습니다 |
-| `in_progress` | 작업이 현재 실행 중입니다 |
-| `completed` | 작업이 성공적으로 완료되었습니다 |
-| `failed` | 작업 중 오류가 발생했습니다 |
-| `cancelled` | 사용자가 작업을 취소했습니다 |
+| `success` | 작업이 성공적으로 완료됨. 터미널 |
+| `error` | 작업 실패. 터미널 |
+| `non_retryable_error` | 작업이 실패했으며 재시도해도 도움이 되지 않음. 터미널 |
+| `lost` | 작업이 완료되기 전에 사라짐. 터미널 |
+| `cancelled` | 작업이 취소됨. 터미널 |
+
+이 다섯 가지가 터미널 상태입니다. 그 외의 모든 상태는 작업이 아직 진행 중임을 의미하며, 여기에는 `submitted`, `queued_waiting`, `preparing`, `executing` 및 `cancel_requested`와 같은 전환 상태가 포함됩니다. 진행 중 상태 이름과 매칭하는 대신 터미널 값이 나타날 때까지 폴링하세요.
 
 <CodeGroup>
 ```bash curl
-# 작업 완료 여부를 풀링합니다
+# Poll for job completion
 curl -X GET "$BASE_URL/api/job/{prompt_id}/status" \
   -H "X-API-Key: $COMFY_CLOUD_API_KEY"
 
-# 응답 예시:
-# {"status": "pending"}      - 작업이 대기 중입니다
-# {"status": "in_progress"}  - 작업이 현재 실행 중입니다
-# {"status": "completed"}    - 작업이 성공적으로 완료되었습니다
-# {"status": "failed"}       - 작업 중 오류가 발생했습니다
-# {"status": "cancelled"}    - 작업이 취소되었습니다
+# Response examples:
+# {"status": "queued_waiting"}       - Job is queued
+# {"status": "executing"}            - Job is currently running
+# {"status": "success"}              - Job finished successfully
+# {"status": "error"}                - Job encountered an error
+# {"status": "non_retryable_error"}  - Job failed, retrying will not help
+# {"status": "lost"}                 - Job disappeared before finishing
+# {"status": "cancelled"}            - Job was cancelled
 ```
 
 ```typescript TypeScript
@@ -48,25 +52,27 @@ async function pollForCompletion(
   while (Date.now() - startTime < timeout * 1000) {
     const { status } = await getJobStatus(promptId);
 
-    if (status === "completed") {
+    if (status === "success") {
       return;
-    } else if (["failed", "cancelled"].includes(status)) {
-      throw new Error(`작업이 실패했습니다: ${status}`);
+    } else if (
+      ["error", "non_retryable_error", "lost", "cancelled"].includes(status)
+    ) {
+      throw new Error(`Job failed with status: ${status}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }
 
-  throw new Error(`작업 ${promptId}이 ${timeout}s 내에 완료되지 않았습니다`);
+  throw new Error(`Job ${promptId} did not complete within ${timeout}s`);
 }
 
 await pollForCompletion(promptId);
-console.log("작업 완료!");
+console.log("Job completed!");
 ```
 
 ```python Python
 def get_job_status(prompt_id: str) -> str:
-    """작업의 현재 상태를 가져옵니다."""
+    """Get the current status of a job."""
     response = requests.get(
         f"{BASE_URL}/api/job/{prompt_id}/status",
         headers=get_headers()
@@ -75,22 +81,22 @@ def get_job_status(prompt_id: str) -> str:
     return response.json()["status"]
 
 def poll_for_completion(prompt_id: str, timeout: int = 300, poll_interval: float = 2.0) -> None:
-    """작업이 완료되거나 시간 초과될 때까지 풀링합니다."""
+    """Poll until job completes or times out."""
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         status = get_job_status(prompt_id)
 
-        if status == "completed":
+        if status == "success":
             return
-        elif status in ("failed", "cancelled"):
-            raise RuntimeError(f"작업이 실패했습니다: {status}")
+        elif status in ("error", "non_retryable_error", "lost", "cancelled"):
+            raise RuntimeError(f"Job failed with status: {status}")
 
         time.sleep(poll_interval)
 
-    raise TimeoutError(f"작업 {prompt_id}이 {timeout}s 내에 완료되지 않았습니다")
+    raise TimeoutError(f"Job {prompt_id} did not complete within {timeout}s")
 
 poll_for_completion(prompt_id)
-print("작업 완료!")
+print("Job completed!")
 ```
 </CodeGroup>

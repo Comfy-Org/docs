@@ -1,28 +1,32 @@
-{/* translationSourceHash: 35e4ad69 */}
+{/* translationSourceHash: 0a9acc20 */}
 **任务状态值：**
 
 API 返回以下状态值之一：
 
 | 状态 | 描述 |
 |--------|-------------|
-| `pending` | 任务已排队，等待开始 |
-| `in_progress` | 任务正在执行 |
-| `completed` | 任务成功完成 |
-| `failed` | 任务遇到错误 |
-| `cancelled` | 任务被用户取消 |
+| `success` | 任务成功完成。终端状态 |
+| `error` | 任务失败。终端状态 |
+| `non_retryable_error` | 任务失败，重试无济于事。终端状态 |
+| `lost` | 任务在完成之前消失。终端状态 |
+| `cancelled` | 任务已取消。终端状态 |
+
+这五种状态均为终端状态。其他所有状态都表示任务仍在进行中，包括 `submitted`、`queued_waiting`、`preparing`、`executing` 以及 `cancel_requested` 等过渡状态。请持续轮询，直到看到终端值，而不是匹配进行中的状态名称。
 
 <CodeGroup>
 ```bash curl
-# 轮询任务完成状态
+# Poll for job completion
 curl -X GET "$BASE_URL/api/job/{prompt_id}/status" \
   -H "X-API-Key: $COMFY_CLOUD_API_KEY"
 
-# 响应示例：
-# {"status": "pending"}      - 任务已排队
-# {"status": "in_progress"}  - 任务正在运行
-# {"status": "completed"}    - 任务成功完成
-# {"status": "failed"}       - 任务遇到错误
-# {"status": "cancelled"}    - 任务被取消
+# Response examples:
+# {"status": "queued_waiting"}       - Job is queued
+# {"status": "executing"}            - Job is currently running
+# {"status": "success"}              - Job finished successfully
+# {"status": "error"}                - Job encountered an error
+# {"status": "non_retryable_error"}  - Job failed, retrying will not help
+# {"status": "lost"}                 - Job disappeared before finishing
+# {"status": "cancelled"}            - Job was cancelled
 ```
 
 ```typescript TypeScript
@@ -48,25 +52,27 @@ async function pollForCompletion(
   while (Date.now() - startTime < timeout * 1000) {
     const { status } = await getJobStatus(promptId);
 
-    if (status === "completed") {
+    if (status === "success") {
       return;
-    } else if (["failed", "cancelled"].includes(status)) {
-      throw new Error(`任务失败，状态：${status}`);
+    } else if (
+      ["error", "non_retryable_error", "lost", "cancelled"].includes(status)
+    ) {
+      throw new Error(`Job failed with status: ${status}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }
 
-  throw new Error(`任务 ${promptId} 在 ${timeout}s 内未完成`);
+  throw new Error(`Job ${promptId} did not complete within ${timeout}s`);
 }
 
 await pollForCompletion(promptId);
-console.log("任务已完成！");
+console.log("Job completed!");
 ```
 
 ```python Python
 def get_job_status(prompt_id: str) -> str:
-    """获取任务的当前状态。"""
+    """Get the current status of a job."""
     response = requests.get(
         f"{BASE_URL}/api/job/{prompt_id}/status",
         headers=get_headers()
@@ -75,22 +81,22 @@ def get_job_status(prompt_id: str) -> str:
     return response.json()["status"]
 
 def poll_for_completion(prompt_id: str, timeout: int = 300, poll_interval: float = 2.0) -> None:
-    """轮询直到任务完成或超时。"""
+    """Poll until job completes or times out."""
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         status = get_job_status(prompt_id)
 
-        if status == "completed":
+        if status == "success":
             return
-        elif status in ("failed", "cancelled"):
-            raise RuntimeError(f"任务失败，状态：{status}")
+        elif status in ("error", "non_retryable_error", "lost", "cancelled"):
+            raise RuntimeError(f"Job failed with status: {status}")
 
         time.sleep(poll_interval)
 
-    raise TimeoutError(f"任务 {prompt_id} 在 {timeout}s 内未完成")
+    raise TimeoutError(f"Job {prompt_id} did not complete within {timeout}s")
 
 poll_for_completion(prompt_id)
-print("任务已完成！")
+print("Job completed!")
 ```
 </CodeGroup>

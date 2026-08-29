@@ -1,28 +1,32 @@
-{/* translationSourceHash: 35e4ad69 */}
+{/* translationSourceHash: 0a9acc20 */}
 **ジョブのステータス値：**
 
 API は以下のいずれかのステータス値を返します。
 
 | ステータス | 説明 |
 |--------|-------------|
-| `pending` | ジョブがキューに登録され、実行開始を待っています |
-| `in_progress` | ジョブが現在実行中です |
-| `completed` | ジョブが正常に完了しました |
-| `failed` | ジョブでエラーが発生しました |
-| `cancelled` | ジョブがユーザーによってキャンセルされました |
+| `success` | ジョブが正常に完了しました。ターミナル |
+| `error` | ジョブが失敗しました。ターミナル |
+| `non_retryable_error` | ジョブが失敗し、再試行しても効果がありません。ターミナル |
+| `lost` | ジョブが完了する前に消失しました。ターミナル |
+| `cancelled` | ジョブがキャンセルされました。ターミナル |
+
+これら5つがターミナル状態です。それ以外はすべて、ジョブがまだ進行中であることを意味します。`submitted`、`queued_waiting`、`preparing`、`executing`、および `cancel_requested` などの移行状態も含まれます。処理中の状態名を判定条件にするのではなく、ターミナル値が表示されるまでポーリングしてください。
 
 <CodeGroup>
 ```bash curl
-# ジョブの完了状態をポーリング
+# Poll for job completion
 curl -X GET "$BASE_URL/api/job/{prompt_id}/status" \
   -H "X-API-Key: $COMFY_CLOUD_API_KEY"
 
-# 応答例：
-# {"status": "pending"}      - ジョブがキューに登録済み
-# {"status": "in_progress"}  - ジョブが現在実行中
-# {"status": "completed"}    - ジョブが正常に完了
-# {"status": "failed"}       - ジョブでエラーが発生
-# {"status": "cancelled"}    - ジョブがキャンセル済み
+# Response examples:
+# {"status": "queued_waiting"}       - Job is queued
+# {"status": "executing"}            - Job is currently running
+# {"status": "success"}              - Job finished successfully
+# {"status": "error"}                - Job encountered an error
+# {"status": "non_retryable_error"}  - Job failed, retrying will not help
+# {"status": "lost"}                 - Job disappeared before finishing
+# {"status": "cancelled"}            - Job was cancelled
 ```
 
 ```typescript TypeScript
@@ -48,25 +52,27 @@ async function pollForCompletion(
   while (Date.now() - startTime < timeout * 1000) {
     const { status } = await getJobStatus(promptId);
 
-    if (status === "completed") {
+    if (status === "success") {
       return;
-    } else if (["failed", "cancelled"].includes(status)) {
-      throw new Error(`ジョブが失敗しました。ステータス：${status}`);
+    } else if (
+      ["error", "non_retryable_error", "lost", "cancelled"].includes(status)
+    ) {
+      throw new Error(`Job failed with status: ${status}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }
 
-  throw new Error(`ジョブ ${promptId} が ${timeout} 秒以内に完了しませんでした`);
+  throw new Error(`Job ${promptId} did not complete within ${timeout}s`);
 }
 
 await pollForCompletion(promptId);
-console.log("ジョブが完了しました！");
+console.log("Job completed!");
 ```
 
 ```python Python
 def get_job_status(prompt_id: str) -> str:
-    """ジョブの現在のステータスを取得します。"""
+    """Get the current status of a job."""
     response = requests.get(
         f"{BASE_URL}/api/job/{prompt_id}/status",
         headers=get_headers()
@@ -75,22 +81,22 @@ def get_job_status(prompt_id: str) -> str:
     return response.json()["status"]
 
 def poll_for_completion(prompt_id: str, timeout: int = 300, poll_interval: float = 2.0) -> None:
-    """ジョブが完了するか、タイムアウトするまでポーリングします。"""
+    """Poll until job completes or times out."""
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         status = get_job_status(prompt_id)
 
-        if status == "completed":
+        if status == "success":
             return
-        elif status in ("failed", "cancelled"):
-            raise RuntimeError(f"ジョブが失敗しました。ステータス：{status}")
+        elif status in ("error", "non_retryable_error", "lost", "cancelled"):
+            raise RuntimeError(f"Job failed with status: {status}")
 
         time.sleep(poll_interval)
 
-    raise TimeoutError(f"ジョブ {prompt_id} が {timeout} 秒以内に完了しませんでした")
+    raise TimeoutError(f"Job {prompt_id} did not complete within {timeout}s")
 
 poll_for_completion(prompt_id)
-print("ジョブが完了しました！")
+print("Job completed!")
 ```
 </CodeGroup>

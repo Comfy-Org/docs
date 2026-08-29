@@ -1,41 +1,66 @@
 ---
 title: "Comfy API v2 の概要"
-description: "公式 Comfy API v2 リファレンス：入力をアップロードしてワークフローを送信し、結果をポーリングして外部アプリケーションから ComfyUI ワークフローを実行します。"
-translationSourceHash: 6c26a24e
+sidebarTitle: "概要"
+description: "公式 Comfy API v2 リファレンス：入力をアップロードしてジョブを送信し、結果をポーリングして外部アプリケーションから ComfyUI ワークフローを実行します。"
+translationSourceHash: f2a20d1e
 translationFrom: api-reference/v2/overview.mdx
+translationBlockHashes:
+  "_intro": faa93edf
+  "Where v2 Runs": 832a785d
+  "Design Principles": 7fb3bede
+  "Base URLs": 5ec95f1e
+  "Endpoint Categories": cfe96710
+  "Comfy Router": 56778843
 ---
-
 <Warning>
-  **ベータ：** Comfy API v2 は `0.1.x` であり、API サーフェスはまだ変更される可能性があります。v2 内の変更は追加的なものになります。破壊的な変更がある場合は v3 としてリリースされます。
+  **ベータ:** Comfy API v2 は `0.1.x` であり、API のインターフェースはまだ変更される可能性があります。v2 内の変更は追加的なものになります。破壊的な変更は v3 としてリリースされます。
 </Warning>
 
 外部アプリケーションから ComfyUI ワークフローを実行するための、公式のバージョン管理された HTTP API です。入力のアップロード、ワークフローの送信、実行の監視、結果の取得を行うことができます。
 
-ほとんどのユーザーは、この API を Python と TypeScript でラップした [Comfy SDK](/ja/development/api-development/sdks) から始めることをお勧めします。別の言語で開発している場合は、これらのエンドポイントを直接呼び出してください。
+ほとんどのユーザーは、この API を Python と TypeScript でラップした [Comfy SDKs](/ja/development/api-development/sdks) から始めることをお勧めします。他の言語で作業している場合は、これらのエンドポイントを直接呼び出してください。完全なエンドポイントドキュメントは、このセクションの API Reference ページにあり、OpenAPI 仕様から生成されています。
+
+## v2 が動作する場所
+
+同じ API が 3 つのサーフェスで提供されるため、1 つのインテグレーションでベース URL を変更するだけで、それらを切り替えることができます。
+
+**Comfy Cloud.** `https://cloud.comfy.org` で提供されるマネージド型のマルチテナントサービスです。[APIキー](/ja/development/api-development/getting-an-api-key)を作成すれば、任意のワークフローを送信できます。クレジット、モデルの閲覧、キュー管理などのクラウド固有の機能は、v2 ではなく [v1 Cloud API](/ja/development/cloud/overview) にあります。
+
+**Serverless API（Developer Platform）.** [Developer Platform](https://platform.comfy.org) を通じてデプロイしたワークフローには、`https://{deployment}.run.comfy.app` に専用のエンドポイントが割り当てられ、同じ APIキーで同じ v2 API を提供します。サーバーレスデプロイメントはピン留めされた 1 つのワークフローを実行するため、独立してスケーリングされ、`GET /workflow` は実行されたグラフを返します。構築とデプロイの詳細については、[Serverless API ガイド](/ja/development/serverless/overview) を参照してください。
+
+**オープンソースの ComfyUI（プロキシ経由）.** ベータ期間中、セルフホストの ComfyUI は、[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy)（ComfyUI と一緒に実行される小さなオープンソースサービス）を通じて v2 を利用します。
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+```
+
+デフォルトでは、`127.0.0.1:8188` の ComfyUI をプロキシし、`127.0.0.1:8189` で v2 API を提供します。ループバックのみにバインドされます。認証はデフォルトではオフになっており、オプションで静的ベアラートークンを設定できます。プロキシは暫定的な対策です。v2 が安定化すると ComfyUI コアに組み込まれ、プロキシは不要になります。設定の詳細については、SDK ガイドの [自分専用の ComfyUI](/ja/development/api-development/sdks#ご自身のcomfyui) を参照してください。
 
 ## 設計原則
 
-- **ポーリング優先。** すべての機能は、単純な GET ポーリングで利用できます。SSE ストリームはライブ拡張機能であり、正本（source of truth）にはなりません。
-- **すべて再開可能。** 送信は冪等であり、ジョブの状態と出力は `expires_at` まで ID で取得できます。
-- **コンテンツアドレス型アセット。** アセットは、サーバーが計算した blake3 ハッシュをキーとする blob 上の UUID 識別レコードです。そのため、同一の入力が 2 回アップロードされることはありません。
-- **URL を組み立てず、リンクに従う。** レスポンスには後続の URL が埋め込まれています。
+- **ポーリング優先。** すべての機能は、単純な GET ポーリングで利用できます。SSE ストリームはライブ拡張であり、決して真実のソースではありません。
+- **すべてが再開可能。** 送信は冪等であり、ジョブの状態と出力は `expires_at` まで ID によって取得できます。
+- **コンテンツアドレス型アセット。** アセットは UUID で識別されるレコードであり、その基盤となる blob はサーバーが計算した blake3 ハッシュをキーとします。そのため、同一の入力が 2 回アップロードされることはありません。
+- **リンクを辿り、URL を組み立てない。** レスポンスには、フォローアップ URL が埋め込まれています。
 
-これらの背景にある設計上の理由については、[設計メモ](/ja/development/api-development/sdks-design) を参照してください。
+これらの根拠については、[設計ノート](/ja/development/api-development/sdks-design) を参照してください。
 
-## ベース URL
+## ベースURL
 
-| サーフェス | URL | 認証 |
+| 利用形態 | URL | 認証 |
 |---------|-----|----------------|
 | Comfy Cloud | `https://cloud.comfy.org` | `Authorization: Bearer <api-key>` |
-| セルフホスト（[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) 経由） | `http://127.0.0.1:8189` | デフォルトでは認証なし。オプションで静的ベアラートークンを使用可能 |
+| サーバーレスデプロイメント | `https://{deployment}.run.comfy.app` | `Authorization: Bearer <api-key>` |
+| セルフホスト（[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) 経由） | `http://127.0.0.1:8189` | デフォルトでは認証なし。静的ベアラートークンは任意 |
 
-## エンドポイントのカテゴリ
+## エンドポイントカテゴリ
 
 | カテゴリ | 説明 |
 |----------|-------------|
-| アセット | コンテンツアドレス型 blob 上の UUID 識別レコード。入力のアップロードと出力のダウンロードを行います。 |
-| ジョブ | ワークフローの 1 回の実行。永続的で、ポーリング可能であり、キャンセルも可能です。 |
+| アセット | コンテンツアドレス指定されたblob上でUUIDにより識別されるレコード。入力のアップロード、出力のダウンロードを行います。 |
+| ジョブ | ワークフローの1回の実行。永続的で、ポーリング可能かつキャンセル可能です。 |
 
 ## Comfy Router
 
-Comfy API v2 は、送信してポーリングする永続的なジョブとしてワークフローを実行します。モデルを直接呼び出す場合（パートナーモデル 1 つ、リクエスト 1 つ、モデル固有のネイティブな入出力）は、[Comfy Router](/ja/api-reference/comfy-router/quickstart) をご覧ください。先に [Router の制限事項](/ja/api-reference/comfy-router/limitations) をご確認ください。Router はまだ一般提供されていません。
+Comfy API v2 は、送信してポーリングする永続的なジョブとしてワークフローを実行します。直接モデル呼び出し（1つのパートナーモデル、1つのリクエスト、モデル独自の入力と出力）については、[Comfy Router](/ja/api-reference/comfy-router/quickstart)を参照してください。まず[Routerの制限事項](/ja/api-reference/comfy-router/limitations)を確認してください。Routerはまだ一般提供されていません。

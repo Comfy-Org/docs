@@ -1,20 +1,26 @@
-{/* translationSourceHash: 84385416 */}
+{/* translationSourceHash: 82d7e39e */}
 <CodeGroup>
 ```bash curl
-# 단일 출력 파일 다운로드하기 (302 리디렉션은 -L 옵션으로 따라가기)
-curl -L "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
-  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
-  -o output.png
+# Step 1: read the 302 target. Do not use -L here: following the redirect
+# would resend your API key to the storage host.
+SIGNED_URL=$(curl -s -o /dev/null -w '%{redirect_url}' \
+  "$BASE_URL/api/view?filename=output.png&subfolder=&type=output" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY")
+
+# Step 2: the signed URL carries its own authorization, so send no headers.
+curl -s "$SIGNED_URL" -o output.png
 ```
 
 ```typescript TypeScript
+import { mkdir, writeFile } from "fs/promises";
+
 async function downloadOutput(
   filename: string,
   subfolder: string = "",
   outputType: string = "output"
 ): Promise<ArrayBuffer> {
   const params = new URLSearchParams({ filename, subfolder, type: outputType });
-  // 리디렉션 URL 가져오기
+  // Get the redirect URL
   const response = await fetch(`${BASE_URL}/api/view?${params}`, {
     headers: { "X-API-Key": API_KEY },
     redirect: "manual",
@@ -22,7 +28,7 @@ async function downloadOutput(
   if (response.status !== 302) throw new Error(`HTTP ${response.status}`);
   const signedUrl = response.headers.get("location")!;
 
-  // 서명된 URL에서 가져오기
+  // Fetch from signed URL
   const fileResponse = await fetch(signedUrl);
   if (!fileResponse.ok) throw new Error(`HTTP ${fileResponse.status}`);
   return fileResponse.arrayBuffer();
@@ -32,6 +38,7 @@ async function saveOutputs(
   outputs: Record<string, any>,
   outputDir: string = "."
 ): Promise<void> {
+  await mkdir(outputDir, { recursive: true });
   for (const nodeOutputs of Object.values(outputs)) {
     for (const key of ["images", "video", "audio"]) {
       for (const fileInfo of (nodeOutputs as any)[key] ?? []) {
@@ -42,27 +49,27 @@ async function saveOutputs(
         );
         const path = `${outputDir}/${fileInfo.filename}`;
         await writeFile(path, Buffer.from(data));
-        console.log(`저장됨: ${path}`);
+        console.log(`Saved: ${path}`);
       }
     }
   }
 }
 
-// 모든 출력 다운로드
+// Download all outputs
 await saveOutputs(outputs, "./my_outputs");
 ```
 
 ```python Python
 def download_output(filename: str, subfolder: str = "", output_type: str = "output") -> bytes:
-    """출력 파일을 다운로드합니다.
+    """Download an output file.
 
     Args:
-        filename: 파일 이름
-        subfolder: 하위 폴더 경로 (보통 비어 있음)
-        output_type: 최종 출력일 경우 "output", 미리보기일 경우 "temp"
+        filename: Name of the file
+        subfolder: Subfolder path (usually empty)
+        output_type: "output" for final outputs, "temp" for previews
 
     Returns:
-        파일 바이트
+        File bytes
     """
     params = {
         "filename": filename,
@@ -70,20 +77,29 @@ def download_output(filename: str, subfolder: str = "", output_type: str = "outp
         "type": output_type
     }
 
+    # Do not follow the redirect. requests drops Authorization on a cross-host
+    # redirect but keeps custom headers, so X-API-Key would reach the storage
+    # host. The signed URL carries its own authorization.
     response = requests.get(
         f"{BASE_URL}/api/view",
         headers=get_headers(),
-        params=params
+        params=params,
+        allow_redirects=False
     )
-    response.raise_for_status()
-    return response.content
+    if response.status_code != 302:
+        raise RuntimeError(f"Expected a 302 redirect, got {response.status_code}")
+    signed_url = response.headers["Location"]
+
+    file_response = requests.get(signed_url)
+    file_response.raise_for_status()
+    return file_response.content
 
 def save_outputs(outputs: dict, output_dir: str = "."):
-    """작업의 모든 출력을 디스크에 저장합니다.
+    """Save all outputs from a job to disk.
 
     Args:
-        outputs: 작업에서 가져온 출력 사전 (노드 ID -> 출력 데이터)
-        output_dir: 파일을 저장할 디렉터리
+        outputs: Outputs dict from job (node_id -> output_data)
+        output_dir: Directory to save files to
     """
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -100,9 +116,9 @@ def save_outputs(outputs: dict, output_dir: str = "."):
                 output_path = os.path.join(output_dir, filename)
                 with open(output_path, "wb") as f:
                     f.write(data)
-                print(f"저장됨: {output_path}")
+                print(f"Saved: {output_path}")
 
-# 모든 출력 다운로드
+# Download all outputs
 save_outputs(outputs, "./my_outputs")
 ```
 </CodeGroup>

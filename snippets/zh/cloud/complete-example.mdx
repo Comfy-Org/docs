@@ -1,4 +1,4 @@
-{/* translationSourceHash: 0ac3ddc0 */}
+{/* translationSourceHash: e65a488e */}
 <CodeGroup>
 ```typescript TypeScript
 import { readFile, writeFile } from "fs/promises";
@@ -7,42 +7,44 @@ const BASE_URL = "https://cloud.comfy.org";
 const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
 
 async function main() {
-  // 1. 加载并修改工作流
+  // 1. Load and modify workflow
   const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
   workflow["3"].inputs.seed = 42;
   workflow["6"].inputs.text = "a beautiful sunset";
 
-  // 2. 提交工作流
+  // 2. Submit workflow
   const response = await fetch(`${BASE_URL}/api/prompt`, {
     method: "POST",
     headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({ prompt: workflow }),
   });
   const { prompt_id } = await response.json();
-  console.log(`任务已提交：${prompt_id}`);
+  console.log(`Job submitted: ${prompt_id}`);
 
-  // 3. 轮询完成状态
+  // 3. Poll for completion
   while (true) {
     const statusRes = await fetch(`${BASE_URL}/api/job/${prompt_id}/status`, {
       headers: { "X-API-Key": API_KEY },
     });
     const { status } = await statusRes.json();
 
-    if (status === "completed") break;
-    if (["failed", "cancelled"].includes(status)) {
-      throw new Error(`任务 ${status}`);
+    if (status === "success") break;
+    if (
+      ["error", "non_retryable_error", "lost", "cancelled"].includes(status)
+    ) {
+      throw new Error(`Job ${status}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  // 4. 通过任务详情端点获取输出
+  // 4. Get outputs via job detail endpoint
   const jobRes = await fetch(`${BASE_URL}/api/jobs/${prompt_id}`, {
     headers: { "X-API-Key": API_KEY },
   });
   const job = await jobRes.json();
   const outputs = job.outputs;
 
-  // 5. 下载输出文件
+  // 5. Download output files
   for (const nodeOutputs of Object.values(outputs)) {
     for (const fileInfo of (nodeOutputs as any).images ?? []) {
       const params = new URLSearchParams({
@@ -57,7 +59,7 @@ async function main() {
       const signedUrl = viewRes.headers.get("location")!;
       const fileRes = await fetch(signedUrl);
       await writeFile(`./${fileInfo.filename}`, Buffer.from(await fileRes.arrayBuffer()));
-      console.log(`已下载：${fileInfo.filename}`);
+      console.log(`Downloaded: ${fileInfo.filename}`);
     }
   }
 }
@@ -75,23 +77,23 @@ BASE_URL = "https://cloud.comfy.org"
 API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
 
 def main():
-    # 1. 加载并修改工作流
+    # 1. Load and modify workflow
     with open("workflow_api.json") as f:
         workflow = json.load(f)
 
     workflow["3"]["inputs"]["seed"] = 42
     workflow["6"]["inputs"]["text"] = "a beautiful sunset"
 
-    # 2. 提交工作流
+    # 2. Submit workflow
     response = requests.post(
         f"{BASE_URL}/api/prompt",
         headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
         json={"prompt": workflow}
     )
     prompt_id = response.json()["prompt_id"]
-    print(f"任务已提交：{prompt_id}")
+    print(f"Job submitted: {prompt_id}")
 
-    # 3. 轮询完成状态
+    # 3. Poll for completion
     while True:
         status_res = requests.get(
             f"{BASE_URL}/api/job/{prompt_id}/status",
@@ -99,13 +101,13 @@ def main():
         )
         status = status_res.json()["status"]
 
-        if status == "completed":
+        if status == "success":
             break
-        if status in ("failed", "cancelled"):
-            raise RuntimeError(f"任务 {status}")
+        if status in ("error", "non_retryable_error", "lost", "cancelled"):
+            raise RuntimeError(f"Job {status}")
         time.sleep(2)
 
-    # 4. 通过任务详情端点获取输出
+    # 4. Get outputs via job detail endpoint
     job_res = requests.get(
         f"{BASE_URL}/api/jobs/{prompt_id}",
         headers={"X-API-Key": API_KEY}
@@ -113,7 +115,7 @@ def main():
     job = job_res.json()
     outputs = job["outputs"]
 
-    # 5. 下载输出文件
+    # 5. Download output files
     for node_outputs in outputs.values():
         for file_info in node_outputs.get("images", []):
             params = {
@@ -121,14 +123,18 @@ def main():
                 "subfolder": file_info.get("subfolder", ""),
                 "type": "output"
             }
+            # Read the redirect instead of following it. requests keeps custom
+            # headers across hosts, which would send the key to storage.
             view_res = requests.get(
                 f"{BASE_URL}/api/view",
                 headers={"X-API-Key": API_KEY},
-                params=params
+                params=params,
+                allow_redirects=False
             )
+            file_res = requests.get(view_res.headers["Location"])
             with open(file_info["filename"], "wb") as f:
-                f.write(view_res.content)
-            print(f"已下载：{file_info['filename']}")
+                f.write(file_res.content)
+            print(f"Downloaded: {file_info['filename']}")
 
 if __name__ == "__main__":
     main()
