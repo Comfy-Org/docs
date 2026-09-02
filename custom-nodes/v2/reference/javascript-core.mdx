@@ -1,0 +1,445 @@
+---
+title: "JavaScript core API"
+description: "The root Comfy object, capabilities, backend calls, commands, chrome contributions, and handle rules."
+---
+
+<Note>
+  This page is generated from the authoritative declaration file. Do not edit it by hand. Contract SHA-256: <code>152c7fab547f</code>.
+</Note>
+
+This reference contains 13 exported declarations: `BackendHandle`, `BadgeContribution`, `ChromeItemHandle`, `ButtonContribution`, `PropSpec`, `HandleSpec`, `HandleCommon`, `HandleToken`, `Comfy`, `KeyCombo`, `CommandDef`, `NotifyDef`, `CommandsHandle`.
+
+Download the complete contract from the docs source: [TypeScript declaration](https://github.com/Comfy-Org/docs/blob/main/public/custom-nodes-sdk/v2/comfy-api.d.ts).
+
+## Contract
+
+````typescript
+// ─── backendHandle.ts ────────────────────────────────────────────
+
+export interface BackendHandle {
+  /**
+   * Absolute URL for a backend route, honouring however the host is served —
+   * a base path, a different port, a proxy.
+   */
+  url(route: string): string
+  /**
+   * Absolute URL for a file the host serves, rather than an API route.
+   *
+   * Distinct from `url()` because that one addresses the API and prepends
+   * `/api`, so a static path built through it produced `/api/extensions/…`,
+   * which 404s.
+   *
+   * This is for a path the caller already knows absolutely. It is *not* the
+   * way a pack should reach its own neighbouring files: the host serves those
+   * from `/extensions/<install-dir>/`, and that directory name is chosen when
+   * the pack is installed and can be renamed, so it is not knowable from
+   * source. `new URL('x.css', import.meta.url)` resolves against the module's
+   * real location and stays correct. One pack ships two spellings of its own
+   * directory with an `onerror` fallback between them, which is what guessing
+   * costs.
+   */
+  assetUrl(route: string): string
+  /**
+   * Identifies this frontend connection to a pack's own backend route.
+   * Undefined until the backend establishes the connection; do not persist it.
+   */
+  sessionId(): string | undefined
+  /**
+   * Fires when {@link sessionId} becomes a different value.
+   *
+   * A pack that keys ephemeral server-side work by session — a scratch
+   * directory, a warmed model, a subscription — needs to know its old key is
+   * dead. The id changes on the first connection and again whenever the socket
+   * reconnects under a new identity, and the work filed under the previous one
+   * is no longer addressable.
+   *
+   * The session is not the user, the workflow or the node. It does not survive
+   * a reload, and storing it in any of those is how a pack ends up reading
+   * another tab's scratch state.
+   */
+  onSessionChanged(
+    listener: (sessionId: string | undefined) => void
+  ): Unsubscribe
+  /**
+   * Subscribes to a backend message. The name is whatever the backend emits;
+   * `detail` is its payload, unparsed.
+   */
+  on(event: string, listener: (detail: unknown) => void): Unsubscribe
+  /**
+   * Calls a backend route with the host's own credentials attached.
+   *
+   * `url()` only builds a string, so a pack calling `fetch()` on it sends an
+   * unauthenticated request — fine for a public route, a 401 when host authentication is required.
+   * Packs ship their own Python routes and were reaching for `api.fetchApi`
+   * precisely to inherit the session; this is that, and nothing more.
+   *
+   * The route is API-relative and must start with `/`, as `url()` requires.
+   */
+  fetch(route: string, init?: RequestInit): Promise<Response>
+}
+
+// ─── chromeContributions.ts ──────────────────────────────────────
+
+export interface BadgeContribution {
+  /** Namespaced, e.g. `Crystools.monitor`. Registering the same id twice throws. */
+  readonly id: string
+  readonly text: string
+  readonly label?: string
+  readonly variant?: 'info' | 'warning' | 'error'
+  /** An iconify or PrimeIcons class, e.g. `pi-chart-bar`. */
+  readonly icon?: string
+  readonly tooltip?: string
+}
+
+/** What a pack keeps after contributing something to the chrome. */
+export interface ChromeItemHandle<T> {
+  /** Changes what is shown. Only the fields given are replaced. */
+  update(changes: Partial<Omit<T, 'id'>>): void
+  remove(): void
+}
+
+export interface ButtonContribution {
+  readonly id: string
+  readonly icon: string
+  readonly label?: string
+  readonly tooltip?: string
+  /**
+   * The click. The event is passed because packs branch on modifiers — one
+   * opens its panel in a sized window on shift-click — and without it that
+   * behaviour has nothing to read.
+   */
+  run(event: MouseEvent): void
+}
+
+// ─── closedProxy.ts ──────────────────────────────────────────────
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface PropSpec<TTarget> {
+  get(target: TTarget): unknown
+  set?(target: TTarget, value: unknown): void
+  /** Appended to the error when a pack assigns to a read-only property. */
+  readonlyHint?: string
+}
+
+export interface HandleSpec<TTarget> {
+  /** Used in errors and `Symbol.toStringTag`, e.g. 'node'. */
+  readonly kind: string
+  readonly props: Readonly<Record<string, PropSpec<TTarget>>>
+  readonly methods?: Readonly<
+    Record<string, (target: TTarget, ...args: never[]) => unknown>
+  >
+  /**
+   * Methods that also need the handle's own id.
+   *
+   * A widget target is just the widget: it holds no reference back to its
+   * node, by design, so a method that has to name a sibling cannot find one
+   * from the target alone. Separate from `methods` so the common signature
+   * stays two arguments.
+   */
+  readonly idMethods?: Readonly<
+    Record<string, (target: TTarget, id: string, ...args: never[]) => unknown>
+  >
+  /**
+   * Props that remain readable after deletion. Identity only — an id or type is
+   * still useful for logging and cleanup once the entity is gone.
+   */
+  readonly identityProps?: readonly string[]
+}
+
+/** Present on every handle. Never throws, even when the entity is gone. */
+export interface HandleCommon {
+  readonly isDeleted: boolean
+}
+
+export interface HandleToken {
+  readonly kind: string
+  readonly id: string
+}
+
+// ─── comfyApi.ts ─────────────────────────────────────────────────
+
+export interface Comfy {
+  /**
+   * `major.minor`. Prefer `supports()` over comparing this — a capability
+   * survives being backported or reordered across minors; a version comparison
+   * does not.
+   */
+  readonly version: string
+  /** Breaking-change generation. Incremented only when something is removed. */
+  readonly major: number
+  /**
+   * Cheap, never throws. The supported way to branch.
+   *
+   * Answers whether this host can do something, under the grant it is running
+   * with. It is not a permission request: asking does not obtain authority, and
+   * a pack never enumerates capabilities to be allowed to run.
+   */
+  supports(capability: string): boolean
+  /** Asserts a capability, with an actionable error naming it. */
+  require(capability: string): void
+  /** Every capability this host provides. */
+  capabilities(): readonly string[]
+  /**
+   * Pins to a specific major.
+   *
+   * A major stays available until it is announced for removal and withdrawn
+   * through the normal phased deprecation process, so a pack written against
+   * one keeps working across that period rather than breaking on a release.
+   */
+  forMajor(major: number): Comfy
+
+  /**
+   * True when two handles refer to the same entity, whatever major, API
+   * instance or graph scope produced them.
+   *
+   * `===` is only reliable for handles from the same instance, the same major
+   * AND the same scope. Scope is the one most likely to catch a pack out: a
+   * node reached through `comfy.graph` while it is on screen and the same node
+   * reached through `graph.subgraphs()` or through a document-scoped
+   * `onNodeChanged` come from different handle caches, so they are equal here
+   * and not equal under `===`. Use this whenever a handle may have come from
+   * another pack, from an event, or from a graph other than the visible one.
+   */
+  sameEntity(a: unknown, b: unknown): boolean
+
+  /**
+   * Re-resolves a handle from any major or instance into one of this instance's
+   * own. Returns `undefined` if it is not a handle, or its entity is gone.
+   */
+  adopt(handle: unknown): NodeHandle | undefined
+
+  readonly graph: GraphHandle
+  /** Node definitions, and the replacement for `beforeRegisterNodeDef`. */
+  readonly defs: DefRegistry
+  /** Declaring, reading and writing pack settings. */
+  readonly settings: SettingsHandle
+  /**
+   * Per-user persistent storage for documents the pack's users author —
+   * templates, presets, saved prompts. Server-side, so it follows the user
+   * between machines.
+   */
+  readonly storage: StorageHandle
+  /** Bounded, host-sampled hardware metrics. */
+  readonly system: SystemHandle
+  /** The sanctioned slice of app chrome — sidebar tabs. */
+  readonly ui: UiHandle
+  /** Host-owned facilities shared by widget implementations. */
+  readonly widgets: WidgetsHandle
+  /** Bounded declarative locale catalogs rendered by host-native i18n. */
+  readonly localization: LocalizationHandle
+  /** Commands, their keybindings, and notifications. */
+  readonly commands: CommandsHandle
+  /** Backend URLs and messages, including a pack's own events. */
+  readonly backend: BackendHandle
+  /** Loading a parsed workflow into a new active document. */
+  readonly workflow: WorkflowHandle
+  /** Explicit, bounded host file selection and download. */
+  readonly files: FilesHandle
+  /** Fixed host cryptographic primitives available to pack UI workers. */
+  readonly crypto: CryptoHandle
+  /** Bounded vendor-specific facilities. */
+  readonly integrations: IntegrationsHandle
+  /**
+   * The editor is already mid-gesture — dragging a link, resizing a node,
+   * dragging a widget. A pack running its own pointer gesture must stand down
+   * while this is true.
+   */
+  isInteracting(): boolean
+  /**
+   * Observes nodes being moved, under either renderer.
+   *
+   * For building an editing gesture — swap, insert-on-link, shake-to-detach.
+   * A pack that moves nodes itself will see its own writes, so guard re-entry.
+   */
+  onNodeMoved(listener: (event: NodeMoveEvent) => void): Unsubscribe
+  /**
+   * A drag finished; every node it moved.
+   *
+   * Where an editing gesture commits — swap the pair, insert into the link
+   * under the cursor. **Nodes 2.0 only**: the legacy canvas renderer publishes
+   * no drag lifecycle, so this never fires under it.
+   */
+  onNodeDragEnd(listener: (nodes: readonly NodeHandle[]) => void): Unsubscribe
+  /**
+   * The view panned, zoomed or was resized.
+   *
+   * For keeping something anchored to a node in sync — ask
+   * `node.getScreenRect()` again when this fires. Carries no payload: where a
+   * node is belongs to the node, and the transform belongs to the renderer.
+   */
+  onViewportChanged(listener: () => void): Unsubscribe
+  /**
+   * A node changed — its mode, title, colour or shape.
+   *
+   * For observing nodes the pack does not own. rgthree's relay polls every
+   * 500ms and installs a `defineProperty` trap on `mode` because nothing
+   * reports it; this is that signal.
+   *
+   * One stream rather than a subscription per node, deliberately: node
+   * identity does not survive undo, reload or re-entering a subgraph, so
+   * anything keyed by the object stops firing silently, and keying by id
+   * instead never gets collected. Filter by `event.node.id`.
+   *
+   * Only fields the host tracks are reported. Position is not among them — it
+   * changes per frame during a drag and is served by {@link onNodeMoved}.
+   *
+   * Reports the graph on screen unless `scope: 'document'` asks for the root
+   * graph and every subgraph definition as well. A pack that computes from
+   * other nodes wants `'document'`: a relay in a subgraph the user has
+   * navigated away from otherwise stops recomputing while still asserting its
+   * last answer. Each event names the graph it came from, and resolves its node
+   * there — ids repeat across definitions, so `event.node.id` alone is not a
+   * key.
+   */
+  onNodeChanged(
+    listener: (event: NodeChangeEvent) => void,
+    options?: NodeChangeOptions
+  ): Unsubscribe
+  /**
+   * The application has finished starting: canvas, settings and graph all
+   * exist, and node definitions are registered.
+   *
+   * This is `registerExtension({ setup })`. A pack's module body is the `init`
+   * half — it runs before definitions register — so anything that needs the
+   * running app belongs here. Registering after the app has already started is
+   * fine; the listener is called on the next microtask rather than dropped,
+   * which is what makes this safe for a pack loaded lazily.
+   *
+   * Do not poll for the DOM instead. Several packs shipped a `waitForElements`
+   * loop to paper over the missing hook, and a poll that outlives its target
+   * is a leak that only shows up on someone else's machine.
+   */
+  onReady(listener: () => void): Unsubscribe
+  /** Starting a run, and knowing when one starts. */
+  queue: QueueHandle
+  /**
+   * The node the backend is executing, or `undefined` between runs.
+   *
+   * Packs tracked this from the raw `executing` message to badge the running
+   * node or follow it with the view.
+   */
+  executingNode(): NodeHandle | undefined
+  /** Resolves a backend execution id, including a nested subgraph path. */
+  executionNode(id: string): NodeHandle | undefined
+  /** Fires when {@link executingNode} changes, including to nothing. */
+  onExecutingNodeChanged(
+    listener: (node: NodeHandle | undefined) => void
+  ): Unsubscribe
+  /**
+   * A workflow finished loading, and the graph is the new one.
+   *
+   * This is `afterConfigureGraph`. Unlike {@link onReady} it fires again for
+   * every workflow the user opens, which is what a pack re-attaching itself to
+   * the document needs — `onReady` fires once and misses every later open.
+   *
+   * It also fires for undo, redo and a reload of the same document, because a
+   * pack rebuilding state from the graph needs those too. The handle says
+   * which of them happened: an id equal to the one from last time means this
+   * document was rebuilt, not replaced. `undefined` when the host cannot name
+   * a document, as when raw workflow data is loaded with no file behind it.
+   */
+  onWorkflowLoaded(
+    listener: (document: DocumentHandle | undefined) => void
+  ): Unsubscribe
+  /**
+   * A document's editing session began.
+   *
+   * Where per-document state belongs. Fires for a tab opened in the
+   * background too, so a pack that allocates here and releases in
+   * {@link onDocumentClosed} stays balanced however the user moves around.
+   */
+  onDocumentOpened(listener: (document: DocumentHandle) => void): Unsubscribe
+  /**
+   * A document became the one on screen.
+   *
+   * Distinct from opening: the user returning to a tab activates a document
+   * that was already open, and its state is still valid. Anything tied to
+   * *being visible* — a panel, a canvas overlay — belongs here.
+   */
+  onDocumentActivated(listener: (document: DocumentHandle) => void): Unsubscribe
+  /**
+   * A document stopped being the one on screen, but is still open.
+   *
+   * Fires before the next document is activated, so a pack moving something
+   * between them never sees two claiming the screen at once.
+   */
+  onDocumentDeactivated(
+    listener: (document: DocumentHandle) => void
+  ): Unsubscribe
+  /**
+   * A document's editing session ended, however it ended — the user closing
+   * the tab, a temporary workflow being deleted, or the host discarding a
+   * background tab whose file changed on disk.
+   *
+   * Release everything keyed to it. The handle already reports `isDeleted`,
+   * and carries the id so a pack can find what it stored; it will not describe
+   * the document, because there is no longer one to describe.
+   */
+  onDocumentClosed(listener: (document: DocumentHandle) => void): Unsubscribe
+}
+
+// ─── commandsHandle.ts ───────────────────────────────────────────
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface KeyCombo {
+  readonly key: string
+  readonly ctrl?: boolean
+  readonly alt?: boolean
+  readonly shift?: boolean
+  readonly meta?: boolean
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface CommandDef {
+  /** Namespaced, e.g. `MyPack.doTheThing`. Shared with core and every pack. */
+  readonly id: string
+  /**
+   * A function when the label depends on state — a toggle that reads "Follow
+   * execution" and then "Stop following execution". It is read each time the
+   * label is shown, so it must return quickly.
+   */
+  readonly label: string | (() => string)
+  readonly run: () => void | Promise<void>
+  /** Bound as a default, so a user's own binding still wins. */
+  readonly keybinding?: KeyCombo
+  /**
+   * Where the keybinding applies. Defaults to anywhere in the application.
+   *
+   * `'canvas'` limits it to the graph, so it will not fire while the user is
+   * typing in a node's text widget or any other field. The host already
+   * withholds combos a text input owns — every bare arrow, Ctrl+Left/Right,
+   * Ctrl+A/C/V/X/Z — but a pack binding something it does not, say Ctrl+Up,
+   * would otherwise fire mid-sentence.
+   */
+  readonly scope?: 'canvas'
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface NotifyDef {
+  readonly severity?: 'success' | 'info' | 'warn' | 'error'
+  readonly summary: string
+  readonly detail?: string
+  /** Milliseconds. Omit for the host's default. */
+  readonly life?: number
+}
+
+export interface CommandsHandle {
+  register(def: CommandDef): void
+  notify(def: NotifyDef): void
+  /**
+   * Runs a command the host or another pack registered, by id.
+   *
+   * Packs reached into internals to do what a command already does — opening
+   * the mask editor was `ComfyApp.copyToClipspace` plus `clipspace_return_node`
+   * plus invoking `Comfy.MaskEditor.OpenMaskEditor` by hand. Commands are the
+   * sanctioned action layer, so a pack can ask for the behaviour without the
+   * host having to publish the machinery behind it.
+   *
+   * Rejects if no such command is registered — a pack naming a command that
+   * has been renamed should hear about it rather than silently do nothing.
+   */
+  run(id: string): Promise<void>
+  /** Whether a command exists, for a pack that offers an entry conditionally. */
+  has(id: string): boolean
+}
+````
