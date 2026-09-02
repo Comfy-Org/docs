@@ -19,7 +19,6 @@ const ROOT = join(import.meta.dir, "../../..");
 const SPEC_GLOB = "tutorials/partner-nodes/**/code.yaml";
 const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
-const CLIENT_TIMEOUT_S = 660; // above Router's 10 minute server deadline
 
 type Variant = { title: string; model: string; example?: Record<string, unknown>; input?: any; output?: any; provider_spec?: { url: string } };
 type Spec = {
@@ -162,7 +161,7 @@ console.log("${label}:", data${tsPath(resultPath)});`;
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
   const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
-  const esc = (v: unknown) => JSON.stringify(v).replace(/"/g, '\\"');
+  const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
   const entries = Object.entries(example).map(([k, v]) => {
     const f = files.find((x) => x.key === k);
     const value = f ? `\\"$${shellVar(f.varName)}\\"` : esc(v);
@@ -425,8 +424,8 @@ function renderPage(spec: Spec, dir: string): string {
     body = `## Quick start\n\n${setup}\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>`;
   }
   return `---
-title: "Use ${spec.name} with Comfy Router"
-description: "${spec.description.replace(/\s+/g, " ").trim()}"
+title: ${JSON.stringify(`Use ${spec.name} with Comfy Router`)}
+description: ${JSON.stringify(spec.description.replace(/\s+/g, " ").trim())}
 sidebarTitle: "Code"
 ---
 

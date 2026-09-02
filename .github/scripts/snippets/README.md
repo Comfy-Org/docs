@@ -53,11 +53,14 @@ fallback schemas are tested rather than trusted until Router publishes its own.
 
 1. Create `code.yaml` in the model's directory (copy the Kontext one).
 2. Set `variants` to the Router model IDs (`provider/model`, from `GET /v2/models`).
-3. Put the smallest request body that produces a result in `example`. A value of
+3. Write `summary`: one sentence describing what the model does. It becomes the
+   opening line of the generated page's body (`API Reference for <name>.
+   <summary>`) unless `intro` overrides it.
+4. Put the smallest request body that produces a result in `example`. A value of
    `"@file:<path>"` is read from disk and base64 encoded by every snippet.
-4. Set `result.path` to where the output lives in the provider's native
+5. Set `result.path` to where the output lives in the provider's native
    response and `result.example` to a representative response.
-5. Run `pnpm code-pages:gen`, add the page to the model's group in `docs.json`,
+6. Run `pnpm code-pages:gen`, add the page to the model's group in `docs.json`,
    and link it from the overview's "Use it" cards.
 
 Python, TypeScript and cURL are all emitted from the same `example`, so the
