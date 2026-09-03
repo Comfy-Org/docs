@@ -62,7 +62,9 @@ fallback schemas are tested rather than trusted until Router publishes its own.
    response and `result.example` to a representative response. Optional
    `result.absent_when: {path, label}` names a field whose presence means the
    provider legitimately returned no result; the Python/TypeScript snippets
-   check it first and exit non-zero with the object printed.
+   check it first and exit non-zero with the object printed. Its segments may
+   not be `[0]` indexes, so the emitted guard stays a single expression; segments
+   that are not identifiers (`prompt-feedback`) are quoted and bracketed.
 6. Run `pnpm code-pages:gen`, add the page to the model's group in `docs.json`,
    and link it from the overview's "Use it" cards.
 

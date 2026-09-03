@@ -74,7 +74,7 @@ function pyPath(path: string): string {
 }
 
 function tsPath(path: string): string {
-  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
+  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : tsAccess(p, false))).join("");
 }
 
 /**
@@ -87,6 +87,28 @@ function absentSegments(path: string): string[] {
   return segs as string[];
 }
 
+/**
+ * A provider field name is not always a TypeScript identifier -- `prompt-feedback` is a legal JSON
+ * key. Dot access on one is not a syntax error, which is what makes it dangerous:
+ * `data.prompt-feedback?.blockReason` transpiles clean as `data.prompt - feedback?.blockReason`,
+ * reading the wrong property and subtracting. So every TypeScript emission site below brackets and
+ * quotes a non-identifier segment. The Python emitters already quote every segment
+ * (`pySafeGet`, `pyKeyLiteral`), so they needed no change.
+ */
+const TS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+/** A member access on an existing expression: `.foo`, `?.foo`, `["a-b"]`, `?.["a-b"]`. */
+function tsAccess(seg: string, optional: boolean): string {
+  // Bracket access carries its own delimiter, so it takes a dot only when it is also optional.
+  if (TS_IDENTIFIER.test(seg)) return `${optional ? "?." : "."}${seg}`;
+  return `${optional ? "?." : ""}[${JSON.stringify(seg)}]`;
+}
+
+/** A key as it appears in a type literal or an object literal: `foo` or `"a-b"`. */
+function tsKey(seg: string): string {
+  return TS_IDENTIFIER.test(seg) ? seg : JSON.stringify(seg);
+}
+
 /** `promptFeedback.blockReason` -> `result.get("promptFeedback", {}).get("blockReason")`. */
 function pySafeGet(path: string): string {
   const segs = absentSegments(path);
@@ -95,15 +117,20 @@ function pySafeGet(path: string): string {
 
 /** `promptFeedback.blockReason` -> `data.promptFeedback?.blockReason`. */
 function tsSafeGet(path: string): string {
-  return `data.${absentSegments(path).join("?.")}`;
+  return `data${absentSegments(path).map((p, i) => tsAccess(p, i > 0)).join("")}`;
+}
+
+/** The `absent_when` root read for the error payload: `data.promptFeedback` / `data["a-b"]`. */
+function tsAbsentRoot(path: string): string {
+  return `data${tsAccess(absentSegments(path)[0], false)}`;
 }
 
 /** `promptFeedback.blockReason` -> `promptFeedback?: { blockReason?: string }` (a `Result` member). */
 function tsAbsentType(path: string): string {
   const segs = absentSegments(path);
   let t = "string";
-  for (let i = segs.length - 1; i >= 1; i--) t = `{ ${segs[i]}?: ${t} }`;
-  return `${segs[0]}?: ${t}`;
+  for (let i = segs.length - 1; i >= 1; i--) t = `{ ${tsKey(segs[i])}?: ${t} }`;
+  return `${tsKey(segs[0])}?: ${t}`;
 }
 
 /**
@@ -115,15 +142,41 @@ function pyKeyLiteral(key: string): string {
   return `'${key.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 }
 
+// Labels are spec-controlled but land inside emitted string literals, where three of the four
+// sites are *silent* failures rather than the syntax errors `--validate` would catch: a `{` in a
+// Python f-string is an interpolation (NameError at run time), and a backtick or `${` in a
+// TypeScript template literal alters or executes the emitted expression. Each helper below escapes
+// for one site's quoting rules; all four are the identity function on the labels shipping today.
+
+/** Inside a double-quoted Python string literal. JSON's escapes are a subset of Python's. */
+function pyEscape(s: string): string {
+  return JSON.stringify(s).slice(1, -1);
+}
+
+/** Inside a double-quoted Python *f-string*, where a literal brace must be doubled. */
+function pyFEscape(s: string): string {
+  return pyEscape(s).replace(/[{}]/g, (c) => c + c);
+}
+
+/** Inside a double-quoted TypeScript string literal. */
+function tsEscape(s: string): string {
+  return JSON.stringify(s).slice(1, -1);
+}
+
+/** Inside a TypeScript template literal, where a backtick or `${` would end or interpolate it. */
+function tsTemplateEscape(s: string): string {
+  return s.replace(/[\\`]/g, (c) => `\\${c}`).replace(/\$\{/g, "\\${");
+}
+
 /** The result type's object BODY (no braces), so `absent_when` can splice an extra member in. */
 function tsResultType(path: string): string {
   const segs = pathSegments(path);
   let t = "string";
   for (let i = segs.length - 1; i >= 1; i--) {
     const p = segs[i];
-    t = typeof p === "number" ? `${t}[]` : `{ ${p}: ${t} }`;
+    t = typeof p === "number" ? `${t}[]` : `{ ${tsKey(p)}: ${t} }`;
   }
-  return `${segs[0]}: ${t}`;
+  return `${tsKey(segs[0] as string)}: ${t}`;
 }
 
 /** JSON value -> Python literal, multi-line, at the given indent. */
@@ -167,7 +220,7 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
   // The provider can legitimately answer with no result (a blocked prompt). Check that first:
   // indexing into the absent result path would raise KeyError/IndexError and hide the reason.
   const guard = absent
-    ? `if ${pySafeGet(absent.path)}:\n    raise SystemExit(f"${absent.label}: {result[${pyKeyLiteral(absentSegments(absent.path)[0])}]}")\n\n`
+    ? `if ${pySafeGet(absent.path)}:\n    raise SystemExit(f"${pyFEscape(absent.label)}: {result[${pyKeyLiteral(absentSegments(absent.path)[0])}]}")\n\n`
     : "";
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
@@ -181,7 +234,7 @@ ${body}
         },
     )
 
-${guard}print("${label}:", result${pyPath(resultPath)})`;
+${guard}print("${pyEscape(label)}:", result${pyPath(resultPath)})`;
 }
 
 function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string, absent?: { path: string; label: string }): string {
@@ -196,7 +249,7 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
   // Same guard as the Python snippet: reading through the absent result path would throw on
   // `undefined` and lose the provider's reason.
   const guard = absent
-    ? `if (${tsSafeGet(absent.path)}) throw new Error(\`${absent.label}: \${JSON.stringify(data.${absentSegments(absent.path)[0]})}\`);\n\n`
+    ? `if (${tsSafeGet(absent.path)}) throw new Error(\`${tsTemplateEscape(absent.label)}: \${JSON.stringify(${tsAbsentRoot(absent.path)})}\`);\n\n`
     : "";
   return `${imports}
 ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
@@ -206,7 +259,7 @@ const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
 });
 
-${guard}console.log("${label}:", data${tsPath(resultPath)});`;
+${guard}console.log("${tsEscape(label)}:", data${tsPath(resultPath)});`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
