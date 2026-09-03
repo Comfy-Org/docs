@@ -38,6 +38,28 @@ ResponseField list) and `example` / `result.example`, with a note that Router
 has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
 
+A rule that spans two fields rather than constraining one (Ideogram 4.0 takes a
+`text_prompt` or a `json_prompt`, never both) has no per-field representation, so
+it goes on the schema root as a `oneOf` / `anyOf` whose branches carry nothing but
+`required`:
+
+```yaml
+input:
+  type: object
+  oneOf:
+  - required: [text_prompt]
+  - required: [json_prompt]
+  properties: ...
+```
+
+That renders as one prose line above the field list (`oneOf` reads "Provide
+exactly one of ...", `anyOf` "Provide at least one of ..."), and the alternated
+fields stay individually optional, since neither is required on its own. Branches
+that carry anything else (a `type`, an `enum`, properties redefining a root field)
+are a choice of shapes instead, and keep rendering per field as `a | b`. The
+provider drift check collapses required-only unions, so adding one does not change
+what it compares.
+
 ## Provider drift check
 
 `pnpm code-pages:check-providers` (`check-provider-schemas.ts`) fetches each

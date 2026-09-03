@@ -267,6 +267,55 @@ const attr = (v: unknown) => String(v ?? "").replace(/"/g, "&quot;").replace(/\s
 const mdxText = (v: unknown) =>
   String(v).split(/(`[^`]*`)/).map((part, i) => (i % 2 ? part : part.replace(/[{<]/g, "\\$&"))).join("");
 
+/** `["a", "b", "c"]` becomes "`a`, `b`, or `c`" (Oxford comma from three names up). */
+function joinOr(names: string[]): string {
+  const q = names.map((n) => `\`${n}\``);
+  if (q.length < 3) return q.join(" or ");
+  return `${q.slice(0, -1).join(", ")}, or ${q.at(-1)}`;
+}
+
+/** The keys a branch may carry and still count as differing from its siblings only by `required`. */
+const ALTERNATION_KEYS = new Set(["required", "properties"]);
+
+/**
+ * A root-level `oneOf` / `anyOf` whose branches differ only by `required` states a rule
+ * ACROSS fields ("exactly one of text_prompt or json_prompt"), not a choice of shapes.
+ * JSON Schema has no other way to say that, and a per-field ParamField cannot express it
+ * either, so it renders as one prose line above the field list. Returns null for a real
+ * shape union, which `typeLabel` already renders per field as `a | b`.
+ */
+function rootAlternation(s: any, components: Record<string, any>, kind: "param" | "response") {
+  const key = s?.oneOf ? "oneOf" : s?.anyOf ? "anyOf" : null;
+  if (!key || !Array.isArray(s[key]) || s[key].length < 2) return null;
+  const branches = s[key].map((b: any) => deref(b, components));
+  const rootProps: Record<string, any> = s.properties ?? {};
+  for (const b of branches) {
+    if (!b || typeof b !== "object") return null;
+    // Any key beyond required/properties (a `type`, an `enum`, a nested union) makes this a
+    // shape union rather than an alternation, and a branch that requires nothing is degenerate.
+    if (Object.keys(b).some((k) => !ALTERNATION_KEYS.has(k))) return null;
+    if (!(Array.isArray(b.required) && b.required.length)) return null;
+    // A branch may re-state a root property, but must not redefine it to a different shape.
+    for (const [name, prop] of Object.entries<any>(b.properties ?? {}))
+      if (name in rootProps && JSON.stringify(rootProps[name]) !== JSON.stringify(prop)) return null;
+  }
+  const names = [...new Set(branches.flatMap((b: any) => b.required.map(String)))];
+  if (names.length < 2) return null;
+  const count = key === "oneOf" ? "exactly one" : "at least one";
+  // The output half of a page is describing what came back, not asking for a body.
+  const prose = kind === "param"
+    ? `Provide ${count} of ${joinOr(names)}.`
+    : `${count[0].toUpperCase()}${count.slice(1)} of ${joinOr(names)} is present.`;
+  // The branches can carry the only definitions of the alternated fields, so hand them back
+  // for the walk: without them those fields would vanish and the page would look empty. The
+  // root keeps both its authored field order and its definitions; branch-only fields append.
+  const properties: Record<string, any> = { ...rootProps };
+  for (const b of branches)
+    for (const [name, prop] of Object.entries<any>(b.properties ?? {}))
+      if (!(name in properties)) properties[name] = prop;
+  return { prose, properties };
+}
+
 /** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
 function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response"): string {
   const blocks: string[] = [];
@@ -305,9 +354,16 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
       }
     }
   };
-  walk(schema, "", 0);
-  if (!blocks.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
-  return blocks.join("\n\n");
+  const root = deref(schema, components);
+  const alternation = rootAlternation(root, components, kind);
+  // The alternated fields stay individually optional: neither is required on its own, only the
+  // choice between them is, which is what the prose line says.
+  walk(alternation ? { ...root, properties: alternation.properties } : root, "", 0);
+  if (!blocks.length) {
+    // "any JSON object is accepted" would contradict the alternation, so the rule stands alone.
+    return alternation?.prose ?? "_The schema declares no fixed fields: any JSON object is accepted._";
+  }
+  return [alternation?.prose, blocks.join("\n\n")].filter(Boolean).join("\n\n");
 }
 
 // ---------------------------------------------------------------------------
