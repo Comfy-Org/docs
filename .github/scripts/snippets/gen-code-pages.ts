@@ -32,7 +32,7 @@ type Spec = {
   input?: any;
   output?: any;
   provider_spec?: { url: string };
-  result: { path: string; label: string; example: unknown; note?: string };
+  result: { path: string; label: string; example: unknown; note?: string; absent_when?: { path: string; label: string } };
   summary: string;
   intro?: string;
 };
@@ -77,14 +77,53 @@ function tsPath(path: string): string {
   return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
 }
 
+/**
+ * Segments of a `result.absent_when.path`. Index segments are rejected so the emitted guard stays
+ * one expression (`.get(a, {}).get(b)` / `a?.b`); none of the current specs needs one.
+ */
+function absentSegments(path: string): string[] {
+  const segs = pathSegments(path);
+  if (segs.some((p) => typeof p === "number")) throw new Error("bad absent_when path: index segments unsupported");
+  return segs as string[];
+}
+
+/** `promptFeedback.blockReason` -> `result.get("promptFeedback", {}).get("blockReason")`. */
+function pySafeGet(path: string): string {
+  const segs = absentSegments(path);
+  return `result${segs.map((p, i) => `.get(${JSON.stringify(p)}${i < segs.length - 1 ? ", {}" : ""})`).join("")}`;
+}
+
+/** `promptFeedback.blockReason` -> `data.promptFeedback?.blockReason`. */
+function tsSafeGet(path: string): string {
+  return `data.${absentSegments(path).join("?.")}`;
+}
+
+/** `promptFeedback.blockReason` -> `promptFeedback?: { blockReason?: string }` (a `Result` member). */
+function tsAbsentType(path: string): string {
+  const segs = absentSegments(path);
+  let t = "string";
+  for (let i = segs.length - 1; i >= 1; i--) t = `{ ${segs[i]}?: ${t} }`;
+  return `${segs[0]}?: ${t}`;
+}
+
+/**
+ * A Python string literal quoted with `'`, so it can sit inside the double-quoted f-string the
+ * guard emits. Reusing `"` there would need PEP 701 (Python 3.12+) and is a syntax error on 3.11
+ * and older, which a reader pasting the snippet would hit.
+ */
+function pyKeyLiteral(key: string): string {
+  return `'${key.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+
+/** The result type's object BODY (no braces), so `absent_when` can splice an extra member in. */
 function tsResultType(path: string): string {
   const segs = pathSegments(path);
   let t = "string";
-  for (let i = segs.length - 1; i >= 0; i--) {
+  for (let i = segs.length - 1; i >= 1; i--) {
     const p = segs[i];
     t = typeof p === "number" ? `${t}[]` : `{ ${p}: ${t} }`;
   }
-  return t;
+  return `${segs[0]}: ${t}`;
 }
 
 /** JSON value -> Python literal, multi-line, at the given indent. */
@@ -118,13 +157,18 @@ function tsLiteral(v: unknown, indent: number, files: FileInput[], topKey?: stri
   return `{\n${entries.map(([k, x]) => `${pad}  ${key(k)}: ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}}`;
 }
 
-function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string, absent?: { path: string; label: string }): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
     .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
+  // The provider can legitimately answer with no result (a blocked prompt). Check that first:
+  // indexing into the absent result path would raise KeyError/IndexError and hide the reason.
+  const guard = absent
+    ? `if ${pySafeGet(absent.path)}:\n    raise SystemExit(f"${absent.label}: {result[${pyKeyLiteral(absentSegments(absent.path)[0])}]}")\n\n`
+    : "";
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment. Each call sends a fresh
@@ -137,10 +181,10 @@ ${body}
         },
     )
 
-print("${label}:", result${pyPath(resultPath)})`;
+${guard}print("${label}:", result${pyPath(resultPath)})`;
 }
 
-function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string, absent?: { path: string; label: string }): string {
   const imports = `import { comfy } from "@comfyorg/sdk";\n${files.length ? `import { readFile } from "node:fs/promises";\n` : ""}`;
   const reads = files
     .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
@@ -148,15 +192,21 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
   const body = Object.entries(example)
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
+  const members = [absent ? tsAbsentType(absent.path) : null, tsResultType(resultPath)].filter(Boolean).join("; ");
+  // Same guard as the Python snippet: reading through the absent result path would throw on
+  // `undefined` and lose the provider's reason.
+  const guard = absent
+    ? `if (${tsSafeGet(absent.path)}) throw new Error(\`${absent.label}: \${JSON.stringify(data.${absentSegments(absent.path)[0]})}\`);\n\n`
+    : "";
   return `${imports}
 ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
 // Idempotency-Key and waits up to 10 minutes for the finished result.
-type Result = ${tsResultType(resultPath)};
+type Result = { ${members} };
 const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
 });
 
-console.log("${label}:", data${tsPath(resultPath)});`;
+${guard}console.log("${label}:", data${tsPath(resultPath)});`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -359,11 +409,11 @@ function quickStart(v: Variant, spec: Spec): string {
 
 <CodeGroup>
 \`\`\`python Python
-${pythonSnippet(v.model, example, files, spec.result.path, label)}
+${pythonSnippet(v.model, example, files, spec.result.path, label, spec.result.absent_when)}
 \`\`\`
 
 \`\`\`typescript TypeScript
-${typescriptSnippet(v.model, example, files, spec.result.path, label)}
+${typescriptSnippet(v.model, example, files, spec.result.path, label, spec.result.absent_when)}
 \`\`\`
 
 \`\`\`bash cURL
@@ -491,6 +541,21 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
   }
   for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
     if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+  }
+  // `absent_when.path` uses the same dotted syntax as `result.path`, minus index segments. Report a
+  // bad one against this spec, like the missing-key checks above, rather than throwing out of the run.
+  const absentWhen = spec.result?.absent_when;
+  if (absentWhen) {
+    for (const key of ["path", "label"] as const) {
+      // Both are interpolated straight into the emitted guard, where a missing one would ship as
+      // the literal `undefined` in a snippet that still compiles.
+      if (absentWhen[key] === undefined) problems.push(`${specPath}: missing required key \`result.absent_when.${key}\``);
+    }
+    try {
+      if (absentWhen.path !== undefined) absentSegments(absentWhen.path);
+    } catch (e) {
+      problems.push(`${specPath}: result.absent_when: ${(e as Error).message}`);
+    }
   }
   if (problems.some((m) => m.startsWith(specPath))) continue;
   const dir = dirname(specPath);

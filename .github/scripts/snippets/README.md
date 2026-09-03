@@ -59,7 +59,10 @@ fallback schemas are tested rather than trusted until Router publishes its own.
 4. Put the smallest request body that produces a result in `example`. A value of
    `"@file:<path>"` is read from disk and base64 encoded by every snippet.
 5. Set `result.path` to where the output lives in the provider's native
-   response and `result.example` to a representative response.
+   response and `result.example` to a representative response. Optional
+   `result.absent_when: {path, label}` names a field whose presence means the
+   provider legitimately returned no result; the Python/TypeScript snippets
+   check it first and exit non-zero with the object printed.
 6. Run `pnpm code-pages:gen`, add the page to the model's group in `docs.json`,
    and link it from the overview's "Use it" cards.
 
