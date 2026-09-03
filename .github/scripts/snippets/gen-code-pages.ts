@@ -552,7 +552,15 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
       if (absentWhen[key] === undefined) problems.push(`${specPath}: missing required key \`result.absent_when.${key}\``);
     }
     try {
-      if (absentWhen.path !== undefined) absentSegments(absentWhen.path);
+      if (absentWhen.path !== undefined) {
+        // `type Result` splices the absent_when member alongside the result member, so sharing a
+        // root key emits a duplicate identifier. That is a TS *type* error, and `--validate` only
+        // transpiles (`bun build --no-bundle`), so it would ship into the page unnoticed.
+        const root = absentSegments(absentWhen.path)[0];
+        if (root === spec.result.path?.split(/[.[]/)[0]) {
+          problems.push(`${specPath}: result.absent_when.path root \`${root}\` collides with \`result.path\``);
+        }
+      }
     } catch (e) {
       problems.push(`${specPath}: result.absent_when: ${(e as Error).message}`);
     }
