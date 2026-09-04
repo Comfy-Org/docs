@@ -1,18 +1,23 @@
 # Partner-model Code pages
 
-Every partner model page under `tutorials/partner-nodes/<provider>/<model>/` can
-carry a third sub-page, `code.mdx`, showing how to call the model through Comfy
-Router from Python, TypeScript and cURL.
+Every Router-addressable partner model can carry a `code.mdx` page under
+`development/comfy-router/models/<provider>/<model>/`, showing how to call the
+model through Comfy Router from Python, TypeScript and cURL.
+
+These pages live in the **developer** section, not under `tutorials/`: the
+tutorials tree is for end users driving the nodes in the app, and mixing API
+reference into it makes both harder to find. Each tutorial page links across to
+its Code page instead.
 
 `code.mdx` is **generated**. The source of truth is the `code.yaml` next to it;
 the page shape lives in `gen-code-pages.ts` and nowhere else.
 
 ```text
-tutorials/partner-nodes/black-forest-labs/flux-1-kontext/
-  flux-1-kontext.mdx   Overview (hand-written)
-  workflow.mdx         Workflows (hand-written)
+development/comfy-router/models/black-forest-labs/flux-1-kontext/
   code.yaml            spec: name, variants, example body, result path   <- edit this
   code.mdx             generated from code.yaml                          <- never edit
+
+tutorials/partner-nodes/black-forest-labs/flux-1-kontext.mdx   Overview (hand-written, links to the Code page)
 ```
 
 ## Commands

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Generate the per-model "Code" pages (tutorials/partner-nodes/<provider>/<model>/code.mdx)
+ * Generate the per-model "Code" pages (development/comfy-router/models/<provider>/<model>/code.mdx)
  * from their code.yaml specs.
  *
  *   bun .github/scripts/snippets/gen-code-pages.ts            # write every code.mdx
@@ -16,7 +16,7 @@ import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
 
 const ROOT = join(import.meta.dir, "../../..");
-const SPEC_GLOB = "tutorials/partner-nodes/**/code.yaml";
+const SPEC_GLOB = "development/comfy-router/models/**/code.yaml";
 const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 
@@ -283,7 +283,13 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
       if (required.has(name)) attrs.push("required");
       if (prop.default !== undefined) attrs.push(`default="${attr(JSON.stringify(prop.default))}"`);
       const body: string[] = [];
-      if (prop.description) body.push(mdxText(String(prop.description).trim()));
+      // An array property usually carries no description of its own: the prose sits on the
+      // component its `items` point at (OpenAPI 3.0 ignores a sibling `description` next to a
+      // `$ref`, so that is the only place an author can put it). Without this fallback the whole
+      // Gemini request body renders as empty ParamFields.
+      const itemsDesc = prop.type === "array" && prop.items ? deref(prop.items, components).description : undefined;
+      const description = prop.description ?? itemsDesc;
+      if (description) body.push(mdxText(String(description).trim()));
       if (prop.enum) body.push(`Possible values: ${prop.enum.map((v: unknown) => `\`${String(v)}\``).join(", ")}`);
       // A union (`integer | "auto"`) carries its bounds on the numeric branch, not on the field.
       const alts: any[] = prop.anyOf ?? prop.oneOf ?? [];
@@ -426,7 +432,7 @@ function renderPage(spec: Spec, dir: string): string {
   return `---
 title: ${JSON.stringify(`Use ${spec.name} with Comfy Router`)}
 description: ${JSON.stringify(spec.description.replace(/\s+/g, " ").trim())}
-sidebarTitle: "Code"
+sidebarTitle: ${JSON.stringify(spec.name)}
 ---
 
 {/* GENERATED FILE. Edit code.yaml in this directory and run \`pnpm code-pages:gen\`. */}

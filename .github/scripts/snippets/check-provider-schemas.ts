@@ -177,7 +177,7 @@ function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: 
 }
 
 // ---- main
-const glob = new Bun.Glob("tutorials/partner-nodes/**/code.yaml");
+const glob = new Bun.Glob("development/comfy-router/models/**/code.yaml");
 const rep: Report = { errors: [], warnings: [] };
 let checked = 0, skipped = 0;
 for (const specPath of glob.scanSync({ cwd: ROOT })) {
@@ -186,7 +186,7 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
     const ps: ProviderSpec | undefined = v.provider_spec ?? spec.provider_spec;
     const input = v.input ?? spec.input, output = v.output ?? spec.output;
     if (!ps) { skipped++; rep.warnings.push(`${dirname(specPath)} (${v.model}): no provider_spec, cannot verify`); continue; }
-    const where = `${dirname(specPath).replace("tutorials/partner-nodes/", "")} (${v.model})`;
+    const where = `${dirname(specPath).replace("development/comfy-router/models/", "")} (${v.model})`;
     try {
       const shapes = await providerShapes(ps);
       const omit = new Set<string>(ps.omit ?? []);
