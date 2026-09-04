@@ -1,0 +1,602 @@
+---
+title: "JavaScript definitions API"
+description: "Node definitions, definition builders, lifecycle hooks, and frontend node declarations."
+---
+
+<Note>
+  This page is generated from the authoritative declaration file. Do not edit it by hand. Contract SHA-256: <code>152c7fab547f</code>.
+</Note>
+
+This reference contains 17 exported declarations: `NodeDef`, `ExecutionResult`, `PreviewFrame`, `ConnectionChangeEvent`, `PromptInputProjection`, `PromptInputProjector`, `NodeDefBuilder`, `NodeCreatedEvent`, `UnplacedLinkEvent`, `BeforeConnectEvent`, `NodeSubMenuItem`, `NodeColor`, `NodeMenuItem`, `DefSelector`, `NodeDefinition`, `DefRegistry`, `PropertyChangeEvent`.
+
+Download the complete contract from the docs source: [TypeScript declaration](https://github.com/Comfy-Org/docs/blob/main/public/custom-nodes-sdk/v2/comfy-api.d.ts).
+
+## Contract
+
+````typescript
+// ─── defsRegistry.ts ─────────────────────────────────────────────
+
+/**
+ * The read view of a node definition. Frozen and inert, like every read here.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface NodeDef {
+  readonly type: string
+  readonly title: string
+  readonly category: string
+  readonly description: string
+  readonly inputs: readonly Readonly<{
+    name: string
+    type: string
+    /** The translated caption core renders for this input, when it differs. */
+    localizedName?: string
+    /** The declared choices for a COMBO input, in backend order. */
+    values?: readonly (string | number)[]
+    /**
+     * The input's declaration dict, verbatim from the backend.
+     *
+     * Same passthrough reasoning as `ExecutionResult.raw`: a pack declares its
+     * own keys on its own Python input spec and reads them back here to drive
+     * frontend behaviour, so discarding unrecognised keys breaks the pack
+     * against its own data. Carries `default`, `min`, `max` and the like too.
+     */
+    options: Readonly<Record<string, unknown>>
+  }>[]
+  readonly outputs: readonly Readonly<{
+    name: string
+    type: string
+    tooltip?: string
+  }>[]
+  readonly isOutputNode: boolean
+  /**
+   * The node's `hidden` input declarations, verbatim.
+   *
+   * Deliberately not merged into {@link inputs}: a hidden input is not a slot,
+   * and listing it as one would put a connectable input on the node for
+   * something the server fills in.
+   *
+   * Packs ship their own data here and read it back — easy-use and
+   * tinyterraNodes both carry an XY-plot axis catalogue as
+   * `input.hidden.plot_dict[0]`, on their own key, from their own Python spec.
+   * That is the same passthrough reasoning `inputs[].options` already rests on,
+   * and dropping it broke both packs against their own data.
+   *
+   * These are declarations, not values. `PROMPT`, `UNIQUE_ID` and
+   * `EXTRA_PNGINFO` appear here as the type markers the node asked for; the
+   * server substitutes the real thing at execution time and it never passes
+   * through here.
+   */
+  readonly hidden: Readonly<Record<string, unknown>>
+  /** Which pack supplied it, when the backend reports one. */
+  readonly source: string | undefined
+}
+
+/**
+ * Node output as it arrives from the backend.
+ *
+ * `raw` carries everything else verbatim — ADR 0007's passthrough schema
+ * guarantees custom output keys survive, so a pack reading a bespoke key keeps
+ * working.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface ExecutionResult {
+  readonly images: readonly Readonly<Record<string, unknown>>[]
+  readonly text: readonly string[]
+  readonly raw: Readonly<Record<string, unknown>>
+}
+
+/**
+ * A preview frame the backend produced while this node was running.
+ *
+ * Per node rather than per channel, deliberately. Packs currently subscribe to
+ * `b_preview_with_metadata` *and* `b_preview`, track the executing node id in a
+ * module global to correlate the second one, and probe
+ * `serverSupportsFeature('supports_preview_metadata')` to decide which to
+ * trust — all to answer "is this frame mine?". Answering it once here removes
+ * the global, and with it the mis-attribution when two nodes preview at once.
+ */
+export interface PreviewFrame {
+  readonly blob: Blob
+  /** Object URL for the blob, revoked when the next frame arrives. */
+  readonly url: string
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface ConnectionChangeEvent {
+  readonly side: 'input' | 'output'
+  readonly index: number
+  readonly connected: boolean
+  /**
+   * The node at the other end, or `undefined` on a disconnect.
+   *
+   * Packs read `link_info.origin_id` to decide what the new neighbour means —
+   * retype a slot to match it, adopt its label. Knowing only that *something*
+   * connected forced a re-walk of the whole graph to find out what.
+   */
+  readonly peerNodeId?: string
+  /** The slot index at the other end, or `undefined` on a disconnect. */
+  readonly peerIndex?: number
+}
+
+/**
+ * The only change a node extension may make to one queued API prompt.
+ *
+ * Inputs are named from that node type's own backend declaration. The saved
+ * workflow is untouched; the prompt builder removes these names only from the
+ * executable payload it is assembling now.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface PromptInputProjection {
+  readonly omitInputs: readonly string[]
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type PromptInputProjector = (
+  node: NodeHandle
+) => PromptInputProjection | Promise<PromptInputProjection>
+
+export interface NodeDefBuilder {
+  /** Current state of the definition, after any earlier extensions ran. */
+  readonly def: NodeDef
+
+  setTitle(title: string): void
+  setCategory(category: string): void
+  /**
+   * Declares that this node type never reaches the backend.
+   *
+   * `defs.define` takes `execution: 'frontend'` for a type the pack owns, but
+   * packs also mark *backend-registered* types frontend-only — a tools or
+   * control node that exists to drive other nodes and must not appear in the
+   * prompt. Without this they reach for `node.isVirtualNode`, and dropping that
+   * line puts a new node into `graphToPrompt`, which is a wire-format break.
+   *
+   * Supply `resolve` when the node carries a value through to something else;
+   * omit it and the node is simply left out. See `resolution.ts` — `resolve` is
+   * pure over a read-only view and must not mutate the graph.
+   */
+  setExecution(execution: 'backend' | 'frontend', resolve?: Resolver): void
+  /**
+   * Declares what this node feeds into *other* nodes' unconnected inputs.
+   *
+   * The counterpart of `setExecution`'s `resolve`, which answers only "what
+   * feeds my own outputs" and is never called for a node with none. Broadcast
+   * packs are the reverse: they name inputs on nodes that are not themselves,
+   * and discover those edges rather than declaring them.
+   *
+   * Available here and not only on `defs.define` because the types that
+   * broadcast are registered by the pack's Python, and `defs.define` refuses a
+   * type that already exists — which left `supply` unreachable for every pack
+   * that actually needed it.
+   *
+   * Not gated on `setExecution('frontend')`: feeding somebody else and being
+   * skipped by the prompt builder are separate questions, and a node may
+   * legitimately both execute and broadcast.
+   */
+  setSupply(supply: Supplier): void
+  addWidget(def: WidgetDef): void
+  hideWidget(name: string): void
+
+  // Behaviour hooks, ordered by measured usage across the 1,265 packs.
+  /**
+   * Fires once the node exists *and is addressable* — after it joins a graph.
+   *
+   * Deliberately not litegraph's `onNodeCreated`, which runs inside
+   * `createNode()` before the node has an id, a graph, or store registration.
+   * A handle is id-backed, so at that moment there is nothing to hand back, and
+   * widget writes would land on an unregistered node and be lost on insert.
+   */
+  onCreated(callback: (node: NodeHandle, event: NodeCreatedEvent) => void): void // 943 packs
+  onExecuted(
+    callback: (node: NodeHandle, result: ExecutionResult) => void
+  ): void // 497 packs
+  onConfigured(
+    callback: (node: NodeHandle, data: Record<string, unknown>) => void
+  ): void // 429 packs
+  onConnectionsChanged(
+    callback: (node: NodeHandle, event: ConnectionChangeEvent) => void
+  ): void // 223 packs
+  onRemoved(callback: (node: NodeHandle) => void): void // 158 packs
+  /**
+   * The node was resized, by the user or by a layout pass.
+   *
+   * Packs hung a `ResizeObserver` on their mounted element to notice this,
+   * which fires for the element rather than the node and misses a resize that
+   * does not change the element.
+   */
+  onResized(callback: (node: NodeHandle, size: Size) => void): void
+  /**
+   * The pointer entered or left the node.
+   *
+   * Packs read `canvas.node_over` or set `node.mouseOver` to rebuild a list
+   * the moment the pointer arrives, or to decide which node a tooltip belongs
+   * to. Both are canvas internals, and the canvas is what Nodes 2.0 replaces.
+   */
+  onHover(callback: (node: NodeHandle, hovering: boolean) => void): void
+  /**
+   * The node was double-clicked.
+   *
+   * Deliberately carries no coordinates. Hit-testing a pointer against
+   * node-local geometry is a pack drawing its own front end; the published
+   * answer is `widgets.mount` and ordinary DOM events on the element you own.
+   */
+  onDoubleClick(callback: (node: NodeHandle) => void): void
+  /**
+   * Whether this node can accept the current browser drag.
+   *
+   * The event is the browser's data-transfer surface, not a renderer object.
+   * Returning `true` makes both node renderers present and route the drop.
+   */
+  onDragOver(
+    callback: (node: NodeHandle, event: DragEvent) => boolean | void
+  ): void
+  /** Handles a drop the node accepted. Returning `true` claims it. */
+  onDrop(
+    callback: (
+      node: NodeHandle,
+      event: DragEvent
+    ) => boolean | void | Promise<boolean | void>
+  ): void
+  /**
+   * A property the user edited in the node's properties panel.
+   *
+   * Packs used `onPropertyChanged` to keep a hand-entered value sane — rgthree
+   * clamps a seed's `randomMax` as it is typed. litegraph's own callback can
+   * only veto, reverting to the previous value, which throws the user's input
+   * away rather than correcting it. `setValue` replaces it instead, and writes
+   * without going back through `setProperty`, so a clamp cannot recurse.
+   */
+  onPropertyChanged(
+    callback: (node: NodeHandle, event: PropertyChangeEvent) => void
+  ): void
+  /** Preview frames for this node, already correlated. */
+  onPreview(callback: (node: NodeHandle, frame: PreviewFrame) => void): void
+  /**
+   * Contributes the pack's own state to the saved node.
+   *
+   * The returned object is merged into the serialized node, and comes back
+   * through `onConfigured`. Only keys the pack owns: core fields are not
+   * writable from here, because a pack must not be able to change what the
+   * workflow means.
+   */
+  onSerialize(callback: (node: NodeHandle) => Record<string, unknown>): void
+  /**
+   * Omits declared inputs from this node in the API prompt being built.
+   *
+   * This is not a prompt rewrite: the callback receives no prompt or input
+   * values, may not name another node, and cannot inject replacements. It is
+   * awaited on the prompt path so an extension answers from its
+   * current read-only node snapshot rather than a stale cached value.
+   */
+  onPromptSerialize(callback: PromptInputProjector): void
+  /**
+   * Vetoes or permits an incoming connection *before* it is wired.
+   *
+   * Distinct from `onConnectionsChanged`, which fires after the fact — packs
+   * use the pre-hook to refuse an incompatible link or relabel a slot while
+   * the type is still known. Returning `false` refuses.
+   */
+  onBeforeConnect(
+    callback: (node: NodeHandle, event: BeforeConnectEvent) => boolean | void
+  ): void
+  /**
+   * The user dropped a link on a node's body and the host found no single slot
+   * that fits. Wire it yourself and return `true`; return nothing to let the
+   * host report the drop unplaceable.
+   *
+   * For a node whose one slot carries a bundle of values — a context, a pipe —
+   * and which wants to unpack it into several of the peer's slots at once. Both
+   * ends of the drag are asked, the one the user aimed at first, because the
+   * node with the knowledge is the drop target in one direction and the drag's
+   * origin in the other.
+   *
+   * The published alternative to replacing `connectByType` on the prototype,
+   * which is how packs did this: that changes link routing for every node in
+   * the document, so one pack's convenience became every other pack's
+   * behaviour.
+   */
+  onUnplacedLink(
+    callback: (node: NodeHandle, event: UnplacedLinkEvent) => boolean | void
+  ): void
+  /** Adds an entry to this node type's context menu. */
+  addMenuItem(item: NodeMenuItem): void
+}
+
+export interface NodeCreatedEvent {
+  /**
+   * The node arrived carrying saved state — pasted, duplicated, or loaded from
+   * a workflow — rather than being made fresh.
+   *
+   * Read as "was `configure` called on it before it joined the graph", which is
+   * what actually distinguishes the cases. Packs overrode `clone()` to reset
+   * state a copy should not inherit — a duplicated node keeping the dynamic
+   * slots that were fed by the original's upstream, a duplicated reroute born
+   * hard-typed and refusing every other type — and `clone()` runs before the
+   * node has an id, so there is nothing to hand a pack there.
+   */
+  readonly restored: boolean
+  /**
+   * The whole graph was being loaded, so {@link restored} means "came from the
+   * saved file" rather than "came from the clipboard".
+   *
+   * The distinction is the point: a pasted node should drop slots it cannot
+   * still be fed through, and a loaded one must keep every one of them or the
+   * workflow opens wrong.
+   */
+  readonly loading: boolean
+}
+
+export interface UnplacedLinkEvent {
+  /** Which of this node's slots the link would land on. */
+  readonly side: 'input' | 'output'
+  /** The node at the other end of the drag. */
+  readonly peerNodeId: string
+  /** The slot on the peer the drag started from. */
+  readonly peerIndex: number
+  readonly type: string
+  /**
+   * The user held the modifier that means "overwrite what is already wired".
+   *
+   * Published because packs read a global keyboard service of their own to get
+   * it, and which modifier means this is the host's to decide.
+   */
+  readonly replaceExisting: boolean
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface BeforeConnectEvent {
+  readonly side: 'input' | 'output'
+  readonly index: number
+  /** The node at the other end, when one is known. */
+  readonly peerNodeId: string | undefined
+  /** The slot at the other end, when one is known. */
+  readonly peerIndex: number | undefined
+  readonly peerType: string | undefined
+}
+
+/** One entry inside a menu item's submenu. */
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface NodeSubMenuItem {
+  readonly label: string
+  run(node: NodeHandle): void
+}
+
+/**
+ * One entry of ComfyUI's node palette: the title bar, the body, and the shade
+ * a group of that colour is filled with.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface NodeColor {
+  readonly color: string
+  readonly bgColor: string
+  readonly groupColor: string
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface NodeMenuItem {
+  /**
+   * A function when the text depends on the node — packs label entries with
+   * the current state ("Unmute 3 nodes"), which a string fixed at
+   * registration cannot express.
+   */
+  readonly label: string | ((node: NodeHandle) => string)
+  /**
+   * Shown only when this returns true. Without it a pack that wants an entry
+   * to appear conditionally has to either show it always or not at all —
+   * efficiency-nodes hides its seed submenu when the feature is off, and
+   * flattening that to a permanent entry is a worse lie than omitting it.
+   */
+  when?(node: NodeHandle): boolean
+  /** Omit when the item only opens a submenu. */
+  run?(node: NodeHandle): void
+  /**
+   * Turns the entry into a submenu. One level deep, deliberately: every
+   * measured pack uses exactly one, and nesting further is a menu design
+   * problem rather than an API one.
+   *
+   * A function when the children depend on the node's current state, which is
+   * the common case rather than the exotic one: efficiency-nodes' LoRA Stacker
+   * declares fifty `lora_name_N` widgets and lists only the two or three a
+   * user has filled. A fixed array would put fifty rows in that menu, which is
+   * a different menu, so the alternative to this was omitting the feature.
+   */
+  readonly items?:
+    | readonly NodeSubMenuItem[]
+    | ((node: NodeHandle) => readonly NodeSubMenuItem[])
+  /**
+   * Sort position among this node's pack-added entries. Lower first; entries
+   * without one keep registration order, which is module-load order and so
+   * depends on import sequence rather than intent.
+   */
+  readonly order?: number
+}
+
+/**
+ * Which definitions an extension applies to.
+ *
+ * Indexed rather than run-and-return: this predicate is almost always the guard
+ * clause the pack already had at the top of its hook.
+ */
+export type DefSelector =
+  | string
+  | readonly string[]
+  | RegExp
+  /**
+   * A predicate over the definition, for a guard the other forms cannot
+   * express — "any node taking a VAE input", which is a shape rather than a
+   * name.
+   *
+   * Deliberately last, and deliberately discouraged. The declarative forms
+   * exist because a name check can be indexed, while a predicate has to run for
+   * every registered type; with thousands of types that is the boot cost this
+   * API set out to remove. Use it only when the guard genuinely reads a def's
+   * inputs or outputs.
+   */
+  | ((def: NodeDef) => boolean)
+  /**
+   * A `RegExp` category covers the prefix filter 53 packs open their hook with
+   * (`nodeData.category.startsWith('KJNodes')` → `{ category: /^KJNodes/ }`).
+   */
+  | { readonly category: string | RegExp }
+
+/**
+ * A node type the pack owns, declared rather than subclassed.
+ *
+ * 86 packs (18.2% of installs) do this today with `extends LGraphNode` +
+ * `LiteGraph.registerNodeType`, which is OOP entity modelling — the thing ADR
+ * 0008 rules out. Here the definition is plain data; the class behind it is an
+ * internal detail of this layer, never the pack's.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface NodeDefinition {
+  readonly type: string
+  readonly title?: string
+  readonly category?: string
+  readonly description?: string
+  readonly inputs?: readonly { name: string; type: string }[]
+  readonly outputs?: readonly {
+    name: string
+    type: string
+    shape?: SlotShape
+  }[]
+  readonly widgets?: readonly WidgetDef[]
+  /**
+   * `'frontend'` nodes never reach the backend: they are resolved away at
+   * prompt time by the resolution system, or simply omitted.
+   */
+  readonly execution?: 'backend' | 'frontend'
+  /**
+   * Answers what each output resolves to, purely, over a read-only view.
+   * See `resolution.ts` — this replaces `applyToGraph`, which mutated the
+   * live graph mid-serialize.
+   */
+  readonly resolve?: Resolver
+  /**
+   * What this node feeds into *other* nodes' unconnected inputs.
+   *
+   * The broadcast direction: `resolve` cannot express it, because the nodes
+   * being fed are not this one and the edges are discovered rather than
+   * declared.
+   */
+  readonly supply?: Supplier
+
+  onCreated?(node: NodeHandle, event: NodeCreatedEvent): void
+  onExecuted?(node: NodeHandle, result: ExecutionResult): void
+  onConfigured?(node: NodeHandle, data: Record<string, unknown>): void
+  onConnectionsChanged?(node: NodeHandle, event: ConnectionChangeEvent): void
+  onPropertyChanged?(node: NodeHandle, event: PropertyChangeEvent): void
+  onDragOver?(node: NodeHandle, event: DragEvent): boolean | void
+  onDrop?(
+    node: NodeHandle,
+    event: DragEvent
+  ): boolean | void | Promise<boolean | void>
+  onRemoved?(node: NodeHandle): void
+  onSerialize?(node: NodeHandle): Record<string, unknown>
+  onPromptSerialize?: PromptInputProjector
+}
+
+export interface DefRegistry {
+  /**
+   * Declares how an input *type* is presented — the replacement for
+   * `getCustomWidgets`.
+   *
+   * Not decoration: the host decides widget-vs-socket purely by whether a type
+   * is registered, so an unregistered one turns the input into a socket and
+   * drops its value from `widgets_values`. See `widgetTypes.ts`.
+   */
+  defineWidgetType(type: string, def: WidgetTypeDef): Unsubscribe
+  /**
+   * Registers a node type the pack owns. Returns a handle that unregisters
+   * it — which `LiteGraph.registerNodeType` never offered.
+   */
+  define(definition: NodeDefinition): Unsubscribe
+  get(type: string): NodeDef | undefined
+  all(): readonly NodeDef[]
+  has(type: string): boolean
+  extend(
+    selector: DefSelector,
+    apply: (builder: NodeDefBuilder) => void
+  ): Unsubscribe
+  /**
+   * Asks the host to reload node definitions from the backend.
+   *
+   * Combo inputs whose values the backend supplies — model lists, LoRA names,
+   * sampler names — are captured when definitions load, so a pack that adds a
+   * file server-side leaves every open picker showing the old list. This is
+   * `app.refreshComboInNodes()`, which packs called after saving a model
+   * preview or writing a new file.
+   *
+   * Refreshing is not free: it refetches every definition. Call it after a
+   * change the user made, not on a timer.
+   */
+  /**
+   * The colour links and slots of a type are drawn in.
+   *
+   * A pack matching the theme in its own DOM — a legend, a chip, a preview —
+   * read `LGraphCanvas.link_type_colors` for this. Reading a design token to
+   * match is the opposite of drawing your own front end, so it is published;
+   * the table itself is not.
+   */
+  typeColor(type: string): string
+  /**
+   * The colours behind a name in ComfyUI's node palette — `red`, `pale_blue` —
+   * or `undefined` for a name it does not define.
+   *
+   * Same reasoning as {@link typeColor}, and the same limit: the resolver is
+   * published, the table is not. What makes this a design token rather than a
+   * renderer internal is that the names are the user's own vocabulary. They
+   * pick "green" from a menu; nothing records the word, only the hex it stood
+   * for. So a pack offering "mute every red group" cannot match what the user
+   * chose without being told which hex "red" meant, and two packs did it by
+   * reading `LGraphCanvas.node_colors` directly.
+   *
+   * Colours move with the palette, names do not. Resolve on use; do not cache
+   * the result and do not persist it in a workflow.
+   */
+  nodeColor(name: string): NodeColor | undefined
+  /**
+   * Tests an output type against an input type using the host's connection
+   * rules, including wildcards and comma-delimited unions.
+   */
+  isTypeCompatible(outputType: string, inputType: string): boolean
+  /**
+   * Declares the colour for a data type this pack introduces.
+   *
+   * Packs shipping their own types — `PIPE_LINE`, `LORA_STACK`, `XYPLOT` —
+   * wrote straight into `LGraphCanvas.link_type_colors` so their links were
+   * not all grey.
+   *
+   * Refuses a type the host already colours. That write is global: one pack
+   * recolouring `IMAGE` restyles every graph for every other pack and the
+   * user has no way to see who did it. Colouring a type you brought is
+   * additive; colouring one you did not is not yours to decide.
+   */
+  setTypeColor(type: string, color: string): Unsubscribe
+  refresh(): Promise<void>
+  /**
+   * Node definitions were reloaded — by this pack, another pack, or the user.
+   *
+   * The listening half of `refresh()`, and what the `refreshComboInNodes`
+   * extension hook gave packs. A pack holding its own cached copy of a combo's
+   * values — a model list it filters, a picker it built — needs to rebuild it
+   * when the list changes underneath, and the pack that caused the change is
+   * usually not this one.
+   */
+  onRefreshed(listener: () => void): Unsubscribe
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface PropertyChangeEvent {
+  readonly name: string
+  readonly value: unknown
+  readonly previous: unknown
+  /** Replaces what is stored. Last writer wins if several packs respond. */
+  setValue(value: unknown): void
+  /** Discards the edit, restoring `previous`. */
+  reject(): void
+}
+````
