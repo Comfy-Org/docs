@@ -1,7 +1,7 @@
 ---
 title: "Use FLUX Video Upscale with Comfy Router"
 description: "Python, TypeScript and cURL snippets for upscaling a video with FLUX Video Upscale over HTTP through Comfy Router, plus the request fields and the result shape"
-sidebarTitle: "Code"
+sidebarTitle: "FLUX Video Upscale"
 ---
 
 {/* GENERATED FILE. Edit code.yaml in this directory and run `pnpm code-pages:gen`. */}
@@ -68,56 +68,112 @@ curl https://api.comfy.org/v2/models/bfl/video-upscale-v1 \
 
 ### Input
 
-_Fields follow Black Forest Labs' published API specification and are checked against it in CI. Router's own schema for this model is not published yet, so requests are forwarded to the provider unvalidated._
+<ParamField body="creativity" type="integer" default="1">
+  0 preserves the source precisely and sharpens it; 1 allows creative detail enhancement, which does not strictly preserve faces or products.
+
+  Range: `0` to `1`
+</ParamField>
 
 <ParamField body="input_video" type="string" required>
-  The video to upscale, as an HTTPS URL or a base64-encoded MP4. At most 20 seconds and 50MB.
+  Video to upscale, either an HTTP(S) URL or a base64-encoded MP4. At most 20 seconds of source footage and 50MB.
 </ParamField>
 
-<ParamField body="upscale_factor" type="number" default="2">
-  Resolution multiplier.
-
-  Range: `1.5` to `3`
-</ParamField>
-
-<ParamField body="creativity" type="integer" default="1">
-  `0` preserves faces and products faithfully; `1` lets the model add detail, suited to generated footage.
-
-  Possible values: `0`, `1`
-</ParamField>
-
-<ParamField body="prompt" type="string" default="&quot;&quot;">
-  Optional guidance for the added detail.
+<ParamField body="prompt" type="string">
+  Optional description of the clip's content, steering the enhanced detail. Leave empty for a neutral upscale.
 </ParamField>
 
 <ParamField body="safety_tolerance" type="integer" default="2">
-  Moderation tolerance for inputs and outputs. 0 is strictest.
+  Tolerance level for prompt and output frame moderation, 0 being most strict.
 
   Range: `0` to `4`
 </ParamField>
 
+<ParamField body="upscale_factor" type="number" default="2">
+  Output scaling relative to the source resolution. The output preserves the source aspect ratio and is capped at roughly 14.4 megapixels per frame, so very large sources scale by less than the requested factor.
+
+  Range: `1.5` to `3`
+
+  Format: `float`
+</ParamField>
+
+<ParamField body="webhook_secret" type="string">
+  Optional secret for webhook signature verification.
+</ParamField>
+
+<ParamField body="webhook_url" type="string (uri)">
+  URL to receive webhook notifications.
+
+  Format: `uri`
+</ParamField>
+
+Generated from the schema Router serves at `GET /v2/models/bfl/video-upscale-v1/openapi.json`, the same document it validates a call against before the request reaches the provider.
+
 ### Output
 
-Router returns Black Forest Labs' native response unchanged. The video is at `result.sample`.
+<ResponseField name="cost" type="number">
+  Provider-reported cost in credits, populated once the task is Ready.
 
-<ResponseField name="id" type="string" required>
-  BFL task id for this generation.
+  Format: `float`
 </ResponseField>
 
-<ResponseField name="status" type="string" required>
-  Terminal task status. Router only returns once this is `Ready`.
+<ResponseField name="id" type="string" required>
+  BFL task identifier.
+</ResponseField>
 
-  Possible values: `Ready`
+<ResponseField name="progress" type="number">
+  Optional generation progress reported by BFL.
+
+  Range: `0` to `1`
+
+  Format: `float`
 </ResponseField>
 
 <ResponseField name="result" type="object" required>
-   
+  The finished generation. Not nullable here: this component's `required` entry is a promise that a `200` carries the result, and a nullable `result` would reduce it to a key-presence check.
 </ResponseField>
 
-<ResponseField name="result.sample" type="string (uri)" required>
-  Signed URL of the generated MP4. Expires roughly two hours after the result is ready.
+<ResponseField name="result.cost" type="number">
+  Provider-reported cost of the generation. This is BFL's number, not the Comfy charge.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.duration" type="number">
+  Provider-reported generation duration in seconds.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.end_time" type="number">
+  Provider-reported completion time of the generation, in seconds since the Unix epoch. `double` for the same reason as `start_time`.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.prompt" type="string">
+  The prompt the generation actually ran, after any prompt upsampling.
+</ResponseField>
+
+<ResponseField name="result.sample" type="string (uri)">
+  Signed URL for the generated asset. Router re-hosts the asset onto Comfy storage and rewrites this field, so it is normally a Comfy-hosted URL valid for up to 24 hours - signed for 24 hours when minted, and replayed from a 23-hour memo, so a later poll can hand back one with as little as an hour left; a leaf whose re-host could not be performed keeps BFL's own short-lived delivery URL instead - roughly two hours for video, roughly ten minutes for images. Either way the link expires, so download the asset rather than storing the URL.
 
   Format: `uri`
+</ResponseField>
+
+<ResponseField name="result.seed" type="integer">
+  The seed the generation used, whether supplied or chosen by the provider. Declared `int64` because BFL returns seeds above 2^31 (e.g. 2784347701), which an unformatted `integer` generates as a 32-bit field in many SDK generators.
+
+  Format: `int64`
+</ResponseField>
+
+<ResponseField name="result.start_time" type="number">
+  Provider-reported start time of the generation, in seconds since the Unix epoch. `double`, not `float`: float32 spacing near a present-day epoch value is ~128 seconds, which collapses a whole generation's span to a single decoded value.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Task status: Pending, Reasoning, Generating, Ready, Request Moderated, Content Moderated, Error, or Task not found.
 </ResponseField>
 
 ## Examples
@@ -126,9 +182,8 @@ Router returns Black Forest Labs' native response unchanged. The video is at `re
 
 ```json
 {
-  "input_video": "https://your-host.example/clip.mp4",
-  "upscale_factor": 2,
-  "creativity": 1
+  "input_video": "https://example.com/clip.mp4",
+  "upscale_factor": 2
 }
 ```
 
@@ -136,11 +191,19 @@ Router returns Black Forest Labs' native response unchanged. The video is at `re
 
 ```json
 {
-  "id": "0a1b2c3d-...",
-  "status": "Ready",
+  "cost": null,
+  "id": "b2e0c1a4-0f2f-4a55-9f2e-2f9a1c0d4e77",
+  "progress": null,
   "result": {
-    "sample": "https://.../upscaled.mp4"
-  }
+    "cost": null,
+    "duration": 3.4,
+    "end_time": 1767225603.4,
+    "prompt": "A watercolor painting of a lighthouse at dawn, soft light on the water",
+    "sample": "https://example.invalid/bfl/flux-pro-1.1/sample.png",
+    "seed": 2784347701,
+    "start_time": 1767225600
+  },
+  "status": "Ready"
 }
 ```
 
