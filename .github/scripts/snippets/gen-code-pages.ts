@@ -247,6 +247,10 @@ function typeLabel(schema: any, components: Record<string, any>): string {
   if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" | ");
   if (s.const !== undefined) return JSON.stringify(s.const);
   if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
+  // Tuples: JSON Schema 2020-12 spells them `prefixItems`; the OpenAPI 3.0 idiom is a
+  // fixed-length array whose `items` is the union of the positions. Both label `[number, string]`.
+  if (s.type === "array" && Array.isArray(s.prefixItems)) return `[${s.prefixItems.map((x: any) => typeLabel(x, components)).join(", ")}]`;
+  if (s.type === "array" && s.minItems !== undefined && s.minItems === s.maxItems && s.items && (s.items.oneOf || s.items.anyOf)) return `[${(s.items.oneOf ?? s.items.anyOf).map((x: any) => typeLabel(x, components)).join(", ")}]`;
   if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
   if (s.type === "string" && s.format) return `string (${s.format})`;
   return s.type ?? "object";

@@ -78,6 +78,9 @@ function normalizer(doc: any) {
     if (s.properties) { out.properties = {}; for (const [k, v] of Object.entries<any>(s.properties)) out.properties[k] = norm(v, depth + 1); }
     if (s.required) out.required = s.required;
     if (s.items) out.items = norm(s.items, depth + 1);
+    // Keep a tuple branch a tuple: without this a `prefixItems` alternative normalises to a
+    // bare `array` and its positional shape is no longer visible to a reader of the diff.
+    if (Array.isArray(s.prefixItems)) out.prefixItems = s.prefixItems.map((x: any) => norm(x, depth + 1));
     if (isDiscovery && s.type === undefined && s.properties) out.type = "object";
     return out;
   };
