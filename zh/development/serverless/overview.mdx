@@ -1,0 +1,234 @@
+---
+title: "Comfy API：Serverless 部署"
+description: "构建版本化的 ComfyUI 环境，将其部署为托管端点，并通过 API 运行工作流。"
+icon: "cloud-arrow-up"
+translationSourceHash: 1dec8b0b
+translationFrom: development/serverless/overview.mdx
+translationBlockHashes:
+  "_intro": 14817cbe
+  "Quick start": deded1ad
+  "The Build file": 8fd3f83e
+  "1. Initialize a Build": 3e2f5628
+  "2. Update and release": 05b93b4e
+  "Regions and GPU availability": 3cf9a951
+  "3. Deploy a release": 2052f8d5
+  "4. Run a workflow": 30eca3a8
+  "Operate a deployment": de5e72b5
+  "Inspect and clean up": 0033fd9b
+  "Next steps": 8765dc11
+---
+
+<Warning>
+  Comfy API 的 Serverless 部署服务目前处于测试版（beta）阶段。请前往 [platform.comfy.org](https://platform.comfy.org) 注册以获取访问权限。
+</Warning>
+
+Comfy API 可让你将 ComfyUI 工作流部署为具备按需 GPU 算力的托管式自动扩缩容端点。**Build** 是 ComfyUI 环境的版本化定义，包含从本地安装中获取的模型、自定义节点和设置。Build and Deploy CLI 将 Build 定义保存在你的项目中，基于该定义创建发布版本（release），并在准备好对外提供服务时部署某个发布版本。
+
+<CardGroup cols={2}>
+  <Card title="1. 构建（Build）" icon="box">
+    从你的本地 ComfyUI 安装创建构建规格文件。
+  </Card>
+  <Card title="2. 发布（Release）" icon="tag">
+    从 Build 切出一个不可变的 Linux/NVIDIA 发布版本。
+  </Card>
+  <Card title="3. 部署（Deploy）" icon="cloud-arrow-up">
+    为发布版本分配 URL 和托管 GPU 算力。
+  </Card>
+  <Card title="4. 运行（Run）" icon="code">
+    向处于活动状态的部署提交 API 格式的工作流。
+  </Card>
+</CardGroup>
+
+## 快速开始
+
+当本地安装和 API 格式的工作流准备就绪后，使用以下命令：
+
+利用 compute 命令的输出选择有效的区域和 GPU。按需替换 `<region>` 和 `l4`；将 `deploy up` 打印的部署 ID 复制到最后一条命令中。
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+
+comfy build push --release --target linux/nvidia
+comfy deploy refs compute # 获取可用区域和 GPU 类型
+comfy deploy up --gpu l4 --region <region> --min 1 --max 4 --watch # 打印部署 ID
+comfy deploy run --workflow workflow_api.json --deployment <deployment-id> --output-dir ./results
+```
+
+<Steps>
+  <Step title="初始化">
+    ```bash
+    comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+    ```
+  </Step>
+  <Step title="创建发布版本">
+    ```bash
+    comfy build push --release --target linux/nvidia
+    ```
+    该命令会同步 Build 并为指定目标创建一个发布版本。
+  </Step>
+  <Step title="启动部署">
+    如果你还不确定所选 GPU 在哪些区域可用，请先查询：
+
+    ```bash
+    comfy deploy refs compute --region <region>
+    ```
+
+    然后创建或调整（reconcile）部署：
+
+    ```bash
+    comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+    ```
+    `deploy up` 会打印新的部署 ID。如需稍后再获取，可列出当前 Build 处于就绪状态的部署：
+
+    ```bash
+    comfy deploy ls --status ready
+    ```
+
+    将返回的 `dep_...` 值用于 `--deployment` 参数。
+  </Step>
+  <Step title="运行工作流">
+    ```bash
+    comfy deploy run \
+      --workflow workflow_api.json \
+      --deployment <deployment-id> \
+      --output-dir ./results
+    ```
+    CLI 会提交 API 格式的工作流，并将其输出下载到 `./results`。
+  </Step>
+</Steps>
+
+## 构建文件
+
+`comfy-build.yaml` 是 Build 的本地事实来源（source of truth）。它保存构建定义和最近一次已知的远程状态，因此 CLI 可以自动选择正确的 Build，并在本地更改可能覆盖较新的远程定义时发出警告。
+
+请将此文件与项目放在一起。它只描述 Build，本身不包含模型文件的内容。
+
+## 1. 初始化 Build
+
+从本地 ComfyUI 安装开始。该命令会扫描模型和自定义节点，然后写入 `comfy-build.yaml`。
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+```
+
+在推送之前，检查本地规格与本地安装及远程 Build 的差异：
+
+```bash
+comfy build status
+```
+
+## 2. 更新与发布
+
+修改本地 ComfyUI 安装后，刷新本地构建定义：
+
+```bash
+comfy build update --yes
+```
+
+若想走快捷路径，可用一条命令推送定义并为目标发布：
+
+```bash
+comfy build push --release --target linux/nvidia
+```
+
+当需要从现有 Build 创建另一个发布版本时，先查看支持的构建目标，再显式切出发布版本：
+
+```bash
+comfy build refs build-targets
+comfy build release create --target linux/nvidia --watch
+```
+
+跟踪某个发布版本的构建日志：
+
+```bash
+comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## 区域与 GPU 可用性
+
+区域容量会变化，因此不要在脚本中硬编码静态列表。选择部署目标时，请查询平台目录：
+
+```bash
+comfy deploy refs compute
+```
+
+使用 `--region <region>` 过滤结果：
+
+```bash
+comfy deploy refs compute --region <region>
+```
+
+将返回的 `region` 和 `gpu` 组合复制到 `comfy deploy up` 中：
+
+```bash
+comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+```
+
+在部署时，该目录是各区域可用 GPU 类型的事实来源。
+
+## 3. 部署发布版本
+
+先查询区域内可用的算力，然后为所选发布版本创建或调整部署：
+
+```bash
+comfy deploy refs compute --region US-MO-2
+
+comfy deploy up \
+  --gpu l4 \
+  --region US-MO-2 \
+  --min 1 \
+  --max 4 \
+  --watch
+```
+
+`--min` 和 `--max` 设置工作节点（worker）数量的上下限。使用 `comfy deploy status --watch` 跟踪部署健康状况、发布版本新旧程度以及服务活动。
+
+## 4. 运行工作流
+
+向就绪的部署提交 [API 格式的工作流](/zh/development/api-development/workflow-api-format)：
+
+```bash
+comfy deploy run \
+  --workflow workflow_api.json \
+  --deployment dep_123456 \
+  --output-dir ./results
+```
+
+也可以通过 [Comfy SDK](/zh/development/api-development/sdks) 调用该端点，只需将 `COMFY_BASE_URL` 设置为部署 URL。SDK 请求仍需要 API 密钥：参见[选择基础 URL](/zh/development/api-development/sdks#选择基础-url)。
+
+## 运维部署
+
+```bash
+# 修改工作节点数量上下限
+comfy deploy scale --deployment dep_123456 --min 2 --max 5
+
+# 暂停或恢复，同时保留部署记录
+comfy deploy stop --deployment dep_123456
+comfy deploy start --deployment dep_123456
+```
+
+## 查看与清理
+
+```bash
+# Build 状态
+comfy build ls
+comfy build show --id bld_123456
+comfy build release ls
+comfy build release show rel_123456
+
+# 部署状态
+comfy deploy ls --workspace --status ready
+comfy deploy logs --deployment dep_123456
+comfy deploy events --deployment dep_123456
+```
+
+<Warning>
+  删除部署与删除 Build 是两个相互独立且不可逆的操作。在使用 `comfy deploy delete --yes` 或 `comfy build delete --id bld_123456 --yes` 之前，请确认操作对象。
+</Warning>
+
+## 后续步骤
+
+- [Comfy SDK](/zh/development/api-development/sdks)
+- [Comfy API v2 概述](/zh/api-reference/v2/overview)
+- [工作流 API 格式](/zh/development/api-development/workflow-api-format)
+- [Comfy CLI 参考](/zh/comfy-cli/reference)
