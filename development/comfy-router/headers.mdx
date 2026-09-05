@@ -1,0 +1,89 @@
+---
+title: "Comfy Router headers"
+sidebarTitle: "Headers"
+description: "The request headers you can send to Comfy Router and the response headers it returns, for every model: authentication, idempotency, request IDs, error buckets, retry pacing and spend limits."
+---
+
+Every Router model uses `POST /v2/models/{provider}/{model}` with its own JSON body. This page covers the headers shared across models; the [API reference](/development/comfy-router/reference) lists the generated contract.
+
+The Comfy SDKs (`comfy-sdk` for Python, `@comfyorg/sdk` for TypeScript) handle authentication and generate idempotency keys. They expose selected response metadata as described below. Raw HTTP clients must send and read the headers themselves.
+
+## Request headers
+
+<ParamField header="X-API-Key" type="string">
+  A Comfy API key, `comfyui-...`, created at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). It uses your workspace's model access and credit balance. You can also send it as `Authorization: Bearer comfyui-...`; if both headers are present, `X-API-Key` wins.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`. A `comfyui-` value is an API key. Any other value is treated as a Comfy Cloud JWT.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Identifies one logical generation. Generate and store a UUID before the call, then reuse it for retries of the unchanged request. The key can replay a result or collect accepted work for up to 24 hours. The SDKs generate keys and let you supply your own (`idempotency_key=` in Python, `idempotencyKey` in TypeScript). See [retry outcomes](/development/comfy-router/models#retry-outcomes) for conflicts, expiry, and non-replayable results.
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`. Send the model's native JSON input. Fields and validation requirements vary by model; see [Using the Router API](/development/comfy-router/models).
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  On `GET /v2/models/{provider}/{model}/openapi.json` only. Send the `ETag` you hold from an earlier `200`; when it still matches, the answer is a bodyless `304` with the same `ETag`. Cache a model's schema for the life of your process and revalidate it this way rather than re-reading it before every call.
+</ParamField>
+
+## Response headers
+
+<ResponseField name="X-Comfy-Request-Id" type="string" required>
+  Identifies this HTTP request. Include it when contacting support. TypeScript exposes it as `requestId`; Python exposes `request_id` on errors.
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="string">
+  The machine-readable error category. On a `422`, use this header because the validation body has `detail[]` and no `error_type`. Combine it with the HTTP status to decide what to do. Treat an unknown value as `internal_error` for control flow and preserve it for diagnostics.
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="boolean">
+  Present and `true` when Router serves a stored result instead of running the model again. It is absent on a fresh run.
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Seconds to wait before retrying. On `409` / `concurrency_limit_exceeded` or `504` / `deadline_exceeded`, retry the same request and key after the wait. On `429` / `rate_limited`, it tells you when the rate limit resets.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="integer">
+  The ceiling on partner spend committed to calls still running, in USD cents. An enforcing spend gate can return it on admitted responses and on its `429` refusals. It is absent when the gate is not enforcing or a different control refused the request.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="integer">
+  USD cents currently committed to calls in flight. An admitted response includes its own call; a `429` excludes the refused call. Sent alongside `X-Committed-Spend-Limit`.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="integer">
+  USD cents left below the committed-spend ceiling. It can be positive on a refusal when the requested call costs more than the remaining amount.
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  On `GET /v2/models/{provider}/{model}/openapi.json`. Store it and send it back as `If-None-Match` to revalidate a cached schema.
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="string">
+  On the schema route: `private, must-revalidate`. Keep the response in a private cache and revalidate stale copies with the `ETag`.
+</ResponseField>
+
+## Status codes that carry two meanings
+
+Three statuses are shared by two buckets, and the header is what tells them apart:
+
+| Status | `X-Comfy-Error-Type` | What to do |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | The original call for this key is still running. Wait `Retry-After`, re-send the same key. |
+| `409` | `invalid_input` | Inspect the conflict. Restore the original request if you changed it. A consumed, non-replayable key cannot recover the result; use a new key only if you intend a new, potentially billable generation. |
+| `429` | `concurrency_limit_exceeded` | Too many calls in flight, or the committed-spend ceiling (see the `X-Committed-Spend-*` headers). Clears when one of your own calls finishes. |
+| `429` | `rate_limited` | Wait for `Retry-After` before retrying. |
+| `504` | `deadline_exceeded` | Router's own 10-minute bound. With `Retry-After`, re-send the same key to collect the running generation. |
+| `504` | `provider_timeout` | The partner timed out. Follow the [retry and billing guidance](/development/comfy-router/models#retry-outcomes); do not treat this as a guarantee of no charge. |
+
+## Next
+
+- [Quickstart](/development/comfy-router/quickstart): send a request and read the result.
+- [Using the Comfy Router API](/development/comfy-router/models): model discovery, schemas, errors, retries, and billing.
+- [API reference](/development/comfy-router/reference): the generated contract these headers are defined in.
+- [Limitations](/development/comfy-router/limitations): what Router does not do today, and what to use instead.
