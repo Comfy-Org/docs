@@ -1,8 +1,25 @@
 # Partner-model Code pages
 
-Every Router-addressable partner model can carry a `code.mdx` page under
+Every Router-addressable partner model has a `code.mdx` page under
 `development/comfy-router/models/<provider>/<model>/`, showing how to call the
 model through Comfy Router from Python, TypeScript and cURL.
+
+Pages come in two kinds, and both are generated:
+
+- **Curated** — a hand-written `code.yaml` next to the page supplies a display
+  name, a real request body, and the path the result sits at. One spec can cover
+  several model IDs (`variants`), which is why nine specs document fourteen models.
+- **Derived** — no `code.yaml`; the page is generated from
+  `router-schemas/<provider>/<model>.json` alone, the document the spec-sync bot
+  commits from `GET /v2/models/<provider>/<model>/openapi.json`.
+
+A derived page says only what Router has authored. The OUTPUT schema is authored
+for every model, so the response is documented in full. The INPUT schema usually
+is not (`x-comfy-input-schema-authored: false` means Router forwards the body to
+the provider unvalidated and cannot state its fields), so the page says exactly
+that and points at the provider instead of inventing a request shape, and it
+carries no example unless the served document has one. Writing a `code.yaml`
+upgrades a derived page to a curated one; nothing else has to change.
 
 These pages live in the **developer** section, not under `tutorials/`: the
 tutorials tree is for end users driving the nodes in the app, and mixing API
@@ -23,12 +40,41 @@ tutorials/partner-nodes/black-forest-labs/flux-1-kontext.mdx   Overview (hand-wr
 ## Commands
 
 ```bash
-pnpm code-pages:gen     # regenerate every code.mdx from its code.yaml
-pnpm code-pages:check   # CI: fail if any code.mdx is stale, and syntax-check the emitted snippets
+pnpm code-pages:gen             # regenerate every code.mdx, and the Models nav in docs.json
+pnpm code-pages:check           # CI: fail if any page is stale OR MISSING, and syntax-check the snippets
+pnpm code-pages:gen --prune     # also delete pages whose model has left the catalog
 ```
 
 `code-pages-check.yml` runs the check on any PR touching a spec, a generated
-page, the shared Router snippets or the generator.
+page, a synced schema, `docs.json`, the shared Router snippets or the generator.
+
+## Coverage
+
+`--check` fails when a model under `router-schemas/` has no page, not only when
+an existing page is stale. That is the gate: the schemas are synced from cloud by
+a bot, so a model Router starts serving arrives here on its own, and the first PR
+after it lands goes red until the page is generated. Before this existed, the
+catalog grew and the sidebar did not — Router served 202 models while the docs
+listed 9.
+
+The gate can only see models whose schema has been synced. `GET /v2/models` is
+the full catalog and is ahead of `router-schemas/` (202 vs 162 on 2026-09-04);
+closing that gap is the sync bot's job upstream, not this generator's. A page
+whose model leaves the catalog is reported as an orphan and deleted by `--prune`
+— a dead page in the sidebar documents a model that now answers 404.
+
+The `Models` group in `docs.json` is generated too, one sub-group per provider,
+so a new page is in the sidebar the moment it is generated. Provider labels come
+from `PROVIDER_LABEL` in the generator; an unlisted slug is title-cased, so a new
+provider renders sanely without a code change.
+
+## The preview banner
+
+`snippets/comfy-router/preview-notice.mdx` is rendered on every page while that
+file exists, and vanishes from all of them on the next `code-pages:gen` once it
+is deleted. The banner is a rollout artifact, so retiring it is one `rm` plus a
+regen rather than an edit to the template and every generated page in the same
+commit.
 
 ## Schema sections
 
@@ -65,7 +111,7 @@ fallback schemas are tested rather than trusted until Router publishes its own.
    `"@file:<path>"` is read from disk and base64 encoded by every snippet.
 5. Set `result.path` to where the output lives in the provider's native
    response and `result.example` to a representative response.
-6. Run `pnpm code-pages:gen`, add the page to the model's group in `docs.json`,
+6. Run `pnpm code-pages:gen` (it writes the page and the `docs.json` nav entry)
    and link it from the overview's "Use it" cards.
 
 Python, TypeScript and cURL are all emitted from the same `example`, so the
