@@ -1,0 +1,273 @@
+---
+title: "Using the Comfy Router API"
+sidebarTitle: "Using the Router API"
+description: "Choose models, inspect schemas, call Router safely, and handle results, errors, retries, and billing."
+---
+
+import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
+
+<RouterPreviewNotice />
+
+Use this page to choose a model, inspect its schema, call it safely, and handle the result. Authentication and the route pattern stay the same: `POST /v2/models/{provider}/{model}`.
+
+## Discover the catalog
+
+List models with the same API key used for generation:
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v2/models?limit=50"
+```
+
+An abbreviated catalog response:
+
+```json
+{
+  "data": [
+    {
+      "id": "bfl/flux-2-pro",
+      "provider": "bfl",
+      "model": "flux-2-pro",
+      "billing": { "charges_on_policy_rejection": "no" }
+    }
+  ],
+  "has_more": true,
+  "next_cursor": "example-cursor",
+  "limit": 50
+}
+```
+
+Use `id` in the invocation path. The `billing` object contains billing facts, not a price. Read [policy-refusal billing](/development/comfy-router/models#model-billing-facts) before relying on it.
+
+### Pagination
+
+- When `has_more` is `true`, pass the returned `next_cursor` as `cursor`. Stop when `has_more` is `false`, even if an earlier page was shorter than requested.
+- Treat cursors as opaque. URL-encode the value, for example with cURL `--get --data-urlencode "cursor=$NEXT_CURSOR"`; do not calculate offsets or modify the cursor.
+- `limit` defaults to 20 and is capped at 100. Values above the cap are clamped; zero and negative values select the default. The response reports the limit actually used.
+- An invalid cursor returns `400` / `invalid_input`. It does not silently restart the list.
+- A cursor can remain valid across catalog updates, but traversal is not a snapshot: a model added before your current position may not appear in that walk.
+
+`503` / `service_unavailable` is a temporary failure, not an empty catalog. Unreleased models are not listed. Cache the catalog when appropriate for your application instead of fetching it before every invocation. The SDK run methods do not automatically list the catalog or fetch model details first.
+
+## Read one model
+
+Fetch a catalog entry directly when you know the model ID:
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro
+```
+
+The model detail endpoint avoids walking the entire catalog. Use the [API reference](/development/comfy-router/reference) for the complete entry fields.
+
+## Read input and output schemas
+
+Each model exposes a standalone OpenAPI document:
+
+```bash
+curl --dump-header schema-headers.txt \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+Within the model operation, `requestBody` describes the input, and the `200` response describes the output when an output schema has been authored. Input validation and output documentation are different: Router validates against its input schema but does not validate the returned provider result against its output schema.
+
+Inspect the output media type as well as its fields. An unauthored output can use `*/*`, and some models return binary data rather than JSON. Provider-specific routing can also adapt model-selection fields and output-format options; changing only the host of a provider request is not a complete migration.
+
+### Cache a schema
+
+Save the schema and its `ETag`. On a later schema fetch, pass that ETag in `If-None-Match`. A `304` has no body; keep the cached document. A `200` supplies a replacement document and ETag.
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  -H 'If-None-Match: "previous-etag-value"' \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+The schema route uses `Cache-Control: private, must-revalidate`. Keep authenticated responses out of a shared cache and revalidate stale copies. This ETag/304 contract applies to the schema endpoint; do not assume the catalog list supports the same conditional request.
+
+## Validation and fallback schemas
+
+An authored input schema rejects invalid fields before the provider call with `422` and a `detail[]` array. Read the field paths in `loc`; see [validation errors](/development/comfy-router/models#validation-errors).
+
+Some model schemas deliberately accept any JSON object. The document marks these with `x-comfy-input-schema-authored: false`. Router then forwards that object without model-specific prevalidation, and the provider can still reject it. A published schema is therefore not proof that a missing field will be rejected by Router before any provider call.
+
+The `bfl/flux-2-pro` example currently uses this permissive fallback. Consult the provider documentation or the per-model field guide for requirements. Model Code pages can show documented provider fields even when Router has not authored an enforcing schema.
+
+## Read the result
+
+Router returns the model's native terminal result shape, which may differ from a provider SDK helper or a proxy's initial submit response. There is no common image/video/text envelope across models. For example, BFL image output uses `result.sample`, while some other models return lists of URLs or inline base64 bytes.
+
+Some asset URLs are rewritten to Comfy-hosted URLs. Other models retain provider URLs or inline bytes, and some rehosting paths may omit undeclared provider fields. Check [result assets](/development/comfy-router/reference#result-assets) and download expiring assets promptly. Replaying a result does not renew its URLs.
+
+## Handle errors, retries, and billing
+
+### Read errors defensively
+
+A failed request can return a proxy's HTML error page, truncated JSON, or plain text. Do not let a JSON parsing error hide the HTTP status or request ID. These helpers use an `httpx.Response` in Python and a Fetch `Response` in TypeScript; the SDKs already expose error fields for normal SDK calls.
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+</CodeGroup>
+
+### Validation errors
+
+A Router `422` means validation failed before the provider call and is not billed. Its body has a `detail[]` array, with one entry per rejected field. The error category is in `X-Comfy-Error-Type`, not in the body. For example:
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+This is an illustrative error shape, not a second request to run. Models with a permissive input schema may forward a missing field to the provider instead of returning a Router `422`. See [validation and fallback schemas](/development/comfy-router/models#validation-and-fallback-schemas).
+
+| Field | Meaning |
+| --- | --- |
+| `loc` | Path to the rejected field, outermost segment first. |
+| `msg` | Human-readable reason for the failure. |
+| `type` | Provider-specific reason, such as `missing`, `greater_than` or `image_too_small`. |
+| `ctx` | Optional bound or extra data for that provider error. |
+
+`400` describes a request-level problem, such as a malformed cursor, rather than this per-field validation body. The [error reference](/development/comfy-router/reference#error-buckets) lists the supported categories. Treat an unknown category as `internal_error` for control flow, but keep the original value for diagnostics. Do not hard-reject a new error value or implement forecast error categories as though they already occur.
+
+### Retry safely
+
+Persist the key with the model ID and request body **before sending**. Reuse it for every attempt of that logical call. Router does not return the `Idempotency-Key` to you in its response. The Python SDK includes its key on raised exceptions; in TypeScript, keep your supplied key yourself.
+
+Keys are shared within the workspace carried by the credential, or scoped to the user when it carries no workspace. Use a UUID unique across that scope and retry with the same credential. Reusing another workspace member's key can return their recorded result or a conflict; changing credentials can start a separate, billable call.
+
+Router retains keyed response or collection state for 24 hours; a retry does not start a new retention window. Once that state expires, do not expect the old key to recover a result or prevent a new dispatch. A key also does not make an expired asset URL usable again.
+
+### Retry outcomes
+
+| Status | Bucket | What it means | What to do |
+| --- | --- | --- | --- |
+| `200` | `Idempotent-Replayed: true` header | Router replayed a result or returned a collected generation. | Use the result; the replay is not a second Comfy charge. |
+| `409` | `concurrency_limit_exceeded` | The original call for that key is still running. | Wait `Retry-After`, then resend the same key. |
+| `504` | `deadline_exceeded`, with `Retry-After` | Router retained a handle to accepted provider work. | Wait the stated interval and resend the same request and key to collect it. It may still be running. |
+| `429` | `rate_limited` | The request allowance is exhausted. | Wait `Retry-After`, then retry with the same key. |
+| `429` | `concurrency_limit_exceeded` | The concurrent-call or committed-spend limit refused the request. | Reduce concurrency and retry with the same key. Inspect the spend headers. |
+| `409` | `invalid_input` | The request differs from the key's original request, or its record cannot be replayed. | Inspect the conflict. Restore the original request if it changed. Start a new key only when you intend a new, potentially billable call. |
+| `504` without a collection hint, another `5xx`, or no response | Varies | The status alone does not identify whether work was accepted, retained, or released. | Preserve the same key and request. Use a bounded retry policy; recovery is not guaranteed. |
+
+Conflicts compare the method, model path, query, and body. A consumed, non-replayable record can result from an oversized response, a response-write failure, a handler failure after answering, or an asset response that cannot be safely replayed. A key may also be made non-replayable after repeated unresolved provider polls. Waiting does not recover a consumed result. A new key can generate and charge again; it does not retrieve the old output.
+
+For direct-return models, a response containing provider-hosted URLs can have a short replay grace period before it becomes non-replayable. Do not rely on that grace period for durable storage. Submit-and-poll results with unknown URL age and responses above the replay size cap do not get the same grace period. A refusal before any provider dispatch releases the key, so correcting the cause can let that key run for the first time.
+
+Some transient outcomes release the reservation so a same-key retry dispatches again. Accepted submit-and-poll work is different: Router can retain the provider handle after a deadline, disconnect, or unresolved poll. Do not infer that all `5xx` responses release the key or that a missing response means nothing was billed.
+
+Do not mint a brand-new key just because a call timed out or the connection dropped. If Router already accepted the generation, a new key can create a second logical run and therefore a second billable outcome. Reuse the same key until you know the original call is unrecoverable.
+
+#### Timeouts and collection
+
+One Router call may hold the connection for 10 minutes by default. Set your client timeout above that bound so you keep the typed `504` and the request ID rather than an opaque local abort.
+
+`deadline_exceeded` is Router's waiting limit; `provider_timeout` is the provider's deadline. A provider generation that completes can be billed even if the caller received a timeout or disconnected. Client cancellation stops the wait and SDK retries, but does not necessarily cancel accepted provider work.
+
+For submit-and-poll providers, a retained handle lets a same-key request continue collecting the original generation. Dispatched calls cut off without a recoverable handle can consume the key without a replayable result; a same-key retry then returns `409`. Provider-attributed transient failures without a captured success can still release the key for another attempt. The absence of a handle alone does not tell you which outcome applies.
+
+The SDKs retry some failures within a bounded budget. Once they return an error, keep the request and key rather than starting over with a generated key. For raw HTTP, this Python example makes at most three attempts and retries only the two explicit collection hints:
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+Pass the original model, body, and saved key. This limits attempts, not total wall time: each call can last up to the client timeout and each wait follows `Retry-After`. HTTP errors retain the response for inspection; transport errors propagate without replacing the key. Schedule later collection with the saved key if your application needs a longer recovery window.
+
+### Model billing facts
+
+`GET /v2/models` and the model detail response include `billing.charges_on_policy_rejection`. This describes a policy refusal, not every failure or a price estimate.
+
+| Value | Meaning |
+| --- | --- |
+| `yes` | A policy refusal is charged. |
+| `no` | A policy refusal is not charged. |
+| `unknown` | Nobody has established the behavior yet. Treat it as maybe charged. |
+
+Compare these strings explicitly: `"no"` is truthy in Python and JavaScript. Treat any unrecognized value as `unknown`. A request refused for lack of credits reports `insufficient_credits`.
+
+Provider payloads may include their own cost or usage numbers; those are not the Comfy charge. `X-Comfy-Credits-Used` may appear for an allowlist of providers but is not universal and is not replayed. Use [workspace usage and invoices](https://platform.comfy.org) for reconciliation. Preserve the request ID when investigating a charge.
+
+## Per-model examples
+
+- [Google Gemini](/development/comfy-router/models/google/gemini/code)
+- [Nano Banana 2](/development/comfy-router/models/google/nano-banana-2/code)
+- [Nano Banana 2 Lite](/development/comfy-router/models/google/nano-banana-2-lite/code)
+- [Nano Banana Pro](/development/comfy-router/models/google/nano-banana-pro/code)
+- [FLUX 1.1 Pro Ultra](/development/comfy-router/models/black-forest-labs/flux-1-1-pro-ultra-image/code)
+- [FLUX Kontext](/development/comfy-router/models/black-forest-labs/flux-1-kontext/code)
+- [FLUX Video Upscale](/development/comfy-router/models/black-forest-labs/flux-video-upscale/code)
+- [FLUX 3 Video](/development/comfy-router/models/black-forest-labs/flux-3-video/code)
+- [Ideogram 4](/development/comfy-router/models/ideogram/ideogram-v4/code)
+
+## Next
+
+- [Quickstart](/development/comfy-router/quickstart): installation, invocation, and saving the image.
+- [API reference](/development/comfy-router/reference): endpoint parameters, schemas, and response codes.
