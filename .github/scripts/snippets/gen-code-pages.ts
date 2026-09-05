@@ -644,7 +644,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
+${spec.intro ?? `Use ${spec.name} with Comfy Router. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
 ${body}
 
@@ -742,7 +742,7 @@ sidebarTitle: ${JSON.stringify(title)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-API Reference for \`${model}\`, served by Comfy Router from ${provider}.
+Use \`${model}\` with the Comfy Router API. ${provider} provides the model; Router gives it the shared authentication and request route below.
 ${previewNotice.body}
 ## Quick start
 
