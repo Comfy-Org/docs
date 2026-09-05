@@ -6,7 +6,7 @@ description: "Choose Router or a partner proxy, plan for long-running calls, and
 
 Router runs a partner model through one synchronous HTTP call. Use it when your application can wait for a finished result and handle the model's own input and output fields.
 
-## At a glance
+## What Router supports
 
 | Requirement | Router support | Alternative or next step |
 | --- | --- | --- |
@@ -19,25 +19,23 @@ Router runs a partner model through one synchronous HTTP call. Use it when your 
 
 ## No queued submission
 
-Router holds the connection while the model runs. For providers with asynchronous APIs, Router submits the provider job and polls internally. It does not return a general-purpose Router job ID or expose a job-status endpoint, callback, or completion webhook.
+Router holds the connection while the model runs. For asynchronous providers, it submits the job and polls internally. It does not expose a Router job ID, status endpoint, callback, or webhook.
 
-If your web request or serverless function cannot stay open long enough, call Router from a worker with an appropriate execution timeout. Your application's job ID and status tracking belong to that worker. Use a [partner proxy](#router-does-not-cover-every-partner-operation) when you need the provider's own submit-and-poll controls.
+If your request cannot stay open long enough, call Router from a worker and track the job in your application. Use a [partner proxy](#router-does-not-cover-every-partner-operation) when you need the provider's submit-and-poll controls.
 
 ## Calls are cut off at a server deadline
 
-Router's default server deadline is **10 minutes**, configurable by the deployment. Set the client timeout above it, such as 660 seconds, so Router can return its error and request ID before the client gives up. Your hosting platform must also allow the call to last that long.
+Router's default deadline is **10 minutes**, configurable by the deployment. Set your client timeout above it so Router can return its error and request ID first.
 
-`504` / `deadline_exceeded` means Router stopped waiting. `504` / `provider_timeout` means the provider timed out. Neither the HTTP status nor losing the connection establishes whether a generation was charged. An accepted provider job can continue after Router stops waiting and be billed when it completes. Read [timeouts and collection](/development/comfy-router/models#timeouts-and-collection) before retrying.
-
-If a response was already committed as the deadline expired, that response may be delivered instead of a deadline error. A timeout does not cancel work a provider has already accepted.
+`504` / `deadline_exceeded` means Router stopped waiting; `504` / `provider_timeout` means the provider timed out. A timeout or lost connection does not prove that a generation was unbilled, and it does not cancel accepted provider work. Read [timeouts and collection](/development/comfy-router/models#timeouts-and-collection) before retrying.
 
 <span id="no-way-to-resume-a-call-you-lost" />
 
 ## Recovery depends on the provider
 
-Router can retain a provider handle for an accepted submit-and-poll generation. Reusing the same `Idempotency-Key` lets a later request collect that generation. Completed, replayable responses can also be returned from the key record.
+Router can retain a provider handle for an accepted submit-and-poll generation. Reuse the same `Idempotency-Key` to collect it later; completed replayable responses can also come from the key record.
 
-This does not recover every disconnected call. A direct-return provider may offer no handle, the key can expire, and a response can be non-replayable. Preserve your request and key before sending, and use the [retry outcome table](/development/comfy-router/models#retry-outcomes). A new key creates a new logical call and may incur another charge.
+Not every disconnected call is recoverable. Preserve the request and key before sending, then use the [retry outcome table](/development/comfy-router/models#retry-outcomes). A new key creates a new call and may incur another charge.
 
 ## Requests are rate limited per caller
 
@@ -46,37 +44,33 @@ This does not recover every disconnected call. A direct-return provider may offe
 | `429` / `concurrency_limit_exceeded` | Too many concurrent calls, or insufficient headroom under the committed-spend ceiling. | Reduce concurrent work. The spend headers distinguish the spend ceiling from the call-count limit. |
 | `429` / `rate_limited` | The request allowance is exhausted. | Wait for `Retry-After` before retrying. |
 
-The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller across hosts, rather than the source IP address. Calls using the caller's own provider key are exempt from that Router request-rate limit; provider limits still apply. Limits are deployment settings, so do not assume a fixed allowance.
+The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply.
 
-Cache catalog and schema reads instead of repeating them before every generation. Revalidate schemas with `ETag` and `If-None-Match`. Keep the request ID from refusals you need to investigate. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
+Cache catalog and schema reads. Revalidate schemas with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
 
 ## No progress while a call runs
 
 Router returns a final response, with no streamed tokens, server-sent events, percentage updates, or intermediate preview frames. A provider's internal polling state is not forwarded during the request.
 
-Show an indeterminate progress indicator. If progress or streaming is required, use a supported partner-proxy operation that exposes it. Queues and progress have been discussed as future capabilities, but they are not part of this contract and have no committed availability date here.
+Show an indeterminate progress indicator. If you need progress or streaming, use a partner-proxy operation that exposes it.
 
 <span id="no-cost-or-credit-figures-on-a-response" />
 
 ## Comfy charges and usage
 
-The response may contain the provider's own usage or cost fields. Those are not a universal statement of the Comfy charge. `X-Comfy-Credits-Used` can appear for some providers, but it is not guaranteed and is not replayed on an idempotent response. Use the Comfy platform for balances, usage, and invoices.
+The response can contain provider usage or cost fields. They do not represent a universal Comfy charge. `X-Comfy-Credits-Used` is optional and is not replayed. Use the Comfy platform for balances, usage, and invoices.
 
-The model catalog provides billing facts, including `billing.charges_on_policy_rejection`, rather than prices. Handle its `yes`, `no`, and `unknown` values explicitly. See [billing](/development/comfy-router/models#model-billing-facts) for refusals, insufficient credits, and unknown values.
+The catalog provides billing facts, including `billing.charges_on_policy_rejection`, rather than prices. Handle `yes`, `no`, and `unknown` explicitly. See [billing](/development/comfy-router/models#model-billing-facts).
 
 ## Router does not cover every partner operation
 
-Router runs models. File uploads, account reads, asset management, streaming operations, and provider job controls may require the partner-proxy routes under `/proxy/…`. These remain supported on the same host with the same Comfy credential. Check the operation in the [Comfy API specification](/openapi-v2.yaml); support varies by provider.
-
-Both surfaces can be used in one integration. Choose Router for a finished model result through a common route; use the proxy for a specific provider operation.
+Router runs models. File uploads, account reads, asset management, streaming, and provider job controls can require partner-proxy routes under `/proxy/…`. Check the [Comfy API specification](/openapi-v2.yaml); support varies by provider.
 
 ## Model outputs and stored assets
 
-Input and output fields vary by model. Migrating from a provider SDK or a proxy submit call can require changing both the route and result extraction: Router may return the provider's terminal result rather than its initial job handle.
+Input and output fields vary by model. Moving from a provider SDK or proxy can change both the route and how you read the result.
 
-Some assets are rehosted on Comfy storage, while other models return provider URLs or inline bytes. Preserve the qualifications in [Result assets](/development/comfy-router/reference#result-assets), including per-provider lifetimes, shorter-lived fallback URLs, and the fact that a replay does not renew a URL.
-
-The `xai` and `minimax` rehosting paths serialize through known provider types; undeclared provider fields may not survive. Do not rely on fields absent from the published output schema without checking the provider-specific behavior.
+Some assets are rehosted on Comfy storage; others are provider URLs or inline bytes. See [Result assets](/development/comfy-router/reference#result-assets) for lifetimes and replay behavior.
 
 ## Next
 
