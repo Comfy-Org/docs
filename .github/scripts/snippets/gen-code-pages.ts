@@ -84,6 +84,36 @@ const PROVIDER_LABEL: Record<string, string> = {
 const PROVIDER_DOC_BASE: Record<string, string> = { openai: "https://platform.openai.com" };
 
 /**
+ * Provider slug -> that provider's own API reference.
+ *
+ * A model with no authored input schema is documented by the provider and nobody
+ * else, so the Note that says so links there rather than leaving the reader to
+ * search. Every URL here was fetched and returned 200 on 2026-09-04; a provider
+ * with no entry keeps the unlinked wording, which is why `ltx` is absent (its
+ * docs answer 403 to a plain fetch, so the link could not be verified). Verify
+ * before adding a row: a docs link that rots is worse than no link.
+ */
+const PROVIDER_API_DOCS: Record<string, string> = {
+  anthropic: "https://docs.claude.com/en/api/messages",
+  bfl: "https://docs.bfl.ai/",
+  bria: "https://docs.bria.ai/",
+  byteplus: "https://docs.byteplus.com/",
+  "gemini-interactions": "https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference",
+  kling: "https://app.klingai.com/global/dev/document-api",
+  krea: "https://docs.krea.ai/",
+  luma: "https://docs.lumalabs.ai/docs/api",
+  luma_2: "https://docs.lumalabs.ai/docs/api",
+  meshy: "https://docs.meshy.ai/",
+  minimax: "https://platform.minimax.io/docs/api-reference",
+  openai: "https://platform.openai.com/docs/api-reference",
+  recraft: "https://www.recraft.ai/docs",
+  runway: "https://docs.dev.runwayml.com/",
+  veo: "https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/veo-video-generation",
+  vertexai: "https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference",
+  xai: "https://docs.x.ai/docs/api-reference",
+};
+
+/**
  * Display titles for derived pages.
  *
  * Neither `GET /v2/models` nor the per-model schema publishes a human name — the
@@ -691,9 +721,10 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
+  const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
     ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
-    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${provider}'s own API documentation is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${provider}'s own API reference](${apiDocs})` : `${provider}'s own API documentation`} is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
