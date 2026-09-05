@@ -18,9 +18,18 @@
  *     omit: [webhook_url, webhook_secret]            # provider fields we deliberately do not document
  *
  * Errors (exit 1): a documented field the provider does not have; a type, default,
- * enum, bound or required-ness that disagrees with the provider. Warnings: provider
- * fields we do not document (errors under --strict), and provider shapes that are
- * opaque (`{}`) where we document structure.
+ * enum, bound or required-ness that disagrees with the provider; a single documented
+ * `default` for a field whose provider default is PER-VARIANT. Warnings: provider
+ * fields we do not document (errors under --strict), provider shapes that are
+ * opaque (`{}`) where we document structure, and a per-variant provider default the
+ * page has to explain in prose.
+ *
+ * Per-variant defaults: when a provider body is a `oneOf`/`anyOf` of modes (BFL's
+ * FLUX 3 Video is t2v/i2v/v2v/draft_enhance) the alternatives can disagree about a
+ * field's `default` — `resolution` is `hd` in three modes and `fhd` in the fourth.
+ * Merging the alternatives last-wins would pick one arbitrarily and then "verify"
+ * the docs against it, so `norm` instead drops `default` from such a field and
+ * records `defaultByVariant: { <mode>: <default> }` for `compare` to report.
  */
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -46,8 +55,24 @@ function fetchDoc(url: string): Promise<any> {
   return cache.get(url)!;
 }
 
+/**
+ * Name each alternative of a union so a per-variant default reads as `{"t2v":"hd",…}` rather
+ * than `{"#0":"hd",…}`: the discriminator's value when the document declares a discriminator,
+ * else a property that is a distinct constant in every alternative, else the index.
+ */
+export function variantLabels(s: any, alts: any[]): string[] {
+  const constOf = (p: any) => (p?.const !== undefined ? p.const : Array.isArray(p?.enum) && p.enum.length === 1 ? p.enum[0] : undefined);
+  const names: string[] = s?.discriminator?.propertyName ? [s.discriminator.propertyName] : [...new Set(alts.flatMap((a) => Object.keys(a.properties ?? {})))];
+  for (const name of names) {
+    const vals = alts.map((a) => constOf(a.properties?.[name]));
+    // Every alternative must pin it, and to a value no other alternative uses — otherwise it is not the discriminator.
+    if (vals.every((v) => v !== undefined) && new Set(vals.map(String)).size === alts.length) return vals.map(String);
+  }
+  return alts.map((_, i) => `#${i}`);
+}
+
 // ---- normalise provider schemas (OpenAPI 3 or Google discovery) into plain JSON-schema-ish objects
-function normalizer(doc: any) {
+export function normalizer(doc: any) {
   const isDiscovery = !!doc.schemas && !doc.openapi;
   const comps: Record<string, any> = isDiscovery ? doc.schemas : doc.components?.schemas ?? {};
   const seen = new Set<string>();
@@ -64,9 +89,21 @@ function normalizer(doc: any) {
       if (alts.length === 1) return { ...alts[0], nullable: true, ...(s.default !== undefined ? { default: s.default } : {}) };
       // discriminated unions (FLUX 3 Video): union of properties, required = intersection
       const props: Record<string, any> = {}; let req: Set<string> | null = null;
-      for (const a of alts) {
+      // Merging last-wins would silently adopt the LAST alternative's default as if it were the
+      // provider's one default, so collect every alternative's default per property as we go.
+      const labels = variantLabels(s, alts);
+      const defaults = new Map<string, [string, unknown][]>();
+      alts.forEach((a: any, i: number) => {
+        for (const [name, p] of Object.entries<any>(a.properties ?? {})) {
+          if (p?.default !== undefined) defaults.set(name, [...(defaults.get(name) ?? []), [labels[i]!, p.default]]);
+        }
         Object.assign(props, a.properties ?? {});
         const r = new Set<string>(a.required ?? []); req = req ? new Set([...req].filter((x) => r.has(x))) : r;
+      });
+      for (const [name, entries] of defaults) {
+        if (new Set(entries.map(([, d]) => JSON.stringify(d))).size < 2) continue; // the alternatives agree — the merged default is theirs
+        const { default: _collapsed, ...rest } = props[name] ?? {};
+        props[name] = { ...rest, defaultByVariant: Object.fromEntries(entries) };
       }
       const types = [...new Set(alts.map((a: any) => a.type).filter(Boolean))];
       return { type: types.length === 1 ? types[0] : types, properties: props, required: [...(req ?? [])], union: true, ...(s.default !== undefined ? { default: s.default } : {}) };
@@ -74,7 +111,8 @@ function normalizer(doc: any) {
     if (s.allOf) return s.allOf.map((a: any) => norm(a, depth + 1)).reduce((acc: any, d: any) => ({ ...acc, ...d, properties: { ...(acc.properties ?? {}), ...(d.properties ?? {}) }, required: [...(acc.required ?? []), ...(d.required ?? [])] }), {});
     const out: any = { type: s.type };
     if ((s.type === "object" || s.type === undefined) && !s.properties && !s.items && !s.enum && !s.anyOf) out.opaque = true;
-    for (const k of ["default", "enum", "minimum", "maximum", "format", "description"]) if (s[k] !== undefined) out[k] = s[k];
+    // `const` is carried for `variantLabels` only — nothing compares it, so it adds no new drift.
+    for (const k of ["default", "enum", "minimum", "maximum", "format", "description", "const"]) if (s[k] !== undefined) out[k] = s[k];
     if (s.properties) { out.properties = {}; for (const [k, v] of Object.entries<any>(s.properties)) out.properties[k] = norm(v, depth + 1); }
     if (s.required) out.required = s.required;
     if (s.items) out.items = norm(s.items, depth + 1);
@@ -113,7 +151,7 @@ async function providerShapes(ps: ProviderSpec): Promise<{ input: any; output: a
 }
 
 // ---- comparison
-type Report = { errors: string[]; warnings: string[] };
+export type Report = { errors: string[]; warnings: string[] };
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const baseType = (t: unknown) => (Array.isArray(t) ? t : [t]).map(String);
 const compatible = (ours: unknown, theirs: unknown) => {
@@ -147,7 +185,7 @@ function flatten(s: any): any {
   };
 }
 
-function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: Report, prefix = "", noRequired = false) {
+export function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: Report, prefix = "", noRequired = false) {
   ours = flatten(ours);
   noRequired = noRequired || !!theirs?.noRequiredInfo;
   if (!theirs || theirs.opaque) { if (ours?.properties && Object.keys(ours.properties).length) rep.warnings.push(`${where}: provider declares \`${prefix || "body"}\` as an opaque object; cannot verify ${Object.keys(ours.properties).length} documented field(s) beneath it`); return; }
@@ -159,9 +197,18 @@ function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: 
     if (!t) { rep.errors.push(`${where}: \`${path}\` is documented but the provider spec has no such field`); continue; }
     if (!compatible(o.type, t.type)) rep.errors.push(`${where}: \`${path}\` type ${JSON.stringify(o.type)} vs provider ${JSON.stringify(t.type)}`);
     if (!noRequired && ourReq.has(name) !== theirReq.has(name) && !theirs.union) rep.errors.push(`${where}: \`${path}\` required=${ourReq.has(name)} vs provider required=${theirReq.has(name)}`);
-    if (t.default !== undefined && o.default !== undefined && !eq(o.default, t.default)) rep.errors.push(`${where}: \`${path}\` default ${JSON.stringify(o.default)} vs provider ${JSON.stringify(t.default)}`);
-    if (t.default !== undefined && o.default === undefined && !prefix.includes("[]")) rep.warnings.push(`${where}: \`${path}\` provider default ${JSON.stringify(t.default)} is not documented`);
-    if (o.default !== undefined && t.default === undefined) rep.warnings.push(`${where}: \`${path}\` documents default ${JSON.stringify(o.default)} but the provider spec declares none`);
+    if (t.defaultByVariant) {
+      // The provider's alternatives disagree: there is no single default to document, so a `default:`
+      // here is wrong for at least one mode however it is written. Only these two apply to the field.
+      if (o.default !== undefined) rep.errors.push(`${where}: \`${path}\` documents a single default ${JSON.stringify(o.default)} but the provider default is per-variant ${JSON.stringify(t.defaultByVariant)}; document the per-variant defaults in the description and drop \`default\``);
+      // `!prefix.includes("[]")` mirrors the undocumented-default warning below: inside an array's items
+      // an undocumented provider default is not something the page is expected to state. An ERROR still fires there.
+      else if (!prefix.includes("[]")) rep.warnings.push(`${where}: \`${path}\` provider default is per-variant ${JSON.stringify(t.defaultByVariant)}; make sure the description says so`);
+    } else {
+      if (t.default !== undefined && o.default !== undefined && !eq(o.default, t.default)) rep.errors.push(`${where}: \`${path}\` default ${JSON.stringify(o.default)} vs provider ${JSON.stringify(t.default)}`);
+      if (t.default !== undefined && o.default === undefined && !prefix.includes("[]")) rep.warnings.push(`${where}: \`${path}\` provider default ${JSON.stringify(t.default)} is not documented`);
+      if (o.default !== undefined && t.default === undefined) rep.warnings.push(`${where}: \`${path}\` documents default ${JSON.stringify(o.default)} but the provider spec declares none`);
+    }
     if (o.enum && t.enum) { const extra = o.enum.filter((v: unknown) => !t.enum.includes(v)); if (extra.length) rep.errors.push(`${where}: \`${path}\` enum values ${JSON.stringify(extra)} are not in the provider's ${JSON.stringify(t.enum)}`); const missing = t.enum.filter((v: unknown) => !o.enum.includes(v) && !String(v).endsWith("UNSPECIFIED")); if (missing.length) rep.warnings.push(`${where}: \`${path}\` provider also allows ${JSON.stringify(missing)}`); }
     if (t.enum && !o.enum && t.enum.length <= 12) rep.warnings.push(`${where}: \`${path}\` provider enumerates ${JSON.stringify(t.enum)} but we document a free ${o.type}`);
     for (const b of ["minimum", "maximum"] as const) if (o[b] !== undefined && t[b] !== undefined && Number(o[b]) !== Number(t[b])) rep.errors.push(`${where}: \`${path}\` ${b} ${o[b]} vs provider ${t[b]}`);
@@ -176,28 +223,30 @@ function compare(ours: any, theirs: any, where: string, omit: Set<string>, rep: 
   }
 }
 
-// ---- main
-const glob = new Bun.Glob("development/comfy-router/models/**/code.yaml");
-const rep: Report = { errors: [], warnings: [] };
-let checked = 0, skipped = 0;
-for (const specPath of glob.scanSync({ cwd: ROOT })) {
-  const spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as any;
-  for (const v of spec.variants) {
-    const ps: ProviderSpec | undefined = v.provider_spec ?? spec.provider_spec;
-    const input = v.input ?? spec.input, output = v.output ?? spec.output;
-    if (!ps) { skipped++; rep.warnings.push(`${dirname(specPath)} (${v.model}): no provider_spec, cannot verify`); continue; }
-    const where = `${dirname(specPath).replace("development/comfy-router/models/", "")} (${v.model})`;
-    try {
-      const shapes = await providerShapes(ps);
-      const omit = new Set<string>(ps.omit ?? []);
-      if (input) compare(input, shapes.input, `${where} input`, omit, rep);
-      if (output) compare(output, shapes.output, `${where} output`, omit, rep);
-      checked++;
-    } catch (e) { rep.errors.push(`${where}: ${(e as Error).message}`); }
+// ---- main (only when run as a script; importing this file for tests must not fetch anything)
+if (import.meta.main) {
+  const glob = new Bun.Glob("development/comfy-router/models/**/code.yaml");
+  const rep: Report = { errors: [], warnings: [] };
+  let checked = 0, skipped = 0;
+  for (const specPath of glob.scanSync({ cwd: ROOT })) {
+    const spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as any;
+    for (const v of spec.variants) {
+      const ps: ProviderSpec | undefined = v.provider_spec ?? spec.provider_spec;
+      const input = v.input ?? spec.input, output = v.output ?? spec.output;
+      if (!ps) { skipped++; rep.warnings.push(`${dirname(specPath)} (${v.model}): no provider_spec, cannot verify`); continue; }
+      const where = `${dirname(specPath).replace("development/comfy-router/models/", "")} (${v.model})`;
+      try {
+        const shapes = await providerShapes(ps);
+        const omit = new Set<string>(ps.omit ?? []);
+        if (input) compare(input, shapes.input, `${where} input`, omit, rep);
+        if (output) compare(output, shapes.output, `${where} output`, omit, rep);
+        checked++;
+      } catch (e) { rep.errors.push(`${where}: ${(e as Error).message}`); }
+    }
   }
+  if (verbose) for (const w of rep.warnings) console.log(`warn  ${w}`);
+  else if (rep.warnings.length) console.log(`(${rep.warnings.length} warning(s); run with --verbose to list them)`);
+  for (const e of rep.errors) console.log(`ERROR ${e}`);
+  console.log(`\n${checked} model(s) checked against provider specs, ${skipped} skipped, ${rep.errors.length} error(s), ${rep.warnings.length} warning(s)`);
+  process.exit(rep.errors.length ? 1 : 0);
 }
-if (verbose) for (const w of rep.warnings) console.log(`warn  ${w}`);
-else if (rep.warnings.length) console.log(`(${rep.warnings.length} warning(s); run with --verbose to list them)`);
-for (const e of rep.errors) console.log(`ERROR ${e}`);
-console.log(`\n${checked} model(s) checked against provider specs, ${skipped} skipped, ${rep.errors.length} error(s), ${rep.warnings.length} warning(s)`);
-process.exit(rep.errors.length ? 1 : 0);
