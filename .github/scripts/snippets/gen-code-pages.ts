@@ -11,14 +11,72 @@
  * and cURL are all emitted from the same `example` object, so the three cannot
  * disagree about the request body.
  */
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
 
 const ROOT = join(import.meta.dir, "../../..");
 const SPEC_GLOB = "development/comfy-router/models/**/code.yaml";
+const SCHEMA_GLOB = "router-schemas/*/*.json";
+const MODELS_DIR = "development/comfy-router/models";
+const DOCS_JSON = "docs.json";
+const PREVIEW_NOTICE = "snippets/comfy-router/preview-notice.mdx";
 const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
+
+/**
+ * Router provider slug -> the directory its pages live under, where the two
+ * differ. A curated page is filed under the provider's display name; a derived
+ * page for the same provider has to land in that same directory or the sidebar
+ * shows one provider twice (`bfl` next to "Black Forest Labs").
+ */
+const PROVIDER_DIR: Record<string, string> = { bfl: "black-forest-labs", vertexai: "google" };
+
+/**
+ * Router provider slug -> sidebar group label. A slug that is not listed is
+ * title-cased, so a provider the catalog gains still renders a sane group
+ * without a code change; add a row when the cased form is wrong (`xai` -> `xAI`).
+ */
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic",
+  beeble: "Beeble",
+  bfl: "Black Forest Labs",
+  bria: "Bria",
+  byteplus: "BytePlus",
+  fal: "fal",
+  freepik: "Freepik",
+  "gemini-interactions": "Gemini Interactions",
+  heygen: "HeyGen",
+  ideogram: "Ideogram",
+  kling: "Kling",
+  krea: "Krea",
+  ltx: "LTX",
+  luma: "Luma",
+  luma_2: "Luma 2",
+  meshy: "Meshy",
+  minimax: "MiniMax",
+  moonvalley: "Moonvalley",
+  openai: "OpenAI",
+  qwen: "Qwen",
+  recraft: "Recraft",
+  runway: "Runway",
+  tencent: "Tencent",
+  veo: "Veo",
+  vertexai: "Google",
+  wan: "Wan",
+  wavespeed: "WaveSpeed",
+  xai: "xAI",
+};
+
+const providerOf = (modelId: string) => modelId.split("/")[0];
+const modelOf = (modelId: string) => modelId.slice(modelId.indexOf("/") + 1);
+const providerDir = (slug: string) => PROVIDER_DIR[slug] ?? slug;
+const providerLabel = (slug: string) =>
+  PROVIDER_LABEL[slug] ?? slug.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+/** `kling/kling-3.0-turbo` -> `kling/kling-3-0-turbo`: one URL-safe directory per model. */
+const pageDir = (modelId: string) =>
+  `${MODELS_DIR}/${providerDir(providerOf(modelId))}/${modelOf(modelId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
 
 type Variant = { title: string; model: string; example?: Record<string, unknown>; input?: any; output?: any; provider_spec?: { url: string } };
 type Spec = {
@@ -413,6 +471,22 @@ function variantsShareSections(spec: Spec): boolean {
   return spec.variants.every((v) => key(v) === key(spec.variants[0]));
 }
 
+/**
+ * The preview banner is rendered while `snippets/comfy-router/preview-notice.mdx`
+ * exists, and disappears from every page the moment that file is deleted. The
+ * notice is a rollout artifact ("Router is not GA, these routes answer 404"), so
+ * tying it to the snippet's existence means retiring it is one `rm` plus a
+ * regen, rather than an edit to this template and 100+ generated pages that must
+ * land in the same commit.
+ */
+const previewNotice = (() => {
+  const present = existsSync(join(ROOT, PREVIEW_NOTICE));
+  return {
+    imports: present ? `import RouterPreviewNotice from "/${PREVIEW_NOTICE}";\n` : "",
+    body: present ? "\n<RouterPreviewNotice />\n" : "",
+  };
+})();
+
 function renderPage(spec: Spec, dir: string): string {
   const both = spec.variants.length > 1;
   // The one-time setup a snippet cannot run without. Everything else that is
@@ -437,17 +511,179 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 {/* GENERATED FILE. Edit code.yaml in this directory and run \`pnpm code-pages:gen\`. */}
 
-import RouterPreviewNotice from "/snippets/comfy-router/preview-notice.mdx";
-import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
-
-<RouterPreviewNotice />
-
+${previewNotice.body}
 ${body}
 
 <RouterCodeFooter />
 `;
+}
+
+// ---------------------------------------------------------------------------
+// Derived pages
+//
+// Every model Router serves publishes its own OpenAPI document at
+// `GET /v2/models/<provider>/<model>/openapi.json`, and the spec-sync bot commits
+// each one under `router-schemas/`. A model with no hand-written `code.yaml` gets
+// its page from that document alone, so the sidebar tracks the catalog instead of
+// tracking who found time to write a spec.
+//
+// What such a page can honestly say is bounded by what Router has authored. The
+// OUTPUT schema is authored for every model, so the response is documented in
+// full. The INPUT schema mostly is not (`x-comfy-input-schema-authored: false`
+// means Router forwards the body to the provider unvalidated and cannot state its
+// fields), so the page says exactly that and points at the provider rather than
+// inventing a request shape. No example is fabricated: a derived page shows an
+// example only when the served document carries one.
+// ---------------------------------------------------------------------------
+
+/** The one-line body placeholder for a model whose request fields Router does not publish. */
+const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.";
+
+function derivedSnippets(model: string): string {
+  const python = `from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment. Each call sends a fresh
+# Idempotency-Key and waits up to 10 minutes for the finished result.
+with Comfy() as client:
+    result = client.models.run(
+        "${model}",
+        {
+            # ${BODY_HINT}
+        },
+    )
+
+print(result)`;
+  const typescript = `import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment. Each call sends a fresh
+// Idempotency-Key and waits up to 10 minutes for the finished result.
+const { data } = await comfy.models.run("${model}", {
+  // ${BODY_HINT}
+});
+
+console.log(data);`;
+  const curl = `# ${BODY_HINT}
+curl ${BASE_URL}${ROUTE}/${model} \\
+  -H "X-API-Key: $COMFY_API_KEY" \\
+  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Content-Type: application/json" \\
+  -d '{}'`;
+  return `<CodeGroup>
+\`\`\`python Python
+${python}
+\`\`\`
+
+\`\`\`typescript TypeScript
+${typescript}
+\`\`\`
+
+\`\`\`bash cURL
+${curl}
+\`\`\`
+</CodeGroup>`;
+}
+
+function renderDerivedPage(model: string, s: ModelSchema): string {
+  const provider = providerLabel(providerOf(model));
+  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const input = s.authored && s.input
+    ? `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${provider}'s own API documentation is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
+  const output = s.output
+    ? schemaFields(s.output, s.components, "response")
+    : `Router does not publish an output schema for this model.`;
+  const examples = s.inputExample !== undefined || s.outputExample !== undefined
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    : "";
+  return `---
+title: ${JSON.stringify(`Use ${model} with Comfy Router`)}
+description: ${JSON.stringify(`Call ${model} through Comfy Router: endpoint, request shape and the response Router returns.`)}
+sidebarTitle: ${JSON.stringify(modelOf(model))}
+---
+
+{/* GENERATED FILE. Generated from router-schemas/${model}.json by \`pnpm code-pages:gen\`. */}
+
+${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+
+API Reference for \`${model}\`, served by Comfy Router from ${provider}.
+${previewNotice.body}
+## Quick start
+
+${setup}
+
+**Model ID:** \`${model}\`
+
+**Endpoint:** \`POST ${BASE_URL}${ROUTE}/${model}\`
+
+${derivedSnippets(model)}
+
+## Schema
+
+### Input
+
+${input}
+
+### Output
+
+${output}${examples}
+
+<RouterCodeFooter />
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+//
+// `docs.json` carries the nav for four locales; only `en` lists these pages, and
+// the zh/ja/ko trees are maintained by the i18n sync. With one page per catalog
+// model a flat list is unreadable, so the Models group holds one sub-group per
+// provider.
+// ---------------------------------------------------------------------------
+
+type NavGroup = { group: string; pages: (string | NavGroup)[] };
+
+function modelsNav(pages: { model: string; page: string }[]): NavGroup {
+  const byProvider = new Map<string, string[]>();
+  for (const { model, page } of pages) {
+    const label = providerLabel(providerOf(model));
+    const list = byProvider.get(label) ?? [];
+    list.push(page);
+    byProvider.set(label, list);
+  }
+  return {
+    group: "Models",
+    pages: [...byProvider.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+  };
+}
+
+/** Replace the `Models` group under `Comfy Router` in the `en` nav. Returns the new file text. */
+function renderDocsJson(nav: NavGroup): string {
+  const raw = readFileSync(join(ROOT, DOCS_JSON), "utf8");
+  const doc = JSON.parse(raw);
+  const en = doc.navigation?.languages?.find((l: any) => l.language === "en");
+  if (!en) throw new Error(`${DOCS_JSON}: no \`en\` language in navigation.languages`);
+  const groups: NavGroup[] = [];
+  const walk = (node: any) => {
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (node && typeof node === "object") {
+      if (typeof node.group === "string") groups.push(node);
+      if (node.pages) walk(node.pages);
+      if (node.tabs) walk(node.tabs);
+      if (node.anchors) walk(node.anchors);
+    }
+  };
+  walk(en);
+  const router = groups.find((g) => g.group === "Comfy Router");
+  if (!router) throw new Error(`${DOCS_JSON}: no \`Comfy Router\` group in the en nav`);
+  const at = router.pages.findIndex((p) => typeof p === "object" && (p as NavGroup).group === "Models");
+  if (at === -1) throw new Error(`${DOCS_JSON}: no \`Models\` group under \`Comfy Router\``);
+  router.pages[at] = nav;
+  return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -482,12 +718,19 @@ function validate(page: string, rel: string): string[] {
 
 const check = process.argv.includes("--check");
 const doValidate = process.argv.includes("--validate");
-const glob = new Bun.Glob(SPEC_GLOB);
-let stale: string[] = [];
+const prune = process.argv.includes("--prune");
+
+type Page = { model: string; page: string; text: string; out: string };
+
+const pages: Page[] = [];
+const covered = new Set<string>();
 let problems: string[] = [];
-let count = 0;
-for (const specPath of glob.scanSync({ cwd: ROOT })) {
-  count++;
+
+// ---- curated pages: one hand-written code.yaml, one page, one or more models
+const specGlob = new Bun.Glob(SPEC_GLOB);
+let specCount = 0;
+for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
+  specCount++;
   let spec: Spec;
   try {
     spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
@@ -500,31 +743,105 @@ for (const specPath of glob.scanSync({ cwd: ROOT })) {
   }
   if (problems.some((m) => m.startsWith(specPath))) continue;
   const dir = dirname(specPath);
-  const out = join(ROOT, dir, "code.mdx");
-  let page: string;
+  let text: string;
   try {
     // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
     // remaining specs half written; report it against this spec and carry on, as YAML errors do.
-    page = renderPage(spec, dir);
+    text = renderPage(spec, dir);
   } catch (e) {
     problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
     continue;
   }
-  if (doValidate) problems.push(...validate(page, relative(ROOT, out)));
-  if (check) {
-    if (!existsSync(out) || readFileSync(out, "utf8") !== page) stale.push(relative(ROOT, out));
-  } else {
-    writeFileSync(out, page);
-    console.log(`wrote ${relative(ROOT, out)}`);
-  }
+  for (const v of spec.variants) covered.add(v.model);
+  pages.push({ model: spec.variants[0].model, page: `${dir}/code`, text, out: join(ROOT, dir, "code.mdx") });
 }
-if (count === 0) {
+if (specCount === 0) {
   console.error(`no specs matched ${SPEC_GLOB}`);
   process.exit(1);
+}
+
+// ---- derived pages: one per synced router schema with no curated spec
+const schemaGlob = new Bun.Glob(SCHEMA_GLOB);
+const claimed = new Map<string, string>(pages.map((p) => [p.page, "a code.yaml spec"]));
+for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
+  const model = rel.slice("router-schemas/".length).replace(/\.json$/, "");
+  if (covered.has(model)) continue;
+  let schema: ModelSchema | null;
+  try {
+    schema = loadModelSchema(model);
+  } catch (e) {
+    problems.push(`${rel}: ${(e as Error).message}`);
+    continue;
+  }
+  if (!schema) {
+    problems.push(`${rel}: model id does not match its path (expected router-schemas/<provider>/<model>.json)`);
+    continue;
+  }
+  const dir = pageDir(model);
+  const owner = claimed.get(`${dir}/code`);
+  if (owner) {
+    // Two model ids that differ only in punctuation would silently overwrite one another.
+    problems.push(`${rel}: page directory ${dir} is already claimed by ${owner}`);
+    continue;
+  }
+  claimed.set(`${dir}/code`, rel);
+  pages.push({ model, page: `${dir}/code`, text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
+}
+
+// ---- write or check
+const stale: string[] = [];
+const missing: string[] = [];
+for (const p of pages) {
+  if (doValidate) problems.push(...validate(p.text, relative(ROOT, p.out)));
+  if (check) {
+    if (!existsSync(p.out)) missing.push(relative(ROOT, p.out));
+    else if (readFileSync(p.out, "utf8") !== p.text) stale.push(relative(ROOT, p.out));
+  } else {
+    mkdirSync(dirname(p.out), { recursive: true });
+    writeFileSync(p.out, p.text);
+  }
+}
+
+// A model that leaves the catalog leaves its schema and, without this, its page:
+// a dead page still in the sidebar, documenting a model that now answers 404.
+const wanted = new Set(pages.map((p) => p.out));
+const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
+  .filter((rel) => !wanted.has(join(ROOT, rel)))
+  .sort();
+for (const rel of orphans) {
+  if (prune && !check) {
+    rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
+    console.log(`pruned ${rel}`);
+  } else {
+    problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
+  }
+}
+
+// ---- sidebar
+let docsJson: string;
+try {
+  docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))));
+} catch (e) {
+  problems.push((e as Error).message);
+  docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
+}
+if (check) {
+  if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) stale.push(DOCS_JSON);
+} else if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) {
+  writeFileSync(join(ROOT, DOCS_JSON), docsJson);
+  console.log(`wrote ${DOCS_JSON}`);
+}
+
+if (missing.length) {
+  console.error(
+    `missing generated pages (run \`pnpm code-pages:gen\`) \u2014 a model Router serves has no page:\n  ${missing.join("\n  ")}`
+  );
 }
 if (stale.length) {
   console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
 }
 if (problems.length) console.error(problems.join("\n"));
-if (stale.length || problems.length) process.exit(1);
-if (check) console.log(`${count} code page(s) fresh`);
+if (missing.length || stale.length || problems.length) process.exit(1);
+const derivedCount = pages.length - specCount;
+if (check) console.log(`${pages.length} code page(s) fresh (${specCount} curated, ${derivedCount} derived)`);
+else console.log(`wrote ${pages.length} code page(s) (${specCount} curated, ${derivedCount} derived)`);
