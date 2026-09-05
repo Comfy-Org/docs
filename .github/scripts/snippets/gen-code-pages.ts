@@ -83,6 +83,85 @@ const PROVIDER_LABEL: Record<string, string> = {
  */
 const PROVIDER_DOC_BASE: Record<string, string> = { openai: "https://platform.openai.com" };
 
+/**
+ * Display titles for derived pages.
+ *
+ * Neither `GET /v2/models` nor the per-model schema publishes a human name — the
+ * catalog record is `{id, model, provider, billing}` and `info.title` is the id —
+ * so a derived page's sidebar entry would otherwise read `claude-haiku-4-5-20251001`.
+ * `modelTitle` derives one from the id with rules that hold across this catalog,
+ * and anything the rules get wrong is spelled out in {@link MODEL_TITLE}. Fixing a
+ * name is one row there; the id itself is never guessed at, and stays visible on
+ * the page (frontmatter description, the intro line, and **Model ID**) so a search
+ * for the exact slug still lands.
+ *
+ * If Router ever publishes a display name, read it instead and delete the rules.
+ */
+const MODEL_TITLE: Record<string, string> = {
+  // OpenAI's reasoning models are lower-case by their own convention.
+  "openai/o1": "o1",
+  "openai/o1-pro": "o1-pro",
+  "openai/o3": "o3",
+  "openai/o4-mini": "o4-mini",
+  "beeble/switchx": "SwitchX",
+  "wan/wan2.7-videoedit": "Wan 2.7 Video Edit",
+};
+
+/** Tokens whose casing the generic title-case rule gets wrong. */
+const TOKEN_CASE: Record<string, string> = {
+  "3d": "3D",
+  ai: "AI",
+  api: "API",
+  asr: "ASR",
+  flux: "FLUX",
+  gpt: "GPT",
+  hd: "HD",
+  i2i: "I2I",
+  i2v: "I2V",
+  ir: "IR",
+  ltx: "LTX",
+  minimax: "MiniMax",
+  r2v: "R2V",
+  svg: "SVG",
+  t2i: "T2I",
+  t2v: "T2V",
+  tts: "TTS",
+  v2v: "V2V",
+  vto: "VTO",
+  xl: "XL",
+};
+
+/**
+ * `kling/kling-v2-5-turbo` -> `Kling V2.5 Turbo`.
+ *
+ * Three rules, each earning its place on this catalog: a one-or-two digit run
+ * joined to the digit before it by `-`/`_` is a version, so `v2-5` is `V2.5` and
+ * `recraftv4_1` is `V4.1` (a longer run is a date — `claude-…-4-5-20251001` keeps
+ * `20251001` as its own word); a token ending `v<digit>` splits there, so
+ * `recraftv3` is `Recraft V3`; and a token of three or more letters followed by
+ * digits splits too, so `wan2.5` is `Wan 2.5` while `o1` is left alone.
+ */
+function modelTitle(modelId: string): string {
+  const override = MODEL_TITLE[modelId];
+  if (override) return override;
+  let name = modelOf(modelId);
+  for (let prev = ""; prev !== name; ) {
+    prev = name;
+    name = name.replace(/(\d)[-_](\d{1,2})(?!\d)/, "$1.$2");
+  }
+  return name
+    .split(/[-_]/)
+    .map((token) =>
+      token
+        .replace(/^([a-z]{2,})v(\d)/, "$1 V$2")
+        .replace(/^([a-z]{3,})(\d)/, "$1 $2")
+        .split(" ")
+        .map((word) => TOKEN_CASE[word.toLowerCase()] ?? (/^[a-z]/.test(word) ? word[0].toUpperCase() + word.slice(1) : word))
+        .join(" ")
+    )
+    .join(" ");
+}
+
 const providerOf = (modelId: string) => modelId.split("/")[0];
 const modelOf = (modelId: string) => modelId.slice(modelId.indexOf("/") + 1);
 const providerDir = (slug: string) => PROVIDER_DIR[slug] ?? slug;
@@ -621,10 +700,11 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
     ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
+  const title = modelTitle(model);
   return `---
-title: ${JSON.stringify(`Use ${model} with Comfy Router`)}
+title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
 description: ${JSON.stringify(`Call ${model} through Comfy Router: endpoint, request shape and the response Router returns.`)}
-sidebarTitle: ${JSON.stringify(modelOf(model))}
+sidebarTitle: ${JSON.stringify(title)}
 ---
 
 {/* GENERATED FILE. Generated from router-schemas/${model}.json by \`pnpm code-pages:gen\`. */}
