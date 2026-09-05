@@ -11,17 +11,15 @@ The Comfy SDKs (`comfy-sdk` for Python, `@comfyorg/sdk` for TypeScript) handle a
 ## Request headers
 
 <ParamField header="X-API-Key" type="string">
-  A Comfy API key, `comfyui-...`, created at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). Keys are per workspace and carry that workspace's model entitlements and credit balance. The same key is also accepted as `Authorization: Bearer comfyui-...`; the `comfyui-` prefix, not the header, is what marks it as an API key. If both headers are sent, `X-API-Key` wins.
+  A Comfy API key, `comfyui-...`, created at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys). It uses your workspace's model access and credit balance. You can also send it as `Authorization: Bearer comfyui-...`; if both headers are present, `X-API-Key` wins.
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  `Bearer <token>`. A `comfyui-` API key is accepted here exactly as in `X-API-Key`. A value without that prefix is treated as a Comfy Cloud JWT, which is what the generated reference means by "bearer token" and what the OAuth-based SDK clients send.
+  `Bearer <token>`. A `comfyui-` value is an API key. Any other value is treated as a Comfy Cloud JWT.
 </ParamField>
 
 <ParamField header="Idempotency-Key" type="string">
-  A key for one logical call, 1 to 255 characters. Generate and store a UUID before the call, and reuse it when retrying the same request. Router retains replay or collection state for 24 hours; do not assume a retry extends that window. A completed replayable response can be returned again without another charge. If an accepted submit-and-poll generation outlives the connection, a retained provider handle lets a same-key retry collect it. This does not make every lost call recoverable.
-
-  A different body, path, query, or method under the same key returns `409`. A new key starts a new logical call and may incur another charge. The SDKs generate keys and let you supply your own (`idempotency_key=` in Python, `idempotencyKey` in TypeScript). See [retry outcomes](/development/comfy-router/models#retry-outcomes) for in-flight, expired, and non-replayable cases.
+  Identifies one logical generation. Generate and store a UUID before the call, then reuse it for retries of the unchanged request. The key can replay a result or collect accepted work for up to 24 hours. The SDKs generate keys and let you supply your own (`idempotency_key=` in Python, `idempotencyKey` in TypeScript). See [retry outcomes](/development/comfy-router/models#retry-outcomes) for conflicts, expiry, and non-replayable results.
 </ParamField>
 
 <ParamField header="Content-Type" type="string">
@@ -35,23 +33,19 @@ The Comfy SDKs (`comfy-sdk` for Python, `@comfyorg/sdk` for TypeScript) handle a
 ## Response headers
 
 <ResponseField name="X-Comfy-Request-Id" type="string" required>
-  On every response, success and error alike. The ID to quote in a support request; the same value is written into the call's usage record, which is what lets a question about a charge be joined to the charge. The TypeScript SDK returns it as `requestId`; the Python SDK exposes `request_id` on every error.
+  Identifies this HTTP request. Include it when contacting support. TypeScript exposes it as `requestId`; Python exposes `request_id` on errors.
 </ResponseField>
 
 <ResponseField name="X-Comfy-Error-Type" type="string">
-  The machine-readable error category, repeated in `error_type` for ordinary error bodies. On a `422`, read this header: the validation body has `detail[]` and no `error_type` field. Use the category with the HTTP status to decide what to do. Treat an unknown category as `internal_error` for control flow while keeping its original value for diagnostics.
-
-  The [error reference](/development/comfy-router/reference#error-buckets) lists the categories. `client_disconnected` is recorded in server logs rather than delivered to a client whose connection has closed. A proxy-generated error may not carry Router headers, so error handling must also work when they are absent.
+  The machine-readable error category. On a `422`, use this header because the validation body has `detail[]` and no `error_type`. Combine it with the HTTP status to decide what to do. Treat an unknown value as `internal_error` for control flow and preserve it for diagnostics.
 </ResponseField>
 
 <ResponseField name="Idempotent-Replayed" type="boolean">
-  Present, and `true`, when the response was served from an `Idempotency-Key`'s record rather than by running the model again. It carries the original call's status, body and content type and is not billed a second time. Absent on a fresh run rather than sent as `false`, so branch on its presence.
+  Present and `true` when Router serves a stored result instead of running the model again. It is absent on a fresh run.
 </ResponseField>
 
 <ResponseField name="Retry-After" type="integer">
-  Seconds to wait before retrying. On `409` / `concurrency_limit_exceeded`, the original request under that key is still running. On `504` / `deadline_exceeded`, its presence means Router retained a provider handle that a same-key retry can collect. A retry can still report that the generation is running.
-
-  On `429` / `rate_limited`, this header tells you when to retry after a rate-limit refusal; it does not indicate a retained generation. Keep the same key when retrying the same logical call. A `409` / `invalid_input` requires inspecting the conflict, not waiting for this header.
+  Seconds to wait before retrying. On `409` / `concurrency_limit_exceeded` or `504` / `deadline_exceeded`, retry the same request and key after the wait. On `429` / `rate_limited`, it tells you when the rate limit resets.
 </ResponseField>
 
 <ResponseField name="X-Committed-Spend-Limit" type="integer">
@@ -63,15 +57,15 @@ The Comfy SDKs (`comfy-sdk` for Python, `@comfyorg/sdk` for TypeScript) handle a
 </ResponseField>
 
 <ResponseField name="X-Committed-Spend-Remaining" type="integer">
-  USD cents of headroom left under the ceiling, floored at zero. It can be positive on a refusal: the refused call cost more than what was left, and a cheaper call would still be admitted.
+  USD cents left below the committed-spend ceiling. It can be positive on a refusal when the requested call costs more than the remaining amount.
 </ResponseField>
 
 <ResponseField name="ETag" type="string">
-  On `GET /v2/models/{provider}/{model}/openapi.json`. A strong validator over the document's bytes; store it and send it back as `If-None-Match`.
+  On `GET /v2/models/{provider}/{model}/openapi.json`. Store it and send it back as `If-None-Match` to revalidate a cached schema.
 </ResponseField>
 
 <ResponseField name="Cache-Control" type="string">
-  On the schema route: `private, must-revalidate`. The document is not caller-specific, but the route is authenticated, so a shared cache must not hold it, and a stale copy is revalidated against the `ETag` rather than served on.
+  On the schema route: `private, must-revalidate`. Keep the response in a private cache and revalidate stale copies with the `ETag`.
 </ResponseField>
 
 ## Status codes that carry two meanings

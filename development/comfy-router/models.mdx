@@ -47,7 +47,7 @@ Use `id` in the invocation path. The `billing` object contains billing facts, no
 - An invalid cursor returns `400` / `invalid_input`. It does not silently restart the list.
 - A cursor can remain valid across catalog updates, but traversal is not a snapshot: a model added before your current position may not appear in that walk.
 
-`503` / `service_unavailable` is a temporary failure, not an empty catalog. Unreleased models are not listed. Cache the catalog when appropriate for your application instead of fetching it before every invocation. The SDK run methods do not automatically list the catalog or fetch model details first.
+`503` / `service_unavailable` is temporary. Retry with backoff; do not treat it as an empty catalog. Cache catalog reads. SDK run methods call the selected model directly; they do not list models first.
 
 ## Read one model
 
@@ -72,7 +72,7 @@ curl --dump-header schema-headers.txt \
 
 Within the model operation, `requestBody` describes the input, and the `200` response describes the output when an output schema has been authored. Input validation and output documentation are different: Router validates against its input schema but does not validate the returned provider result against its output schema.
 
-Inspect the output media type as well as its fields. An unauthored output can use `*/*`, and some models return binary data rather than JSON. Provider-specific routing can also adapt model-selection fields and output-format options; changing only the host of a provider request is not a complete migration.
+Inspect the output media type as well as its fields. An unauthored output can use `*/*`, and some models return binary data rather than JSON.
 
 ### Cache a schema
 
@@ -159,7 +159,7 @@ A Router `422` means validation failed before the provider call and is not bille
 {"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
 ```
 
-This is an illustrative error shape, not a second request to run. Models with a permissive input schema may forward a missing field to the provider instead of returning a Router `422`. See [validation and fallback schemas](/development/comfy-router/models#validation-and-fallback-schemas).
+This is an example shape. Models with a permissive input schema may forward a missing field to the provider instead of returning a Router `422`.
 
 | Field | Meaning |
 | --- | --- |
@@ -190,11 +190,9 @@ Router retains keyed response or collection state for 24 hours; a retry does not
 | `409` | `invalid_input` | The request differs from the key's original request, or its record cannot be replayed. | Inspect the conflict. Restore the original request if it changed. Start a new key only when you intend a new, potentially billable call. |
 | `504` without a collection hint, another `5xx`, or no response | Varies | The status alone does not identify whether work was accepted, retained, or released. | Preserve the same key and request. Use a bounded retry policy; recovery is not guaranteed. |
 
-Conflicts compare the method, model path, query, and body. A consumed, non-replayable record can result from an oversized response, a response-write failure, a handler failure after answering, or an asset response that cannot be safely replayed. A key may also be made non-replayable after repeated unresolved provider polls. Waiting does not recover a consumed result. A new key can generate and charge again; it does not retrieve the old output.
+Conflicts compare the method, model path, query, and body. A key can become non-replayable after an oversized response, failed response write, or an asset that cannot be safely replayed. Waiting does not recover a consumed result. A new key starts a new call; it does not retrieve the old output.
 
-For direct-return models, a response containing provider-hosted URLs can have a short replay grace period before it becomes non-replayable. Do not rely on that grace period for durable storage. Submit-and-poll results with unknown URL age and responses above the replay size cap do not get the same grace period. A refusal before any provider dispatch releases the key, so correcting the cause can let that key run for the first time.
-
-Some transient outcomes release the reservation so a same-key retry dispatches again. Accepted submit-and-poll work is different: Router can retain the provider handle after a deadline, disconnect, or unresolved poll. Do not infer that all `5xx` responses release the key or that a missing response means nothing was billed.
+A refusal before provider dispatch releases the key. A dispatched call can retain a provider handle or become non-replayable. Do not infer key state or billing from the status code alone.
 
 Do not mint a brand-new key just because a call timed out or the connection dropped. If Router already accepted the generation, a new key can create a second logical run and therefore a second billable outcome. Reuse the same key until you know the original call is unrecoverable.
 
@@ -206,7 +204,7 @@ One Router call may hold the connection for 10 minutes by default. Set your clie
 
 For submit-and-poll providers, a retained handle lets a same-key request continue collecting the original generation. Dispatched calls cut off without a recoverable handle can consume the key without a replayable result; a same-key retry then returns `409`. Provider-attributed transient failures without a captured success can still release the key for another attempt. The absence of a handle alone does not tell you which outcome applies.
 
-The SDKs retry some failures within a bounded budget. Once they return an error, keep the request and key rather than starting over with a generated key. For raw HTTP, this Python example makes at most three attempts and retries only the two explicit collection hints:
+The SDKs retry some failures within a bounded budget. Once they return an error, keep the request and key rather than generating a new one. For raw HTTP, this example retries only the two explicit collection hints:
 
 ```python
 import os

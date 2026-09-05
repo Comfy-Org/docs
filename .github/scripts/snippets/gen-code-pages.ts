@@ -644,7 +644,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
+${spec.intro ?? `Use ${spec.name} with Comfy Router. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
 ${body}
 
