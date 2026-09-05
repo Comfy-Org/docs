@@ -68,6 +68,21 @@ const PROVIDER_LABEL: Record<string, string> = {
   xai: "xAI",
 };
 
+/**
+ * Provider slug -> the site that provider's schema prose links into.
+ *
+ * Field descriptions are copied verbatim out of the provider's own specification,
+ * where a link like `[structured outputs](/docs/guides/structured-outputs)` resolves
+ * on THEIR domain. Rendered here it resolves to docs.comfy.org and 404s — 64 of them
+ * across the OpenAI pages on the first run of this generator. A provider with no entry
+ * has such links flattened to plain text, so a new provider cannot reintroduce the rot.
+ *
+ * OpenAI is the only provider whose synced schemas use the root-relative form today,
+ * and those same documents already spell other links `https://platform.openai.com/...`,
+ * which is where this points.
+ */
+const PROVIDER_DOC_BASE: Record<string, string> = { openai: "https://platform.openai.com" };
+
 const providerOf = (modelId: string) => modelId.split("/")[0];
 const modelOf = (modelId: string) => modelId.slice(modelId.indexOf("/") + 1);
 const providerDir = (slug: string) => PROVIDER_DIR[slug] ?? slug;
@@ -321,12 +336,18 @@ function constraints(s: any): string {
 
 const attr = (v: unknown) => String(v ?? "").replace(/"/g, "&quot;").replace(/\s+/g, " ").trim();
 
+/** Rewrite a provider's root-relative markdown links onto its own site, or flatten them. */
+const resolveProviderLinks = (text: string, docBase?: string) =>
+  text.replace(/\[([^\]]*)\]\(\/([^)\s]*)\)/g, (_, label: string, path: string) =>
+    docBase ? `[${label}](${docBase}/${path})` : label
+  );
+
 /** Escape the characters MDX reads as syntax in prose, leaving `code spans` alone. */
 const mdxText = (v: unknown) =>
   String(v).split(/(`[^`]*`)/).map((part, i) => (i % 2 ? part : part.replace(/[{<]/g, "\\$&"))).join("");
 
 /** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
-function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response"): string {
+function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response", docBase?: string): string {
   const blocks: string[] = [];
   const walk = (s: any, prefix: string, depth: number) => {
     s = deref(s, components);
@@ -347,7 +368,7 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
       // Gemini request body renders as empty ParamFields.
       const itemsDesc = prop.type === "array" && prop.items ? deref(prop.items, components).description : undefined;
       const description = prop.description ?? itemsDesc;
-      if (description) body.push(mdxText(String(description).trim()));
+      if (description) body.push(mdxText(resolveProviderLinks(String(description).trim(), docBase)));
       if (prop.enum) body.push(`Possible values: ${prop.enum.map((v: unknown) => `\`${String(v)}\``).join(", ")}`);
       // A union (`integer | "auto"`) carries its bounds on the numeric branch, not on the field.
       const alts: any[] = prop.anyOf ?? prop.oneOf ?? [];
@@ -392,19 +413,20 @@ function sectionBlocks(v: Variant, spec: Spec) {
   // half: the page then reads its fields AND its examples from the spec, as the README describes.
   const published = s?.authored ? s : null;
   let input: string;
+  const docBase = PROVIDER_DOC_BASE[providerOf(v.model)];
   if (published?.input) {
-    input = `${schemaFields(published.input, published.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
+    input = `${schemaFields(published.input, published.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${v.model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`;
   } else if (specInput) {
-    input = `${notPublished}\n\n${schemaFields(specInput, {}, "param")}`;
+    input = `${notPublished}\n\n${schemaFields(specInput, {}, "param", docBase)}`;
   } else {
     input = `${notPublished}\n\n${fields}`;
   }
   const inputExample = JSON.stringify(published?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
   let output: string;
   if (published?.output) {
-    output = schemaFields(published.output, published.components, "response");
+    output = schemaFields(published.output, published.components, "response", docBase);
   } else if (specOutput) {
-    output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response")}`;
+    output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response", docBase)}`;
   } else {
     output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
   }
@@ -589,11 +611,12 @@ ${curl}
 function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const input = s.authored && s.input
-    ? `${schemaFields(s.input, s.components, "param")}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
+    ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
     : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${provider}'s own API documentation is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
   const output = s.output
-    ? schemaFields(s.output, s.components, "response")
+    ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
     ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
