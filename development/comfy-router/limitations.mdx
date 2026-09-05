@@ -1,0 +1,84 @@
+---
+title: "Comfy Router capabilities and limits"
+sidebarTitle: "Capabilities and limits"
+description: "Choose Router or a partner proxy, plan for long-running calls, and understand recovery, rate limits, and asset storage."
+---
+
+Router runs a partner model through one synchronous HTTP call. Use it when your application can wait for a finished result and handle the model's own input and output fields.
+
+## What Router supports
+
+| Requirement | Router support | Alternative or next step |
+| --- | --- | --- |
+| Generate with one request | `POST /v2/models/{provider}/{model}` returns the finished result. | Start with the [Quickstart](/development/comfy-router/quickstart). |
+| Submit a job and collect it later | No general job/status API or completion webhook. | Run Router from a worker, or use a partner proxy with submit-and-poll operations. |
+| Show progress or stream output | No live progress, streaming, or preview frames during the call. | Show an indeterminate state, or use a supported proxy operation. |
+| Recover after a lost connection | Same-key collection is available when Router retained a handle to an accepted generation. | Preserve the key and follow [retry guidance](/development/comfy-router/models#retry-outcomes). |
+| Reconcile Comfy charges | No universal Comfy cost or credit-balance field on the response. | Use [workspace billing](https://platform.comfy.org). |
+| Store results permanently | Asset URLs can expire, including rehosted and replayed URLs. | Download the assets; see [result assets](/development/comfy-router/reference#result-assets). |
+
+## No queued submission
+
+Router holds the connection while the model runs. For asynchronous providers, it submits the job and polls internally. It does not expose a Router job ID, status endpoint, callback, or webhook.
+
+If your request cannot stay open long enough, call Router from a worker and track the job in your application. Use a [partner proxy](#router-does-not-cover-every-partner-operation) when you need the provider's submit-and-poll controls.
+
+## Calls are cut off at a server deadline
+
+Router's default deadline is **10 minutes**, configurable by the deployment. Set your client timeout above it so Router can return its error and request ID first.
+
+`504` / `deadline_exceeded` means Router stopped waiting; `504` / `provider_timeout` means the provider timed out. A timeout or lost connection does not prove that a generation was unbilled, and it does not cancel accepted provider work. Read [timeouts and collection](/development/comfy-router/models#timeouts-and-collection) before retrying.
+
+<span id="no-way-to-resume-a-call-you-lost" />
+
+## Recovery depends on the provider
+
+Router can retain a provider handle for an accepted submit-and-poll generation. Reuse the same `Idempotency-Key` to collect it later; completed replayable responses can also come from the key record.
+
+Not every disconnected call is recoverable. Preserve the request and key before sending, then use the [retry outcome table](/development/comfy-router/models#retry-outcomes). A new key creates a new call and may incur another charge.
+
+## Requests are rate limited per caller
+
+| Response | Cause | Action |
+| --- | --- | --- |
+| `429` / `concurrency_limit_exceeded` | Too many concurrent calls, or insufficient headroom under the committed-spend ceiling. | Reduce concurrent work. The spend headers distinguish the spend ceiling from the call-count limit. |
+| `429` / `rate_limited` | The request allowance is exhausted. | Wait for `Retry-After` before retrying. |
+
+The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply.
+
+Cache catalog and schema reads. Revalidate schemas with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
+
+## No progress while a call runs
+
+Router returns a final response, with no streamed tokens, server-sent events, percentage updates, or intermediate preview frames. A provider's internal polling state is not forwarded during the request.
+
+Show an indeterminate progress indicator. If you need progress or streaming, use a partner-proxy operation that exposes it.
+
+<span id="no-cost-or-credit-figures-on-a-response" />
+
+## Comfy charges and usage
+
+The response can contain provider usage or cost fields. They do not represent a universal Comfy charge. `X-Comfy-Credits-Used` is optional and is not replayed. Use the Comfy platform for balances, usage, and invoices.
+
+The catalog provides billing facts, including `billing.charges_on_policy_rejection`, rather than prices. Handle `yes`, `no`, and `unknown` explicitly. See [billing](/development/comfy-router/models#model-billing-facts).
+
+## Router does not cover every partner operation
+
+Router runs models. File uploads, account reads, asset management, streaming, and provider job controls can require partner-proxy routes under `/proxy/…`. Check the [Comfy API specification](/openapi-v2.yaml); support varies by provider.
+
+## Model outputs and stored assets
+
+Input and output fields vary by model. Moving from a provider SDK or proxy can change both the route and how you read the result.
+
+Some assets are rehosted on Comfy storage; others are provider URLs or inline bytes. See [Result assets](/development/comfy-router/reference#result-assets) for lifetimes and replay behavior.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/development/comfy-router/quickstart">
+    Generate your first image through Comfy Router.
+  </Card>
+  <Card title="Using the Router API" icon="code" href="/development/comfy-router/models">
+    Choose a model, inspect its schema, and handle results and retries.
+  </Card>
+</CardGroup>

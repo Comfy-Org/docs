@@ -1,0 +1,234 @@
+---
+title: "Comfy API：サーバーレスデプロイ"
+description: "バージョン管理された ComfyUI 環境を構築し、マネージドエンドポイントとしてデプロイして、API 経由でワークフローを実行します。"
+icon: "cloud-arrow-up"
+translationSourceHash: 1dec8b0b
+translationFrom: development/serverless/overview.mdx
+translationBlockHashes:
+  "_intro": 14817cbe
+  "Quick start": deded1ad
+  "The Build file": 8fd3f83e
+  "1. Initialize a Build": 3e2f5628
+  "2. Update and release": 05b93b4e
+  "Regions and GPU availability": 3cf9a951
+  "3. Deploy a release": 2052f8d5
+  "4. Run a workflow": 30eca3a8
+  "Operate a deployment": de5e72b5
+  "Inspect and clean up": 0033fd9b
+  "Next steps": 8765dc11
+---
+
+<Warning>
+  Comfy API のサーバーレスデプロイサービスはベータ版です。[platform.comfy.org](https://platform.comfy.org) からサインアップしてアクセスをリクエストしてください。
+</Warning>
+
+Comfy API では、ComfyUI ワークフローを、オンデマンドの GPU キャパシティを備えたマネージド型のオートスケーリングエンドポイントとしてデプロイできます。**Build** は、ローカルインストールから取り込んだモデル、カスタムノード、設定で構成される、バージョン管理された ComfyUI 環境の定義です。Build and Deploy CLI は、Build 定義をプロジェクト内に保持し、その定義からリリースを作成し、トラフィックを受け付ける準備ができたらリリースをデプロイします。
+
+<CardGroup cols={2}>
+  <Card title="1. ビルド（Build）" icon="box">
+    ローカルの ComfyUI インストールからビルド仕様を作成します。
+  </Card>
+  <Card title="2. リリース（Release）" icon="tag">
+    Build からイミュータブルな Linux/NVIDIA リリースを切り出します。
+  </Card>
+  <Card title="3. デプロイ（Deploy）" icon="cloud-arrow-up">
+    リリースに URL とマネージド GPU キャパシティを割り当てます。
+  </Card>
+  <Card title="4. 実行（Run）" icon="code">
+    アクティブなデプロイメントに API 形式のワークフローを送信します。
+  </Card>
+</CardGroup>
+
+## クイックスタート
+
+ローカルインストールと API 形式のワークフローが準備できたら、次のコマンドを使用します。
+
+compute の出力を使って、有効なリージョンと GPU を選択してください。必要に応じて `<region>` と `l4` を置き換えます。`deploy up` が表示するデプロイメント ID を最後のコマンドにコピーしてください。
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+
+comfy build push --release --target linux/nvidia
+comfy deploy refs compute # 利用可能なリージョンと GPU クラスを取得
+comfy deploy up --gpu l4 --region <region> --min 1 --max 4 --watch # デプロイメント ID を表示
+comfy deploy run --workflow workflow_api.json --deployment <deployment-id> --output-dir ./results
+```
+
+<Steps>
+  <Step title="初期化">
+    ```bash
+    comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+    ```
+  </Step>
+  <Step title="リリースを作成">
+    ```bash
+    comfy build push --release --target linux/nvidia
+    ```
+    このコマンドは Build を同期し、指定したターゲット向けのリリースを作成します。
+  </Step>
+  <Step title="デプロイメントを開始">
+    選択した GPU がどこで利用可能か分からない場合は、まず確認します。
+
+    ```bash
+    comfy deploy refs compute --region <region>
+    ```
+
+    次に、デプロイメントを作成または調整（reconcile）します。
+
+    ```bash
+    comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+    ```
+    `deploy up` は新しいデプロイメント ID を表示します。後から取得する必要がある場合は、この Build の準備完了状態のデプロイメントを一覧表示します。
+
+    ```bash
+    comfy deploy ls --status ready
+    ```
+
+    返された `dep_...` の値を `--deployment` に指定してください。
+  </Step>
+  <Step title="ワークフローを実行">
+    ```bash
+    comfy deploy run \
+      --workflow workflow_api.json \
+      --deployment <deployment-id> \
+      --output-dir ./results
+    ```
+    CLI は API 形式のワークフローを送信し、その出力を `./results` にダウンロードします。
+  </Step>
+</Steps>
+
+## ビルドファイル
+
+`comfy-build.yaml` は Build のローカルにおける信頼できる情報源（source of truth）です。ビルド定義と最後に確認したリモートの状態を保存しているため、CLI は適切な Build を自動的に選択し、ローカルの変更がより新しいリモート定義を上書きしそうな場合に警告できます。
+
+このファイルはプロジェクトと一緒に管理してください。Build を記述するものであり、モデルのデータ自体は含みません。
+
+## 1. Build を初期化する
+
+ローカルの ComfyUI インストールから始めます。このコマンドはモデルとカスタムノードをスキャンし、`comfy-build.yaml` を書き出します。
+
+```bash
+comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
+```
+
+プッシュする前に、ローカル仕様がインストールおよびリモートの Build とどう異なるかを確認します。
+
+```bash
+comfy build status
+```
+
+## 2. 更新とリリース
+
+ローカルの ComfyUI インストールを変更した後、ローカルのビルド定義を更新します。
+
+```bash
+comfy build update --yes
+```
+
+最短の手順として、1 つのコマンドで定義をプッシュし、ターゲット向けにリリースできます。
+
+```bash
+comfy build push --release --target linux/nvidia
+```
+
+既存の Build から別のリリースを作成する必要がある場合は、サポートされているターゲットを確認し、明示的にリリースを切り出します。
+
+```bash
+comfy build refs build-targets
+comfy build release create --target linux/nvidia --watch
+```
+
+特定のリリースのビルドログを追跡するには次を使います。
+
+```bash
+comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## リージョンと GPU の可用性
+
+リージョンのキャパシティは変動するため、静的なリストをスクリプトにコピーしないでください。デプロイ先を選ぶ際は、プラットフォームカタログを照会します。
+
+```bash
+comfy deploy refs compute
+```
+
+結果を絞り込むには `--region <region>` を使います。
+
+```bash
+comfy deploy refs compute --region <region>
+```
+
+返された `region` と `gpu` のペアを `comfy deploy up` にコピーしてください。
+
+```bash
+comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
+```
+
+デプロイ時に各リージョンでどの GPU クラスが利用可能かについては、このカタログが信頼できる情報源です。
+
+## 3. リリースをデプロイする
+
+リージョンで利用可能なコンピュートを確認し、選択したリリース向けのデプロイメントを作成または調整します。
+
+```bash
+comfy deploy refs compute --region US-MO-2
+
+comfy deploy up \
+  --gpu l4 \
+  --region US-MO-2 \
+  --min 1 \
+  --max 4 \
+  --watch
+```
+
+`--min` と `--max` はワーカー数の上下限を設定します。デプロイメントの健全性、リリースの新しさ、サービングの状況を追跡するには `comfy deploy status --watch` を使います。
+
+## 4. ワークフローを実行する
+
+準備完了状態のデプロイメントに [API 形式のワークフロー](/ja/development/api-development/workflow-api-format)を送信します。
+
+```bash
+comfy deploy run \
+  --workflow workflow_api.json \
+  --deployment dep_123456 \
+  --output-dir ./results
+```
+
+`COMFY_BASE_URL` をデプロイメント URL に設定すれば、[Comfy SDK](/ja/development/api-development/sdks) からもこのエンドポイントを呼び出せます。SDK リクエストには API キーが必要です。[ベース URL の選択](/ja/development/api-development/sdks#ベースurlの選択)を参照してください。
+
+## デプロイメントの運用
+
+```bash
+# ワーカー数の上下限を変更
+comfy deploy scale --deployment dep_123456 --min 2 --max 5
+
+# デプロイメントのレコードを保持したまま一時停止・再開
+comfy deploy stop --deployment dep_123456
+comfy deploy start --deployment dep_123456
+```
+
+## 確認とクリーンアップ
+
+```bash
+# Build の状態
+comfy build ls
+comfy build show --id bld_123456
+comfy build release ls
+comfy build release show rel_123456
+
+# デプロイメントの状態
+comfy deploy ls --workspace --status ready
+comfy deploy logs --deployment dep_123456
+comfy deploy events --deployment dep_123456
+```
+
+<Warning>
+  デプロイメントの削除と Build の削除は、それぞれ独立した取り消し不可能な操作です。`comfy deploy delete --yes` や `comfy build delete --id bld_123456 --yes` を実行する前に、対象を確認してください。
+</Warning>
+
+## 次のステップ
+
+- [Comfy SDK](/ja/development/api-development/sdks)
+- [Comfy API v2 概要](/ja/api-reference/v2/overview)
+- [ワークフロー API 形式](/ja/development/api-development/workflow-api-format)
+- [Comfy CLI リファレンス](/ja/comfy-cli/reference)

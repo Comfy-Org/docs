@@ -234,6 +234,23 @@ async function main(): Promise<void> {
 
   const [primary, ...secondary] = projects;
 
+  // Locales must come from each project's own staging EN. Copying comfyui
+  // translations onto cloud overwrites cloud campaign shortlinks.
+  if (mode === "translate-only") {
+    for (const projectId of projects) {
+      await prepareForProject(
+        baseConfig,
+        projectId,
+        mode,
+        dryRun,
+        force,
+        explicitVersions
+      );
+      if (projects.length > 1) console.log("");
+    }
+    return;
+  }
+
   const preparedVersions = await prepareForProject(
     baseConfig,
     primary!,
@@ -248,7 +265,7 @@ async function main(): Promise<void> {
       console.log(`[${projectId}] Skip staging merge — no versions prepared`);
     } else if (dryRun) {
       console.log(
-        `[${projectId}] Would merge v${preparedVersions.join(", v")} from ${primary} (leave other versions untouched)`
+        `[${projectId}] Would merge v${preparedVersions.join(", v")} from ${primary} (keep dest EN tracking shortlinks)`
       );
     } else {
       const copied = await copyProjectStaging(
@@ -258,7 +275,7 @@ async function main(): Promise<void> {
         preparedVersions
       );
       console.log(
-        `[${projectId}] Merged v${preparedVersions.join(", v")} into ${copied} staging file(s) from ${primary} (other versions untouched)`
+        `[${projectId}] Merged v${preparedVersions.join(", v")} into ${copied} staging file(s) from ${primary} (dest EN tracking shortlinks preserved)`
       );
     }
     if (projects.length > 1) console.log("");
