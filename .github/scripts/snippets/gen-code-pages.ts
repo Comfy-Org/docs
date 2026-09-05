@@ -307,16 +307,19 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
   const body = Object.entries(example)
     .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
-  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+  return `${files.length ? "import base64\n" : ""}import uuid
+from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment. Save this key and reuse it if you
+# retry this request after the SDK returns an error.
+idempotency_key = str(uuid.uuid4())
 with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
 ${body}
         },
+        idempotency_key=idempotency_key,
     )
 
 print("${label}:", result${pyPath(resultPath)})`;
@@ -331,12 +334,13 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   return `${imports}
-${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Save this key and reuse it if you
+// retry this request after the SDK returns an error.
 type Result = ${tsResultType(resultPath)};
+const idempotencyKey = crypto.randomUUID();
 const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
-});
+}, { idempotencyKey });
 
 console.log("${label}:", data${tsPath(resultPath)});`;
 }
@@ -350,9 +354,11 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
     return `${esc(k)}: ${value}`;
   });
   const json = `{${entries.join(", ")}}`;
-  return `${reads ? `${reads}\n\n` : ""}curl ${BASE_URL}${ROUTE}/${model} \\
+  return `${reads ? `${reads}\n\n` : ""}# Run this line once. Reuse ROUTER_REQUEST_KEY if you retry the curl command.
+ROUTER_REQUEST_KEY=$(uuidgen)
+curl ${BASE_URL}${ROUTE}/${model} \\
   -H "X-API-Key: $COMFY_API_KEY" \\
-  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Idempotency-Key: $ROUTER_REQUEST_KEY" \\
   -H "Content-Type: application/json" \\
   -d "${json}"`;
 }
@@ -644,7 +650,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
+${spec.intro ?? `Use ${spec.name} with Comfy Router. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
 ${body}
 
@@ -674,32 +680,38 @@ ${body}
 const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.";
 
 function derivedSnippets(model: string): string {
-  const python = `from comfy_sdk import Comfy
+  const python = `import uuid
+from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment. Save this key and reuse it if you
+# retry this request after the SDK returns an error.
+idempotency_key = str(uuid.uuid4())
 with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
             # ${BODY_HINT}
         },
+        idempotency_key=idempotency_key,
     )
 
 print(result)`;
   const typescript = `import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment. Save this key and reuse it if you
+// retry this request after the SDK returns an error.
+const idempotencyKey = crypto.randomUUID();
 const { data } = await comfy.models.run("${model}", {
   // ${BODY_HINT}
-});
+}, { idempotencyKey });
 
 console.log(data);`;
   const curl = `# ${BODY_HINT}
+# Run this line once. Reuse ROUTER_REQUEST_KEY if you retry the curl command.
+ROUTER_REQUEST_KEY=$(uuidgen)
 curl ${BASE_URL}${ROUTE}/${model} \\
   -H "X-API-Key: $COMFY_API_KEY" \\
-  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Idempotency-Key: $ROUTER_REQUEST_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{}'`;
   return `<CodeGroup>
@@ -742,7 +754,7 @@ sidebarTitle: ${JSON.stringify(title)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-API Reference for \`${model}\`, served by Comfy Router from ${provider}.
+Use \`${model}\` with the Comfy Router API. ${provider} provides the model; Router gives it the shared authentication and request route below.
 ${previewNotice.body}
 ## Quick start
 
