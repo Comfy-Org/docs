@@ -60,7 +60,9 @@ Strapi drafts → publish → published-versions.json
 
 Each version is **saved immediately** after simplify/translate (safe to resume).
 
-After prepare, secondary projects (cloud) **merge only the prepared `<Update>` blocks** from comfyui. Older cloud blocks (including project-specific tracking shortlinks) are left untouched. Do not full-file overwrite `staging/cloud/`.
+After prepare:en, secondary projects (cloud) merge only the prepared `<Update>` blocks from comfyui. If cloud EN already has that version, incoming tracking shortlinks are rewritten to match cloud EN (local vs cloud campaign URLs). `prepare:locales` translates each project from its own staging EN and does not copy comfyui locale files onto cloud.
+
+**Bullet URLs** (agents rewrite after prepare:en; see skill `cms-changelog-sync`): Cloud prefers a user-supplied UTM/`links.comfy.org` URL, else `https://cloud.comfy.org/?template=<name>` from [workflow_templates `index.json`](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (video: r2v → i2v → t2v). Docs and local CMS prefer a [blog.comfy.org](https://blog.comfy.org/) post, then the GitHub PR, then the repo commit/tag. **Cloud copy** is shorter than local (announce the model, do not enumerate every node).
 
 ## Projects & attention
 

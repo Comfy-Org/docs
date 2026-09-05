@@ -1,20 +1,22 @@
 ---
 title: "Comfy SDK"
 description: "独自のアプリケーションからComfyUIワークフローを実行するための公式PythonおよびTypeScript SDK"
-sidebarTitle: "概要"
+sidebarTitle: "SDK 概要"
 icon: "code"
-translationSourceHash: 4b01fa84
+translationSourceHash: b7f9b923
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": 0df68ad9
   "Install": 6bcd1ccf
-  "Quickstart": 47f1a4c5
-  "Choosing a base URL": 46f88061
-  "Watching a job run": d41efc9a
-  "What the SDKs cover today": 6151cc1e
+  "Quickstart": 02297586
+  "Choosing a base URL": fa38be4d
+  "Watching a job run": a1c73d9b
+  "Tracing an output back to its workflow": b01886a3
+  "What the SDKs cover today": 3f918c7b
   "Reference": 5fc97b4a
   "Feedback": f8553211
 ---
+
 <Warning>
   **ベータ。** SDKと、それらが呼び出すComfy API v2は`0.1.x`です。APIの形状は、確定する前にまだ変更される可能性があります。今が、間違っていることを私たちに伝えるのに最もコストのかからない時期です。[フィードバック](#フィードバック)を参照してください。
 </Warning>
@@ -91,14 +93,38 @@ await job.getOutputs("9")[0].toFile("out.png");
 
 `run()` はジョブを送信し、ターミナル状態に達するまで待機します。実行中に他の作業を行うには、代わりに `submit()` を使用し、[イベントストリーム](#ジョブの実行を監視する)を監視してください。
 
-代わりに自分の ComfyUI に対して実行するには、1行変更してキーを削除します: `Comfy("http://127.0.0.1:8189")`。以下を参照してください。
+代わりに自分の ComfyUI に対して実行するには、`COMFY_BASE_URL` を設定してキーを削除します。以下を参照してください。
 
 ## ベースURLの選択
 
 | 接続先 | Base URL | APIキー |
 |---|---|---|
 | **Comfy Cloud** | `https://cloud.comfy.org` (デフォルト) | 必須 |
+| **サーバーレスデプロイ** | `https://<deployment>.run.comfy.app` | 必須 |
 | **ご自身のComfyUI** | `http://127.0.0.1:8189` (ローカルプロキシ) | デフォルトでは不要。オプションの静的ベアラートークン |
+
+ベースURLはコンストラクタ引数ではなく、`COMFY_BASE_URL`環境変数から取得されます:
+
+```bash
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # サーバーレスデプロイ
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # self-hosted proxy
+```
+
+この変数はクライアントが構築されるたびに読み取られ、`http(s)` URLである必要があります。未設定または空白の場合はComfy Cloudを意味します。したがって、クライアント自体はどこでも同じです:
+
+<CodeGroup>
+```python Python
+client = Comfy(api_key="comfyui-...")
+```
+
+```typescript TypeScript
+const client = new Comfy({ apiKey: "comfyui-..." });
+```
+</CodeGroup>
+
+<Note>
+  初期ビルドからアップグレードしますか? `Comfy("<url>", "<key>")`は、`COMFY_BASE_URL`を設定した`Comfy(api_key="<key>")`になりました。`api_key`はキーワード専用引数なので、以前の位置引数での呼び出しは、URLをキーとして静かに読み取るのではなく、`TypeError`を発生させます。
+</Note>
 
 ### Comfy Cloud
 
@@ -107,6 +133,12 @@ await job.getOutputs("9")[0].toFile("out.png");
 <Note>
   APIアクセスには有料のComfy Cloudサブスクリプションが必要です。無料プランには含まれません。同時に実行できるジョブ数はプランによって異なります。[Cloud API概要](/ja/development/cloud/overview#並列実行（同時ジョブ）)をご覧ください。
 </Note>
+
+### サーバーレスデプロイ
+
+[開発者プラットフォーム](https://platform.comfy.org)を通じてデプロイしたワークフローには、専用のエンドポイントが割り当てられます。`COMFY_BASE_URL`をそのエンドポイントに指定し、Comfy Cloudとまったく同じようにAPIキーを使用します。このガイドのすべてが同じように機能します。
+
+サーバーレスデプロイはピン留めされた1つのワークフローを実行するため、`get_workflow()`は実行されたグラフ（`format: "api"`）を返します。
 
 ### ご自身のComfyUI
 
@@ -119,7 +151,7 @@ comfy-api-proxy
 
 デフォルトでは、`127.0.0.1:8188`のComfyUIをプロキシし、`127.0.0.1:8189`でv2 APIを提供します。いずれかを変更するには、`--comfyui`と`--port`を使用します。
 
-その後、SDKを`http://127.0.0.1:8189`に指定します。認証はデフォルトでは不要です。プロキシに静的ベアラートークンを設定している場合は、同じトークンを SDK の API キーとして渡します: `Comfy("http://127.0.0.1:8189", api_key="...")`。プロキシはデフォルトではループバックのみにバインドします。インストール環境にモデルファイルもアップロードしたい場合は、`--comfyui-base-dir /path/to/ComfyUI`を指定して実行してください。
+次に、`COMFY_BASE_URL="http://127.0.0.1:8189"`を設定します。認証はデフォルトでは不要です。プロキシに静的ベアラートークンを設定している場合は、そのトークンをSDKのAPIキーとして渡します: `Comfy(api_key="...")`。プロキシはデフォルトではループバックにのみバインドします。インストール環境にモデルファイルもアップロードしたい場合は、`--comfyui-base-dir /path/to/ComfyUI`を指定して実行してください。
 
 プロキシは暫定対策です。v2 APIが安定すれば、ComfyUIコアに組み込まれ、プロキシは不要になります。
 
@@ -171,44 +203,96 @@ for await (const event of job.events()) {
 
 ストリームはライブフィードであり、再生可能なログではありません。進捗を表示するためのものであり、結果の取得に依存するためのものではありません。ジョブのポーリングこそが信頼できる情報源であり、`run()`、`wait()`、`result()` は自動的にポーリングにフォールバックします。理由については、[設計ノート](/ja/development/api-development/sdks-design#まずポーリング、進捗はストリームで) を参照してください。
 
-## 現在SDKがカバーするもの
+## 出力を生成元のワークフローまで遡る
 
-最初のバージョンは、1つのことを適切に行います: ワークフローを実行して結果を取得することです。
+出力には、それを生成したジョブのIDが保持されています。そのため、サイドテーブルを保持しなくても、ファイルから逆方向に遡ることができます。
 
-- **アセット。** ファイル、バイト、ストリーム、またはURLから入力ハンドルを作成します。ハンドルは遅延評価され、コンテンツアドレス方式であるため、同じ入力で再実行しても再アップロードされません。
-- **送信。** API形式のグラフを送信します。送信は冪等であり、キューがいっぱいの場合は、制限された予算内で自動的に再試行されます。
-- **実行。** `wait()`でポーリングするか、`events()`でライブの進行状況を追跡します。
-- **出力。** ディスクに書き込んだり、メモリにバッファリングしたり、バイト範囲を取得したり、短期間有効なダウンロードURLを取得したりできます。
-- **エラー。** 生のステータスコードではなく、`JobFailed`、`Unauthorized`、`InsufficientCredits`、`QueueFull`などの型付き例外。
-- **キャンセル。** 実行中のジョブはキャンセルできます。TypeScriptでは、任意の呼び出しで`AbortSignal`も受け入れます。
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # the job that produced this file
+```
 
-Pythonには、同じサーフェスを持つ同期`Comfy`クライアントと`AsyncComfy`クライアントの両方が用意されています。TypeScriptは非同期のみです。
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // the job that produced this file
+```
+</CodeGroup>
 
-このバージョンに含まれないもの: 保存済みワークフローの管理、モデルライブラリ、ノードイントロスペクション、名前付きワークフローパラメータ。[設計ノート](/ja/development/api-development/sdks-design#最初のバージョンの範囲)では、サーフェスがこれほど小さく始まる理由を説明しています。
+同じIDは、単体で取得したアセットにも付いています。後で見つけたファイルでも、そのジョブまで遡れます。アップロードしたアセットには生成元のジョブがないため、この値は`None`（TypeScriptでは`undefined`）になります。
+
+ジョブから、その背後にあるワークフローを取得できます。これは、このプロセス内で送信したものではなく、IDで再水和されたジョブでも機能します。
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # the workflow as authored, canvas layout and Note nodes intact
+else:
+    ...  # the executed API-format graph
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // the workflow as authored, canvas layout and Note nodes intact
+} else {
+  // the executed API-format graph
+}
+```
+</CodeGroup>
+
+**常に`format`で分岐してください。** 返ってくる形状は、ジョブがどのように送信されたかによって決まり、リクエストごとに制御できるものではありません。
+
+| `format` | 取得できるもの | ケース |
+|---|---|---|
+| `save` | ジョブが実行されたバージョンの作成時ワークフロー。キャンバスレイアウトとNoteなどのエディタ専用ノードを含みます | Comfy Cloudエディタから送信されたジョブ。ワークフローバージョンが固定されています |
+| `api` | 実行されたグラフ。エディタ専用の構成要素は除去され、Get/Setノードは展開されています | その他すべて（今日これらのSDKを通じて送信されるすべてのジョブを含みます） |
+
+SDKを通じて送信したジョブは常に`api`を返します。v2送信にはバージョン固定フィールドがまだないためです。この動作は将来変更されます。判別子が用意されているのは、コード側の変更が不要になるようにするためです。
+
+## SDK が現在対応している範囲
+
+最初のバージョンは、1つのことをきちんと行います。ワークフローを実行して結果を取得することです。
+
+- **アセット:** ファイル、バイト、ストリーム、または URL から入力ハンドルを作成します。ハンドルは遅延評価され、コンテンツアドレス方式のため、同じ入力で再実行しても再アップロードされません。
+- **送信:** API 形式のグラフを送信します。送信は冪等であり、キューが満杯の場合も、限られた予算内で自動的に再試行されます。
+- **実行:** `wait()` でポーリングするか、`events()` でリアルタイムの進捗を追跡します。
+- **出力:** ディスクに書き込む、メモリにバッファリングする、バイト範囲を取得する、または短期間有効なダウンロード URL を取得します。
+- **トレーサビリティ:** すべての出力には、それを生成したジョブの ID が含まれ、ジョブからその背後にあるワークフローを取得することもできます。
+- **アセットの削除:** アップロードしたアセットを、ハンドルまたは ID で削除します。
+- **エラー:** 生のステータスコードではなく、`JobFailed`、`Unauthorized`、`InsufficientCredits`、`QueueFull` などの型付き例外。
+- **キャンセル:** 実行中のジョブをキャンセルできます。TypeScript では、任意の呼び出しで `AbortSignal` も受け付けます。
+
+Python には、同期 `Comfy` クライアントと、同じインターフェースを持つ `AsyncComfy` クライアントの両方が用意されています。TypeScript は非同期のみです。
+
+このバージョンには含まれないもの: 保存したワークフローの管理、モデルライブラリ、ノードのイントロスペクション、名前付きワークフローパラメータ。[設計ノート](/ja/development/api-development/sdks-design#最初のバージョンの範囲) では、なぜ API サーフェスがこのように小さく始まるのかを説明しています。
 
 ## リファレンス
 
-SDK の README は、認証、アセット、エラー、低レベルのエスケープハッチなど、各言語の完全なリファレンスです。
+SDK の README は、各言語の完全なリファレンスです。認証、アセット、エラー、および低レベルのエスケープハッチを含みます。
 
 <CardGroup cols={2}>
   <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
-    <code>comfy-sdk</code> は PyPI で公開されています。同期クライアントと非同期クライアントに対応しています。
+    <code>comfy-sdk</code> を PyPI で公開。同期・非同期クライアント。
   </Card>
   <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
-    <code>@comfyorg/sdk</code> は npm で公開されています。型付けされた非同期クライアントで、低レベルクライアントも備えています。
+    <code>@comfyorg/sdk</code> を npm で公開。型付き・非同期、低レベルクライアントを備えています。
   </Card>
   <Card title="Comfy API v2 リファレンス" icon="code" href="/ja/api-reference/v2/overview">
-    両 SDK の基盤となる HTTP API です。任意の言語から直接利用できます。
+    両方のSDKの基盤となるHTTP API。任意の言語から直接使用できます。
   </Card>
   <Card title="設計ノート" icon="compass" href="/ja/development/api-development/sdks-design">
-    この API が存在する理由、既存の ComfyUI API との関連性、そして今後の展開について説明します。
+    このAPIが存在する理由、既存のComfyUI APIとの関係、今後の予定。
   </Card>
 </CardGroup>
 
 ## フィードバック
 
-あえて `0.1.x` にしています。メソッド名、クライアントの形、イベントカタログ、エラーの分類体系、実際のアセット処理の使用感は、まだどれも変更が容易です。今後数週間のうちにインターフェースを固定する予定です。その後は、「長期的にサポートします」というのは、もはやあなたのために修正できないという意味になり始めます。
+これは意図的に`0.1.x`です。メソッド名、クライアントの形状、イベントカタログ、エラーの分類体系、実際のアセット操作の使用感は、すべてまだ変更コストが低く、今後数週間でサーフェスを固定する予定です。その後、「長期的にサポートします」という言葉は、もはや修正できないことを意味するようになります。
 
-だから、使いにくい点、見つかると思っていたのに見つからなかった点、結局回避策を取らざるを得なかった点を教えてください。そのための場所は、[私たちのDiscord](https://discord.com/invite/comfyorg) の `#developer-platform` チャンネルです。
+使いにくい点、期待していたのに見つからなかったもの、回避策で対応せざるを得なかったことをお知らせください。[私たちのDiscord](https://discord.com/invite/comfyorg)の`#developer-platform`チャンネルがその場所です。
 
-別の言語向けのファーストパーティSDKが必要な場合は、そこでお知らせください。どちらのSDKも同じ文書化されたHTTPコントラクトに基づいているため、現在どの言語でもAPIと通信できますが、むしろ需要がどこにあるのかを知りたいのです。
+別の言語のファーストパーティSDKが必要な場合は、そこでその旨をお伝えください。両方のSDKは同じ文書化されたHTTP契約に基づいているため、今日の時点であらゆる言語がAPIと通信できますが、どこに需要があるのかを把握したいと考えています。

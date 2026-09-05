@@ -1,0 +1,328 @@
+---
+title: "Comfy Router 快速入门"
+description: "从零开始，大约五分钟内，使用 Python 和 TypeScript，在 Comfy Router 上生成一张图像。"
+translationSourceHash: 50fc5524
+translationFrom: development/comfy-router/quickstart.mdx
+translationBlockHashes:
+  "_intro": 46050c92
+  "Why this page uses `bfl/flux-2-pro`": 0eaf0bb3
+  "Get a key": 843d281f
+  "cURL": bc3e1e4c
+  "Python": 059e95b8
+  "TypeScript": 1053430f
+  "Reading the `422`": 602cd505
+  "Find a model": 9b7855c1
+  "Where the model's fields come from": 7861bd52
+  "Next": 6aa641e1
+---
+<Note>
+**Comfy Router 尚未正式发布。** 以下路由：`POST /v1/models/{provider}/{model}` 及其目录与 schema 兄弟路由，目前均尚未处理请求：经过身份验证的调用目前会返回 `404`。本页面记录的是这些路由未来将提供的契约，并提前于该发布公开，以便集成可以据此进行编写。这不是对当前可执行行为的描述。
+</Note>
+
+Comfy Router 通过单一主机、单一凭据和单一路由形状来运行合作伙伴模型。本页面是通往已生成图像的最短完整路径：安装客户端、设置密钥、发送一个请求、读取结果，并在真正遇到第一次失败之前，先看清失败的样子。
+
+Base URL 为 `https://api.comfy.org`。路由为 `POST /v1/models/{provider}/{model}`，请求体是模型自身的原生 JSON 输入，`200` 响应携带模型自身的原生 JSON 输出。Router 不会对两者进行包装，因此，只需更改主机，您已针对合作伙伴 API 写好的调用即可变成 Router 调用。
+
+## 为什么本页使用 `bfl/flux-2-pro`
+
+`bfl/flux-2-pro` 在 p50 下大约 3.1 秒返回，这是 Router 上实测最快的路径，也是让五分钟内获得首个结果成为现实的原因。较慢的模型会把这段预算花在等待上，而不是阅读上。
+
+这只是方便之选，并非必需。Router 上的所有其他模型都以完全相同的方式调用：相同的路由、相同的凭据请求头、相同的错误分类、相同的 `X-Comfy-Request-Id`。唯一会变的只有模型 ID、请求体中的字段，以及读回结果的形状。例如，Gemini 在 p95 下以 72.8 秒轻松完成。Router 会在整个生成期间保持连接，而不是返回一个任务句柄供轮询。没有边缘上限会将长调用截断，但 Router 确实会限制调用本身：其服务器截止时间（默认 10 分钟）是它保持连接的最长时间，超过之后会返回 `504` / `deadline_exceeded`，并且不收费。替换 ID，然后从该模型自己的 schema（如下）中读取其字段。
+
+## 获取密钥
+
+Router 使用 Comfy API 密钥进行身份验证。你可以在 [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) 创建一个，然后将其放入环境中。下面的两个示例都会读取 `COMFY_API_KEY`，并且都不接受以字面量形式传入密钥，因此复制粘贴的代码片段不会将你的凭据带入提交记录。
+
+```bash
+export COMFY_API_KEY="comfyui-..."
+```
+
+<Note>
+`comfyui-` 密钥既可以放在 **`X-API-Key`** 请求头中，也可以放在 **`Authorization: Bearer`** 中：告诉服务“这是一个 API 密钥”的是 `comfyui-` 前缀而不是请求头，因此两种形式的查找方式完全相同。下面的示例使用 `X-API-Key`；`Authorization: Bearer $COMFY_API_KEY` 与之等价。如果同时发送了两个请求头，则以 `X-API-Key` 中的密钥为准。`Authorization: Bearer` 中**不带** `comfyui-` 前缀的值会被视为 Cloud/Firebase **JWT**（这也是已生成的 [API 参考](/zh/development/comfy-router/reference) 中“bearer token”的含义）。
+</Note>
+
+密钥按工作区分属，并携带该工作区的模型权益和信用余额。没有可用凭据的请求会返回 `401`，并带有 `X-Comfy-Error-Type: unauthorized`；工作区无法运行该模型的请求会返回 `403` / `forbidden`。
+
+## cURL
+
+最短的调用方式，适用于脚本、冒烟测试以及直接复制粘贴到终端：
+
+```bash
+curl https://api.comfy.org/v1/models/bfl/flux-2-pro \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+```
+
+响应即为模型的原生输出，与下文示例读取到的内容完全一致。请求失败时，响应体携带错误信息，`X-Comfy-Error-Type` 响应头会标明错误类型；请保留任何后续需要查询的响应中的 `X-Comfy-Request-Id` 响应头。macOS 和 Linux 均自带 `uuidgen`；在 Windows 上，可使用 `New-Guid` 或任何 UUID 来源生成 Idempotency-Key。
+
+## Python
+
+需要 Python 3.9+ 和 `httpx`：
+
+```bash
+pip install httpx
+```
+
+保存为 `quickstart.py`，用 `python quickstart.py` 运行：
+
+```python
+import os
+import uuid
+
+import httpx
+
+BASE_URL = os.environ.get("COMFY_ROUTER_BASE_URL", "https://api.comfy.org")
+MODEL = "bfl/flux-2-pro"
+
+# Give the client headroom ABOVE Router's own server deadline (10 minutes by
+# default) so a call that reaches the server bound comes back as a typed 504
+# with a request id rather than as an opaque client abort. The deadline bounds
+# how long Router holds the connection, not whether the call is billed: if the
+# provider completed the generation, it is billed either way.
+READ_TIMEOUT_SECONDS = 660.0
+
+
+class RouterError(Exception):
+    """A Comfy Router failure, typed by its X-Comfy-Error-Type bucket."""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self.error_type = response.headers.get("X-Comfy-Error-Type", "internal_error")
+        self.request_id = response.headers.get("X-Comfy-Request-Id")
+        self.status_code = response.status_code
+        # Parse defensively: an error can arrive as an HTML 502 from a load
+        # balancer, a plain-text 429, an empty body or a truncated JSON one. The
+        # status, the bucket and the request id above are the parts worth
+        # keeping, so a body that will not parse must not replace this exception
+        # with a JSONDecodeError and lose them.
+        body = None
+        if response.headers.get("content-type", "").startswith("application/json"):
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        # A 422 carries a detail[] array - one entry per rejected field, each
+        # keeping its own `loc`, `msg` and `type`. Every other bucket carries a
+        # plain `detail` string.
+        self.errors = detail if isinstance(detail, list) else []
+        self.detail = detail if isinstance(detail, str) else f"HTTP {response.status_code}"
+        super().__init__(self.detail)
+
+
+def run(model: str, arguments: dict, idempotency_key: str) -> dict:
+    # Idempotency-Key makes a retry safe on a PAID call: Router replays the
+    # original response for 24h instead of dispatching (and billing) the
+    # provider a second time. Reuse the SAME key when retrying one logical
+    # call; generate a new one for a new call.
+    response = httpx.post(
+        f"{BASE_URL}/v1/models/{model}",
+        headers={
+            "X-API-Key": os.environ["COMFY_API_KEY"],
+            "Idempotency-Key": idempotency_key,
+        },
+        json=arguments,
+        timeout=httpx.Timeout(READ_TIMEOUT_SECONDS, connect=10.0),
+    )
+    if response.is_error:
+        raise RouterError(response)
+    return response.json()
+
+
+result = run(
+    MODEL,
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    idempotency_key=str(uuid.uuid4()),
+)
+# Router forwards each provider's native output unchanged, so this path is
+# BFL's, not a Router envelope. Reading a different model means reading its own
+# output shape.
+print("image:", result["result"]["sample"])
+
+# The first failure most callers hit: a field the model's input schema requires
+# is missing, so Router rejects the request BEFORE any provider call - which is
+# why a 422 is never billed.
+try:
+    run(MODEL, {"width": 1024}, idempotency_key=str(uuid.uuid4()))
+except RouterError as exc:
+    print(f"{exc.error_type} (HTTP {exc.status_code}), request id {exc.request_id}")
+    for entry in exc.errors:
+        print("  ", ".".join(str(p) for p in entry["loc"]), "->", entry["msg"])
+```
+
+```text
+image: https://.../out.jpeg
+invalid_input (HTTP 422), request id 6f1c...
+   body.prompt -> Field required
+```
+
+## TypeScript
+
+需要 Node 18+（内置 `fetch`、`AbortSignal.timeout` 和 `crypto.randomUUID`）以及直接运行 TypeScript 所需的 `tsx`：
+
+```bash
+npm install --save-dev tsx
+```
+
+保存为 `quickstart.mts`。`.mts` 扩展名很重要，因为该文件使用了顶层 `await`，这需要 ES 模块。用 `npx tsx quickstart.mts` 运行：
+
+```typescript
+const API_KEY = process.env.COMFY_API_KEY;
+if (!API_KEY) throw new Error("Set COMFY_API_KEY before running this sample.");
+
+const BASE_URL = process.env.COMFY_ROUTER_BASE_URL ?? "https://api.comfy.org";
+const MODEL = "bfl/flux-2-pro";
+
+// Headroom ABOVE Router's own server deadline (10 minutes by default), so a
+// call that reaches the server bound returns a typed 504 with a request id
+// rather than aborting locally at the same moment. The deadline bounds how
+// long Router holds the connection, not whether the call is billed: if the
+// provider completed the generation, it is billed either way.
+const CLIENT_TIMEOUT_MS = 660_000;
+
+interface ValidationEntry {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+}
+
+/** A Comfy Router failure, typed by its `X-Comfy-Error-Type` bucket. */
+class RouterError extends Error {
+  readonly errorType: string;
+  readonly requestId: string | null;
+  readonly status: number;
+  /** A 422 carries a `detail[]` array — one entry per rejected field, each
+   * keeping its own `loc`, `msg` and `type`. Every other bucket carries a
+   * plain `detail` string. */
+  readonly errors: ValidationEntry[];
+
+  constructor(response: Response, body: unknown) {
+    const detail =
+      typeof body === "object" && body !== null
+        ? (body as { detail?: unknown }).detail
+        : undefined;
+    super(typeof detail === "string" ? detail : `HTTP ${String(response.status)}`);
+    this.name = "RouterError";
+    this.errorType = response.headers.get("X-Comfy-Error-Type") ?? "internal_error";
+    this.requestId = response.headers.get("X-Comfy-Request-Id");
+    this.status = response.status;
+    this.errors = Array.isArray(detail) ? (detail as ValidationEntry[]) : [];
+  }
+}
+
+/** Read a body without letting a non-JSON error page mask the real failure. */
+async function parseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+async function run<T>(
+  model: string,
+  args: Record<string, unknown>,
+  idempotencyKey: string,
+): Promise<T> {
+  // Idempotency-Key makes a retry safe on a PAID call: Router replays the
+  // original response for 24h instead of dispatching (and billing) the provider
+  // a second time. Reuse the SAME key when retrying one logical call.
+  const response = await fetch(`${BASE_URL}/v1/models/${model}`, {
+    method: "POST",
+    headers: {
+      "X-API-Key": API_KEY,
+      "Idempotency-Key": idempotencyKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+  });
+  // Read the body without letting it decide the outcome: an HTML 502, a
+  // plain-text 429 or an empty body still yields the status, the bucket and
+  // the request id, because `parseBody` returns `undefined` on a parse failure.
+  const body = await parseBody(response);
+  if (!response.ok) throw new RouterError(response, body);
+  return body as T;
+}
+
+const result = await run<{ result: { sample: string } }>(
+  MODEL,
+  { prompt: "a red teapot on a windowsill, morning light" },
+  crypto.randomUUID(),
+);
+// Router forwards each provider's native output unchanged, so this path is
+// BFL's, not a Router envelope. Reading a different model means reading its own
+// output shape.
+console.log("image:", result.result.sample);
+
+// The first failure most callers hit: a field the model's input schema requires
+// is missing, so Router rejects the request BEFORE any provider call - which is
+// why a 422 is never billed.
+try {
+  await run(MODEL, { width: 1024 }, crypto.randomUUID());
+} catch (exc) {
+  if (!(exc instanceof RouterError)) throw exc;
+  console.log(`${exc.errorType} (HTTP ${String(exc.status)}), request id ${String(exc.requestId)}`);
+  for (const entry of exc.errors) console.log("  ", entry.loc.join("."), "->", entry.msg);
+}
+```
+
+```text
+image: https://.../out.jpeg
+invalid_input (HTTP 422), request id 6f1c...
+   body.prompt -> Field required
+```
+
+## 解读 `422`
+
+`422` 是最值得在第一次真正调用之前理解的一个错误，因为它是你引发的。它表示 Router 已根据模型自身的输入模式检查了你的请求体并拒绝了它：必填字段缺失、值超出边界、图像太小。该检查在任何提供商调用之前执行，因此 `422` 不会产生任何成本：没有合作伙伴支出，之后也无需解答计费疑问。它不同于 `400`，后者是请求级失败（格式错误的游标、无法读取的信封），而不是字段级失败。
+
+其响应体是 FastAPI 的 `detail[]` 形状：一个数组，每个违规字段对应一个条目，每个条目保留自己的 `loc`（字段路径）、`msg`、`type`（具体的提供商级原因：`missing`、`value_error`、`image_too_small`），以及原因带有边界时的 `ctx`。正是这种字段级粒度，使得上面的示例将数组作为数据保留，而不是将其扁平化到异常消息中。
+
+<Note>
+输入模式尚未创建的模型会解析为文档中所述的宽松回退方案，该方案接受任何 JSON 对象，因此它会转发请求体，而不会返回 `422`。上面的示例展示了模式存在后你需要处理的形状；请将 `422` 块视为错误路径，而不是对特定请求体的保证响应。
+</Note>
+
+该响应体本身不携带 `error_type` 字段，因此在 `422` 上，`X-Comfy-Error-Type` 响应头是*唯一*机器可读的类别。两个示例都正因如此才首先从响应头中读取该类别，这也使得一个错误类就足以涵盖 Router 可能返回的所有失败。
+
+`X-Comfy-Request-Id` 出现在每个响应上，成功、`4xx` 和 `5xx` 均如此，并且是在支持请求中引用的 ID。两个示例都将其附加到异常中，而不是让你在启用响应头日志的情况下重新运行来找到它。
+
+## 查找模型
+
+`bfl/flux-2-pro` 只是其中一个 ID；其余的都在目录里。`GET /v1/models` 会逐页列出 Router 能运行的每一个模型，每个条目正好就是调用它所需的全部信息：放进路径的 `id`、分别给出的 `provider` 和 `model` 段，以及一个可以在花费任何费用之前据以分支判断的 `billing` 块。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v1/models?limit=50"
+```
+
+```json
+{
+  "data": [
+    { "id": "bfl/flux-2-pro", "provider": "bfl", "model": "flux-2-pro", "billing": { "charges_on_policy_rejection": "no" } }
+  ],
+  "has_more": true,
+  "next_cursor": "q7Fm2xTn9pLd4RsV",
+  "limit": 50
+}
+```
+
+用游标而不是偏移量来遍历：把 `next_cursor` 作为 `?cursor=` 原样传回，并在 `has_more` 为 `false` 时停止，而不是在某一页返回得较短时停止。游标是不透明的，只用于原样往返；Router 不接受的游标会返回 `400` / `invalid_input`，绝不会悄悄从第一页重新开始。游标是目录排序顺序中的一个位置，因此在新增或移除模型的部署之后依然有效；添加在你已经走过的位置之前的模型，只是在这一次遍历中不会被访问到。列表返回 `503` / `service_unavailable` 表示 Router 暂时还无法应答（某个 pod 仍在加载其发布状态）；请重试，不要把它当成空目录。响应中的 `limit` 是实际提供的页面大小：超过上限的请求会被截断到上限而不是拒绝，因此请按返回的数字进行分页。已部署但尚未发布的模型只是不会出现在任何一页中。
+
+## 模型字段的来源
+
+`prompt` 是 `bfl/flux-2-pro` 唯一必需的字段；`width`、`height`、`seed` 和 `output_format` 是您接下来会需要用到的字段。与其复述一份可能过时的字段列表，不如实时读取模型的 schema：
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v1/models/bfl/flux-2-pro/openapi.json
+```
+
+这份文档与服务器校验您的请求时所依据的文档是同一份，以独立的 OpenAPI 文档形式提供，因此所发布的内容与所执行的内容不可能不一致。从上面的目录中取任意 `id`，在其调用路径后追加 `/openapi.json`，然后根据返回的内容进行生成。
+
+## 下一步
+
+- [Comfy Router API 参考](/zh/development/comfy-router/reference)：每个端点、每个参数，以及全部十五类错误。
+- [Comfy Router 限制](/zh/development/comfy-router/limitations)：Router 目前尚未支持的功能，以及可以使用的替代方案。
