@@ -1,6 +1,6 @@
 ---
 title: "Workflow Metadata"
-description: "Learn how ComfyUI embeds workflows in generated files and how to read the embedded metadata"
+description: "Learn how ComfyUI embeds workflows in generated files, how to read the embedded metadata, and how to audit which models produced an output"
 icon: "file-code"
 ---
 
@@ -15,6 +15,7 @@ Embedded workflow metadata allows you to:
 - Reopen a generated file in ComfyUI and recover its workflow.
 - Share a generated file together with the workflow used to create it.
 - Inspect generation settings in an automated workflow.
+- Audit which models and other assets were used to produce an output.
 - Build tools that read ComfyUI workflow metadata from output files.
 
 The metadata is stored inside the file format. It does not change the visible image or video content.
@@ -94,6 +95,71 @@ If the file contains both `workflow` and `prompt`, ComfyUI uses the embedded `wo
 When building an integration, check for the field before parsing it. Metadata may be missing because the file was created with `--disable-metadata`, because the save node did not receive workflow information, or because another application re-encoded the file.
 
 For a browser-based way to inspect or edit embedded workflows, see the [ComfyUI Embedded Workflow Editor](https://comfyui-embedded-workflow-editor.vercel.app/).
+
+## Auditing model usage
+
+A common governance question is which models were used to produce a given output. For files saved by ComfyUI with metadata enabled, the embedded `prompt` field answers this. Every model that a workflow loads appears as an input on a loader node, so the file itself records the models that produced it.
+
+For example, a `prompt` field for a workflow that loads a checkpoint and a LoRA contains entries like this:
+
+```json
+{
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "sd_xl_base_1.0.safetensors"
+    }
+  },
+  "10": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "detail_tweaker_xl.safetensors",
+      "strength_model": 1.0
+    }
+  }
+}
+```
+
+Model references appear as inputs on loader nodes. Common examples include:
+
+| Node type | Input | Refers to |
+| --- | --- | --- |
+| `CheckpointLoaderSimple` | `ckpt_name` | The checkpoint file |
+| `UNETLoader` | `unet_name` | The diffusion model file |
+| `LoraLoader`, `LoraLoaderModelOnly` | `lora_name` | The LoRA file |
+| `VAELoader` | `vae_name` | The VAE file |
+| `CLIPLoader` | `clip_name` | The text encoder file |
+| `DualCLIPLoader` | `clip_name1`, `clip_name2` | The text encoder files |
+
+For API nodes that call hosted models, the node type and its inputs identify the external model. Depending on the node, the model is implied by the node type itself or selected through a `model` input.
+
+### Extracting model names programmatically
+
+For PNG output, the metadata is available as text entries. This example lists the models referenced by a generated image:
+
+```python
+import json
+from PIL import Image
+
+image = Image.open("ComfyUI_00001_.png")
+prompt = json.loads(image.info["prompt"])
+
+for node_id, node in prompt.items():
+    if "Loader" in node.get("class_type", ""):
+        for key, value in node.get("inputs", {}).items():
+            if "_name" in key:
+                print(f"{node['class_type']}: {value}")
+```
+
+Check that the `prompt` entry exists before parsing it. Files created with `--disable-metadata`, or re-encoded by another application, do not contain it.
+
+### Building an audit trail
+
+Embedded metadata is a good starting point for provenance, but it has limits that matter for governance:
+
+- The recorded values are file names as they existed on the server, not content hashes. Two servers can have different files with the same name. If your audit requirements are strict, record a hash of each model file alongside the file name, for example the SHA-256 checksums that model hubs publish.
+- The metadata is optional and easy to remove. It is not a digital signature, so it proves neither origin nor integrity. Treat it as informative, not authoritative.
+- Only the generating server can guarantee a record. For an enforceable audit trail, log executions on the server side as well: the [`/history` endpoint](/development/comfyui-server/comms_routes) returns the executed prompt for each job, including the same model references described above.
 
 ## Limitations
 
