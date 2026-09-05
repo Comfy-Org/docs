@@ -100,6 +100,36 @@ we leave undocumented are warnings (`--strict` makes them errors, `omit:` lists
 the deliberate ones). It runs in CI as the `provider-schemas` job, so the
 fallback schemas are tested rather than trusted until Router publishes its own.
 
+### Per-variant defaults
+
+Some provider bodies are a `oneOf` of modes: BFL's FLUX 3 Video is `t2v`, `i2v`,
+`v2v` and `draft_enhance`, and the four modes disagree about `resolution` (`hd`
+in three of them, `fhd` in `draft_enhance`). Merging those alternatives into one
+shape used to take the last one's `default`, so the checker would have accepted a
+documented `default: fhd` and rejected a documented `default: hd`. Both are wrong:
+neither value is the default in every mode.
+
+The checker now records the disagreement as `defaultByVariant` instead of picking
+a winner, and reports it two ways:
+
+```text
+ERROR ... input: `resolution` documents a single default "fhd" but the provider default is per-variant
+      {"t2v":"hd","i2v":"hd","v2v":"hd","draft_enhance":"fhd"}; document the per-variant defaults in the
+      description and drop `default`
+warn  ... input: `resolution` provider default is per-variant
+      {"t2v":"hd","i2v":"hd","v2v":"hd","draft_enhance":"fhd"}; make sure the description says so
+```
+
+So a field like this carries no `default:` in the `code.yaml` and explains the
+per-mode values in its `description` instead, which is what the page renders. The
+variant keys come from the union's discriminator when the document declares one,
+and fall back to `#0`, `#1` when it does not. Everything else about the field
+(type, `enum`, bounds) is still checked as usual.
+
+`bun test ./.github/scripts/snippets/` covers this against a fixture, and runs in
+CI as the `snippet-script-tests` job. It needs no network, so it stays green when
+a provider's host is down.
+
 ## Adding a model
 
 1. Create `code.yaml` in the model's directory (copy the Kontext one).
