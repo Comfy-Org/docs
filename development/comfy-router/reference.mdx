@@ -28,7 +28,7 @@ Comfy API keys can also be sent as Bearer tokens. `X-API-Key` takes precedence w
 
 **List the models Comfy Router can run.**
 
-List one page of model IDs accepted by `POST /v2/models/{provider}/{model}`. Each entry includes its `id`, `provider`, `model`, and billing facts. Use `next_cursor` to fetch another page when `has_more` is true. Catalog discovery is optional; the SDK run methods do not fetch this list before invoking a model.
+List available model IDs and billing facts. Use `next_cursor` while `has_more` is true.
 
 **Parameters**
 
@@ -51,14 +51,14 @@ List one page of model IDs accepted by `POST /v2/models/{provider}/{model}`. Eac
 
 **Read one partner model's catalog entry by canonical model ID.**
 
-Per-model detail for a single Comfy Router model, so a caller can inspect one model without walking the whole paginated catalog.
+Read details for one model without listing the full catalog.
 
 **Parameters**
 
 | Name | In | Required | Type | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
-| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Provider portion of the canonical `{provider}/{model}` model ID. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Model portion of the canonical `{provider}/{model}` model ID. |
 
 **Responses**
 
@@ -74,15 +74,15 @@ Per-model detail for a single Comfy Router model, so a caller can inspect one mo
 
 **Run a partner model synchronously by canonical model ID.**
 
-Run a partner model and return its finished result in the same response. Send the model's native input fields; the result uses the model's terminal output shape, rather than a common Comfy envelope or the provider's initial submit handle. Provider-specific input adaptations and asset URL rewriting are documented in the model schemas and the Router reference's Result assets section.
+Run a model and receive its finished result in the same response.
 
 **Parameters**
 
 | Name | In | Required | Type | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
-| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
-| `Idempotency-Key` | header | no | string | 1–255 characters | A key for one logical call, scoped to the credential's workspace or, when no workspace is present, its user. |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Provider portion of the canonical `{provider}/{model}` model ID. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Model portion of the canonical `{provider}/{model}` model ID. |
+| `Idempotency-Key` | header | no | string | 1–255 characters | Caller-generated key that makes retrying ONE logical call safe. |
 
 **Request body**
 
@@ -94,15 +94,15 @@ The partner model's native JSON input, forwarded to the provider unchanged.
 
 | Status | Body | Headers | Description |
 | --- | --- | --- | --- |
-| `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | OK - the model's finished result, including any documented asset URL rewriting. |
+| `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | OK - the partner model's native JSON output, returned unchanged. |
 | `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | Invalid request. Check the error type and request body. |
 | `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
 | `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
 | `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
-| `409` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` | The `Idempotency-Key` on this request is already held, and this request cannot be answered from its record. |
+| `409` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`) | Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. |
 | `413` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request body is too large. |
 | `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | The request's contents were rejected against the model's schema. |
-| `429` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. |
+| `429` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means reduce in-flight calls; `rate_limited` means wait for the allowance window. |
 | `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
 | `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` | The request exceeded a deadline. Check the error type before retrying. |
 
@@ -110,14 +110,14 @@ The partner model's native JSON input, forwarded to the provider unchanged.
 
 **Read one partner model's input and output schemas as an OpenAPI document.**
 
-The per-model input AND output schemas for a single Comfy Router model, served as a standalone OpenAPI document, so a caller can discover a model's arguments and the shape of what it returns without reading Comfy's prose docs.
+Read one model's input and output schemas as a standalone OpenAPI document.
 
 **Parameters**
 
 | Name | In | Required | Type | Constraints | Description |
 | --- | --- | --- | --- | --- | --- |
-| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
-| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Provider portion of the canonical `{provider}/{model}` model ID. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Model portion of the canonical `{provider}/{model}` model ID. |
 | `If-None-Match` | header | no | string | - | The `ETag` a caller holds from an earlier `200`. |
 
 **Responses**
@@ -136,7 +136,7 @@ Table descriptions are brief. Use [Using the Comfy Router API](/development/comf
 
 ## Error buckets
 
-Machine-readable Router error category, also sent in the `X-Comfy-Error-Type` response header.
+Machine-readable Router error category, also sent in the `X-Comfy-Error-Type` header.
 
 ### Request-level buckets
 
@@ -194,7 +194,7 @@ A model can return asset URLs, inline bytes, or both. The providers below copy s
 
 These lifetimes start when the URL is signed, not when you open it. Cached or replayed URLs can have less time remaining; replay does not renew them. Download the asset promptly. Only the assets named in each row are copied: `byteplus/seedream-*` and `byteplus/seededit-*` images are not covered by the BytePlus video row.
 
-**Veo has a separate storage path.** In `response.videos[]`, read whichever member is present: `bytesBase64Encoded` contains the clip inline, while `gcsUri` contains a Comfy-signed HTTPS link when the environment is configured for direct provider writes to Comfy storage. That link is valid for 24 hours from the response. The latter case writes the asset directly rather than copying it, so Veo is not in the rehosting table.
+**Veo (`veo/*`) has a separate storage path.** In `response.videos[]`, read whichever member is present: `bytesBase64Encoded` contains the clip inline, while `gcsUri` contains a Comfy-signed HTTPS link when the environment is configured for direct provider writes to Comfy storage. That link is valid for 24 hours from the response. The latter case writes the asset directly rather than copying it, so Veo is not in the rehosting table.
 
 Other models return provider asset references or inline bytes. Provider URLs follow the provider's expiry, which can be much shorter than the lifetimes above and is not specified by the Router contract.
 
@@ -220,16 +220,16 @@ Type: `string`
 
 ### RouterErrorResponse
 
-Error body for authentication, access, model lookup, quota, and provider transport failures. Validation failures use `RouterValidationErrorResponse`.
+Error body for authentication, access, model lookup, quota, and provider transport failures.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `detail` | string | yes | - | Human-readable description of the failure, safe to surface to an end user. |
-| `error_type` | [`RouterErrorType`](#routererrortype) | yes | - | Machine-readable Router error category, also sent in the `X-Comfy-Error-Type` response header. |
+| `detail` | string | yes | - | Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead. |
+| `error_type` | [`RouterErrorType`](#routererrortype) | yes | - | Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at fifteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable` and `rate_limited`. |
 
 ### RouterErrorType
 
-Machine-readable Router error category, also sent in the `X-Comfy-Error-Type` response header.
+Machine-readable Router error category, also sent in the `X-Comfy-Error-Type` header.
 
 Type: `string`
 
@@ -239,7 +239,7 @@ Billing behavior to check before invoking a model. It does not include prices or
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `charges_on_policy_rejection` | [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection) | yes | - | Whether a content-policy refusal is charged for this model. |
+| `charges_on_policy_rejection` | [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection) | yes | - | Whether a call this model REFUSES on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore. |
 
 ### RouterModelDetail
 
@@ -255,36 +255,36 @@ Optional fields returned by the model-details endpoint.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `input_schema_url` | string | no | HTTPS URL, e.g. `https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json`, Up to 2048 characters | Pointer to this model's input schema document - the description of the body `POST /v2/models/{provider}/{model}` accepts for this model. |
+| `input_schema_url` | string | no | HTTPS URL, e.g. `https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json`, Up to 2048 characters | URL of this model's OpenAPI document, including its input and output schemas. |
 
 ### RouterModelId
 
-The model ID used in `POST /v2/models/{provider}/{model}`, such as `anthropic/claude-opus-4-6`.
+The model ID used in `POST /v2/models/{provider}/{model}`.
 
 Type: `string` -- Model ID, e.g. `anthropic/claude-opus-4-6`, Up to 193 characters
 
 ### RouterModelInput
 
-A model's JSON input. This shared component accepts an object; the per-model OpenAPI document describes specific fields and validation. Provider-specific routing can set model-selection fields or adapt supported options. Read the selected model's schema before reusing a request from another API.
+The model input object. Read the selected model's OpenAPI document for fields and validation.
 
 Type: `object`
 
 ### RouterModelInputSchemaDocument
 
-A standalone OpenAPI document describing ONE Comfy Router model's input AND output - the body `POST /v2/models/{provider}/{model}` accepts for that model, under the operation's `requestBody`, and the body it returns, under that operation's `200` content. It is what `GET /v2/models/{provider}/{model}/openapi.json` returns. The component keeps its historical name, which predates the output half; the shape it describes is the whole document, not the input alone.
+A standalone OpenAPI document for one model's input and output.
 
 Type: `object`
 
 ### RouterModelListEntry
 
-One model's identity and billing facts. Use `id` to invoke the model; it is `provider` and `model` joined by `/`. Fetch model details or input/output schemas through their separate endpoints when needed.
+A model's ID and billing facts.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `id` | [`RouterModelId`](#routermodelid) | yes | Model ID, e.g. `anthropic/claude-opus-4-6`, Up to 193 characters | The model ID used in `POST /v2/models/{provider}/{model}`, such as `anthropic/claude-opus-4-6`. |
-| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | yes | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. |
-| `model` | [`RouterModelSegment`](#routermodelsegment) | yes | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
-| `billing` | [`RouterModelBilling`](#routermodelbilling) | yes | - | Billing behavior to check before invoking a model. |
+| `id` | [`RouterModelId`](#routermodelid) | yes | Model ID, e.g. `anthropic/claude-opus-4-6`, Up to 193 characters | A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator. |
+| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | yes | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart. |
+| `model` | [`RouterModelSegment`](#routermodelsegment) | yes | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`. |
+| `billing` | [`RouterModelBilling`](#routermodelbilling) | yes | - | Per-model billing FACTS a caller needs before invoking - not prices. Usage and cost figures never appear here. |
 
 ### RouterModelListResponse
 
@@ -293,59 +293,59 @@ One page of the Router model catalog.
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `data` | array of [`RouterModelListEntry`](#routermodellistentry) | yes | - | The models on this page, at most `limit` of them. |
-| `has_more` | boolean | yes | - | Whether another page exists beyond this one. |
-| `next_cursor` | [`RouterPageCursor`](#routerpagecursor) | no | Opaque cursor returned as `next_cursor`, 1–512 characters | An OPAQUE cursor into a Router list. |
-| `limit` | integer | yes | 1–100 | The page size actually served. |
+| `has_more` | boolean | yes | - | Whether another page exists beyond this one. Keep walking while this is true; do not infer the end of the catalog from a short or empty `data`. |
+| `next_cursor` | [`RouterPageCursor`](#routerpagecursor) | no | Opaque cursor returned as `next_cursor`, 1–512 characters | An OPAQUE cursor into a Router list. It is produced by the server and only ever round-tripped: it is not an offset, not a model ID, not ordered, and not stable across catalog rebuilds, so parsing one, incrementing one, or persisting one beyond the walk it came from are all outside the contract. Cursor rather than offset because the catalog is a moving list - an offset walk silently skips or repeats entries when entries are added or removed mid-walk, and a caller cannot tell that it happened. |
+| `limit` | integer | yes | 1–100 | The page size actually served. A requested `limit` above the maximum is CLAMPED down to the maximum rather than rejected, so this can be smaller than the value asked for - paginate with this number, not with the one you sent, or you will assume rows you never received. |
 
 ### RouterModelOutput
 
-A model's JSON result, without a common Comfy envelope. Asset URLs may be rewritten, and some provider adapters may omit undeclared fields. Read the model's `200` output schema at `GET /v2/models/{provider}/{model}/openapi.json` and the Router reference's Result assets section for its specific behavior.
+The model result object. Read the selected model's output schema for its exact shape.
 
 Type: `object`
 
 ### RouterModelSegment
 
-Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`.
+The model portion of a `{provider}/{model}` model ID.
 
 Type: `string` -- Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters
 
 ### RouterPageCursor
 
-An OPAQUE cursor into a Router list. It is produced by the server and only ever round-tripped: it is not an offset, not a model ID, not ordered, and not stable across catalog rebuilds, so parsing one, incrementing one, or persisting one beyond the walk it came from are all outside the contract. Cursor rather than offset because the catalog is a moving list - an offset walk silently skips or repeats entries when entries are added or removed mid-walk, and a caller cannot tell that it happened.
+An opaque catalog cursor. Pass it back unchanged as `cursor`.
 
 Type: `string` -- Opaque cursor returned as `next_cursor`, 1–512 characters
 
 ### RouterProviderSegment
 
-Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart.
+The provider portion of a `{provider}/{model}` model ID.
 
 Type: `string` -- Alphanumeric slug, e.g. `anthropic`, Up to 64 characters
 
 ### RouterValidationErrorContext
 
-The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. The key set is specific to the provider and the error type, so this is deliberately an open object: narrowing it to a fixed field list, or folding it into the `msg` string, is precisely how a ported integration compiles and then silently loses the branch that read the bound. Absent when the error type carries no bound.
+Provider-supplied details about the validation rule that failed.
 
 Type: `object`
 
 ### RouterValidationErrorDetail
 
-One model-level validation failure, in the FastAPI form. `type` carries the SPECIFIC provider reason - `value_error`, `missing`, `image_too_small`, `unsupported_audio_format`, `greater_than`, `file_too_large` and the rest - which is the granularity `RouterErrorType`'s coarse bucket cannot express. It is an open string and not an `enum` for the same reason: the provider vocabulary runs to roughly 48 values across two tiers and grows on the provider's release cycle, not ours, and an unmodelled value must reach the caller rather than fail deserialization.
+One field-level validation failure.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `loc` | array of any | yes | - | Path to the offending field, outermost segment first - for example `["body", "image_url"]`, or `["body", "images", 0]` where an integer indexes into an array. |
 | `msg` | string | yes | - | Human-readable description of this single failure. |
-| `type` | string | yes | - | Specific, machine-readable reason for this failure, passed through from the provider unchanged. |
-| `ctx` | [`RouterValidationErrorContext`](#routervalidationerrorcontext) | no | - | The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. |
-| `input` | [`RouterValidationErrorInput`](#routervalidationerrorinput) | no | - | The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. |
+| `type` | string | yes | - | Specific, machine-readable reason for this failure, passed through from the provider unchanged. This is the value a typed SDK exception hierarchy branches on; `error_type` on the response header is only its coarse bucket. |
+| `ctx` | [`RouterValidationErrorContext`](#routervalidationerrorcontext) | no | - | The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. The key set is specific to the provider and the error type, so this is deliberately an open object: narrowing it to a fixed field list, or folding it into the `msg` string, is precisely how a ported integration compiles and then silently loses the branch that read the bound. Absent when the error type carries no bound. |
+| `input` | [`RouterValidationErrorInput`](#routervalidationerrorinput) | no | - | The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. Any JSON type - string, number, boolean, array, object or null - so this schema is deliberately left untyped rather than narrowed to an object. Absent when the provider does not echo the input back. |
 
 ### RouterValidationErrorInput
 
-The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. Any JSON type - string, number, boolean, array, object or null - so this schema is deliberately left untyped rather than narrowed to an object. Absent when the provider does not echo the input back.
+The rejected input value, when the provider includes it.
 
 ### RouterValidationErrorResponse
 
-Router's model-level `422` body, in the FastAPI form: the request was well-formed enough to reach the model and the model rejected its contents. Note it carries no `error_type` of its own - that is what `X-Comfy-Error-Type` on the response is for, so a client can read the coarse bucket off the header without first deciding which of the two Router error bodies it received.
+The `422` validation error body. Read `X-Comfy-Error-Type` for its category.
 
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
