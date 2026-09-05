@@ -1,0 +1,339 @@
+---
+title: "Comfy Router API reference"
+description: "Every Comfy Router endpoint, parameter, response body and error bucket, generated from the Comfy API contract."
+---
+
+{/*
+  GENERATED FILE -- DO NOT HAND-EDIT.
+
+  Produced from the Comfy API contract by gen_router_reference.py. Edit the
+  contract and regenerate; an edit made here is overwritten by the next run and
+  is rejected by the drift gate in the meantime.
+*/}
+
+Comfy Router's canonical, model-ID-addressed routes.
+
+Base URL: `https://api.comfy.org`
+
+Every endpoint below is authenticated. Send `X-API-Key: <api-key>` or `Authorization: Bearer <jwt>`.
+
+## Endpoints
+
+### `GET /v2/models`
+
+**List the models Comfy Router can run.**
+
+Comfy Router's model catalog - one page of the canonical model IDs that `POST /v2/models/{provider}/{model}` accepts. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry's `provider` and `model` are the two path segments of the invocation route and reference the SAME schema components that route's path parameters do, and `id` is those two segments joined by `/`.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `cursor` | query | no | [`RouterPageCursor`](#routerpagecursor) | `pattern: ^[A-Za-z0-9._~+/=-]+$`, `minLength: 1`, `maxLength: 512` | Opaque pagination cursor. Pass a previous page's `next_cursor` to fetch the next page; omit it for the first page. See `RouterPageCursor` for why the value is opaque and why this route paginates by cursor rather than by offset. |
+| `limit` | query | no | integer | `maximum: 100`, `default: 20` | Number of models to return in one page. Values above the declared maximum are outside the contract, but this route does not reject them: it serves the maximum instead, and the page size actually served is echoed back as `limit` on the response, so a clamp is always detectable by the caller. Treat the maximum as the real page stride - a client that asks for more and assumes it received more will miss rows. 0 and negative values are also accepted and select the default, which is why no `minimum` is declared: sub-1 is meaningful here, not invalid. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelListResponse`](#routermodellistresponse) | `X-Comfy-Request-Id` | OK - one page of the model catalog. |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+
+### `GET /v2/models/{provider}/{model}`
+
+**Read one partner model's catalog entry by canonical model ID.**
+
+Per-model detail for a single Comfy Router model, so a caller can check one model without walking the whole paginated catalog. The SDKs use it to look a model up immediately before invoking it.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelDetail`](#routermodeldetail) | `X-Comfy-Request-Id` | OK - the model's catalog entry. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+
+### `POST /v2/models/{provider}/{model}`
+
+**Run a partner model synchronously by canonical model ID.**
+
+Comfy Router's canonical, model-ID-addressed entry point. The request body is the partner model's OWN native JSON input and the success response is that model's OWN native JSON output: Router forwards both unchanged instead of imposing a Comfy-shaped envelope, so a caller can move between the partner's API and Router by changing the host. This is the SYNCHRONOUS path: the response carries the finished result.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
+| `Idempotency-Key` | header | no | string | `minLength: 1`, `maxLength: 255` | Caller-generated key that makes retrying ONE logical call safe. A call that reached the caller with an answer is recorded against its key for 24 hours, and a retry carrying the same key is answered from that record instead of dispatching - and charging - the provider a second time, marked `Idempotent-Replayed: true`. Keys are scoped to the workspace your credential carries, or to your user when it carries none - so the keyspace is SHARED by every member of a workspace rather than private to one caller. Make a key unique across the whole workspace, not just within your own client: a second member who reuses a key string is answered from the first member's record, or refused `409` if the request differs. Because the scope follows the CREDENTIAL and not the person, a credential that carries no workspace at all scopes to your user id instead - so retrying one logical call under a different credential can land in a different namespace, where it is dispatched and charged again. Retry with the credential you started with. A keyed request with no authenticated caller is refused `401`. The guarantee is a BILLING one: a key is charged at most once. It is not a promise that a key is dispatched at most once, and it does not make a lost call resumable. Some answers are RECORDED but not replayable for the full 24 hours, and the billing guarantee is the half that always holds: the key stays consumed - the retry never re-runs and never re-charges - but it is answered `409 invalid_input` instead of being served the original body. That happens whenever Comfy does not hold a copy of the response it can still stand behind; a response past the replay size cap and a result addressed by an asset URL Comfy does not host are the two you are most likely to meet. The second is the one worth planning for, because it looks like an ordinary success: which models answer with a Comfy-hosted asset link, how long one stays valid, and what a result carries when an individual asset could not be copied are stated in one place, under Result assets in the API reference, and this paragraph does not restate them. On a model that returns its result on the original call, an answer still holding a partner's own asset link is replayed for a few minutes - which is where a dropped connection puts an SDK's automatic same-key re-send, and while the partner's link is certainly still alive - and refused after that rather than replayed dead. So a prompt retry of a partially re-hosted result behaves exactly like any other replay, and only a later one meets the `409`. That short window is deliberately NOT offered on a model that submits and is polled, because there the partner may have minted the URL long before your call collected it and its remaining life is unknowable - and those models do not need it: a call cut off mid-generation keeps its key holding the generation, so the same-key retry collects the ORIGINAL result rather than a recorded copy of it. A response past the size cap has no window either and is refused from the start. The action on any of these `409 invalid_input` refusals is the same: use a new key. Only an answer a provider actually produced is recorded, though. A refusal Router raises on its own BEFORE dispatching anything - not enabled for you yet (`403`), unknown model (`404`), not entitled to the model (`403`), a body the model's schema rejects or that names a different model than the path (`422`), a malformed request (`400 invalid_input`) - dispatched nothing and charged nothing, so it RELEASES the key: re-send the SAME key once you are on the rollout ramp or have corrected the request and it runs for real, rather than replaying the refusal or colliding with it as a `409`. That turns on whether a provider was reached, NEVER on the status, so a `400 content_policy_violation` - the partner's own answer to a call that ran, which some models meter - is recorded and replayed like any other answer. Releasing a refusal that dispatched nothing frees nothing chargeable, so it does not weaken the at-most-once billing guarantee above. |
+
+**Request body**
+
+`application/json` -- [`RouterModelInput`](#routermodelinput) (required)
+
+The partner model's native JSON input, forwarded to the provider unchanged.
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | OK - the partner model's native JSON output, returned unchanged. When this response was replayed from the record held against an `Idempotency-Key` rather than produced by running the model again, it carries `Idempotent-Replayed: true` and is not charged a second time. |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. On this route the status is ALSO how the partner's own refusal of a call that really ran is returned - the `content_policy_violation` some models meter - and that answer is recorded against an `Idempotency-Key` and served to a same-key retry, so unlike the catalog reads' shared error this response can arrive carrying `Idempotent-Replayed: true`. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `409` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` | The `Idempotency-Key` on this request is already held, and this request cannot be answered from its record. Two conditions share the status and `X-Comfy-Error-Type` is what separates them, because they are acted on in opposite ways. `concurrency_limit_exceeded` means the original call for this key is still running: wait `Retry-After` seconds and re-send THE SAME key, which collects that call's result rather than starting a second one. `invalid_input` means the key cannot serve this request at all - it was already used for a different request (the method, the path and query, or the body differ from the original), or the original completed (and, if it succeeded, was charged) and Router holds no copy of its response it can still stand behind - for example it was too large to store, or it names an asset Comfy does not host and so cannot promise still resolves, which on a direct-return model is replayed for a few minutes after the original call and refused after that - or the copy it holds is content-encoded in a way this request did not accept - and the answer is always a NEW key, never a re-send of this one. There is no `Retry-After` on any of these, because waiting changes nothing. `detail` says which case it is; the different-request case says nothing about how the call that does own the key turned out. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `413` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | The request's contents were rejected against the model's schema. The body is `RouterValidationErrorResponse`, the FastAPI `detail[]` shape, so each offending field keeps its own specific `type` and `ctx`. `X-Comfy-Error-Type` carries the coarse bucket for the whole response. |
+| `429` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in either case and `detail` says which bound was hit: the number of concurrent calls, or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller's own in-flight calls finishes. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` | Comfy stopped holding the connection at its own configured bound (`deadline_exceeded`). The body and the two headers are exactly `RouterRequestError`'s; what this adds is the optional `Retry-After`, present when a retry with the same `Idempotency-Key` will collect the generation that is still running rather than dispatch a new one. See the `504` on `POST /v2/models/{provider}/{model}`. |
+
+### `GET /v2/models/{provider}/{model}/openapi.json`
+
+**Read one partner model's input and output schemas as an OpenAPI document.**
+
+The per-model input AND output schemas for a single Comfy Router model, served as a standalone OpenAPI document, so a caller - an SDK, a codegen tool, or an agent - can discover a model's arguments, and the shape of what it returns, without reading Comfy's prose docs. It is the discovery mechanism the SDK quickstart depends on.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | Lowercase provider segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | Lowercase model segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. |
+| `If-None-Match` | header | no | string | - | The `ETag` a caller holds from an earlier `200`. When it matches the current document (RFC 9110 weak comparison; `*` matches any current document) the answer is a bodyless `304` carrying the same `ETag`, otherwise the full document. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelInputSchemaDocument`](#routermodelinputschemadocument) | `X-Comfy-Request-Id`, `ETag`, `Cache-Control` | OK - the model's input AND output schemas, as a standalone OpenAPI document. |
+| `304` | - | `X-Comfy-Request-Id`, `ETag`, `Cache-Control` | Not Modified - the document is unchanged since the `ETag` the caller sent in `If-None-Match`. No body is returned. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `500` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. |
+
+## Error buckets
+
+Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at fifteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable` and `rate_limited`.
+
+### Request-level buckets
+
+Raised for a request Router accepted and then could not complete.
+
+| `error_type` | Meaning |
+| --- | --- |
+| `invalid_input` | The request was rejected before it reached the model - a malformed body, a malformed or expired pagination cursor, an input the model's own schema does not accept, or an `Idempotency-Key` that cannot serve this request (already used for a different request - the method, the path and query, or the body differ - or already consumed by a call whose response cannot be replayed). Sent with `409` in the key cases and with `400`/`422` in the others; the status says which, and the key cases are the ones answered by using a NEW key rather than by editing the request. |
+| `content_policy_violation` | The provider refused the request on content-policy grounds. The refusal is deterministic: re-sending the same input will be refused again. |
+| `provider_error` | The partner provider reported a failure of its own, or returned a response Router could not interpret as a result. |
+| `provider_timeout` | The partner provider did not answer within its deadline. This bucket is the PROVIDER timing out and never Router's own server deadline, which is reported as `deadline_exceeded` - the two share `504` and are separated because they name different causes: this one says the partner failed, that one says Comfy stopped holding the connection. |
+| `insufficient_credits` | The calling workspace does not have enough credits to run the model. |
+| `model_not_found` | The `{provider}/{model}` ID names no model Router can run; an unknown provider lands here too. `detail` carries up to three suggestions drawn from the models the caller is entitled to see. |
+
+### Transport-level buckets
+
+Raised by Router itself, before or around the call to the model.
+
+| `error_type` | Meaning |
+| --- | --- |
+| `unauthorized` | The request carried no usable credential. |
+| `forbidden` | The credential is valid but is not entitled to this model or this operation. |
+| `concurrency_limit_exceeded` | The workspace already has as many calls in flight as it is allowed; retry once one of them finishes. It carries one further condition on the run route, on a `409` rather than the `429` above: another call is already in flight for the `Idempotency-Key` this request presented. Re-send the SAME key after `Retry-After` seconds to collect that call's result. |
+| `client_disconnected` | The caller closed the connection before Router could return a result. It is logged rather than delivered - there is no socket left to write it to - and it is an attribution, not a billing outcome: a provider generation that completed is billed regardless of whether the caller received the response. |
+| `internal_error` | Router itself failed. It is also the value a client should treat any UNRECOGNIZED bucket as, so a later addition to the set does not break a client generated before it. |
+| `deadline_exceeded` | Comfy stopped holding the connection at its own configured bound before an answer arrived. It shares `504` with `provider_timeout` and the pair says which side ran out of time; this one is Comfy's own bound, so nothing about the request was rejected and the same request may be retried. It says nothing about the charge: a provider generation that completed is billed regardless of whether the caller received the response. Retry it with the SAME `Idempotency-Key`: when the provider had already accepted the generation, the retry collects that generation rather than dispatching another, and a `Retry-After` on the `504` says when to ask. |
+| `not_enabled` | Comfy Router is not switched on for this caller yet. Nothing about the request is wrong and the model exists, which is why this is not `model_not_found`; it shares `403` with `forbidden` and is NOT the same thing, because `forbidden` is an entitlement decision about the caller while this is a state of the rollout. It is TERMINAL: do not retry, and do not treat it as an outage. |
+| `service_unavailable` | A service Comfy Router depends on is temporarily unavailable and the caller did nothing wrong. Retry it with backoff: it is the one bucket here whose condition clears on its own, without the caller changing the request and without a concurrency slot freeing, which is what distinguishes it from the other retryable answers (`concurrency_limit_exceeded`, `deadline_exceeded`). It is separate from `internal_error` - which is a `500` and means Router itself failed - so a client can tell "come back shortly" from "this call is not going to work". |
+| `rate_limited` | The caller has spent an allowance measured over a WINDOW and must wait for that window to roll. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller's own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window. |
+
+## Response headers
+
+| Header | Type | Description |
+| --- | --- | --- |
+| `Cache-Control` | string | Freshness directives for the served schema document. `private` because the route is authenticated - the document itself is not caller-specific, but a shared cache must not hold a response to an authenticated request - and `must-revalidate` so a stale copy is revalidated against the `ETag` rather than served on. |
+| `ETag` | string | Strong entity tag over the served document's bytes, for `GET /v2/models/{provider}/{model}/openapi.json`. A per-model schema changes rarely and an SDK re-fetches it often, so a caller should store this value and send it back as `If-None-Match` to get a `304` instead of the document. |
+| `Idempotent-Replayed` | boolean | Present and `true` when this response was served from an `Idempotency-Key`'s record rather than by running the model again. It carries the original call's status, body and content type, and it is not billed a second time - the charge settled when the original completed. The header is ABSENT on a fresh run rather than sent as `false`, so branch on its presence. |
+| `Retry-After` | integer | Seconds to wait before retrying the SAME request with the SAME `Idempotency-Key`. It is set on the two answers such a retry can actually collect from: a `409` carrying `error_type: concurrency_limit_exceeded`, where the original call for that key is still running, and a `deadline_exceeded` `504`, where Comfy stopped holding the connection but still holds a handle to a generation the provider is running. In both cases the value is the interval Router itself would wait before asking again, which is the one honest number this route has for "ask again later". Absent when there is nothing to collect: an unkeyed call, a bound that expired before the provider accepted anything, or a `409` that refuses the key outright instead of asking the caller to wait. |
+| `X-Comfy-Error-Type` | [`RouterErrorType`](#routererrortype) | Coarse, machine-readable bucket for the failure, set by Router on every error response. It carries the same value as `RouterErrorResponse.error_type`, and on the `422` it is the ONLY machine-readable bucket, because that body is the FastAPI `detail[]` shape and has no `error_type` field of its own. A client can therefore branch on this header alone, before deciding which of the two Router error bodies it received. |
+| `X-Comfy-Request-Id` | string | Server-generated identifier for this call, present on EVERY Router response - success, 4xx and 5xx alike, because an error response is exactly when a user needs an id to quote in a support request. The SAME value is written into the call's usage/audit event, which is what lets a complaint about a charge be joined to the charge itself instead of searched for by timestamp. |
+| `X-Committed-Spend-Current` | integer | The USD cents the caller currently has committed to calls still in flight. On a `429` this EXCLUDES the refused call, whose commitment was rolled back before the refusal was sent; on an admitted response it INCLUDES the call being answered. Present alongside `X-Committed-Spend-Limit`. |
+| `X-Committed-Spend-Limit` | integer | The ceiling, in USD cents, on the partner spend the caller may have committed to calls still in flight - money held from the moment a call is admitted and released when that call finishes. It is not a budget, a balance, or any running total of what the caller has spent to date: settling an invoice frees no room under it, and letting an in-flight call finish does. Contrast `X-Concurrency-Limit`, which bounds those same in-flight calls counted as a NUMBER OF CALLS rather than priced. How the ceiling is SIZED is a separate question from what it measures, and it is not tier-independent: the ceiling moves with the account's lifetime paid spend, off the same thresholds the concurrent-call tier uses, so paying more raises it - see [partner-node concurrency limits](https://docs.comfy.org/tutorials/partner-nodes/concurrency-limits) for that ladder and for the concurrent-call bound that shares this `429`. Present on BOTH outcomes of an enforcing committed-spend gate - the `429` it raises and the success it admits - and absent while the gate is not enforcing, when it declines to decide and lets the call through, or on a `429` raised by the concurrent-call pool instead (a committed-spend `429` carries this trio and drops `X-Concurrency-*`). |
+| `X-Committed-Spend-Remaining` | integer | The USD cents of headroom left under the ceiling, floored at zero. It can be positive on a refusal: the refused call cost more than what was left, and a cheaper call would still be admitted. Present alongside `X-Committed-Spend-Limit`. |
+
+## Result assets
+
+A model that produces an image, a video or an audio file answers with a link to it, with the bytes inline, or with both, and Router forwards whichever the partner sent on the partner's own field. What is not always the partner's is where a link POINTS: for the models below, Router copies the asset onto Comfy storage while it answers your call and the link you receive is a Comfy-hosted one. Which models those are is a property of the model, not of anything you send or of any header you set.
+
+| Models | What is copied onto Comfy storage | The Comfy-hosted link is valid for |
+| --- | --- | --- |
+| `bfl/*` | the finished asset, and the draft-cache asset when the result carries one | 24 hours |
+| `byteplus/*` video models (`seedance`, `dreamina-seedance`) | the finished video, and the last-frame image when the result carries one | 24 hours |
+| `minimax/*` | the finished video | 12 hours |
+| `xai/*` | every generated image, and the finished video | 24 hours |
+
+The clock starts when Comfy copies the asset, which happens while your call is being answered - not when you read the response, and not when you first follow the link. Each row names what is copied for that provider, and a result a row does not name is not copied: a `byteplus/seedream-*` or `byteplus/seededit-*` image is returned the way everything below is.
+
+**Every other model in the catalog returns the partner's own asset reference, or the bytes inline, exactly as the partner produced it.** `veo/*` is the family worth naming here, because it is a video family like two of the rows in the table and behaves like neither them nor that sentence. A Veo result carries its videos on `response.videos[]`, and which member you get depends on how the environment answering you is configured: `bytesBase64Encoded` is the clip inline, so the bytes are yours the moment you have the response and there is no link to expire, while `gcsUri` means Comfy asked the partner to write the clip straight into Comfy storage and the value you receive is a Comfy-signed HTTPS link, valid for 24 hours from the moment your call is answered. Read whichever member is present rather than assuming one. `veo/*` is deliberately not a row in the table above even in the second case, because nothing is COPIED: the clip is written once, by the partner, into the bucket the link addresses - so there is no second copy of the bytes and no per-asset copy step that can fail. Where a model on no row above answers with a link instead, that link is the PARTNER's: it carries the partner's expiry, which is the partner's to set, is frequently much shorter than the values in the table, and is not a figure this contract states. Fetch the asset promptly rather than storing the URL and following it later.
+
+Copying is best effort and is decided per asset, never per response. An asset Comfy could not copy keeps the partner's own reference on THAT entry while every other entry of the same response keeps its Comfy-hosted link; the call still succeeds and is charged exactly as a fully copied one is, and nothing in the body marks which entry is which. So read the value you were given rather than inferring it from the model, and never read one Comfy-hosted link in a response as a promise about the entries beside it.
+
+Whether a result is Comfy-hosted also decides whether a completed call can still be replayed from its `Idempotency-Key` record later; the `Idempotency-Key` parameter above says what a retry is answered with when it cannot be.
+
+## Per-model input schemas
+
+A model's own input fields are not reproduced here. Read them live from `GET /v2/models/{provider}/{model}/openapi.json`, which serves the same document the server validates the call against, so what is published and what is enforced cannot drift apart. Take a model ID from `GET /v2/models`, append `/openapi.json` to its invocation path, and generate against the document you get back.
+
+## Schemas
+
+### RouterChargesOnPolicyRejection
+
+Whether a call this model REFUSES on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore.
+
+Type: `string`
+
+### RouterErrorResponse
+
+Router's request-level error body: what is returned when the request never reached the model, or failed for a reason the model itself did not report - auth, quota, an unknown model ID, or provider transport. A model-level validation failure has its own shape, `RouterValidationErrorResponse`, because flattening a FastAPI `detail[]` array into this `detail` string would destroy the per-field granularity an SDK branches on.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `detail` | string | yes | - | Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead. |
+| `error_type` | [`RouterErrorType`](#routererrortype) | yes | - | Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at fifteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable` and `rate_limited`. |
+
+### RouterErrorType
+
+Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at fifteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable` and `rate_limited`.
+
+Type: `string`
+
+### RouterModelBilling
+
+Per-model billing FACTS a caller needs before invoking - not prices. Usage and cost figures never appear here.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `charges_on_policy_rejection` | [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection) | yes | - | Whether a call this model REFUSES on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore. |
+
+### RouterModelDetail
+
+Per-model detail for one Comfy Router model: everything the catalog listing reports for it, plus the per-model fields that only the single-model route carries.
+
+Composes [`RouterModelListEntry`](#routermodellistentry), [`RouterModelDetailFields`](#routermodeldetailfields).
+
+Type: `object`
+
+### RouterModelDetailFields
+
+The half of `RouterModelDetail` the catalog listing does NOT carry: per-model fields worth one lookup but not worth repeating on every entry of a paginated catalog page.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `input_schema_url` | string | no | `format: uri`, `pattern: ^https://`, `maxLength: 2048` | Pointer to this model's input schema document - the description of the body `POST /v2/models/{provider}/{model}` accepts for this model. Only the POINTER is part of this contract: the document it addresses is authored separately. Absent when no schema has been authored for the model. |
+
+### RouterModelId
+
+A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator.
+
+Type: `string` -- `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 193`
+
+### RouterModelInput
+
+A partner model's native JSON input document, forwarded to the provider as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI's spec-driven codegen needs a class to generate.
+
+Type: `object`
+
+### RouterModelInputSchemaDocument
+
+A standalone OpenAPI document describing ONE Comfy Router model's input AND output - the body `POST /v2/models/{provider}/{model}` accepts for that model, under the operation's `requestBody`, and the body it returns, under that operation's `200` content. It is what `GET /v2/models/{provider}/{model}/openapi.json` returns. The component keeps its historical name, which predates the output half; the shape it describes is the whole document, not the input alone.
+
+Type: `object`
+
+### RouterModelListEntry
+
+One entry in the Router model catalog: the identity of a runnable model, and nothing else. The per-model detail route composes this same entry rather than restating it, which is why the name is `...ListEntry` and not `...Summary` - there must be exactly one definition of what a catalog entry is. Per-model detail and the per-model input/output schemas are their own routes, so this shape stays the minimum a caller needs in order to invoke the model - deliberately, because this is the payload an SDK fetches on cold start. `id` is `provider` and `model` joined by `/`; the two fields are carried separately as well so a caller composes the invocation path without splitting a string.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `id` | [`RouterModelId`](#routermodelid) | yes | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 193` | A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator. |
+| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | yes | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64` | Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart. |
+| `model` | [`RouterModelSegment`](#routermodelsegment) | yes | `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128` | Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`. |
+| `billing` | [`RouterModelBilling`](#routermodelbilling) | yes | - | Per-model billing FACTS a caller needs before invoking - not prices. Usage and cost figures never appear here. |
+
+### RouterModelListResponse
+
+One page of the Router model catalog.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `data` | array of [`RouterModelListEntry`](#routermodellistentry) | yes | - | The models on this page, at most `limit` of them. |
+| `has_more` | boolean | yes | - | Whether another page exists beyond this one. Keep walking while this is true; do not infer the end of the catalog from a short or empty `data`. |
+| `next_cursor` | [`RouterPageCursor`](#routerpagecursor) | no | `pattern: ^[A-Za-z0-9._~+/=-]+$`, `minLength: 1`, `maxLength: 512` | An OPAQUE cursor into a Router list. It is produced by the server and only ever round-tripped: it is not an offset, not a model ID, not ordered, and not stable across catalog rebuilds, so parsing one, incrementing one, or persisting one beyond the walk it came from are all outside the contract. Cursor rather than offset because the catalog is a moving list - an offset walk silently skips or repeats entries when entries are added or removed mid-walk, and a caller cannot tell that it happened. |
+| `limit` | integer | yes | `minimum: 1`, `maximum: 100` | The page size actually served. A requested `limit` above the maximum is CLAMPED down to the maximum rather than rejected, so this can be smaller than the value asked for - paginate with this number, not with the one you sent, or you will assume rows you never received. |
+
+### RouterModelOutput
+
+A partner model's native JSON output document, returned to the caller as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI's spec-driven codegen needs a class to generate. For the concrete shape ONE model returns, read that model's own document at `GET /v2/models/{provider}/{model}/openapi.json`, whose `200` carries the per-model output schema when Comfy has described it.
+
+Type: `object`
+
+### RouterModelSegment
+
+Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`.
+
+Type: `string` -- `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 128`
+
+### RouterPageCursor
+
+An OPAQUE cursor into a Router list. It is produced by the server and only ever round-tripped: it is not an offset, not a model ID, not ordered, and not stable across catalog rebuilds, so parsing one, incrementing one, or persisting one beyond the walk it came from are all outside the contract. Cursor rather than offset because the catalog is a moving list - an offset walk silently skips or repeats entries when entries are added or removed mid-walk, and a caller cannot tell that it happened.
+
+Type: `string` -- `pattern: ^[A-Za-z0-9._~+/=-]+$`, `minLength: 1`, `maxLength: 512`
+
+### RouterProviderSegment
+
+Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart.
+
+Type: `string` -- `pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$`, `maxLength: 64`
+
+### RouterValidationErrorContext
+
+The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. The key set is specific to the provider and the error type, so this is deliberately an open object: narrowing it to a fixed field list, or folding it into the `msg` string, is precisely how a ported integration compiles and then silently loses the branch that read the bound. Absent when the error type carries no bound.
+
+Type: `object`
+
+### RouterValidationErrorDetail
+
+One model-level validation failure, in the FastAPI form. `type` carries the SPECIFIC provider reason - `value_error`, `missing`, `image_too_small`, `unsupported_audio_format`, `greater_than`, `file_too_large` and the rest - which is the granularity `RouterErrorType`'s coarse bucket cannot express. It is an open string and not an `enum` for the same reason: the provider vocabulary runs to roughly 48 values across two tiers and grows on the provider's release cycle, not ours, and an unmodelled value must reach the caller rather than fail deserialization.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `loc` | array of any | yes | - | Path to the offending field, outermost segment first - for example `["body", "image_url"]`, or `["body", "images", 0]` where an integer indexes into an array. |
+| `msg` | string | yes | - | Human-readable description of this single failure. |
+| `type` | string | yes | - | Specific, machine-readable reason for this failure, passed through from the provider unchanged. This is the value a typed SDK exception hierarchy branches on; `error_type` on the response header is only its coarse bucket. |
+| `ctx` | [`RouterValidationErrorContext`](#routervalidationerrorcontext) | no | - | The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. The key set is specific to the provider and the error type, so this is deliberately an open object: narrowing it to a fixed field list, or folding it into the `msg` string, is precisely how a ported integration compiles and then silently loses the branch that read the bound. Absent when the error type carries no bound. |
+| `input` | [`RouterValidationErrorInput`](#routervalidationerrorinput) | no | - | The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. Any JSON type - string, number, boolean, array, object or null - so this schema is deliberately left untyped rather than narrowed to an object. Absent when the provider does not echo the input back. |
+
+### RouterValidationErrorInput
+
+The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. Any JSON type - string, number, boolean, array, object or null - so this schema is deliberately left untyped rather than narrowed to an object. Absent when the provider does not echo the input back.
+
+### RouterValidationErrorResponse
+
+Router's model-level `422` body, in the FastAPI form: the request was well-formed enough to reach the model and the model rejected its contents. Note it carries no `error_type` of its own - that is what `X-Comfy-Error-Type` on the response is for, so a client can read the coarse bucket off the header without first deciding which of the two Router error bodies it received.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `detail` | array of [`RouterValidationErrorDetail`](#routervalidationerrordetail) | yes | - | Every validation failure found on the request, one entry per offending field. |
