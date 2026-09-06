@@ -673,7 +673,44 @@ ${body}
 /** The one-line body placeholder for a model whose request fields Router does not publish. */
 const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.";
 
-function derivedSnippets(model: string): string {
+/**
+ * The published input example, when it is a JSON object we can render as a body.
+ *
+ * An authored model carries one and it is a REAL call: openapi.yml takes it from
+ * that model's end-to-end smoke case, and routervalidate's
+ * TestAuthoredModelsAreValidatedAgainstTheirOwnSchema runs it through the same
+ * validator that guards live traffic, so it necessarily carries every required
+ * field. Inlining it is what makes the quick start copy-pasteable rather than a
+ * shape the reader has to assemble from the Input table below.
+ *
+ * Anything else -- absent, null, or a non-object -- falls back to BODY_HINT.
+ * That is the unauthored case, where Router genuinely cannot state the fields
+ * and a fabricated body would be worse than an honest placeholder.
+ */
+function bodyExample(example: unknown): Record<string, unknown> | undefined {
+  if (example === null || typeof example !== "object" || Array.isArray(example)) return undefined;
+  const entries = Object.entries(example as Record<string, unknown>);
+  return entries.length > 0 ? (example as Record<string, unknown>) : undefined;
+}
+
+function derivedSnippets(model: string, example?: unknown): string {
+  // Rendered through the same pyLiteral/tsLiteral/esc helpers the curated
+  // snippets use, so the three languages cannot drift from one another or from
+  // the JSON in the Examples section -- the invariant stated at the top of this
+  // file. Derived pages have no file inputs, so the FileInput list is empty.
+  const body = bodyExample(example);
+  const pyBody = body
+    ? Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n")
+    : `            # ${BODY_HINT}`;
+  const tsBody = body
+    ? Object.entries(body).map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, [], k)},`).join("\n")
+    : `  // ${BODY_HINT}`;
+  const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
+  const curlJson = body
+    ? `{${Object.entries(body).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(", ")}}`
+    : "{}";
+  const curlHint = body ? "" : `# ${BODY_HINT}\n`;
+
   const python = `from comfy_sdk import Comfy
 
 # Reads COMFY_API_KEY from the environment. Each call sends a fresh
@@ -682,7 +719,7 @@ with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
-            # ${BODY_HINT}
+${pyBody}
         },
     )
 
@@ -692,16 +729,15 @@ print(result)`;
 // Reads COMFY_API_KEY from the environment. Each call sends a fresh
 // Idempotency-Key and waits up to 10 minutes for the finished result.
 const { data } = await comfy.models.run("${model}", {
-  // ${BODY_HINT}
+${tsBody}
 });
 
 console.log(data);`;
-  const curl = `# ${BODY_HINT}
-curl ${BASE_URL}${ROUTE}/${model} \\
+  const curl = `${curlHint}curl ${BASE_URL}${ROUTE}/${model} \\
   -H "X-API-Key: $COMFY_API_KEY" \\
   -H "Idempotency-Key: $(uuidgen)" \\
   -H "Content-Type: application/json" \\
-  -d '{}'`;
+  -d "${curlJson}"`;
   return `<CodeGroup>
 \`\`\`python Python
 ${python}
@@ -752,7 +788,7 @@ ${setup}
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${model}\`
 
-${derivedSnippets(model)}
+${derivedSnippets(model, s.inputExample)}
 
 ## Schema
 
