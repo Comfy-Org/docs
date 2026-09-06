@@ -25,7 +25,7 @@ export const CMS_SIMPLIFY_SYSTEM_PROMPT = `You are an expert technical writer cr
 **Section order (mandatory — never reorder):**
 1. \`**New Open-Source Model Support**\` — when the source lists new open-source models
 2. \`**Partner Node Updates**\` — when the source lists partner or API node updates; when open-source models are also present, place this immediately after them
-3. \`**New Node Updates**\` — **optional**; omit by default even if the source has a **New Nodes** section
+3. \`**New Node Updates**\` — **optional** for ordinary new nodes; **required** when the source has a core/built-in deprecation, removal, replacement, or EOL
 
 Emit only sections that have source items, in the order above. When open-source models are absent, Partner Node Updates may lead. Never place Partner Node Updates before New Open-Source Model Support when both are present. Never place New Node Updates before Partner Node Updates when both are present. Never merge categories into a flat list. Omit a section entirely if the source has no items for it.
 
@@ -36,13 +36,16 @@ Emit only sections that have source items, in the order above. When open-source 
 
 **Partner Node Updates:**
 - Include partner/API node additions or updates from the source
+- **Also include** partner/API node deprecation, removal, replacement, and EOL / retirement. These are first-class partner updates, not optional extras. Do not drop them to make room for new-feature bullets unless the bullet limit forces a choice: then keep lifecycle items over minor partner tweaks
+- When a successor exists, name both the old node or model and the replacement in the same bullet
 - Preserve scope or capability details when stated (e.g. number of new nodes, supported modality)
 - Always the second section when open-source models are also present (right after Open-Source Model Support)
 
-**New Node Updates (optional — default omit):**
-- **Default: do not emit this section.** Docs changelog may list New Nodes; the CMS popup does not need them.
-- Only include \`**New Node Updates**\` when the user message explicitly asks to include new nodes (or equivalent). Otherwise skip the whole section even if the source has **New Nodes**.
-- When explicitly requested: include meaningful user-facing entries (within the bullet limit); last among the three sections; skip minor plumbing with no workflow impact
+**New Node Updates (optional — default omit ordinary new nodes):**
+- **Default: do not emit this section for ordinary new built-in nodes.** Docs changelog may list New Nodes; the CMS popup does not need those additions.
+- **Exception: emit this section** when the source deprecates, removes, replaces, or EOLs a core / built-in (non-partner) node. Those lifecycle bullets are required even if nobody asked to list new nodes
+- Only include ordinary new-node additions when the user message explicitly asks to include new nodes (or equivalent)
+- When the section is emitted: last among the three sections; skip minor plumbing with no workflow impact; keep lifecycle bullets
 
 **Bullet format:**
 - Linked: * [**Name**](url_from_source): Description
@@ -55,11 +58,12 @@ Emit only sections that have source items, in the order above. When open-source 
 
 **What to include (priority — matches section order):**
 1. All open-source models from the source
-2. Partner/API node updates
-3. **New Nodes only if the user message explicitly requests them** (otherwise omit)
+2. Partner/API node updates, **including** deprecation, removal, replacement, and EOL
+3. Core/built-in node deprecation, removal, replacement, and EOL (emit **New Node Updates** for these)
+4. **Ordinary New Nodes only if the user message explicitly requests them** (otherwise omit additions, but still keep lifecycle items from rule 3)
 
 **What to drop:**
-- **New Node Updates / New Nodes** by default (unless explicitly requested in the user message)
+- Ordinary **New Node Updates / New Nodes** additions by default (unless explicitly requested in the user message). Never drop deprecation, removal, replacement, or EOL
 - Minor fixes, refactors, dtype cleanups, internal tooling
 - Pure loader/plumbing changes with no workflow impact
 - Performance, stability, API housekeeping, console logging
@@ -82,7 +86,8 @@ export function buildSimplifyUserPrompt(
     "",
     `Hard limits: **${limits.maxBulletsTotal} bullets total**, **${limits.maxSections} section headings max**.`,
     "Section order: New Open-Source Model Support → Partner Node Updates → (optional) New Node Updates.",
-    "Omit **New Node Updates** by default even if the source has New Nodes, unless this message explicitly asks to include them.",
+    "Omit ordinary **New Node Updates** additions by default even if the source has New Nodes, unless this message explicitly asks to include them.",
+    "Never drop deprecation, removal, replacement, or EOL. Partner lifecycle goes under **Partner Node Updates**. Core/built-in lifecycle goes under **New Node Updates** (emit that section for those items).",
     "Section labels: **bold** (e.g. **Partner Node Updates**), not ## headings.",
     "Use only facts and links from the release data. Each bullet: **6–12 words** — one key trait, no filler.",
     "",

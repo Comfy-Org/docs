@@ -5,9 +5,10 @@ description: >-
   in-app popup, translate to zh/ja/ko/fr/ru/es in staging, push drafts to CMS.
   Resolves docs/local/cloud bullet URLs (blog.comfy.org, workflow_templates
   index.json, Cloud ?template=, user UTM, GitHub PRs). Use when updating
-  changelog/index.mdx for CMS, running cms:prepare/cms:sync, Strapi
-  release-notes, published-versions.json, CMS staging, simplifying release
-  notes for the notification popup, or cms:publish to go live.
+  changelog/index.mdx for CMS, partner node deprecation/removal/replacement/EOL
+  bullets, running cms:prepare/cms:sync, Strapi release-notes,
+  published-versions.json, CMS staging, simplifying release notes for the
+  notification popup, or cms:publish to go live.
 ---
 
 # CMS Changelog Sync
@@ -98,8 +99,9 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 | Words per version | ~60–120 |
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
-| New Node Updates | **Optional by default.** Omit from CMS popup even if docs has **New Nodes**; add only when a human explicitly asks |
-| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested |
+| New Node Updates | **Optional by default** for new built-in nodes. Omit from CMS popup even if docs has **New Nodes**, unless a human asks **or** the version has a core-node lifecycle change (deprecation, removal, replacement, EOL) |
+| Node lifecycle | **Never drop.** Deprecation, removal, replacement, and EOL belong in **Partner Node Updates** (partner/API) or **New Node Updates** (core/built-in). See **Node lifecycle (deprecation, removal, replacement, EOL)** |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and ordinary New Nodes unless requested. Do **not** drop lifecycle items |
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
 
@@ -107,7 +109,7 @@ Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version ex
 
 **Copy length (local vs Cloud):** Cloud popup users skim. After merge, shorten Cloud bullets so they do not list every node, mode, or task type. One short clause is enough: added the model, or one capability. Local CMS (`staging/en/`) and docs `changelog/index.mdx` can keep the fuller scope (which nodes, which modes). Do not shorten local to match Cloud.
 
-Example: docs/local may say H3 Max landed on text-to-video, first-last-frame, and reference nodes. Cloud: `Added H3 Max model support`.
+Example: docs/local may say H3 Max landed on text-to-video, first-last-frame, and reference nodes. Cloud: `Added H3 Max model support`. Lifecycle bullets stay on Cloud; only shorten the wording, do not omit the deprecation, removal, replacement, or EOL.
 
 ## Bullet links (docs, local CMS, Cloud CMS)
 
@@ -141,7 +143,32 @@ When curating `changelog/index.mdx` from ComfyUI git history, **do not add bulle
 
 Also omit standalone **frontend package semver bumps** unless tied to a user-visible fix worth its own bullet. CMS simplify must never promote WIKI-only items into popup copy even if they appear in the full docs block.
 
-Example staging shape (placeholders only). **New Node Updates** is optional and usually omitted:
+## Node lifecycle (deprecation, removal, replacement, EOL)
+
+When curating `changelog/index.mdx` or simplifying CMS staging, **do not skip** user-facing node lifecycle changes. These are not "minor cleanup." Users need to know a node or model option is going away, already gone, or swapped for a successor.
+
+| Change | What to write | Where |
+|--------|---------------|--------|
+| **Deprecated** | Mark the node or model as deprecated. Include the date or version if the source has one | Partner or node section below |
+| **Removed** | Say what was removed (node, model option, or API). Prefer "removed" over vague "updated" | Same |
+| **Replaced** | Name **both** the old node/model and the replacement. One bullet can cover the swap | Same |
+| **EOL / retired** | State EOL or retirement, plus what users should use instead when a successor exists | Same |
+
+**Section placement:**
+
+- **Partner / API nodes** (including a partner model option dropped from an existing node): put the bullet under **Partner Node Updates**. Partner removals, deprecations, replacements, and EOL are first-class partner updates, not an optional extra.
+- **Core / built-in nodes** (non-partner): put the bullet under **New Node Updates** (or **New Nodes** if that is the heading already in the docs block). For CMS, emit **New Node Updates** when the only reason to include that section is a lifecycle change, even if nobody asked to list ordinary new nodes.
+
+**Writing rules:**
+
+- Prefer a title that states the event: `Kling EOL`, `Reve deprecated`, `Google Veo` with "Removed …" in the body. Do not bury a removal inside an unrelated "added X" bullet.
+- If the same PR both adds a successor and removes the old node, you may use one bullet that names both. If they are separate products, use two bullets (add under the usual new-item style; lifecycle under this rule).
+- Keep Cloud copy short, but still mention the event: `Removed retiring Veo 2 and Veo 3.0`. Do not drop lifecycle bullets when shortening Cloud.
+- CMS simplify must **keep** these items. They are not in the Drop list. Do not treat "removed" or "deprecated" as internal refactors.
+
+## Example staging shape
+
+Placeholders only. **New Node Updates** is optional for ordinary new nodes, and required when a core/built-in lifecycle change is in the source:
 
 ```markdown
 **New Open-Source Model Support**
@@ -149,13 +176,15 @@ Example staging shape (placeholders only). **New Node Updates** is optional and 
 
 **Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
+* [**Partner Node EOL**](source_url): Removed or retired partner nodes, and the replacement when one exists
 ```
 
-Only when a human asks to include nodes:
+Only when a human asks to include ordinary new nodes, **or** when a core/built-in node is deprecated, removed, replaced, or EOL:
 
 ```markdown
 **New Node Updates**
 * [**Node Name**](source_url): What the node does and why it matters
+* [**Node Name deprecated**](source_url): Deprecated or removed; name the replacement when one exists
 ```
 
 Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.
@@ -213,7 +242,7 @@ Requires **Bun**. Loads `.env.local` automatically.
 
 ### New release version
 
-1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged). Set each bullet URL using **Bullet links** (blog → PR → repo for docs).
+1. Add full `<Update>` block to `changelog/index.mdx` (docs quality, unchanged). Set each bullet URL using **Bullet links** (blog → PR → repo for docs). If the release deprecates, removes, replaces, or EOLs a node (especially a Partner Node), add that under **Partner Node Updates** or **New Node Updates** per **Node lifecycle**.
 
 2. **Step 1 — Simplify EN** — review before translating:
 
@@ -295,6 +324,7 @@ When user asks to update CMS release notes:
 - [ ] Confirm `changelog/index.mdx` has the new `<Update>` block
 - [ ] Resolve bullet URLs: search template `index.json` and [blog.comfy.org/archive](https://blog.comfy.org/archive); Cloud = user UTM then `?template=` (video r2v → i2v → t2v); docs/local = blog then PR then repo
 - [ ] Shorten Cloud EN bullets (added model support, skip node lists). Keep local/docs more detailed
+- [ ] Record node lifecycle in the matching section: partner deprecation / removal / replacement / EOL under **Partner Node Updates**; core/built-in lifecycle under **New Node Updates**. Name the replacement node when one exists. Do not drop these from docs or CMS
 - [ ] Omit ComfyUI-WIKI items (embedded docs, workflow templates, model blueprints) unless user explicitly asks
 - [ ] Run `pnpm cms:prepare:en`; rewrite Cloud EN links; show staging EN → **wait for user approval**
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
@@ -327,6 +357,6 @@ When user asks to update CMS release notes:
 |--|-----------|-----------|
 | Source | `changelog/index.mdx` | `staging/en/…` |
 | Length | Full detail | 3–5 bullets |
-| New Nodes | Keep in full changelog | **Optional**; omit by default unless a human asks |
+| New Nodes | Keep in full changelog | **Optional** for ordinary new nodes; **keep** deprecation / removal / replacement / EOL |
 | i18n | `zh/changelog/` etc. | `staging/zh/` etc. |
 | Deploy | Mintlify | Strapi draft → publish |
