@@ -16,19 +16,23 @@ document.addEventListener("click", (event) => {
       panel.inert = panel !== selectedPath;
       panel.setAttribute("aria-hidden", panel === selectedPath ? "false" : "true");
     });
+    selectedPath.querySelector("[data-sample-back]").focus();
   }
 
   if (backButton) {
     const card = backButton.closest("[data-sample-card]");
     const front = card.querySelector("[data-sample-front]");
+    const path = card.dataset.activePath;
+    const openButton = front.querySelector(`[data-sample-open="${path}"]`);
     event.preventDefault();
-    card.removeAttribute("data-flipped");
-    card.removeAttribute("data-active-path");
-    front.inert = false;
-    front.setAttribute("aria-hidden", "false");
     card.querySelectorAll("[data-sample-path]").forEach((panel) => {
       panel.inert = true;
       panel.setAttribute("aria-hidden", "true");
     });
+    card.removeAttribute("data-flipped");
+    card.removeAttribute("data-active-path");
+    front.inert = false;
+    front.setAttribute("aria-hidden", "false");
+    openButton.focus();
   }
 });
