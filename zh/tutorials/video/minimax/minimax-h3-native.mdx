@@ -1,0 +1,251 @@
+---
+title: "MiniMax H3 原生工作流：T2V、I2V 与 R2V"
+description: "在 ComfyUI 中运行 MiniMax H3 文生视频、图生视频与参考生视频工作流，并介绍用于引导锚定和 Latent 噪波遮罩的高级原生节点技术。"
+sidebarTitle: "原生工作流"
+translationSourceHash: f5b4e6e5
+translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
+translationBlockHashes:
+  "_intro": 07883104
+  "MiniMax H3 Text to Video (T2V)": 2d3ed7e6
+  "MiniMax H3 Image to Video (I2V)": fac017ef
+  "MiniMax H3 Reference to Video (R2V)": 11b63b43
+  "Advanced workflows with the native nodes": bb2de607
+---
+本页介绍 ComfyUI 中三个基础的 MiniMax H3 模板工作流，以及基于原生 H3 节点构建的高级技巧。如需了解模型能力、提示词编写和加速方法，请参阅 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
+
+## MiniMax H3 文生视频（T2V）
+
+根据文本提示词生成视频，并带有原生立体声音频。
+
+<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_t2v.mp4"></video>
+
+<CardGroup cols={2}>
+  <Card title="在 Comfy Cloud 上运行" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_t2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
+    在 Comfy Cloud 中打开
+  </Card>
+  <Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_t2v.json">
+    下载 JSON，或在模板库中搜索“MiniMax H3 T2V”
+  </Card>
+</CardGroup>
+
+### 模型下载
+
+<CardGroup cols={2}>
+  <Card title="Diffusion Model: minimax_h3_fl2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors">
+    放入 <code>ComfyUI/models/diffusion_models/</code>
+  </Card>
+  <Card title="文本编码器：qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
+    放入 <code>ComfyUI/models/text_encoders/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
+    放入 <code>ComfyUI/models/vae/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
+    放入 <code>ComfyUI/models/vae/</code>
+  </Card>
+  <Card title="LoRA：minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
+    工作流的模型扫描需要此文件；它为可选的 Lightning LoRA 加速模式提供支持。放入 <code>ComfyUI/models/loras/</code>
+  </Card>
+</CardGroup>
+
+### 模型存储
+
+```
+ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │   └── minimax_h3_fl2va_pruned_int8_convrot.safetensors
+│   ├── 📂 text_encoders/
+│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+│   ├── 📂 vae/
+│   │   ├── minimax_h3_video_vae_fp16.safetensors
+│   │   └── minimax_h3_audio_vae_fp32.safetensors
+│   ├── 📂 loras/
+│   │   └── minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors
+│   └── 📂 embeddings/
+│       └── minimaxh3_art_is_explosion.safetensors
+```
+
+### 提示词技巧
+
+1. **描述整个场景**：先描述整体场景（地点、角色、正在发生的事），再按时间拆分为多个镜头。
+2. **镜头、相机与音频**：在同一个提示词块中描述镜头、相机运动及伴随音频（对话、音效、音乐）。
+3. **分辨率**：H3 的原生画布短边为 768px，在 16:9 下即 1344x768，分辨率会按 32 的倍数取整。
+4. **时长**：在 24fps 下，时长输入会对齐到模型每块 17 帧（17k+5）的网格。
+5. **首帧/末帧**：将图像连接到 `MiniMaxH3ImageToVideo` 节点的 `first_frame` 和/或 `last_frame`，即可将此工作流变成首帧/末帧图生视频。
+6. **Turbo 模式（可选）**：工作流默认以 20 步生成；如需更好的运动质量，可以提高步数（例如设为 25）。在 MiniMax H3 节点上启用 `turbo_mode`，即可使用随附的 Lightning LoRA（`minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16`）以 8 步运行，生成速度大幅提升，但音频和运动质量会略有下降。
+
+官方基础模式的 [提示词编写指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) 内容已总结在 [概览页面](/zh/tutorials/video/minimax/minimax-h3#提示词编写) 上。
+
+## MiniMax H3 图生视频（I2V）
+
+从输入图像生成视频，并可选择使用首帧/末帧关键帧。
+
+<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_i2v.mp4"></video>
+
+<CardGroup cols={2}>
+  <Card title="在 Comfy Cloud 上运行" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_i2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
+    在 Comfy Cloud 中打开
+  </Card>
+  <Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_i2v.json">
+    下载 JSON，或在模板库中搜索 “MiniMax H3 I2V”
+  </Card>
+</CardGroup>
+
+<CardGroup cols={1}>
+  <Card title="输入图像：transparent_rgb_gaming_mouse.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/transparent_rgb_gaming_mouse.png">
+    下载默认输入图像，或使用你自己的图像。
+  </Card>
+</CardGroup>
+
+### 模型下载
+
+<CardGroup cols={2}>
+  <Card title="Diffusion 模型：minimax_h3_fl2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors">
+    放入 <code>ComfyUI/models/diffusion_models/</code>
+  </Card>
+  <Card title="文本编码器：qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
+    放入 <code>ComfyUI/models/text_encoders/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
+    放入 <code>ComfyUI/models/vae/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
+    放入 <code>ComfyUI/models/vae/</code>
+  </Card>
+</CardGroup>
+
+<CardGroup cols={1}>
+  <Card title="Turbo LoRA：minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
+    放入 <code>ComfyUI/models/loras/</code>。当 <code>turbo_mode</code> 启用时使用。
+  </Card>
+</CardGroup>
+
+### 模型存储
+
+```
+ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │   └── minimax_h3_fl2va_pruned_int8_convrot.safetensors
+│   ├── 📂 text_encoders/
+│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+│   ├── 📂 loras/
+│   │   └── minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors
+│   ├── 📂 vae/
+│   │   ├── minimax_h3_video_vae_fp16.safetensors
+│   │   └── minimax_h3_audio_vae_fp32.safetensors
+│   └── 📂 embeddings/
+│       └── minimaxh3_art_is_explosion.safetensors
+```
+
+### 提示技巧
+
+1. **关键帧**：`first_frame` 和 `last_frame` 输入均为可选；模型会生成它们之间的运动。
+2. **提示词**：在同一个提示词块中描述镜头、运动以及伴随的音频（对白、音效、音乐）。
+3. **分辨率**：H3 的原生画布短边为 768px，在 16:9 下为 1344x768，且分辨率会四舍五入到 32 的倍数。
+4. **时长**：时长输入会在 24fps 下对齐到模型每块 17 帧（17k+5）的网格。
+5. **Turbo 模式**：在 MiniMax H3 节点上启用 `turbo_mode`，即可切换到 turbo LoRA，并使用 `turbo_steps`（默认为 8）而不是 20 步生成。`turbo_model_strength` 控制 LoRA 强度（默认为 1.0）。
+
+官方基础模式的[提示词编写指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)已总结在[概览页](/zh/tutorials/video/minimax/minimax-h3#提示词编写)上。
+
+## MiniMax H3 参考转视频（R2V）
+
+通过参考图像、视频和音频的任意组合来生成视频，锁定角色、风格、运动、运镜或声音。
+
+<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_r2v.mp4"></video>
+
+<CardGroup cols={2}>
+  <Card title="在 Comfy Cloud 上运行" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_r2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
+    在 Comfy Cloud 中打开
+  </Card>
+  <Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_r2v.json">
+    下载 JSON，或在模板库中搜索“MiniMax H3 R2V”
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="参考图像：red_superboy_on_city_roof.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/red_superboy_on_city_roof.png">
+    工作流使用的角色参考，也可以使用自己的图像。
+  </Card>
+  <Card title="参考图像：mecha_dragon_lightning.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/mecha_dragon_lightning.png">
+    工作流使用的风格和主题参考，也可以使用自己的图像。
+  </Card>
+</CardGroup>
+
+### 模型下载
+
+<CardGroup cols={2}>
+  <Card title="Diffusion 模型：minimax_h3_ref2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors">
+    放置到 <code>ComfyUI/models/diffusion_models/</code>
+  </Card>
+  <Card title="文本编码器：qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
+    放置到 <code>ComfyUI/models/text_encoders/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
+    放置到 <code>ComfyUI/models/vae/</code>
+  </Card>
+  <Card title="VAE：minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
+    放置到 <code>ComfyUI/models/vae/</code>
+  </Card>
+  <Card title="LoRA：minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors">
+    工作流的模型扫描必需此文件；为可选的 Lightning LoRA turbo 模式提供支持。放置到 <code>ComfyUI/models/loras/</code>
+  </Card>
+</CardGroup>
+
+### 模型存储
+
+```
+ComfyUI/
+├── 📂 models/
+│   ├── 📂 diffusion_models/
+│   │   └── minimax_h3_ref2va_pruned_int8_convrot.safetensors
+│   ├── 📂 text_encoders/
+│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+│   ├── 📂 vae/
+│   │   ├── minimax_h3_video_vae_fp16.safetensors
+│   │   └── minimax_h3_audio_vae_fp32.safetensors
+│   ├── 📂 loras/
+│   │   └── minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors
+│   └── 📂 embeddings/
+│       └── minimaxh3_art_is_explosion.safetensors
+```
+
+### 提示技巧
+
+1. **按标签引用**：按照输入被连接时的精确顺序，通过标签引用每个输入，例如 `<Picture 1>`、`<Video 1>`、`<Audio 1>`
+2. **为每个参考分配任务**：说明哪个参考驱动镜头的哪一部分（身份、风格、运动、相机、声音）。明确的分配往往效果要好得多
+3. **限制**：最多 9 张参考图像、3 段参考视频（每段都可带有自己的音轨），以及 3 段独立的参考音频片段
+4. **ref_image_size**：`match` 会将参考缩小到生成分辨率以提升速度；`max` 会将短边最多保留到 2048 像素，以增强身份保真度，但会牺牲速度
+5. **注意**：R2V 使用 `ref2va` diffusion 模型，其权重与 T2V 和 I2V 工作流所用的 `fl2va` 模型不同
+6. **Turbo 模式（可选）**：该工作流默认生成 20 步；可提高步数（例如增加到 25）以获得更好的运动质量。启用 **Lightning LoRA** 复选框，即可使用 4 步 turbo LoRA（`minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16`）来大幅加快生成速度，但音频和运动质量会略微下降
+
+官方完整参考模式[提示词编写指南](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md)已在[概览页面](/zh/tutorials/video/minimax/minimax-h3#提示词编写)中进行了摘要总结。
+
+## 使用原生节点的高级工作流
+
+原生 MiniMax H3 节点支持最近 ComfyUI 更新中引入的另外两种工作流。要使用它们，请将 ComfyUI 更新到最新版本。
+
+### 将引导锚定到任意帧 (#15439)
+
+[Comfy-Org/ComfyUI#15439](https://github.com/Comfy-Org/ComfyUI/pull/15439) 中新增了 `MiniMaxH3AddGuide` 节点。在此之前，关键帧只能锚定在视频的首帧和末帧。此节点移除了这一限制：引导可以在连续时间轴上锚定到任意帧。
+
+将 MiniMax H3 节点的 `positive` 和 Latent 输出连接到 `MiniMaxH3AddGuide`，然后提供至少一个引导输入：
+
+- **图像**：静态图像或视频片段。多帧批次会作为片段锚定，并裁剪到模型有效的片段长度：5、22、39…帧 (17k+5)。少于 5 帧的批次仅使用第一帧图像
+- **音频**：在同一帧索引处锚定的音轨，裁剪到视频的剩余时长
+- **frame_idx**：要锚定到的帧。负值从视频末尾开始计数
+
+提供图像时，将视频 VAE 连接到 `vae`；提供音频时，将音频 VAE 连接到 `audio_vae`。串联多个 `MiniMaxH3AddGuide` 节点，可以在多个帧处锚定引导。
+
+例如，将现有视频的前 22 帧及其音频一起送入帧 0 处的 `MiniMaxH3AddGuide`，模型便会生成两条流的延续。或者，在 124 帧视频的第 60 帧放置一张静态图像，迫使视频经过该帧。
+
+首帧/末帧锚定产生的坐标与之前相同，因此现有工作流无需更改即可继续工作。
+
+[多帧参考](/zh/tutorials/video/minimax/minimax-h3-multiframe) 模板是基于此节点构建的现成工作流。
+
+### 使用 Latent 噪波遮罩进行 Inpainting 与扩展 (#15375)
+
+[Comfy-Org/ComfyUI#15375](https://github.com/Comfy-Org/ComfyUI/pull/15375) 为 MiniMax H3 添加了逐 token 的噪波遮罩，覆盖视频和音频 Latent。现在，你可以只重新生成视频的一部分，同时保持其余部分不变。
+
+照常将遮罩连接到 sampler 的 `denoise_mask` 输入：值为 `0` 时保留对应的 Latent 区域，值为 `1` 时重新生成该区域。视频遮罩会对齐到模型的 2x2 Latent 补丁网格，音频遮罩则对齐到完整的 Latent 帧。可用于局部 inpainting、移除物体，或扩展片段，同时保持现有内容稳定。
