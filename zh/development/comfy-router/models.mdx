@@ -44,7 +44,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
 }
 ```
 
-在调用路径中使用 `id`。`billing` 对象包含的是计费事实，而非价格。在依赖该字段之前，请先阅读[策略拒绝计费](/zh/development/comfy-router/models#model-billing-facts)。
+在调用路径中使用 `id`。`billing` 对象包含的是计费事实，而非价格。在依赖该字段之前，请先阅读[策略拒绝计费](/zh/development/comfy-router/models#模型计费事实)。
 
 ### 分页
 
@@ -95,7 +95,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
 
 ## 验证与回退 schema
 
-已编写的输入 schema 会在提供商调用之前以 `422` 和 `detail[]` 数组拒绝无效字段。请在 `loc` 中查看字段路径；参见[验证错误](/zh/development/comfy-router/models#validation-errors)。
+已编写的输入 schema 会在提供商调用之前以 `422` 和 `detail[]` 数组拒绝无效字段。请在 `loc` 中查看字段路径；参见[验证错误](/zh/development/comfy-router/models#验证错误)。
 
 某些 schema 接受任意 JSON 对象，并设置 `x-comfy-input-schema-authored: false`。Router 会在不进行模型特定验证的情况下转发这些请求，因此提供商仍可以拒绝这些请求。
 
@@ -105,7 +105,7 @@ curl -H "X-API-Key: $COMFY_API_KEY" \
 
 Router 会返回每个模型的终端结果形状。图像、视频或文本没有统一的封装格式：BFL 图像输出使用 `result.sample`，而其他模型可能返回 URL 列表或内联字节。
 
-部分资产 URL 由 Comfy 重新托管，其他的仍为提供商 URL 或内联字节。请查看[结果资产](/zh/development/comfy-router/reference#result-assets)，并及时下载即将过期的资产。重放不会续期 URL。
+部分资产 URL 由 Comfy 重新托管，其他的仍为提供商 URL 或内联字节。请查看[结果资产](/zh/development/comfy-router/reference)，并及时下载即将过期的资产。重放不会续期 URL。
 
 ## 处理错误、重试和计费
 
@@ -156,7 +156,9 @@ async function readRouterError(response: Response) {
 }
 ```
 
-</CodeGroup>### 验证错误
+</CodeGroup>
+
+### 验证错误
 
 Router 返回 `422` 表示在调用提供商之前验证失败，且不会产生计费。其响应体包含一个 `detail[]` 数组，每个被拒绝的字段对应一个条目。错误类别位于 `X-Comfy-Error-Type` 中，而不是在响应体中。例如：
 
@@ -173,13 +175,17 @@ Router 返回 `422` 表示在调用提供商之前验证失败，且不会产生
 | `type` | 提供商特定的原因，例如 `missing`、`greater_than` 或 `image_too_small`。 |
 | `ctx` | 该提供商错误的可选边界或附加数据。 |
 
-`400` 描述的是请求级别的问题，例如格式错误的游标，而不是这种逐字段验证的响应体。[错误参考](/zh/development/comfy-router/reference#error-buckets)列出了支持的类别。在控制流中，将未知类别视为 `internal_error`，但保留原始值用于诊断。不要硬性拒绝新的错误值，也不要像它们已经出现一样去实现尚在规划中的错误类别。### 安全重试
+`400` 描述的是请求级别的问题，例如格式错误的游标，而不是这种逐字段验证的响应体。[错误参考](/zh/development/comfy-router/reference)列出了支持的类别。在控制流中，将未知类别视为 `internal_error`，但保留原始值用于诊断。不要硬性拒绝新的错误值，也不要像它们已经出现一样去实现尚在规划中的错误类别。
+
+### 安全重试
 
 在**发送之前**，请将密钥、模型 ID 和请求体一并持久化保存。该逻辑调用的每次尝试都应复用此密钥。Router 不会在响应中向你返回 `Idempotency-Key`。Python SDK 会把该密钥包含在抛出的异常中；在 TypeScript 中，请自行保存你提供的密钥。
 
 密钥在凭据所关联的工作区内共享；若凭据未关联工作区，则以该用户为作用域。请使用该作用域内唯一的 UUID，并使用同一凭据重试。复用其他工作区成员的密钥，可能会返回该成员已记录的结果或引发冲突；更换凭据则可能发起一次独立的计费调用。
 
-Router 会按密钥保留对应的响应或集合状态 24 小时；重试不会开启新的保留窗口。一旦该状态过期，不要指望旧密钥能恢复结果或阻止新的调度。此外，密钥也无法让已过期的资源 URL 重新可用。### 重试结果
+Router 会按密钥保留对应的响应或集合状态 24 小时；重试不会开启新的保留窗口。一旦该状态过期，不要指望旧密钥能恢复结果或阻止新的调度。此外，密钥也无法让已过期的资源 URL 重新可用。
+
+### 重试结果
 
 | 状态 | 类别 | 含义 | 应对方法 |
 | --- | --- | --- | --- |
@@ -238,7 +244,9 @@ def collect(model, arguments, key, attempts=3):
     raise ValueError("attempts must be positive")
 ```
 
-传入原始模型、请求体和已保存的键。这限制的是尝试次数，而非总挂钟时间：每次调用可持续至客户端超时，每次等待都遵循 `Retry-After`。HTTP 错误会保留响应以供检查；传输错误会向上传播，而不会替换键。如果您的应用需要更长的恢复窗口，请使用已保存的键安排稍后收集。### 模型计费事实
+传入原始模型、请求体和已保存的键。这限制的是尝试次数，而非总挂钟时间：每次调用可持续至客户端超时，每次等待都遵循 `Retry-After`。HTTP 错误会保留响应以供检查；传输错误会向上传播，而不会替换键。如果您的应用需要更长的恢复窗口，请使用已保存的键安排稍后收集。
+
+### 模型计费事实
 
 `GET /v2/models` 和模型详情响应中包含 `billing.charges_on_policy_rejection`。它描述的是策略拒绝，而非每次失败或价格估算。
 
