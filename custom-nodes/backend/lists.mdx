@@ -1,13 +1,14 @@
 ---
 title: "Data lists"
-description: "Learn how ComfyUI handles data as Python lists internally, including length-one processing, list processing for batches, and how to use INPUT_IS_LIST and OUTPUT_IS_LIST when developing custom nodes."
+description: "Learn how ComfyUI handles data as Python lists internally, including length-one processing, list processing for batches, and how to use the V3 is_input_list and is_output_list schema options when developing custom nodes."
 ---
 
 ## Length one processing
 
-Internally, the Comfy server represents data flowing from one node to the next as a Python `list`, normally length 1, of the relevant datatype.
-In normal operation, when a node returns an output, each element in the output `tuple` is separately wrapped in a list (length 1); then when the 
-next node is called, the data is unwrapped and passed to the main function.
+Internally, the Comfy server represents data flowing from one node to the next as a Python `list`, normally
+length 1, of the relevant datatype. In normal operation, when a node returns an output, each element in the
+output is separately wrapped in a list (length 1); then when the next node is called, the data is unwrapped
+and passed to the `execute` method.
 
 <Tip>You generally don't need to worry about this, since Comfy does the wrapping and unwrapping.</Tip>
 
@@ -15,44 +16,58 @@ next node is called, the data is unwrapped and passed to the main function.
 
 ## List processing
 
-In some circumstance, multiple data instances are processed in a single workflow, in which case the internal data will be a list containing the data instances.
-An example of this might be processing a series of images one at a time to avoid running out of VRAM, or handling images of different sizes.
+In some circumstance, multiple data instances are processed in a single workflow, in which case the internal
+data will be a list containing the data instances. An example of this might be processing a series of images
+one at a time to avoid running out of VRAM, or handling images of different sizes.
 
-By default, Comfy will process the values in the list sequentially: 
+By default, Comfy will process the values in the list sequentially:
+
 - if the inputs are `list`s of different lengths, the shorter ones are padded by repeating the last value
-- the main method is called once for each value in the input lists
+- the `execute` method is called once for each value in the input lists
 - the outputs are `list`s, each of which is the same length as the longest input
 
 The relevant code can be found in the method `map_node_over_list` in `execution.py`.
 
-However, as Comfy wraps node outputs into a `list` of length one, if the `tuple` returned by
-a custom node contains a `list`, that `list` will be wrapped, and treated as a single piece of data.
-In order to tell Comfy that the list being returned should not be wrapped, but treated as a series of data for sequential processing, 
-the node should provide a class attribute `OUTPUT_IS_LIST`, which is a `tuple[bool]`, of the same length as `RETURN_TYPES`, specifying 
-which outputs which should be so treated.
+However, as Comfy wraps node outputs into a `list` of length one, if the values returned by a custom node
+contain a `list`, that `list` will be wrapped, and treated as a single piece of data.
 
-A node can also override the default input behaviour and receive the whole list in a single call. This is done by setting a class attribute
-`INPUT_IS_LIST` to `True`.
+Two V3 schema options change this behaviour:
 
-Here's a (lightly annotated) example from the built in nodes - `ImageRebatch` takes one or more batches of images (received as a list, because `INPUT_IS_LIST - True`)
-and rebatches them into batches of the requested size.
+- `is_input_list=True` on the schema: the node receives the *whole* list in a single call, instead of being
+  called once per item. All inputs become `list[type]`, regardless of how many items are passed in. This
+  replaces the legacy V1 class attribute `INPUT_IS_LIST`.
+- `is_output_list=True` on an output: the list returned for that output is not wrapped, and is treated as a
+  series of data for sequential processing by downstream nodes. This replaces the legacy V1 class attribute
+  `OUTPUT_IS_LIST`.
 
-<Tip>`INPUT_IS_LIST` is node level - all inputs get the same treatment. So the value of the `batch_size` widget is given by `batch_size[0]`.</Tip>
+To show how the two options work together, here's an `ImageRebatch`-style node written in the V3 schema. It
+takes one or more batches of images (received as a list, because `is_input_list=True`) and rebatches them
+into batches of the requested size:
 
-```Python
+<Tip>`is_input_list` is node level - all inputs get the same treatment. So the value of the `batch_size` widget is given by `batch_size[0]`.</Tip>
 
-class ImageRebatch:
+```python
+from comfy_api.latest import ComfyExtension, io
+
+
+class ImageRebatch(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(s):
-        return {"required": { "images": ("IMAGE",),
-                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}) }}
-    RETURN_TYPES = ("IMAGE",)
-    INPUT_IS_LIST = True
-    OUTPUT_IS_LIST = (True, )
-    FUNCTION = "rebatch"
-    CATEGORY = "image/batch"
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="ImageRebatch",
+            category="image/batch",
+            inputs=[
+                io.Image.Input("images"),
+                io.Int.Input("batch_size", default=1, min=1, max=4096),
+            ],
+            outputs=[
+                io.Image.Output(is_output_list=True),
+            ],
+            is_input_list=True,
+        )
 
-    def rebatch(self, images, batch_size):
+    @classmethod
+    def execute(cls, images, batch_size) -> io.NodeOutput:
         batch_size = batch_size[0]    # everything comes as a list, so batch_size is list[int]
 
         output_list = []
@@ -61,17 +76,8 @@ class ImageRebatch:
             for i in range(img.shape[0]):     # each i is a single image
                 all_images.append(img[i:i+1])
 
-        for i in range(0, len(all_images), batch_size): # take batch_size chunks and turn each into a new batch
+        for i in range(0, len(all_images), batch_size):  # take batch_size chunks and turn each into a new batch
             output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # will die horribly if the image batches had different width or height!
 
-        return (output_list,)
+        return io.NodeOutput(output_list)
 ```
-
-
-
-
-
-
-
-#### INPUT_IS_LIST
-

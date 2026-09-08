@@ -1,9 +1,9 @@
 ---
 title: "Getting Started"
-description: "Getting Started with Custom Nodes: a step-by-step ComfyUI walkthrough covering backend node setup, defining CATEGORY, INPUT_TYPES, and FUNCTION, registering nodes, adding options, and building a client-side JS extension."
+description: "Getting Started with Custom Nodes: a step-by-step ComfyUI walkthrough covering backend node setup, defining a schema, the execute method, registering nodes, adding options, and building a client-side JS extension."
 ---
 
-This page will take you step-by-step through the process of creating a custom node. 
+This page will take you step-by-step through the process of creating a custom node.
 
 Our example will take a batch of images, and return one of the images. Initially, the node
 will return the image which is, on average, the lightest in color; we'll then extend
@@ -11,7 +11,7 @@ it to have a range of selection criteria, and then finally add some client side 
 
 This page assumes very little knowledge of Python or Javascript.
 
-After this walkthrough, dive into the details of [backend code](./backend/server_overview), and 
+After this walkthrough, dive into the details of [backend code](./backend/server_overview), and
 [frontend code](./js/javascript_overview).
 
 ## Write a basic node
@@ -21,7 +21,7 @@ After this walkthrough, dive into the details of [backend code](./backend/server
 - A working ComfyUI [installation](/installation/manual_install). For development, we recommend installing ComfyUI manually.
 - A working comfy-cli [installation](/comfy-cli/getting-started).
 
-### Setting up 
+### Setting up
 
 ```bash
 cd ComfyUI/custom_nodes
@@ -53,37 +53,47 @@ Initialized empty Git repository in firstcomfynode/.git/
 ✓ Custom node project created successfully!
 ```
 
+<Note>
+The scaffold generates a legacy V1 example node. In this walkthrough, we'll replace it with the modern V3 schema. See the [V3 Migration guide](/custom-nodes/v3_migration) if you're migrating an existing node.
+</Note>
+
 ### Defining the node
 
 Add the following code to the end of `src/nodes.py`:
 
 ```Python src/nodes.py
-class ImageSelector:
-    CATEGORY = "example"
-    @classmethod    
-    def INPUT_TYPES(s):
-        return { "required":  { "images": ("IMAGE",), } }
-    RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "choose_image"
+from comfy_api.latest import ComfyExtension, io
+
+class ImageSelector(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="ImageSelector",
+            display_name="Image Selector",
+            category="example",
+            inputs=[
+                io.Image.Input("images"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="image"),
+            ],
+        )
 ```
 
 <Info>The basic structure of a custom node is described in detail [here](/custom-nodes/backend/server_overview). </Info>
 
-A custom node is defined using a Python class, which must include these four things: `CATEGORY`, 
-which specifies where in the add new node menu the custom node will be located, 
-`INPUT_TYPES`, which is a class method defining what inputs the node will take
-(see [later](/custom-nodes/backend/server_overview#input_types) for details of the dictionary returned),
-`RETURN_TYPES`, which defines what outputs the node will produce, and `FUNCTION`, the name
-of the function that will be called when the node is executed.
+A custom node is defined using a Python class inheriting from `io.ComfyNode`, which must include `define_schema`, a class method defining the node's metadata and inputs/outputs
+(see [later](/custom-nodes/backend/server_overview#define_schema) for details of the schema fields),
+and an `execute` method that is called when the node is run.
 
-<Tip>Notice that the data type for input and output is `IMAGE` (singular) even though 
+<Tip>Notice that the data type for input and output is `io.Image` even though 
 we expect to receive a batch of images, and return just one. In Comfy, `IMAGE` means
 image batch, and a single image is treated as a batch of size 1.</Tip>
 
 ### The main function
 
-The main function, `choose_image`, receives named arguments as defined in `INPUT_TYPES`, and
-returns a `tuple` as defined in `RETURN_TYPES`. Since we're dealing with images, which are internally
+The main function, `execute`, receives named arguments as defined in the schema, and
+returns an `io.NodeOutput`. Since we're dealing with images, which are internally
 stored as `torch.Tensor`, 
 
 ```Python
@@ -97,67 +107,88 @@ this into a one dimensional tensor, of length `H*W*C`, `torch.mean()` takes the 
 turns a single value tensor into a Python float. 
 
 ```Python
-def choose_image(self, images):
-    brightness = list(torch.mean(image.flatten()).item() for image in images)
-    brightest = brightness.index(max(brightness))
-    result = images[brightest].unsqueeze(0)
-    return (result,)
+    @classmethod
+    def execute(cls, images) -> io.NodeOutput:
+        brightness = list(torch.mean(image.flatten()).item() for image in images)
+        brightest = brightness.index(max(brightness))
+        result = images[brightest].unsqueeze(0)
+        return io.NodeOutput(result)
 ```
 
 Notes on those last two lines: 
 
 - `images[brightest]` will return a Tensor of shape `[H,W,C]`. `unsqueeze` is used to insert a (length 1) dimension at, in this case, dimension zero, to give 
 us `[B,H,W,C]` with `B=1`: a single image.
-- in `return (result,)`, the trailing comma is essential to ensure you return a tuple.
+- `io.NodeOutput` wraps the result values, matching the order of the schema's `outputs`.
 
 ### Register the node
 
-To make Comfy recognize the new node, it must be available at the package level. Modify the `NODE_CLASS_MAPPINGS` variable at the end of `src/nodes.py`. You must restart ComfyUI to see any changes.  
+To make Comfy recognize the new node, it must be exposed through a `ComfyExtension` and a `comfy_entrypoint` function. Modify the end of `src/nodes.py`:
 
 ```Python src/nodes.py
+class ImageSelectorExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            ImageSelector,
+        ]
 
-NODE_CLASS_MAPPINGS = {
-    "Example" : Example,
-    "Image Selector" : ImageSelector,
-}
-
-# Optionally, you can rename the node in the `NODE_DISPLAY_NAME_MAPPINGS` dictionary.
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "Example": "Example Node",
-    "Image Selector": "Image Selector",
-}
+async def comfy_entrypoint() -> ImageSelectorExtension:
+    return ImageSelectorExtension()
 ```
+
+Then update `__init__.py` to export `comfy_entrypoint` (the scaffold generates a number of V1-related exports, like `NODE_CLASS_MAPPINGS`, which you can remove):
+
+```Python __init__.py
+from .src.firstcomfynode.nodes import comfy_entrypoint
+
+__all__ = ["comfy_entrypoint"]
+```
+
+You must restart ComfyUI to see any changes.
 
 <Info>For a detailed explanation of how ComfyUI discovers and loads custom nodes, see the [node lifecycle documentation](/custom-nodes/backend/lifecycle).</Info>
 
 ## Add some options
 
 That node is maybe a bit boring, so we might add some options; a widget that allows you to 
-choose the brightest image, or the reddest, bluest, or greenest. Edit your `INPUT_TYPES` to look like:
+choose the brightest image, or the reddest, bluest, or greenest. Edit your schema's `inputs` to look like:
 
 ```Python
-@classmethod    
-def INPUT_TYPES(s):
-    return { "required":  { "images": ("IMAGE",), 
-                            "mode": (["brightest", "reddest", "greenest", "bluest"],)} }
+from comfy_api.latest import io
+
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="ImageSelector",
+        display_name="Image Selector",
+        category="example",
+        inputs=[
+            io.Image.Input("images"),
+            io.Combo.Input("mode", options=["brightest", "reddest", "greenest", "bluest"]),
+        ],
+        outputs=[
+            io.Image.Output(display_name="image"),
+        ],
+    )
 ```
 
 Then update the main function. We'll use a fairly naive definition of 'reddest' as being the average
 `R` value of the pixels divided by the average of all three colors. So:
 
 ```Python
-def choose_image(self, images, mode):
-    batch_size = images.shape[0]
-    brightness = list(torch.mean(image.flatten()).item() for image in images)
-    if (mode=="brightest"):
-        scores = brightness
-    else:
-        channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
-        absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
-        scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
-    best = scores.index(max(scores))
-    result = images[best].unsqueeze(0)
-    return (result,)
+    @classmethod
+    def execute(cls, images, mode) -> io.NodeOutput:
+        batch_size = images.shape[0]
+        brightness = list(torch.mean(image.flatten()).item() for image in images)
+        if (mode=="brightest"):
+            scores = brightness
+        else:
+            channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
+            absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
+            scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
+        best = scores.index(max(scores))
+        result = images[best].unsqueeze(0)
+        return io.NodeOutput(result)
 ```
 
 ## Tweak the UI
@@ -172,12 +203,12 @@ This requires two lines to be added to the Python code:
 from server import PromptServer
 ```
 
-and, at the end of the `choose_image` method, add a line to send a message to the front end (`send_sync` takes a message
+and, at the end of the `execute` method, add a line to send a message to the front end (`send_sync` takes a message
 type, which should be unique, and a dictionary)
 
 ```Python
 PromptServer.instance.send_sync("example.imageselector.textmessage", {"message":f"Picked image {best+1}"})
-return (result,)
+return io.NodeOutput(result)
 ```
 
 ### Write a client extension
@@ -187,7 +218,7 @@ to tell Comfy about it by exporting `WEB_DIRECTORY`:
 
 ```Python
 WEB_DIRECTORY = "./web/js"
-__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+__all__ = ["comfy_entrypoint", "WEB_DIRECTORY"]
 ```
 
 The client extension is saved as a `.js` file in the `web/js` subdirectory, so create `image_selector/web/js/imageSelector.js` with the 
@@ -208,10 +239,9 @@ All we've done is register an extension and add a listener for the message type 
 
 Stop the Comfy server, start it again, reload the webpage, and run your workflow.
 
-
 ### The complete example
 
-The complete example is available [here](https://gist.github.com/robinjhuang/fbf54b7715091c7b478724fc4dffbd03). You can download the example workflow [JSON file](https://github.com/Comfy-Org/docs/blob/main/public/workflow.json) or view it below:
+The complete example is available at the end of the bundled [`custom_nodes/example_node.py.example`](https://github.com/comfyanonymous/ComfyUI/blob/master/custom_nodes/example_node.py.example). You can download the example workflow [JSON file](https://github.com/Comfy-Org/docs/blob/main/public/workflow.json) or view it below:
 
 <div align="center">
   <img src="/images/firstnodeworkflow.png" alt="Image Selector Workflow" width="100%" />
