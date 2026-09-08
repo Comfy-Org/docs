@@ -310,8 +310,8 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
   return `${files.length ? "import base64\n" : ""}import uuid
 from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-# Reads COMFY_API_KEY from the environment. Persist this UUID with the logical
-# request before sending it, then reuse it if the application retries.
+# Reads COMFY_API_KEY from the environment. Store this UUID before starting a
+# generation. Use the same value if you retry it.
 idempotency_key = str(uuid.uuid4())
 with Comfy() as client:
     result = client.models.run(
@@ -335,8 +335,8 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   return `${imports}
-${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Persist this UUID with the logical
-// request before sending it, then reuse it if the application retries.
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Store this UUID before starting a
+// generation. Use the same value if you retry it.
 type Result = ${tsResultType(resultPath)};
 const idempotencyKey = crypto.randomUUID();
 const { data } = await comfy.models.run<Result>("${model}", {
@@ -721,8 +721,8 @@ function derivedSnippets(model: string, example?: unknown): string {
   const python = `import uuid
 from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Persist this UUID with the logical
-# request before sending it, then reuse it if the application retries.
+# Reads COMFY_API_KEY from the environment. Store this UUID before starting a
+# generation. Use the same value if you retry it.
 idempotency_key = str(uuid.uuid4())
 with Comfy() as client:
     result = client.models.run(
@@ -737,8 +737,8 @@ ${pyBody}
 print(result)`;
   const typescript = `import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Persist this UUID with the logical
-// request before sending it, then reuse it if the application retries.
+// Reads COMFY_API_KEY from the environment. Store this UUID before starting a
+// generation. Use the same value if you retry it.
 const idempotencyKey = crypto.randomUUID();
 const { data } = await comfy.models.run("${model}", {
 ${tsBody}
