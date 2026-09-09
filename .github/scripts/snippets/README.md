@@ -48,14 +48,26 @@ pnpm code-pages:gen --prune     # also delete pages whose model has left the cat
 `code-pages-check.yml` runs the check on any PR touching a spec, a generated
 page, a synced schema, `docs.json`, the shared Router snippets or the generator.
 
+Cloud syncs only `openapi-v2.yaml`, `router-openapi.yaml`, and `router-schemas/`.
+On its `chore/sync-comfy-api-v2-spec` PR, `router-docs-generate.yml` renders the
+Router reference, model pages, and navigation in this repository, then commits
+them to that same PR. Handwritten guides and `code.yaml` files stay here.
+
+The publish job requires a docs-repository `PR_GH_TOKEN` with contents write
+access. Unlike `GITHUB_TOKEN`, its push triggers the normal PR checks. Configure
+that secret and merge this workflow before enabling schema-only sync in Cloud.
+
+To regenerate the Router reference locally (Python with PyYAML installed):
+
+```bash
+python .github/scripts/router/gen_router_reference.py router-openapi.yaml development/comfy-router/reference.mdx
+```
+
 ## Coverage
 
 `--check` fails when a model under `router-schemas/` has no page, not only when
-an existing page is stale. That is the gate: the schemas are synced from cloud by
-a bot, so a model Router starts serving arrives here on its own, and the first PR
-after it lands goes red until the page is generated. Before this existed, the
-catalog grew and the sidebar did not — Router served 202 models while the docs
-listed 9.
+an existing page is stale. The sync PR's generation workflow adds the matching
+pages before merge, and this check verifies the resulting commit.
 
 The gate can only see models whose schema has been synced. `GET /v2/models` is
 the full catalog and is ahead of `router-schemas/` (202 vs 162 on 2026-09-04);
