@@ -3,9 +3,11 @@ name: cms-changelog-sync
 description: >-
   Sync ComfyUI release notes to Strapi CMS: LLM-simplify English changelog for
   in-app popup, translate to zh/ja/ko/fr/ru/es in staging, push drafts to CMS.
-  Use when updating changelog/index.mdx for CMS, running cms:prepare/cms:sync,
-  Strapi release-notes, published-versions.json, CMS staging, simplifying
-  release notes for the notification popup, or cms:publish to go live.
+  Resolves docs/local/cloud bullet URLs (blog.comfy.org, workflow_templates
+  index.json, Cloud ?template=, user UTM, GitHub PRs). Use when updating
+  changelog/index.mdx for CMS, running cms:prepare/cms:sync, Strapi
+  release-notes, published-versions.json, CMS staging, simplifying release
+  notes for the notification popup, or cms:publish to go live.
 ---
 
 # CMS Changelog Sync
@@ -101,6 +103,32 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
 
+`prepare:en` copies docs URLs and local-length copy into Cloud. After it runs, rewrite **Cloud EN** (links and wording) before translating. Never invent URLs.
+
+**Copy length (local vs Cloud):** Cloud popup users skim. After merge, shorten Cloud bullets so they do not list every node, mode, or task type. One short clause is enough: added the model, or one capability. Local CMS (`staging/en/`) and docs `changelog/index.mdx` can keep the fuller scope (which nodes, which modes). Do not shorten local to match Cloud.
+
+Example: docs/local may say H3 Max landed on text-to-video, first-last-frame, and reference nodes. Cloud: `Added H3 Max model support`.
+
+## Bullet links (docs, local CMS, Cloud CMS)
+
+Resolve each feature bullet **before** `cms:prepare:locales`. Search these sources every time a new version lands:
+
+| Source | Where |
+|--------|--------|
+| Template index | [templates/index.json](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (raw: `https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/index.json`) |
+| Blog | [blog.comfy.org](https://blog.comfy.org/) ([archive](https://blog.comfy.org/archive)) |
+
+Match a template by `name`, `title`, or `models` to the changelog item. Match a blog post only if it covers **this** product or version (MiniMax H3 day-0 is not MiniMax H3 Max).
+
+**Video templates:** when several templates exist, pick one by suffix on `name`, in this order: **r2v → i2v → t2v**. Example: `api_minimax_h3_max_r2v` over `_i2v` / `_t2v`. If none of those suffixes exist, use the remaining matching template (`flf2v`, `edit`, and similar). Cloud URL shape: `https://cloud.comfy.org/?template=<name>` (no UTM unless the user supplied one).
+
+| Surface | Link priority (first match wins) |
+|---------|----------------------------------|
+| **Cloud** CMS (`staging/cloud/`) | 1. UTM / `links.comfy.org` URL **the user provided** 2. Cloud template URL from the index 3. GitHub PR 4. ComfyUI repo commit/tag/compare |
+| **Docs** `changelog/index.mdx` and **local** CMS (`staging/en/` etc.) | 1. Matching [blog.comfy.org](https://blog.comfy.org/) post 2. GitHub PR 3. ComfyUI repo commit/tag/compare |
+
+Do **not** put Cloud `?template=` URLs on docs or local popup. Do **not** copy local blog/PR links onto Cloud when a template (or user UTM) exists. After `prepare:en` merges comfyui → cloud, replace Cloud bullets that still point at PRs if the index has a template.
+
 ## ComfyUI-WIKI commits (omit from changelog)
 
 When curating `changelog/index.mdx` from ComfyUI git history, **do not add bullets** for commits routinely opened by **[ComfyUI-WIKI](https://github.com/Comfy-Org/ComfyUI-WIKI)** — they are dependency/content syncs, not core release features:
@@ -185,7 +213,7 @@ Requires **Bun**. Loads `.env.local` automatically.
 
 ### New release version
 
-1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged).
+1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged). Set each bullet URL using **Bullet links** (blog → PR → repo for docs).
 
 2. **Step 1 — Simplify EN** — review before translating:
 
@@ -193,7 +221,7 @@ Requires **Bun**. Loads `.env.local` automatically.
    pnpm cms:prepare:en -- --force v0.25.1
    ```
 
-   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx` → **stop until approved**
+   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx` (blog/PR/repo, fuller copy). Rewrite `.github/scripts/cms/staging/cloud/en/changelog/index.mdx`: user UTM or `?template=` from the index, and **shorter** bullets (model support, not every node). → **stop until approved**
 
 3. **Step 2 — Translate** — from approved staging EN only:
 
@@ -265,8 +293,10 @@ Re-run with `--force`. Staging without `--force` **skips** existing `<Update>` b
 When user asks to update CMS release notes:
 
 - [ ] Confirm `changelog/index.mdx` has the new `<Update>` block
+- [ ] Resolve bullet URLs: search template `index.json` and [blog.comfy.org/archive](https://blog.comfy.org/archive); Cloud = user UTM then `?template=` (video r2v → i2v → t2v); docs/local = blog then PR then repo
+- [ ] Shorten Cloud EN bullets (added model support, skip node lists). Keep local/docs more detailed
 - [ ] Omit ComfyUI-WIKI items (embedded docs, workflow templates, model blueprints) unless user explicitly asks
-- [ ] Run `pnpm cms:prepare:en`; show staging EN → **wait for user approval**
+- [ ] Run `pnpm cms:prepare:en`; rewrite Cloud EN links; show staging EN → **wait for user approval**
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
 - [ ] Run `pnpm cms:preview -- --project comfyui ...` then `pnpm cms:sync -- --project comfyui ...` **only after user confirms staging**
 - [ ] Run cloud `cms:sync` / `cms:publish` only after separate explicit cloud confirmation

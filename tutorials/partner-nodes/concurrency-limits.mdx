@@ -24,6 +24,8 @@ Because the two limits are enforced independently, your effective throughput is 
 
 Your concurrency limit is based on your **lifetime paid spend**: the total of all credit purchases and subscription payments across Comfy Cloud and Partner Nodes, combined. This total accumulates over the life of your account and does not reset or look back over a rolling window.
 
+Don't confuse this with the [committed-spend ceiling](#committed-spend-ceiling) below: "committed spend" is money tied up in calls currently running, a separate bound that your tier also sets. The two numbers are otherwise unrelated.
+
 | Lifetime paid spend   | Concurrency limit |
 | :--------------------- | -----------------: |
 | $0 (no purchases yet) | 1                  |
@@ -46,6 +48,28 @@ Self-serve limits scale up to **40 concurrent requests** at the $1,000 tier.
 
 Higher-cost models have a lower allowed concurrency. When you call a model that costs **$5 or more per request**, your concurrency limit for that model is **one quarter** of your account's tier limit (rounded down, with a minimum of 1). Requests to lower-cost models continue to use your full account limit, and the two limits are tracked independently.
 
+## Committed-spend ceiling
+
+<Note>
+The committed-spend ceiling is being rolled out, and the amounts it allows are tuned over time the same way concurrency limits are, so no specific ceiling is published here. Handle the `429` and the headers below whether or not you see this refusal on your account today.
+</Note>
+
+Besides the count of simultaneous calls, your tier also caps the **total USD value committed to your in-flight calls**. A call holds its cost for as long as it runs, so the platform may also refuse a Partner Node call on this bound while you still have concurrency slots free: a few expensive calls can commit more value than a lot of cheap ones.
+
+"Committed spend" is money tied up in calls that are currently running. It is not your [lifetime paid spend](#concurrency-tiers), which is the separate total that sets your tier. Your tier sets both ceilings, but the two numbers are otherwise unrelated.
+
+Both bounds share the same `429`. The response `detail` says which one you hit: a committed-spend refusal tells you that the value committed to your calls still in flight has reached your ceiling. Only that refusal carries the `X-Committed-Spend-*` headers, so branch on the headers rather than on the message text:
+
+| Header | Meaning |
+| :--- | :--- |
+| `X-Committed-Spend-Limit` | Your ceiling on committed spend, in whole USD cents |
+| `X-Committed-Spend-Current` | Cents committed to calls still in flight, not counting the refused call |
+| `X-Committed-Spend-Remaining` | Cents of headroom left under the ceiling, floored at zero |
+
+`X-Committed-Spend-Remaining` **can be positive on a refusal**, which isn't a contradiction: the refused call cost more than the headroom that was left, and a cheaper call would still have been admitted.
+
+The retry story is the same as for the concurrency limit: the ceiling clears as your own in-flight calls finish. For the full `429` contract, including the error bucket and the other headers on the response, see the [Comfy Router API reference](/development/comfy-router/reference).
+
 ## How concurrency slots work
 
 A Partner Node call occupies one concurrency slot for the full duration of that call: from the moment the request is accepted until the provider returns a result, which for video or 3D generation can take several minutes. The slot is released as soon as the call finishes.
@@ -56,6 +80,7 @@ Only in-flight calls count against your limit. A completed call frees its slot i
 
 When all your concurrency slots are occupied and you make another Partner Node call, that call is rejected immediately with an HTTP `429` status and a response body whose message tells you to wait for existing requests to complete.
 
+- **The same `429` can also mean committed spend.** A call is refused with the same status when your in-flight calls already commit as much value as your tier allows, even while concurrency slots are free. See [Committed-spend ceiling](#committed-spend-ceiling).
 - **A blocked account returns 403 instead.** If Partner Node access has been disabled on your account (a custom limit of 0), calls are rejected with an HTTP `403` rather than a `429`.
 - **Concurrency is separate from your credit balance.** Concurrency slots only govern how many calls can run simultaneously. If your credit balance reaches zero, calls fail because you're out of credits, independent of how many concurrency slots you have free. Keep a positive balance to keep running.
 - Whether a throttled call is retried automatically depends on how you're calling the API. Check the behavior of the specific node or client you're using.
