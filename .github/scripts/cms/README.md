@@ -105,10 +105,11 @@ Configured in `cms-config.json` → `simplify`:
 | `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → optional `**New Node Updates**` (bold labels, not `##`) |
 
 - Section order is **fixed** when present: open-source models first, partner nodes second, node updates last
-- **New Node Updates is optional by default.** Omit from the CMS popup even if docs has New Nodes; include only when a human explicitly asks
+- **New Node Updates is optional by default** for ordinary new nodes. Omit those from the CMS popup even if docs has New Nodes, unless a human asks
+- **Never drop** node deprecation, removal, replacement, or EOL. Partner/API lifecycle goes under **Partner Node Updates**. Core/built-in lifecycle goes under **New Node Updates** (emit that section for those items even if nobody asked for new-node listings). Name the replacement when one exists
 - Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
-- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and New Nodes unless requested
+- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and ordinary New Nodes unless requested. Do not drop lifecycle items
 - English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
 - Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
 
