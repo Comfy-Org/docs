@@ -99,7 +99,7 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
 | New Node Updates | **Optional by default.** Omit from CMS popup even if docs has **New Nodes**; add only when a human explicitly asks |
-| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested. **Do not drop** partner removals, deprecations, or EOL |
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
 
@@ -108,6 +108,12 @@ Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version ex
 **Copy length (local vs Cloud):** Cloud popup users skim. After merge, shorten Cloud bullets so they do not list every node, mode, or task type. One short clause is enough: added the model, or one capability. Local CMS (`staging/en/`) and docs `changelog/index.mdx` can keep the fuller scope (which nodes, which modes). Do not shorten local to match Cloud.
 
 Example: docs/local may say H3 Max landed on text-to-video, first-last-frame, and reference nodes. Cloud: `Added H3 Max model support`.
+
+**OSS bullets name the model, not the plumbing.** After `prepare:en`, rewrite open-source bullets to match names users already see in `tutorials/` (checkpoint family, `fl2va` / `ref2va`, ControlNet Union, and similar). If a tutorial page already documents the model, the popup should say we added support for that model. Do not describe loader internals: optional VAE, keyframe wiring, skipped LoRA keys, unless that is the only user-facing change.
+
+**LoRA / trainer format:** say we support LoRAs trained in that format (or by that trainer). Do not mention the previous load bug.
+
+**Removals, deprecations, EOL:** keep them on the popup (do not drop as housekeeping). On Cloud, still list the retired node or model names so users know which graphs break. The "one short clause" Cloud rule does not apply to removal bullets.
 
 ## Bullet links (docs, local CMS, Cloud CMS)
 
@@ -118,9 +124,9 @@ Resolve each feature bullet **before** `cms:prepare:locales`. Search these sourc
 | Template index | [templates/index.json](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (raw: `https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/index.json`) |
 | Blog | [blog.comfy.org](https://blog.comfy.org/) ([archive](https://blog.comfy.org/archive)) |
 
-Match a template by `name`, `title`, or `models` to the changelog item. Match a blog post only if it covers **this** product or version (MiniMax H3 day-0 is not MiniMax H3 Max).
+Match a template by `name`, `title`, or `models` to the changelog item. Search the **whole** index: partner `api_*` and OSS `video_*`, `image_*`, `3d_*` (and any other prefix). Do not grep `api_` only. Match a blog post only if it covers **this** product or version (MiniMax H3 day-0 is not MiniMax H3 Max).
 
-**Video templates:** when several templates exist, pick one by suffix on `name`, in this order: **r2v → i2v → t2v**. Example: `api_minimax_h3_max_r2v` over `_i2v` / `_t2v`. If none of those suffixes exist, use the remaining matching template (`flf2v`, `edit`, and similar). Cloud URL shape: `https://cloud.comfy.org/?template=<name>` (no UTM unless the user supplied one).
+**Video templates:** when several templates exist, pick one by suffix on `name`, in this order: **r2v → i2v → t2v**. Example: `api_minimax_h3_max_r2v` over `_i2v` / `_t2v`. If none of those suffixes exist, use the remaining matching template (`flf2v`, `edit`, `fun_controlnet_union`, and similar). Cloud URL shape: `https://cloud.comfy.org/?template=<name>` (no UTM unless the user supplied one).
 
 | Surface | Link priority (first match wins) |
 |---------|----------------------------------|
@@ -293,8 +299,10 @@ Re-run with `--force`. Staging without `--force` **skips** existing `<Update>` b
 When user asks to update CMS release notes:
 
 - [ ] Confirm `changelog/index.mdx` has the new `<Update>` block
-- [ ] Resolve bullet URLs: search template `index.json` and [blog.comfy.org/archive](https://blog.comfy.org/archive); Cloud = user UTM then `?template=` (video r2v → i2v → t2v); docs/local = blog then PR then repo
-- [ ] Shorten Cloud EN bullets (added model support, skip node lists). Keep local/docs more detailed
+- [ ] Resolve bullet URLs: search the **full** template `index.json` (`api_*` and OSS `video_*` / `image_*` / `3d_*`) and [blog.comfy.org/archive](https://blog.comfy.org/archive); Cloud = user UTM then `?template=` (video r2v → i2v → t2v); docs/local = blog then PR then repo
+- [ ] Align OSS popup names with existing `tutorials/` model names (added support for X). Not loader plumbing
+- [ ] Shorten Cloud EN bullets (added model support, skip node lists). Keep local/docs more detailed. Exception: Cloud removal/EOL bullets still list what was retired
+- [ ] LoRA format bullets: support that trainer/format, not the previous skip-keys bug
 - [ ] Omit ComfyUI-WIKI items (embedded docs, workflow templates, model blueprints) unless user explicitly asks
 - [ ] Run `pnpm cms:prepare:en`; rewrite Cloud EN links; show staging EN → **wait for user approval**
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
