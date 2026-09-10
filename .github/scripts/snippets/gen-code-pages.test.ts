@@ -42,11 +42,24 @@ describe("generated model pages", () => {
     }
   });
 
-  test("the Opus response example names Opus without extra commentary", () => {
-    const page = read("development/comfy-router/models/anthropic/claude-opus-4-6/code.mdx");
-    expect(page).toContain('"model": "claude-opus-4-6"');
-    expect(page).not.toContain('"model": "claude-haiku-4-5-20251001"');
-    expect(page).not.toContain("This provider example names");
+  test("response examples use provider model IDs without extra commentary", () => {
+    for (const [model, field, expected] of [
+      ["anthropic/claude-opus-4-6", "model", "claude-opus-4-6"],
+      ["anthropic/claude-sonnet-4-5-20250929", "model", "claude-sonnet-4-5-20250929"],
+      ["google/gemini-3-1-flash-lite", "modelVersion", "gemini-3.1-flash-lite"],
+      ["luma/photon-flash-1", "model", "photon-flash-1"],
+      ["luma_2/uni-1-max", "model", "uni-1-max"],
+      ["xai/grok-imagine-video-1-5-preview", "model", "grok-imagine-video-1.5"],
+      ["byteplus/dreamina-seedance-2-0-mini", "model", "dreamina-seedance-2-0-mini-260615"],
+      ["byteplus/seedream-5-0-pro-260628", "model", "dola-seedream-5-0-pro-260628"],
+    ]) {
+      const page = read(`development/comfy-router/models/${model}/code.mdx`);
+      const examples = [...page.matchAll(/```json\n([\s\S]*?)```/g)].map((m) => JSON.parse(m[1]));
+      const response = examples.find((e) => e[field] !== undefined);
+      expect(response[field]).toBe(expected);
+      if (model === "luma/photon-flash-1") expect(response.request.model).toBe(expected);
+      expect(page).not.toContain("This provider example names");
+    }
   });
 
   test("curated pages show only their paired examples", () => {

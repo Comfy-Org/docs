@@ -89,7 +89,8 @@ has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
 
 Curated pages pair their `example` with `result.example`.
-Derived pages use the synced examples. Fix incorrect fixtures in the source contract rather than
+Derived pages use the synced examples with provider model identifiers adjusted for the page.
+Fix other incorrect fixture data in the source contract rather than
 editing synced JSON snapshots.
 
 ## Provider drift check

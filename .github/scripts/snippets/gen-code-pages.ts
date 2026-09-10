@@ -741,6 +741,31 @@ ${curl}
 </CodeGroup>`;
 }
 
+// Adapt shared response fixtures for display only; never rewrite synced schemas.
+// Provider ID/version rules: https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/inference
+function responseExampleForModel(model: string, example: unknown): unknown {
+  if (!example || typeof example !== "object" || Array.isArray(example)) return example;
+  const provider = providerOf(model);
+  if (!["anthropic", "vertexai", "byteplus", "luma", "luma_2", "xai"].includes(provider)) return example;
+  const aliases: Record<string, string> = {
+    // https://docs.x.ai/developers/models/grok-imagine-video-1.5-preview
+    "xai/grok-imagine-video-1.5-preview": "grok-imagine-video-1.5",
+    // https://docs.byteplus.com/en/docs/Byteplus_LAS/video_gen_enhanced
+    "byteplus/dreamina-seedance-2-0-mini": "dreamina-seedance-2-0-mini-260615",
+    // https://github.com/byteplus-sa/modelark-mcp/blob/main/docs/models.md
+    "byteplus/seedream-5-0-pro-260628": "dola-seedream-5-0-pro-260628",
+  };
+  const id = aliases[model] ?? modelOf(model);
+  const sample = { ...example } as Record<string, any>;
+  const field = provider === "vertexai" ? "modelVersion" : "model";
+  if (typeof sample[field] === "string") sample[field] = id;
+  if (provider === "luma" && typeof sample.request?.model === "string") {
+    sample.request = { ...sample.request, model: id };
+  }
+  return sample;
+}
+
 function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const requestExample = bodyExample(s.inputExample);
@@ -756,12 +781,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
-  // Opus 4.6 currently inherits the shared Haiku response example.
-  // https://platform.claude.com/docs/en/models/opus-4-6/overview#model-ids
-  const sample = s.outputExample as Record<string, unknown> | undefined;
-  const outputExample = model === "anthropic/claude-opus-4-6" && sample?.model === "claude-haiku-4-5-20251001"
-    ? { ...sample, model: "claude-opus-4-6" }
-    : s.outputExample;
+  const outputExample = responseExampleForModel(model, s.outputExample);
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
     ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
