@@ -355,8 +355,7 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
     return `${esc(k)}: ${value}`;
   });
   const json = `{${entries.join(", ")}}`;
-  return `${reads ? `${reads}\n\n` : ""}# Run this line once. Reuse ROUTER_REQUEST_KEY if you retry the curl command.
-ROUTER_REQUEST_KEY=$(uuidgen)
+  return `${reads ? `${reads}\n\n` : ""}ROUTER_REQUEST_KEY=$(uuidgen)
 curl --max-time 660 ${BASE_URL}${ROUTE}/${model} \\
   -H "X-API-Key: $COMFY_API_KEY" \\
   -H "Idempotency-Key: $ROUTER_REQUEST_KEY" \\
