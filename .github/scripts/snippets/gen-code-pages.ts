@@ -335,13 +335,12 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   return `${imports}
-${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Store this UUID before starting a
-// generation. Use the same value if you retry it.
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = ${tsResultType(resultPath)};
-const idempotencyKey = crypto.randomUUID();
 const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
-}, { idempotencyKey, timeoutMs: 660_000 });
+}, { timeoutMs: 660_000 });
 
 console.log("${label}:", data${tsPath(resultPath)});`;
 }
@@ -742,12 +741,11 @@ ${pyBody}
 print(result)`;
   const typescript = `import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Store this UUID before starting a
-// generation. Use the same value if you retry it.
-const idempotencyKey = crypto.randomUUID();
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("${model}", {
 ${tsBody}
-}, { idempotencyKey, timeoutMs: 660_000 });
+}, { timeoutMs: 660_000 });
 
 console.log(data);`;
   const curl = curlSnippet(model, body, []);
