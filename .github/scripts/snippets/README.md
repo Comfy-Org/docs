@@ -88,9 +88,8 @@ ResponseField list), with a note that Router
 has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
 
-Curated pages pair their `example` with `result.example`. If the synced schema
-contains different examples, an accordion preserves them as independent
-fixtures. Derived pages use the synced examples and label response fixtures that
+Curated pages pair their `example` with `result.example`.
+Derived pages use the synced examples and label response fixtures that
 name another model. Fix incorrect fixtures in the source contract rather than
 editing synced JSON snapshots.
 

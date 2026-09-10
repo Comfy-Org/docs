@@ -548,19 +548,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
     output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
   }
   const outputExample = JSON.stringify(spec.result.example, null, 2);
-  const additionalExamples: string[] = [];
-  for (const [label, publishedExample, curatedExample] of [
-    ["Input", s?.inputExample, example],
-    ["Output", s?.outputExample, spec.result.example],
-  ] as const) {
-    if (publishedExample !== undefined && JSON.stringify(publishedExample) !== JSON.stringify(curatedExample)) {
-      additionalExamples.push(`**${label} example**\n\n\`\`\`json\n${JSON.stringify(publishedExample, null, 2)}\n\`\`\``);
-    }
-  }
-  const schemaExamples = additionalExamples.length
-    ? `\n\n<Accordion title="Additional examples from the published schema">\n\nThese fixtures are independent of the curated request and may name another model.\n\n${additionalExamples.join("\n\n")}\n\n</Accordion>`
-    : "";
-  return { input, inputExample, output, outputExample, schemaExamples };
+  return { input, inputExample, output, outputExample };
 }
 
 /** Model ID, endpoint and the three snippets for one variant. */
@@ -614,7 +602,7 @@ ${h3("Output")}
 
 \`\`\`json
 ${b.outputExample}
-\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}${b.schemaExamples}`;
+\`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}`;
 }
 
 function variantsShareSections(spec: Spec): boolean {

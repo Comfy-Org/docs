@@ -53,12 +53,12 @@ describe("generated model pages", () => {
     expect(page).toContain("This provider example names `claude-haiku-4-5-20251001`, not `anthropic/claude-opus-4-6`");
   });
 
-  test("curated pages retain curated and published schema examples", () => {
+  test("curated pages show only their paired examples", () => {
     const page = read("development/comfy-router/models/google/nano-banana-pro/code.mdx");
     expect(page).toContain("a single red maple leaf on a plain white background");
-    expect(page).toContain("Additional examples from the published schema");
-    expect(page).toContain("Describe a robot learning to paint, in two sentences.");
-    expect(page).toContain('"modelVersion": "gemini-2.5-flash-image"');
+    expect(page).not.toContain("Additional examples from the published schema");
+    expect(page).not.toContain("Describe a robot learning to paint, in two sentences.");
+    expect(page).not.toContain('"modelVersion": "gemini-2.5-flash-image"');
   });
 
   test("curated image placeholders are valid base64", () => {
