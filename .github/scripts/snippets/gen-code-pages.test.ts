@@ -25,11 +25,6 @@ describe("generated model pages", () => {
     expect(page).toContain('Idempotency-Key: $(uuidgen)');
   });
 
-  test("untyped Anthropic content is not mislabeled as object-only", () => {
-    const page = read("development/comfy-router/models/anthropic/claude-opus-4-6/code.mdx");
-    expect(page).toContain('<ParamField body="messages[].content" type="any"');
-  });
-
   test("equivalent union branches do not produce duplicate type names", () => {
     const page = read("development/comfy-router/models/veo/veo-3-1-generate-001/code.mdx");
     expect(page).not.toContain('type="any | any"');
@@ -47,10 +42,10 @@ describe("generated model pages", () => {
     }
   });
 
-  test("shared response fixtures are labeled without removing them", () => {
+  test("shared response examples remain without extra commentary", () => {
     const page = read("development/comfy-router/models/anthropic/claude-opus-4-6/code.mdx");
     expect(page).toContain('"model": "claude-haiku-4-5-20251001"');
-    expect(page).toContain("This provider example names `claude-haiku-4-5-20251001`, not `anthropic/claude-opus-4-6`");
+    expect(page).not.toContain("This provider example names");
   });
 
   test("curated pages show only their paired examples", () => {

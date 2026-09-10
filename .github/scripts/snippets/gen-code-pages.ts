@@ -433,7 +433,7 @@ function typeLabel(schema: any, components: Record<string, any>): string {
   if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
   if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
   if (s.type === "string" && s.format) return `string (${s.format})`;
-  return s.type ?? (s.properties ? "object" : "any");
+  return s.type ?? "object";
 }
 
 function constraints(s: any): string {
@@ -756,12 +756,8 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
-  const exampleModel = s.outputExample && typeof s.outputExample === "object"
-    ? (s.outputExample as Record<string, unknown>).model
-    : undefined;
-  const sharedOutput = typeof exampleModel === "string" && exampleModel !== modelOf(model);
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n${sharedOutput ? `This provider example names \`${exampleModel}\`, not \`${model}\`. Use it only for the response shape.\n\n` : ""}\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
   const requestSetup = requestExample
     ? derivedSnippets(model, requestExample)
