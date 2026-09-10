@@ -1,0 +1,146 @@
+---
+title: "Image to image with Comfy Router"
+sidebarTitle: "Image to image"
+description: "Send a local image to an image-to-image model through Comfy Router: upload it as an asset and pass its URL, or inline it as base64."
+---
+
+Comfy Router forwards each model's native JSON input unchanged, so an image-to-image call carries the input image in whatever form the provider documents. Across the catalog that is one of two shapes:
+
+- **A URL.** The provider fetches the image server-side, so the URL must be reachable without your credentials. Example: `wan/wan2.5-i2i-preview` takes `input.images`, an array of image URLs.
+- **Inline base64.** The bytes travel inside the JSON body. Example: `bfl/flux-2-pro` takes `input_image`, a base64-encoded string.
+
+A file on your machine has neither shape yet. This page shows both paths. Which one a model takes is in its input schema: `GET /v2/models/{provider}/{model}/openapi.json`, or the model's page in the [model catalog](/development/comfy-router/models).
+
+## Models that take a URL: upload an asset first
+
+Give the local file a fetchable URL by uploading it to Comfy Cloud as an asset. The upload is content-addressed (deduplicated by hash), and the asset resolves to a short-lived signed URL that anyone holding it can read until it expires. That last property is the point: it is what lets the provider behind Router fetch your image without your API key.
+
+The asset upload goes to Comfy Cloud (`https://cloud.comfy.org/api/v2/assets`, `Authorization: Bearer` auth), and the model run goes to Comfy Router (`https://api.comfy.org`, `X-API-Key` auth). Same key, two hosts. The signed URL is the bridge between them.
+
+<Steps>
+  <Step title="Upload the image and resolve its URL">
+    <CodeGroup>
+
+    ```python Python
+    from comfy_sdk import Comfy
+
+    # Reads COMFY_API_KEY from the environment.
+    client = Comfy()
+
+    # Lazy handle; hashed with blake3 and uploaded on first use. If the
+    # server already has identical bytes, nothing is re-uploaded.
+    asset = client.assets.from_file("photo.png")
+
+    # Commits the asset if needed, then returns a short-lived signed URL.
+    url = asset.get_download_url().url
+    ```
+
+    ```bash cURL
+    # Upload (201 for a new blob, 200 for a dedup hit). The response's
+    # `url` field is a short-lived signed URL for the uploaded bytes.
+    IMAGE_URL=$(curl --fail https://cloud.comfy.org/api/v2/assets \
+      -H "Authorization: Bearer $COMFY_API_KEY" \
+      -F "file=@photo.png" \
+      -F "content_type=image/png" \
+      -F "file_path=photo.png" \
+      | jq -r .url)
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      The Python snippet needs a `comfy-sdk` release newer than 0.1.9: that is
+      where `Asset.get_download_url()` was added. On older releases, upload
+      with cURL and pass the returned `url` to `client.models.run` yourself.
+    </Note>
+  </Step>
+
+  <Step title="Pass the URL in the model's input">
+    <CodeGroup>
+
+    ```python Python
+    result = client.models.run(
+        "wan/wan2.5-i2i-preview",
+        {
+            "input": {"images": [url], "prompt": "Make the leaf golden."},
+            "parameters": {"size": "768*768"},
+        },
+    )
+
+    print(result["output"]["results"][0]["url"])
+    ```
+
+    ```bash cURL
+    curl https://api.comfy.org/v2/models/wan/wan2.5-i2i-preview \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d "{\"input\": {\"images\": [\"$IMAGE_URL\"], \"prompt\": \"Make the leaf golden.\"}, \"parameters\": {\"size\": \"768*768\"}}"
+    ```
+
+    </CodeGroup>
+  </Step>
+</Steps>
+
+Three properties of the signed URL to plan around:
+
+- **It is short-lived.** Resolve it right before the run rather than storing it. A stored URL that has expired fails inside the provider's fetch, not in your call.
+- **It is a bearer credential.** Anyone holding the URL can read the asset until it expires. Do not log it or embed it anywhere longer-lived than the request.
+- **It must come from Comfy Cloud.** Behind a self-hosted deployment, the SDK's `get_download_url()` returns the deployment's own auth-guarded content endpoint, which an external provider cannot fetch. Upload Router inputs to Comfy Cloud.
+
+## Models that take the image inline (base64)
+
+For a model whose schema takes base64, there is nothing to upload: encode the file and put the string in the body. `bfl/flux-2-pro` accepts up to nine input images this way (`input_image`, `input_image_2`, and so on).
+
+<CodeGroup>
+
+```python Python
+import base64
+
+from comfy_sdk import Comfy
+
+with open("photo.png", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode()
+
+with Comfy() as client:
+    result = client.models.run(
+        "bfl/flux-2-pro",
+        {"prompt": "make it watercolor", "input_image": image_b64},
+    )
+
+print(result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { readFileSync } from "node:fs";
+
+import { comfy } from "@comfyorg/sdk";
+
+const imageB64 = readFileSync("photo.png").toString("base64");
+
+const { data } = await comfy.models.run("bfl/flux-2-pro", {
+  prompt: "make it watercolor",
+  input_image: imageB64,
+});
+
+console.log(data.result.sample);
+```
+
+```bash cURL
+# GNU coreutils; on macOS use `base64 -i photo.png`.
+IMAGE_B64=$(base64 -w0 photo.png)
+
+curl https://api.comfy.org/v2/models/bfl/flux-2-pro \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"make it watercolor\", \"input_image\": \"$IMAGE_B64\"}"
+```
+
+</CodeGroup>
+
+Base64 inflates the bytes by about a third and travels inside the request body, so very large images are better served by a URL-taking model. Inline bytes also make the request body unique per image, which matters for idempotent retries: reuse the same `Idempotency-Key` only with the exact same body.
+
+## Reading the result
+
+Result shape is the model's own, like the input. `wan/wan2.5-i2i-preview` returns generated image URLs at `output.results[].url`; `bfl/flux-2-pro` returns one at `result.sample`. Result URLs expire too: download promptly, and see [result assets](/development/comfy-router/reference#result-assets) for which providers are rehosted onto Comfy storage and for how long.
