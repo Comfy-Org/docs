@@ -320,7 +320,6 @@ with Comfy() as client:
 ${body}
         },
         idempotency_key=idempotency_key,
-        timeout=660.0,
     )
 
 print("${label}:", result${pyPath(resultPath)})`;
@@ -735,7 +734,6 @@ with Comfy() as client:
 ${pyBody}
         },
         idempotency_key=idempotency_key,
-        timeout=660.0,
     )
 
 print(result)`;
