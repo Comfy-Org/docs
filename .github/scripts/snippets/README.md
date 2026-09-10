@@ -13,13 +13,12 @@ Pages come in two kinds, and both are generated:
   `router-schemas/<provider>/<model>.json` alone, the document the spec-sync bot
   commits from `GET /v2/models/<provider>/<model>/openapi.json`.
 
-A derived page says only what Router has authored. The OUTPUT schema is authored
-for every model, so the response is documented in full. The INPUT schema usually
-is not (`x-comfy-input-schema-authored: false` means Router forwards the body to
-the provider unvalidated and cannot state its fields), so the page says exactly
-that and points at the provider instead of inventing a request shape, and it
-carries no example unless the served document has one. Writing a `code.yaml`
-upgrades a derived page to a curated one; nothing else has to change.
+A derived page uses the synced Router schema. When
+`x-comfy-input-schema-authored` is false, Router forwards the open input object
+without model-specific validation, so the page links to the provider's input
+documentation. Provider validation still applies. Output schemas and examples
+remain available when published. Without a non-empty request example, the page
+shows **Request setup** instead of runnable snippets with an empty body.
 
 These pages live in the **developer** section, not under `tutorials/`: the
 tutorials tree is for end users driving the nodes in the app, and mixing API
@@ -78,16 +77,21 @@ commit.
 
 ## Schema sections
 
-Every Code page ends with a Schema section (Input, Output) and an Examples
-section (Input, Output). They render from `router-schemas/<provider>/<model>.json`,
+Every Code page includes a Schema section and the examples available for it.
+Schema fields render from `router-schemas/<provider>/<model>.json`,
 which is the exact body of `GET https://api.comfy.org/v2/models/<provider>/<model>/openapi.json`
 (a standalone OpenAPI document; the spec-sync bot drops these in, do not hand
 write them). When the file is absent, or reports
 `x-comfy-input-schema-authored: false`, the page falls back to the spec's
 `input` / `output` JSON Schema blocks (rendered as the same ParamField /
-ResponseField list) and `example` / `result.example`, with a note that Router
+ResponseField list), with a note that Router
 has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
+
+Curated pages pair their `example` with `result.example`.
+Derived pages use the synced examples with provider model identifiers adjusted for the page.
+Fix other incorrect fixture data in the source contract rather than
+editing synced JSON snapshots.
 
 ## Provider drift check
 

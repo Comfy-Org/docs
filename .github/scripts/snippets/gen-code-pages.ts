@@ -309,8 +309,8 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
     .join("\n");
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
@@ -331,8 +331,8 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   return `${imports}
-${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = ${tsResultType(resultPath)};
 const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
@@ -426,7 +426,9 @@ function deref(schema: any, components: Record<string, any>, depth = 0): any {
 
 function typeLabel(schema: any, components: Record<string, any>): string {
   const s = deref(schema, components);
-  if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" | ");
+  if (s.oneOf || s.anyOf) {
+    return [...new Set((s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)))].join(" | ");
+  }
   if (s.const !== undefined) return JSON.stringify(s.const);
   if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
   if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
@@ -457,6 +459,13 @@ const mdxText = (v: unknown) =>
 
 /** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
 function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response", docBase?: string): string {
+  const root = deref(schema, components);
+  const variants = Object.entries<string>(root.discriminator?.mapping ?? {});
+  if (variants.length) {
+    return variants
+      .map(([name, ref]) => `#### \`${name}\` variant\n\n${schemaFields({ $ref: ref }, components, kind, docBase)}`)
+      .join("\n\n");
+  }
   const blocks: string[] = [];
   const walk = (s: any, prefix: string, depth: number) => {
     s = deref(s, components);
@@ -500,7 +509,7 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
     }
   };
   walk(schema, "", 0);
-  if (!blocks.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
+  if (!blocks.length) return "_This schema does not declare named properties._";
   return blocks.join("\n\n");
 }
 
@@ -518,8 +527,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
   const notPublished = checked
     ? `_Fields follow ${possessive(spec.provider)} published API specification and are checked against it in CI. Router's own schema for this model is not published yet, so requests are forwarded to the provider unvalidated._`
     : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
-  // `x-comfy-input-schema-authored: false` disqualifies the whole served document, not just its input
-  // half: the page then reads its fields AND its examples from the spec, as the README describes.
+  // Curated provider fields replace an unauthored Router input schema.
   const published = s?.authored ? s : null;
   let input: string;
   const docBase = PROVIDER_DOC_BASE[providerOf(v.model)];
@@ -530,7 +538,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
   } else {
     input = `${notPublished}\n\n${fields}`;
   }
-  const inputExample = JSON.stringify(published?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
+  const inputExample = JSON.stringify(example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
   let output: string;
   if (published?.output) {
     output = schemaFields(published.output, published.components, "response", docBase);
@@ -539,7 +547,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
   } else {
     output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
   }
-  const outputExample = JSON.stringify(published?.outputExample ?? spec.result.example, null, 2);
+  const outputExample = JSON.stringify(spec.result.example, null, 2);
   return { input, inputExample, output, outputExample };
 }
 
@@ -661,17 +669,10 @@ ${body}
 // its page from that document alone, so the sidebar tracks the catalog instead of
 // tracking who found time to write a spec.
 //
-// What such a page can honestly say is bounded by what Router has authored. The
-// OUTPUT schema is authored for every model, so the response is documented in
-// full. The INPUT schema mostly is not (`x-comfy-input-schema-authored: false`
-// means Router forwards the body to the provider unvalidated and cannot state its
-// fields), so the page says exactly that and points at the provider rather than
-// inventing a request shape. No example is fabricated: a derived page shows an
-// example only when the served document carries one.
+// Document only the schemas and examples that are available. A missing request
+// example produces setup guidance, not an empty executable request. Provider
+// validation still applies when Router has no authored input schema.
 // ---------------------------------------------------------------------------
-
-/** The one-line body placeholder for a model whose request fields Router does not publish. */
-const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.";
 
 /**
  * The published input example, when it is a JSON object we can render as a body.
@@ -683,9 +684,9 @@ const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.
  * field. Inlining it is what makes the quick start copy-pasteable rather than a
  * shape the reader has to assemble from the Input table below.
  *
- * Anything else -- absent, null, or a non-object -- falls back to BODY_HINT.
- * That is the unauthored case, where Router genuinely cannot state the fields
- * and a fabricated body would be worse than an honest placeholder.
+ * Anything else -- absent, null, an empty object or a non-object -- cannot make
+ * a runnable snippet. The page keeps the value as reference data and renders
+ * request setup guidance instead of fabricating a body.
  */
 function bodyExample(example: unknown): Record<string, unknown> | undefined {
   if (example === null || typeof example !== "object" || Array.isArray(example)) return undefined;
@@ -699,22 +700,13 @@ function derivedSnippets(model: string, example?: unknown): string {
   // the JSON in the Examples section -- the invariant stated at the top of this
   // file. Derived pages have no file inputs, so the FileInput list is empty.
   const body = bodyExample(example);
-  const pyBody = body
-    ? Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n")
-    : `            # ${BODY_HINT}`;
-  const tsBody = body
-    ? Object.entries(body).map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, [], k)},`).join("\n")
-    : `  // ${BODY_HINT}`;
-  const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
-  const curlJson = body
-    ? `{${Object.entries(body).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(", ")}}`
-    : "{}";
-  const curlHint = body ? "" : `# ${BODY_HINT}\n`;
-
+  if (!body) return "";
+  const pyBody = Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n");
+  const tsBody = Object.entries(body).map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, [], k)},`).join("\n");
   const python = `from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
@@ -726,18 +718,14 @@ ${pyBody}
 print(result)`;
   const typescript = `import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("${model}", {
 ${tsBody}
 });
 
 console.log(data);`;
-  const curl = `${curlHint}curl ${BASE_URL}${ROUTE}/${model} \\
-  -H "X-API-Key: $COMFY_API_KEY" \\
-  -H "Idempotency-Key: $(uuidgen)" \\
-  -H "Content-Type: application/json" \\
-  -d "${curlJson}"`;
+  const curl = curlSnippet(model, body, []);
   return `<CodeGroup>
 \`\`\`python Python
 ${python}
@@ -753,20 +741,51 @@ ${curl}
 </CodeGroup>`;
 }
 
+// Adapt shared response fixtures for display only; never rewrite synced schemas.
+// Provider ID/version rules: https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/inference
+function responseExampleForModel(model: string, example: unknown): unknown {
+  if (!example || typeof example !== "object" || Array.isArray(example)) return example;
+  const provider = providerOf(model);
+  if (!["anthropic", "vertexai", "byteplus", "luma", "luma_2", "xai"].includes(provider)) return example;
+  const aliases: Record<string, string> = {
+    // https://docs.x.ai/developers/models/grok-imagine-video-1.5-preview
+    "xai/grok-imagine-video-1.5-preview": "grok-imagine-video-1.5",
+    // https://docs.byteplus.com/en/docs/Byteplus_LAS/video_gen_enhanced
+    "byteplus/dreamina-seedance-2-0-mini": "dreamina-seedance-2-0-mini-260615",
+  };
+  const id = aliases[model] ?? modelOf(model);
+  const sample = { ...example } as Record<string, any>;
+  const field = provider === "vertexai" ? "modelVersion" : "model";
+  if (typeof sample[field] === "string") sample[field] = id;
+  if (provider === "luma" && typeof sample.request?.model === "string") {
+    sample.request = { ...sample.request, model: id };
+  }
+  return sample;
+}
+
 function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
-  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const requestExample = bodyExample(s.inputExample);
+  const clients = requestExample
+    ? `The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`
+    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. cURL uses raw HTTP.`;
+  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
     ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
-    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${provider}'s own API reference](${apiDocs})` : `${provider}'s own API documentation`} is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${provider}'s own API reference](${apiDocs})` : `${provider}'s own API documentation`} is authoritative for the request fields, and Router does not perform model-specific input validation. Provider validation still applies.\n</Note>`;
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
+  const outputExample = responseExampleForModel(model, s.outputExample);
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
+  const requestSetup = requestExample
+    ? derivedSnippets(model, requestExample)
+    : `<Note>\nThis model has no runnable request example. Build the body from the input documentation below, then use it with the [Router quickstart](/development/comfy-router/quickstart).\n</Note>`;
   const title = modelTitle(model);
   return `---
 title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
@@ -780,7 +799,7 @@ ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/mod
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
 ${previewNotice.body}
-## Quick start
+## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}
 
@@ -788,7 +807,7 @@ ${setup}
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${model}\`
 
-${derivedSnippets(model, s.inputExample)}
+${requestSetup}
 
 ## Schema
 
