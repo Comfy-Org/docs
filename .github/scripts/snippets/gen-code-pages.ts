@@ -756,8 +756,14 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
+  // Opus 4.6 currently inherits the shared Haiku response example.
+  // https://platform.claude.com/docs/en/models/opus-4-6/overview#model-ids
+  const sample = s.outputExample as Record<string, unknown> | undefined;
+  const outputExample = model === "anthropic/claude-opus-4-6" && sample?.model === "claude-haiku-4-5-20251001"
+    ? { ...sample, model: "claude-opus-4-6" }
+    : s.outputExample;
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
   const requestSetup = requestExample
     ? derivedSnippets(model, requestExample)

@@ -42,9 +42,10 @@ describe("generated model pages", () => {
     }
   });
 
-  test("shared response examples remain without extra commentary", () => {
+  test("the Opus response example names Opus without extra commentary", () => {
     const page = read("development/comfy-router/models/anthropic/claude-opus-4-6/code.mdx");
-    expect(page).toContain('"model": "claude-haiku-4-5-20251001"');
+    expect(page).toContain('"model": "claude-opus-4-6"');
+    expect(page).not.toContain('"model": "claude-haiku-4-5-20251001"');
     expect(page).not.toContain("This provider example names");
   });
 
