@@ -1,0 +1,250 @@
+---
+title: "Queue a Comfy Router request"
+sidebarTitle: "Queue (preview)"
+description: "Submit a Comfy Router model run, get a request ID back immediately, then poll its status and collect the result. Python, TypeScript and cURL, using Nano Banana 2."
+---
+
+<Warning>
+**Gated preview.** Queued delivery is switched on per workspace. A workspace that is not enabled receives `403` with `X-Comfy-Error-Type: not_enabled` on the submit route. Nothing about the request is wrong and retrying will not change the answer. The routes and fields on this page are the contract the preview is built against, and the [preview notes](#preview-notes) at the end list the parts still under review.
+</Warning>
+
+`POST /v2/models/{provider}/{model}` holds the connection until the model finishes. Queued delivery takes the same model ID and the same native request body, but returns as soon as Router has accepted the run. You get a `request_id` and three URLs, and you collect the result when it is ready.
+
+Use the queue when a generation can outlast the connection you can hold, when a web request has to return now, when you submit in one process and collect in another, or when you want many generations in flight at once. Ordering, admission, retries, timeouts, billing and expiry are all decided on the server. The SDKs only add polling and ergonomics.
+
+## The four routes
+
+| Route | Answer |
+| --- | --- |
+| `POST /v2/models/{provider}/{model}/requests` | `201` with `request_id`, `status`, `queue_position`, `status_url`, `response_url`, `cancel_url` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200` with the current `status` and `queue_position`, plus a `Retry-After` hint |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | `200` with the model's native output once finished, `202` with the status body while it is not |
+| `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED`, or `400` `ALREADY_COMPLETED` |
+
+`status` is one of `IN_QUEUE`, `IN_PROGRESS` or `COMPLETED`. There is no separate failed or cancelled status: a request that did not succeed is `COMPLETED` carrying an `error_type`, so branch on the presence of that field, not on a fourth status value.
+
+## Example: Nano Banana 2
+
+This example queues an image generation on Nano Banana 2 (`vertexai/gemini-3.1-flash-image`) and collects it. The request body is the same one the [synchronous snippet](/development/comfy-router/models/google/nano-banana-2/code) sends. Export your key as `COMFY_API_KEY` first.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+MODEL = "vertexai/gemini-3.1-flash-image"
+BODY = {
+    "contents": [
+        {
+            "role": "user",
+            "parts": [
+                {"text": "a single red maple leaf on a plain white background, studio lighting"},
+            ],
+        },
+    ],
+    "generationConfig": {
+        "responseModalities": ["IMAGE"],
+        "imageConfig": {"aspectRatio": "1:1"},
+    },
+}
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for retries.
+with Comfy() as client:
+    handle = client.models.submit(MODEL, BODY)
+    print("request_id:", handle.request_id)  # all another process needs
+
+    # Poll until complete, honouring the server's Retry-After.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() would return.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+```
+
+```typescript TypeScript
+// Raw HTTP. comfy.models.submit / subscribe / handle land in @comfyorg/sdk next.
+const MODEL = "vertexai/gemini-3.1-flash-image";
+const BASE = `https://api.comfy.org/v2/models/${MODEL}`;
+const headers = {
+  "X-API-Key": process.env.COMFY_API_KEY!,
+  "Content-Type": "application/json",
+};
+const body = {
+  contents: [
+    {
+      role: "user",
+      parts: [{ text: "a single red maple leaf on a plain white background, studio lighting" }],
+    },
+  ],
+  generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "1:1" } },
+};
+
+// 1. Submit. One Idempotency-Key per logical request; reuse it if you retry this call.
+const submitted = await fetch(`${BASE}/requests`, {
+  method: "POST",
+  headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+  body: JSON.stringify(body),
+});
+if (submitted.status !== 201) {
+  throw new Error(`${submitted.status} ${submitted.headers.get("x-comfy-error-type")}`);
+}
+const handle = await submitted.json();
+console.log("request_id:", handle.request_id);
+
+// 2. Poll the status URL until COMPLETED, waiting the Retry-After the server names.
+let state = handle;
+while (state.status !== "COMPLETED") {
+  const wait = Number(state.retryAfter ?? 2);
+  await new Promise((r) => setTimeout(r, wait * 1000));
+  const res = await fetch(handle.status_url, { headers });
+  state = { ...(await res.json()), retryAfter: res.headers.get("retry-after") };
+  console.log(state.status, state.queue_position);
+}
+
+// 3. Collect. A failed or cancelled request comes back as an error response here,
+//    with the same X-Comfy-Error-Type buckets the synchronous route uses.
+const collected = await fetch(handle.response_url, { headers });
+if (!collected.ok) {
+  throw new Error(`${collected.status} ${collected.headers.get("x-comfy-error-type")}`);
+}
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const data = (await collected.json()) as Result;
+console.log("image (base64):", data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```bash cURL
+MODEL="vertexai/gemini-3.1-flash-image"
+BASE="https://api.comfy.org/v2/models/$MODEL"
+
+# 1. Submit. Returns 201 and a handle as soon as the run is accepted.
+curl -s -X POST "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"a single red maple leaf on a plain white background, studio lighting"}]}],"generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"1:1"}}}'
+
+# 2. Poll. Repeat after the number of seconds in the Retry-After header.
+REQUEST_ID="6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21"
+curl -s -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output once status is COMPLETED.
+curl -s "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+
+# 4. Cancel a request that has not finished. A request, not a guarantee.
+curl -s -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+
+### Submit, follow, collect in one call
+
+When you do want to wait but also want to show progress, the Python SDK folds the three steps into one:
+
+```python
+def on_update(update):
+    print(update.status, update.queue_position)
+
+result = client.models.subscribe(MODEL, BODY, on_queue_update=on_update, timeout=300)
+```
+
+`timeout=` is a client-side bound. When it runs out, `subscribe` asks the server to cancel before raising, so you are not paying for a generation nobody will collect. Use `submit` instead when the request should outlive the caller.
+
+### Collect from another process
+
+Both IDs address the request, so both are needed to rebuild a handle. No call is made until you use it.
+
+```python
+handle = client.models.handle("vertexai/gemini-3.1-flash-image", request_id)
+result = handle.get()
+```
+
+## What the responses look like
+
+**Submit, `201`.** `status` is always `IN_QUEUE` at this point. The three URLs are absolute and are authenticated with the same key as the submit.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_QUEUE",
+  "queue_position": 3,
+  "status_url": "https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status",
+  "response_url": "https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "cancel_url": "https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel"
+}
+```
+
+`request_id` is also the value of the submit's `X-Comfy-Request-Id` header. Keep the model ID next to it: the request is addressed by both.
+
+**Status, `200`.** The same shape, with the current state. `queue_position` counts the requests ahead of yours and reaches `0` when the run is at the front. `Retry-After` on this response is Router's estimate of when polling again is worth the round trip. It is a hint, not a bound, and a request at the back of the queue is told to wait longer than one already running. Polling faster learns nothing earlier and spends your own rate-limit allowance.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_PROGRESS",
+  "queue_position": 0,
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+A request that finished without succeeding is `COMPLETED` with an `error_type`, carrying the same coarse bucket the result read puts on `X-Comfy-Error-Type`. The field is absent on success rather than `null`.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "COMPLETED",
+  "error_type": "content_policy_violation",
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+**Result.** `200` carries the model's own native output, byte for byte what the synchronous route returns for the same model and input, under the provider's own `Content-Type`. While the request is not finished the read answers `202` with the status body above, so a client that only polls the result URL parses one type. A request that failed comes back as an error response with `X-Comfy-Error-Type` set, the same buckets as the synchronous route.
+
+**Cancel.** `202` with `CANCELLATION_REQUESTED` means the ask was accepted, not that the run has stopped. A run already on the wire at the partner may complete anyway, and a partner generation that completes is charged whether or not anyone collects it. Read the status afterwards: a cancellation that took effect shows as `COMPLETED` with `error_type: cancelled`. A request that aged out before it could run shows `queue_timeout` the same way. A request that had already finished answers `400` with `ALREADY_COMPLETED`.
+
+## Idempotency and billing
+
+- **Same charge as the synchronous route.** You are billed when the provider bills Comfy. Time spent waiting in the queue is not charged.
+- **One `Idempotency-Key` per submit.** The SDK mints a fresh key per `submit` call, so two deliberate submits of the same input are two requests. A retry of the same call under the same key does not queue a second run: it returns the original handle with `Idempotent-Replayed: true`. Pass your own key when a lost response could have cost you the `request_id`. See [Headers](/development/comfy-router/headers).
+- **Results expire.** A finished request is kept for 24 hours after it completes. After that, the status and result reads answer `410` and the result is gone. Collect promptly and download any asset URLs the output carries.
+- **Polls are requests too.** Status and result reads count towards the [per-caller request rate](/development/comfy-router/limitations#requests-are-rate-limited-per-caller). Honour `Retry-After` rather than polling on a fixed short interval.
+
+## Errors
+
+| Status | `X-Comfy-Error-Type` | Meaning |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | The workspace cannot fund the run. Nothing is queued or charged, and the same `Idempotency-Key` can be re-sent once it is funded. |
+| `403` | `not_enabled` | Queued delivery is not switched on for this workspace. Terminal, do not retry. |
+| `404` | `model_not_found` | The `{provider}/{model}` ID resolves to no Router model. |
+| `404` | `request_not_found` | No request with that ID exists for this caller and model. |
+| `409` | `concurrency_limit_exceeded` | The same `Idempotency-Key` is still being admitted. Wait the `Retry-After` and re-send the same key to get the original handle. |
+| `409` | `invalid_input` | The `Idempotency-Key` is held for a different request. Send this one under a new key. |
+| `410` | | The request existed and is past its retention window, 24 hours after it completed. Permanent for that ID. |
+| `422` | `invalid_input` | The model rejected the input. The body carries the per-field detail, exactly as on the synchronous route. |
+
+Every error response carries `X-Comfy-Request-Id`. Quote it when you contact support.
+
+## Preview notes
+
+Two parts of this contract are still under review before general availability, and either may change:
+
+- Whether a cancel on a request that already finished should answer `409` instead of `400` `ALREADY_COMPLETED`.
+- Which status the result read answers for a request that was cancelled or timed out in the queue.
+
+Progress events, webhooks and priority are not part of the preview.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Nano Banana 2" icon="image" href="/development/comfy-router/models/google/nano-banana-2/code">
+    The synchronous call for the same model, with its full input and output schema.
+  </Card>
+  <Card title="Headers" icon="list" href="/development/comfy-router/headers">
+    Authentication, idempotency, request IDs, error buckets, retry pacing.
+  </Card>
+</CardGroup>
