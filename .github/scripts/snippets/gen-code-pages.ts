@@ -775,7 +775,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
     ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
-    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${provider}'s own API reference](${apiDocs})` : `${provider}'s own API documentation`} is authoritative for the request fields, and Router does not perform model-specific input validation. Provider validation still applies.\n</Note>`;
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${possessive(provider)} own API reference](${apiDocs})` : `${possessive(provider)} own API documentation`} is authoritative for the request fields, and Router does not perform model-specific input validation. Provider validation still applies.\n</Note>`;
   const output = s.output
     ? schemaFields(s.output, s.components, "response", docBase)
     : `Router does not publish an output schema for this model.`;
@@ -783,9 +783,14 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
     ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
-  const requestSetup = requestExample
-    ? derivedSnippets(model, requestExample)
-    : `<Note>\nThis model has no runnable request example. Build the body from the input documentation below, then use it with the [Router quickstart](/development/comfy-router/quickstart).\n</Note>`;
+  // Say WHY there is no snippet, not just that there isn't one. A model whose
+  // input schema is unauthored has no documented fields on this page either, so
+  // "build the body from the input documentation below" points the reader at a
+  // section that only forwards them to the provider; name that provider instead.
+  const noExample = s.authored
+    ? `This model has no runnable request example. Build the body from the input documentation below, then use it with the [Router quickstart](/development/comfy-router/quickstart).`
+    : `Router has not published an authored input schema for this model, so there is no request example to generate a snippet from. Router forwards the body to ${provider} unchanged: build it from ${apiDocs ? `[${possessive(provider)} own API reference](${apiDocs})` : `${possessive(provider)} own API documentation`}, then send it with the [Router quickstart](/development/comfy-router/quickstart).`;
+  const requestSetup = requestExample ? derivedSnippets(model, requestExample) : `<Note>\n${noExample}\n</Note>`;
   const title = modelTitle(model);
   return `---
 title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
