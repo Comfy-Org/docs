@@ -753,8 +753,6 @@ function responseExampleForModel(model: string, example: unknown): unknown {
     "xai/grok-imagine-video-1.5-preview": "grok-imagine-video-1.5",
     // https://docs.byteplus.com/en/docs/Byteplus_LAS/video_gen_enhanced
     "byteplus/dreamina-seedance-2-0-mini": "dreamina-seedance-2-0-mini-260615",
-    // https://github.com/byteplus-sa/modelark-mcp/blob/main/docs/models.md
-    "byteplus/seedream-5-0-pro-260628": "dola-seedream-5-0-pro-260628",
   };
   const id = aliases[model] ?? modelOf(model);
   const sample = { ...example } as Record<string, any>;
