@@ -17,12 +17,12 @@ describe("generated model pages", () => {
     expect(page).toContain("npm install @comfyorg/sdk");
   });
 
-  test("a documented payload produces bounded, retry-safe examples", () => {
+  test("a documented payload produces runnable examples", () => {
     const page = read("development/comfy-router/models/black-forest-labs/flux-2-pro/code.mdx");
     expect(page).toContain("## Quick start");
     expect(page).toContain('"prompt": "A single red maple leaf');
-    expect(page).toContain("curl --max-time 660");
-    expect(page).toContain("$ROUTER_REQUEST_KEY");
+    expect(page).toContain("curl https://api.comfy.org/v2/models/bfl/flux-2-pro");
+    expect(page).toContain('Idempotency-Key: $(uuidgen)');
   });
 
   test("untyped Anthropic content is not mislabeled as object-only", () => {
