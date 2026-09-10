@@ -340,7 +340,7 @@ ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
 type Result = ${tsResultType(resultPath)};
 const { data } = await comfy.models.run<Result>("${model}", {
 ${body}
-}, { timeoutMs: 660_000 });
+});
 
 console.log("${label}:", data${tsPath(resultPath)});`;
 }
@@ -745,7 +745,7 @@ print(result)`;
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("${model}", {
 ${tsBody}
-}, { timeoutMs: 660_000 });
+});
 
 console.log(data);`;
   const curl = curlSnippet(model, body, []);
