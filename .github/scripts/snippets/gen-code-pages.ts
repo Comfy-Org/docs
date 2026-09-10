@@ -824,12 +824,52 @@ ${output}${examples}
 }
 
 // ---------------------------------------------------------------------------
+// Catalog landing page
+//
+// `/development/comfy-router/models` is where a reader lands expecting to browse
+// the catalog (the API guide lives at `/development/comfy-router/api`), so this
+// page lists every model page, grouped by provider like the sidebar.
+// ---------------------------------------------------------------------------
+
+function renderModelsIndex(pages: { model: string; page: string; title: string }[]): string {
+  const byProvider = new Map<string, { model: string; page: string; title: string }[]>();
+  for (const p of pages) {
+    const label = providerLabel(providerOf(p.model));
+    const list = byProvider.get(label) ?? [];
+    list.push(p);
+    byProvider.set(label, list);
+  }
+  const sections = [...byProvider.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, list]) => {
+      const rows = [...list]
+        .sort((a, b) => a.page.localeCompare(b.page))
+        .map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``)
+        .join("\n");
+      return `## ${label}\n\n${rows}`;
+    })
+    .join("\n\n");
+  return `---
+title: "Comfy Router models"
+sidebarTitle: "All models"
+description: "Every model available through Comfy Router, grouped by provider."
+---
+
+{/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
+
+Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
+
+${sections}
+`;
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 //
 // `docs.json` carries the nav for four locales; only `en` lists these pages, and
 // the zh/ja/ko trees are maintained by the i18n sync. With one page per catalog
 // model a flat list is unreadable, so the Models group holds one sub-group per
-// provider.
+// provider, behind the generated catalog landing page.
 // ---------------------------------------------------------------------------
 
 type NavGroup = { group: string; pages: (string | NavGroup)[] };
@@ -844,9 +884,12 @@ function modelsNav(pages: { model: string; page: string }[]): NavGroup {
   }
   return {
     group: "Models",
-    pages: [...byProvider.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+    pages: [
+      MODELS_DIR,
+      ...[...byProvider.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+    ],
   };
 }
 
@@ -909,7 +952,7 @@ const check = process.argv.includes("--check");
 const doValidate = process.argv.includes("--validate");
 const prune = process.argv.includes("--prune");
 
-type Page = { model: string; page: string; text: string; out: string };
+type Page = { model: string; page: string; title: string; text: string; out: string };
 
 const pages: Page[] = [];
 const covered = new Set<string>();
@@ -942,7 +985,7 @@ for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
     continue;
   }
   for (const v of spec.variants) covered.add(v.model);
-  pages.push({ model: spec.variants[0].model, page: `${dir}/code`, text, out: join(ROOT, dir, "code.mdx") });
+  pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
 }
 if (specCount === 0) {
   console.error(`no specs matched ${SPEC_GLOB}`);
@@ -974,7 +1017,7 @@ for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
     continue;
   }
   claimed.set(`${dir}/code`, rel);
-  pages.push({ model, page: `${dir}/code`, text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
+  pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
 }
 
 // ---- write or check
@@ -989,6 +1032,16 @@ for (const p of pages) {
     mkdirSync(dirname(p.out), { recursive: true });
     writeFileSync(p.out, p.text);
   }
+}
+
+// ---- catalog landing page
+const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
+const indexText = renderModelsIndex(pages);
+if (check) {
+  if (!existsSync(indexOut)) missing.push(relative(ROOT, indexOut));
+  else if (readFileSync(indexOut, "utf8") !== indexText) stale.push(relative(ROOT, indexOut));
+} else {
+  writeFileSync(indexOut, indexText);
 }
 
 // A model that leaves the catalog leaves its schema and, without this, its page:
