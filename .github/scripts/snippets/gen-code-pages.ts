@@ -631,7 +631,7 @@ function renderPage(spec: Spec, dir: string): string {
   // The one-time setup a snippet cannot run without. Everything else that is
   // shared across models (idempotency, deadline, request IDs) lives on the
   // headers page the footer links to.
-  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
   let body: string;
   if (!both) {
     body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}\n\n${sections(spec.variants[0], spec, false)}`;
@@ -770,7 +770,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const clients = requestExample
     ? `The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`
     : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. cURL uses raw HTTP.`;
-  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
