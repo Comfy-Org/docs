@@ -307,19 +307,16 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
   const body = Object.entries(example)
     .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
-  return `${files.length ? "import base64\n" : ""}import uuid
-from comfy_sdk import Comfy
+  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-# Reads COMFY_API_KEY from the environment. Store this UUID before starting a
-# generation. Use the same value if you retry it.
-idempotency_key = str(uuid.uuid4())
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
 ${body}
         },
-        idempotency_key=idempotency_key,
     )
 
 print("${label}:", result${pyPath(resultPath)})`;
@@ -616,8 +613,6 @@ ${b.inputExample}
 
 ${h3("Output")}
 
-Illustrative response.
-
 \`\`\`json
 ${b.outputExample}
 \`\`\`${spec.result.note ? `\n\n${spec.result.note}` : ""}${b.schemaExamples}`;
@@ -670,7 +665,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-${spec.intro ?? `Use ${spec.name} with Comfy Router. ${spec.summary.replace(/\s+/g, " ").trim()}`}
+${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
 ${body}
 
@@ -721,19 +716,16 @@ function derivedSnippets(model: string, example?: unknown): string {
   if (!body) return "";
   const pyBody = Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n");
   const tsBody = Object.entries(body).map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, [], k)},`).join("\n");
-  const python = `import uuid
-from comfy_sdk import Comfy
+  const python = `from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Store this UUID before starting a
-# generation. Use the same value if you retry it.
-idempotency_key = str(uuid.uuid4())
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
 ${pyBody}
         },
-        idempotency_key=idempotency_key,
     )
 
 print(result)`;
@@ -782,7 +774,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
     : undefined;
   const sharedOutput = typeof exampleModel === "string" && exampleModel !== modelOf(model);
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n${sharedOutput ? `This provider example names \`${exampleModel}\`, not \`${model}\`. Use it only for the response shape.` : "Illustrative response from the published schema."}\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n${sharedOutput ? `This provider example names \`${exampleModel}\`, not \`${model}\`. Use it only for the response shape.\n\n` : ""}\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
     : "";
   const requestSetup = requestExample
     ? derivedSnippets(model, requestExample)
@@ -798,7 +790,7 @@ sidebarTitle: ${JSON.stringify(title)}
 
 ${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
-Use \`${model}\` with the Comfy Router API. ${provider} provides the model; Router gives it the shared authentication and request route below.
+API Reference for \`${model}\`, served by Comfy Router from ${provider}.
 ${previewNotice.body}
 ## ${requestExample ? "Quick start" : "Request setup"}
 
