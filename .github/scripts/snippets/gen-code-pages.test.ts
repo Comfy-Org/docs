@@ -7,12 +7,12 @@ const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 
 describe("generated model pages", () => {
   test("an empty schema example is reference material, not a runnable call", () => {
-    const page = read("development/comfy-router/models/openai/gpt-5/code.mdx");
+    const page = read("development/comfy-router/models/minimax/minimax-h3/code.mdx");
     expect(page).toContain("## Request setup");
     expect(page).toContain("This model has no runnable request example");
-    expect(page).not.toContain('client.models.run(\n        "openai/gpt-5"');
+    expect(page).not.toContain('client.models.run(\n        "minimax/minimax-h3"');
     expect(page).not.toContain('-d "{}"');
-    expect(page).toContain("https://platform.openai.com/docs/api-reference");
+    expect(page).toContain("https://platform.minimax.io/docs/api-reference");
     expect(page).toContain("pip install comfy-sdk");
     expect(page).toContain("npm install @comfyorg/sdk");
   });
