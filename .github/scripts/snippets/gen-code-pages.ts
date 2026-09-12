@@ -1057,7 +1057,7 @@ const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: R
   .sort();
 for (const rel of orphans) {
   if (prune && !check) {
-    rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
+    rmSync(join(ROOT, rel));
     console.log(`pruned ${rel}`);
   } else {
     problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
