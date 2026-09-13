@@ -1,0 +1,96 @@
+---
+title: "Comfy Router 请求头"
+sidebarTitle: "请求头"
+description: "你可以向 Comfy Router 发送的请求头，以及它会返回的响应头，适用于所有模型：身份验证、幂等性、请求 ID、错误分桶、重试节奏和支出限额。"
+translationSourceHash: ea8cad67
+translationFrom: development/comfy-router/headers.mdx
+translationBlockHashes:
+  "_intro": 6e9409a3
+  "Request headers": 1a4e6df7
+  "Response headers": 4504c25b
+  "Status codes that carry two meanings": f390ff0e
+  "Next": 31f315d9
+---
+每个 Router 模型都使用 `POST /v2/models/{provider}/{model}`，并各自带有 JSON 请求体。本页介绍各模型共用的请求头；[API 参考](/zh/development/comfy-router/reference) 列出了已生成的契约。
+
+Comfy SDK（Python 版为 `comfy-sdk`，TypeScript 版为 `@comfyorg/sdk`）负责处理身份验证并生成幂等键。它们会按下文所述公开选定的响应元数据。原生 HTTP 客户端必须自行发送和读取这些请求头。
+
+## 请求标头
+
+<ParamField header="X-API-Key" type="string">
+  Comfy API 密钥，格式为 `comfyui-...`，在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys)中创建。它使用你工作区的模型访问权限和额度余额。你也可以通过 `Authorization: Bearer comfyui-...` 发送它；如果两个标头同时存在，`X-API-Key` 优先。
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`。以 `comfyui-` 开头的值是 API 密钥。任何其他值都会被当作 Comfy Cloud JWT。
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  标识一次逻辑生成。在调用之前生成并存储一个 UUID，然后在重试未发生变化的请求时复用它。该密钥可以在最长 24 小时内重放结果或收集已接受的任务。SDK 会生成密钥，也允许你自行提供（Python 中为 `idempotency_key=`，TypeScript 中为 `idempotencyKey`）。关于冲突、过期和不可重放的结果，请参阅[重试结果](/zh/development/comfy-router/api#retry-outcomes)。
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`。发送模型的原生 JSON 输入。字段和验证要求因模型而异；请参阅[使用 Router API](/zh/development/comfy-router/api)。
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  仅用于 `GET /v2/models/{provider}/{model}/openapi.json`。发送你从先前的 `200` 响应中保留的 `ETag`；当它仍然匹配时，响应是带有相同 `ETag` 的无响应体 `304`。将模型的模式缓存在进程的整个生命周期内，并以这种方式重新验证，而不是在每次调用之前重新读取它。
+</ParamField>
+
+## 响应头
+
+<ResponseField name="X-Comfy-Request-Id" type="字符串" required>
+  标识此次 HTTP 请求。联系支持时请提供该值。TypeScript 将其暴露为 `requestId`；Python 在错误中将其暴露为 `request_id`。
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="字符串">
+  机器可读的错误类别。在 `422` 响应中请使用此响应头，因为验证响应体包含 `detail[]` 而没有 `error_type`。将其与 HTTP 状态码组合，以决定如何处理。在控制流中将未知值视为 `internal_error`，并保留该值用于诊断。
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="布尔">
+  当 Router 直接返回已存储的结果而不是重新运行模型时，此响应头存在且为 `true`。全新运行时不存在此响应头。
+</ResponseField>
+
+<ResponseField name="Retry-After" type="整数">
+  重试之前需要等待的秒数。在 `409` / `concurrency_limit_exceeded` 或 `504` / `deadline_exceeded` 时，请在等待之后使用相同的请求和 key 进行重试。在 `429` / `rate_limited` 时，它告诉你速率限制何时重置。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="整数">
+  已承诺用于仍在运行的调用的合作伙伴支出上限，单位为美分。处于执行状态的支出闸门可在准入响应及其 `429` 拒绝响应中返回该值。当闸门未在执行，或由其他控制项拒绝了该请求时，该响应头不存在。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="整数">
+  当前已承诺用于进行中调用的美分数。准入响应会包含其自身的调用；`429` 则不包含被拒绝的调用。与 `X-Committed-Spend-Limit` 一同发送。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="整数">
+  距离已承诺支出上限的剩余美分数。当所请求的调用成本超过剩余数量时，它在拒绝响应中也可能为正数。
+</ResponseField>
+
+<ResponseField name="ETag" type="字符串">
+  出现在 `GET /v2/models/{provider}/{model}/openapi.json`。请将其存储起来，并作为 `If-None-Match` 发送回去，以重新验证缓存的 schema。
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="字符串">
+  在 schema 路由上为：`private, must-revalidate`。将响应保存在私有缓存中，并使用 `ETag` 重新验证过期的副本。
+</ResponseField>
+
+## 具有双重含义的状态码
+
+有三种状态码被两个类别共用，而响应头正是区分它们的关键：
+
+| 状态 | `X-Comfy-Error-Type` | 应对措施 |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | 该 key 的原始调用仍在运行。请等待 `Retry-After`，然后重新发送相同的 key。 |
+| `409` | `invalid_input` | 检查该冲突。如果你修改过原始请求，请将其还原。已消耗、不可重放的 key 无法恢复结果；只有在你要发起一次新的、可能计费的生成时，才使用新的 key。 |
+| `429` | `concurrency_limit_exceeded` | 同时在途的调用过多，或触达了承诺支出上限（见 `X-Committed-Spend-*` 响应头）。当你自己的某个调用完成后，该限制会自动解除。 |
+| `429` | `rate_limited` | 在重试之前等待 `Retry-After`。 |
+| `504` | `deadline_exceeded` | Router 自身的 10 分钟上限。收到 `Retry-After` 后，重新发送相同的 key 以取回正在运行的生成结果。 |
+| `504` | `provider_timeout` | 合作伙伴超时。请遵循[重试与计费引导](/zh/development/comfy-router/api#retry-outcomes)；不要把这种情况当作不收费的保证。 |
+
+## 下一步
+
+- [快速开始](/zh/development/comfy-router/quickstart)：发送请求并读取结果。
+- [使用 Comfy Router API](/zh/development/comfy-router/api)：模型发现、schema、错误、重试与计费。
+- [API 参考](/zh/development/comfy-router/reference)：定义了这些请求头的已生成契约。
+- [限制](/zh/development/comfy-router/limitations)：Router 目前尚不支持的功能，以及可以改用哪些方案。
