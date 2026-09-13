@@ -1,0 +1,96 @@
+---
+title: "Comfy Router ヘッダー"
+sidebarTitle: "ヘッダー"
+description: "Comfy Router に送信できるリクエストヘッダーと、すべてのモデルで返されるレスポンスヘッダーについて説明します。認証、冪等性、リクエスト ID、エラーバケット、リトライのペーシング、支出上限を取り扱います。"
+translationSourceHash: ea8cad67
+translationFrom: development/comfy-router/headers.mdx
+translationBlockHashes:
+  "_intro": 6e9409a3
+  "Request headers": 1a4e6df7
+  "Response headers": 4504c25b
+  "Status codes that carry two meanings": f390ff0e
+  "Next": 31f315d9
+---
+すべての Router モデルは、それぞれ独自の JSON ボディを持つ `POST /v2/models/{provider}/{model}` を使用します。このページでは、モデル間で共通のヘッダーについて説明します。[API リファレンス](/ja/development/comfy-router/reference)には生成済みのコントラクトが記載されています。
+
+Comfy SDK（Python 用の `comfy-sdk`、TypeScript 用の `@comfyorg/sdk`）は認証を処理し、冪等性キーを生成します。以下で説明するように、選択済みのレスポンスメタデータを公開します。生の HTTP クライアントは、ヘッダーを自身で送信し、読み取る必要があります。
+
+## リクエストヘッダー
+
+<ParamField header="X-API-Key" type="string">
+  [Comfy ワークスペース](https://platform.comfy.org/profile/api-keys)で作成した Comfy APIキー（`comfyui-...`）です。ワークスペースのモデルアクセスとクレジット残高を使用します。`Authorization: Bearer comfyui-...` として送信することもできます。両方のヘッダーが存在する場合は `X-API-Key` が優先されます。
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`。`comfyui-` で始まる値はAPIキーです。それ以外の値は Comfy Cloud の JWT として扱われます。
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  1つの論理的な生成を識別します。呼び出しの前にUUIDを生成して保存し、変更していないリクエストの再試行時にそれを再利用します。このキーは最大24時間のあいだ、結果を再生したり、受け付けた処理を収集したりできます。SDK はキーを生成しますが、独自のキーを指定することもできます（Python では `idempotency_key=`、TypeScript では `idempotencyKey`）。競合、有効期限、再生できない結果については、[再試行の結果](/ja/development/comfy-router/api#retry-outcomes)を参照してください。
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`。モデル固有のJSON入力を送信します。フィールドと検証要件はモデルによって異なります。[Router API の使用](/ja/development/comfy-router/api)を参照してください。
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  `GET /v2/models/{provider}/{model}/openapi.json` でのみ使用します。以前の `200` で受け取った `ETag` を送信します。それがまだ一致する場合、応答は同じ `ETag` を持つボディなしの `304` になります。モデルのスキーマはプロセスの存続期間中キャッシュし、呼び出しのたびに読み直すのではなく、この方法で再検証してください。
+</ParamField>
+
+## レスポンスヘッダー
+
+<ResponseField name="X-Comfy-Request-Id" type="string" required>
+  この HTTP リクエストを識別します。サポートに問い合わせる際はこれを含めてください。TypeScript では `requestId` として公開され、Python ではエラー時に `request_id` として公開されます。
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="string">
+  機械可読なエラーカテゴリ。`422` の場合は、検証ボディに `detail[]` があり `error_type` がないため、このヘッダーを使用します。HTTP ステータスと結合して、どう処理するかを判断してください。不明な値は制御フローでは `internal_error` として扱い、診断用にはそのまま保持してください。
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="boolean">
+  Router がモデルを再実行せずに保存済みの結果を返す場合に存在し、`true` になります。新規実行時には存在しません。
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  再試行する前に待機する秒数。`409` / `concurrency_limit_exceeded` または `504` / `deadline_exceeded` の場合は、待機後に同じリクエストと同じキーで再試行してください。`429` / `rate_limited` の場合は、レート制限がいつリセットされるかを示します。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="integer">
+  まだ実行中の呼び出しに対して確定したパートナー支出の上限（USD セント）。強制する spend gate は、許可されたレスポンスとその `429` 拒否の両方でこれを返すことがあります。gate が強制していない場合、または別の制御がリクエストを拒否した場合は存在しません。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="integer">
+  現在実行中の呼び出しに対して確定している USD セント。許可されたレスポンスには自身の呼び出しが含まれ、`429` には拒否された呼び出しは含まれません。`X-Committed-Spend-Limit` とともに送信されます。
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="integer">
+  確定支出の上限を下回って残っている USD セント。要求された呼び出しのコストが残量を超える場合、拒否時でも正の値になることがあります。
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  `GET /v2/models/{provider}/{model}/openapi.json` に対して。これを保存し、キャッシュされたスキーマを再検証するために `If-None-Match` として送り返してください。
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="string">
+  スキーマルートに対しては `private, must-revalidate`。レスポンスをプライベートキャッシュに保持し、古いコピーを `ETag` で再検証してください。
+</ResponseField>
+
+## 2つの意味を持つステータスコード
+
+3つのステータスが2つのバケットで共有されており、それらを見分けるのがこのヘッダーです:
+
+| ステータス | `X-Comfy-Error-Type` | 対処方法 |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | このキーに対するオリジナルの呼び出しがまだ実行中です。`Retry-After` 待ってから、同じキーを再送してください。 |
+| `409` | `invalid_input` | 競合の内容を確認してください。リクエストを変更した場合は、オリジナルのリクエストに戻してください。消費済みでリプレイ不能なキーは結果を復元できません。新規の、課金される可能性がある生成を意図する場合にのみ、新しいキーを使用してください。 |
+| `429` | `concurrency_limit_exceeded` | 実行中の呼び出しが多すぎるか、コミット済み支出の上限(`X-Committed-Spend-*` ヘッダーを参照)に達しています。自身の呼び出しのいずれかが完了すると解除されます。 |
+| `429` | `rate_limited` | 再試行する前に `Retry-After` を待ってください。 |
+| `504` | `deadline_exceeded` | Router 自体の10分間の制限です。`Retry-After` がある場合は、同じキーを再送して実行中の生成結果を回収してください。 |
+| `504` | `provider_timeout` | パートナーがタイムアウトしました。[再試行と課金のガイダンス](/ja/development/comfy-router/api#retry-outcomes)に従ってください。課金されないことの保証として扱わないでください。 |
+
+## 次のステップ
+
+- [クイックスタート](/ja/development/comfy-router/quickstart): リクエストを送信して結果を読み取ります。
+- [Comfy Router API の使用](/ja/development/comfy-router/api): モデルの検出、スキーマ、エラー、リトライ、課金について。
+- [API リファレンス](/ja/development/comfy-router/reference): これらのヘッダーが定義されている生成済みコントラクト。
+- [制限事項](/ja/development/comfy-router/limitations): Router が現時点で行わないこと、および代わりに使用すべきもの。

@@ -1,0 +1,281 @@
+---
+title: "Comfy Router API の使用"
+sidebarTitle: "Router API の使用"
+description: "モデルの選択、スキーマの確認、Router の安全な呼び出し、そして結果、エラー、リトライ、課金の処理方法について説明します。"
+translationSourceHash: cd661025
+translationFrom: development/comfy-router/api.mdx
+translationBlockHashes:
+  "_intro": 1b554933
+  "Discover the catalog": f4cd9b87
+  "Read one model": 6d96021f
+  "Read input and output schemas": 0b7e6eaa
+  "Validation and fallback schemas": 0f3cb67c
+  "Read the result": fab75186
+  "Handle errors, retries, and billing": 41a1e0ab
+  "Per-model examples": ed06edba
+  "Next": 30e39619
+---
+モデルを選択し、そのスキーマを確認して、`POST /v2/models/{provider}/{model}` を呼び出します。ルートと認証はモデル間で変わりません。
+
+## カタログの検出
+
+生成に使用するのと同じAPIキーでモデルを一覧表示します:
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v2/models?limit=50"
+```
+
+省略したカタログレスポンス:
+
+### モデルの課金に関する事実 {#model-billing-facts}
+
+```json
+{
+  "data": [
+    {
+      "id": "bfl/flux-2-pro",
+      "provider": "bfl",
+      "model": "flux-2-pro",
+      "billing": { "charges_on_policy_rejection": "no" }
+    }
+  ],
+  "has_more": true,
+  "next_cursor": "example-cursor",
+  "limit": 50
+}
+```
+
+呼び出しパスでは `id` を使用します。`billing` オブジェクトには価格ではなく、課金に関する事実が含まれます。それに依存する前に、[ポリシー拒否時の課金](/ja/development/comfy-router/api#model-billing-facts) を読んでください。
+
+### ページネーション
+
+- `has_more` が `true` の場合は、返された `next_cursor` を `cursor` として渡します。`has_more` が `false` になったら、前のページが要求より短かったとしても停止します。
+- カーソルは不透明なものとして扱います。値は URL エンコードします。たとえば cURL では `--get --data-urlencode "cursor=$NEXT_CURSOR"` を使用します。オフセットを計算したり、カーソルを変更したりしないでください。
+- `limit` のデフォルトは 20 で、上限は 100 です。上限を超える値はクランプされます。ゼロとネガティブな値はデフォルトを選択します。レスポンスには、実際に使用された limit が報告されます。
+- 無効なカーソルは `400` / `invalid_input` を返します。リストを暗黙的に再起動することはありません。
+- カーソルはカタログの更新をまたいでも有効なままである可能性がありますが、走査はスナップショットではありません。現在位置より前に追加されたモデルは、その走査に現れないことがあります。
+
+`503` / `service_unavailable` は一時的なものです。バックオフしながら再試行してください。空のカタログとして扱わないでください。SDK の run メソッドは、選択済みのモデルを直接呼び出します。
+
+## 1つのモデルを読み取る
+
+モデル ID がわかっている場合は、カタログエントリを直接取得します。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro
+```
+
+モデル詳細エンドポイントを使えば、カタログ全体をたどる必要はありません。エントリの完全なフィールドについては [API リファレンス](/ja/development/comfy-router/reference) を参照してください。
+
+## 入力スキーマと出力スキーマを読み取る {#read-input-and-output-schemas}
+
+各モデルはスタンドアロンの OpenAPI ドキュメントを公開しています:
+
+```bash
+curl --dump-header schema-headers.txt \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+モデルのオペレーション内では、`requestBody` が入力を表し、`200` レスポンスは、出力スキーマが作成されている場合に出力を表します。入力の検証と出力のドキュメント化は別物です。Router は自身の入力スキーマに対して検証を行いますが、返されたプロバイダーの結果を出力スキーマに対して検証しません。
+
+出力のフィールドだけでなく、メディアタイプも確認してください。作成されていない出力は `*/*` を使用することがあり、一部のモデルは JSON ではなくバイナリデータを返します。
+
+### スキーマをキャッシュする {#cache-a-schema}
+
+スキーマとその `ETag` を保存します。後でスキーマを取得する際に、その ETag を `If-None-Match` で渡します。`304` にはボディがありません。キャッシュしたドキュメントを保持してください。`200` は置き換え用のドキュメントと ETag を提供します。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  -H 'If-None-Match: "previous-etag-value"' \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+スキーマルートは `Cache-Control: private, must-revalidate` を使用します。認証済みレスポンスは共有キャッシュに保存しないでください。この ETag/304 の動作はスキーマエンドポイントにのみ適用されます。
+
+## 検証とフォールバックスキーマ
+
+作成済みの入力スキーマは、プロバイダーの呼び出し前に不正なフィールドを `422` と `detail[]` 配列で拒否します。`loc` 内のフィールドパスを確認してください。詳細は[検証エラー](/ja/development/comfy-router/api#validation-errors)を参照してください。
+
+一部のスキーマは任意の JSON オブジェクトを受け入れ、`x-comfy-input-schema-authored: false` を設定します。ルーターはそれらのリクエストをモデル固有の検証なしで転送するため、プロバイダー側で拒否される可能性があります。
+
+`bfl/flux-2-pro` は現在このフォールバックを使用しています。必須フィールドについては、プロバイダーのドキュメントまたはそのモデルページを確認してください。
+
+## 結果を読み取る
+
+Router は各モデルのターミナル結果の形状を返します。共通の画像、ビデオ、テキストのエンベロープはありません。BFL の画像出力は `result.sample` を使用しますが、他のモデルは URL のリストやインラインバイトを返すことがあります。
+
+一部のアセット URL は Comfy によって再ホストされますが、それ以外はプロバイダーの URL やインラインバイトのままです。[結果アセット](/ja/development/comfy-router/reference#結果アセット)を確認し、有効期限のあるアセットは速やかにダウンロードしてください。リプレイでは URL は更新されません。
+
+## エラー、リトライ、課金の処理 {#handle-errors-retries-and-billing}
+
+### エラーを防御的に読み取る
+
+失敗したリクエストは、プロキシの HTML エラーページ、切り詰められた JSON、またはプレーンテキストを返すことがあります。JSON パースエラーによって HTTP ステータスやリクエスト ID が隠れないようにしてください。以下のヘルパーは、Python では `httpx.Response`、TypeScript では Fetch の `Response` を使用します。SDK は通常の SDK 呼び出しに対してすでにエラーフィールドを公開しています。
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+</CodeGroup>### 検証エラー
+
+### バリデーションエラー {#validation-errors}
+
+Router の `422` は、プロバイダーの呼び出し前に検証に失敗したことを意味し、課金されません。そのボディには `detail[]` 配列があり、拒否されたフィールドごとに 1 つのエントリが含まれます。エラーカテゴリはボディではなく `X-Comfy-Error-Type` にあります。例:
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+これは一例の形状です。寛容な入力スキーマを持つモデルは、Router の `422` を返す代わりに、不足しているフィールドをプロバイダーに転送することがあります。
+
+| フィールド | 意味 |
+| --- | --- |
+| `loc` | 拒否されたフィールドへのパス。最も外側のセグメントが先頭になります。 |
+| `msg` | 失敗の理由を人間が読める形式で示したもの。 |
+| `type` | `missing`、`greater_than`、`image_too_small` など、プロバイダー固有の理由。 |
+| `ctx` | そのプロバイダーエラーの任意の境界値または追加データ。 |
+
+`400` は、このフィールド単位の検証ボディではなく、不正な形式のカーソルなど、リクエストレベルの問題を表します。サポートされているカテゴリは[エラーリファレンス](/ja/development/comfy-router/reference#エラーバケット)に記載されています。制御フローでは、不明なカテゴリを `internal_error` として扱いますが、診断用にオリジナルの値は保持してください。新しいエラー値を厳密に拒否したり、予測されるエラーカテゴリがすでに発生しているかのように実装したりしないでください。### 安全にリトライする
+
+### リトライの結果 {#retry-outcomes}
+
+**送信する前に**、キーをモデル ID とリクエストボディとともに永続化します。その論理呼び出しのすべての試行で同じキーを再利用します。Router はレスポンスで `Idempotency-Key` を返しません。Python SDK は発生した例外にキーを含めますが、TypeScript では自分で指定したキーを自分で保持しておく必要があります。
+
+キーは、認証情報が持つワークスペース内で共有され、ワークスペースを持たない場合はユーザーにスコープされます。そのスコープ内で一意な UUID を使用し、同じ認証情報でリトライしてください。別のワークスペースメンバーのキーを再利用すると、そのメンバーの記録済みの結果が返されたり、競合が発生したりする可能性があります。認証情報を変更すると、別の課金対象呼び出しが開始されることがあります。
+
+Router はキー付きのレスポンスまたはコレクションの状態を 24 時間保持します。リトライしても新しい保持ウィンドウは開始されません。その状態が期限切れになった後は、古いキーで結果を復元できることや、新しいディスパッチを防げることを期待しないでください。また、キーがあっても期限切れのアセット URL が再び使用可能になるわけではありません。
+
+### タイムアウトと収集 {#timeouts-and-collection}
+
+### リトライの結果 {#retry-outcomes}
+
+
+| ステータス | バケット | 意味 | 対処 |
+| --- | --- | --- | --- |
+| `200` | `Idempotent-Replayed: true` ヘッダー | Router が結果を再生したか、収集済みの生成を返しました。 | 結果を使用します。再生は 2 回目の Comfy 課金ではありません。 |
+| `409` | `concurrency_limit_exceeded` | そのキーの元の呼び出しがまだ実行中です。 | `Retry-After` を待ってから、同じキーを再送信します。 |
+| `504` | `deadline_exceeded`（`Retry-After` 付き） | Router が、受け入れられたプロバイダー処理へのハンドルを保持しました。 | 指定された間隔を待ち、同じリクエストとキーを再送信して収集します。まだ実行中である可能性があります。 |
+| `429` | `rate_limited` | リクエストの許容量を使い切りました。 | `Retry-After` を待ってから、同じキーでリトライします。 |
+| `429` | `concurrency_limit_exceeded` | 同時呼び出しまたは確定済み支出の上限がリクエストを拒否しました。 | 同時実行数を減らし、同じキーでリトライします。支出ヘッダーを確認してください。 |
+| `409` | `invalid_input` | リクエストがキーの元のリクエストと異なるか、その記録を再生できません。 | 競合を確認します。リクエストが変更されている場合は元のリクエストに戻します。新しく課金される可能性のある呼び出しを意図する場合にのみ、新しいキーを開始してください。 |
+| 収集のヒントがない `504`、その他の `5xx`、またはレスポンスなし | さまざま | ステータスだけでは、処理が受け入れられたのか、保持されたのか、解放されたのかを特定できません。 | 同じキーとリクエストを保持します。上限付きのリトライポリシーを使用してください。回復は保証されません。 |
+
+競合は method、model パス、クエリ、ボディを比較します。過大なレスポンス、レスポンスの書き込み失敗、または安全に再生できないアセットの後、キーは再生不能になることがあります。待機しても消費された結果は回復しません。新しいキーは新しい呼び出しを開始するものであり、古い出力を取得するものではありません。
+
+プロバイダーへのディスパッチ前の拒否はキーを解放します。ディスパッチされた呼び出しはプロバイダーハンドルを保持するか、再生不能になる可能性があります。ステータスコードだけからキーの状態や課金を推測しないでください。
+
+呼び出しがタイムアウトした、または接続が切断されたという理由だけで、まったく新しいキーを発行しないでください。Router がすでに生成を受け入れていた場合、新しいキーは 2 つ目の論理実行を作成し、したがって 2 つ目の課金対象の結果を生む可能性があります。元の呼び出しが回復不能であるとわかるまで、同じキーを再利用してください。
+
+#### タイムアウトと収集
+
+1 回の Router 呼び出しは、デフォルトで接続を 10 分間保持することがあります。クライアントのタイムアウトをその上限より上に設定すると、不透明なローカルアボートではなく、型付きの `504` とリクエスト ID を取得できます。
+
+`deadline_exceeded` は Router の待機制限で、`provider_timeout` はプロバイダーの期限です。完了したプロバイダーの生成は、呼び出し元がタイムアウトを受け取ったか切断されたとしても、課金される可能性があります。クライアントのキャンセルは待機と SDK のリトライを停止しますが、受け入れられたプロバイダー処理を必ずしもキャンセルするわけではありません。
+
+送信とポーリングを行うプロバイダーの場合、保持されたハンドルにより、同じキーのリクエストが元の生成の収集を続けることができます。回復可能なハンドルなしで遮断されたディスパッチ済み呼び出しは、再生可能な結果なしにキーを消費する可能性があり、同じキーでのリトライは `409` を返します。成功が捕捉されていないプロバイダー起因の一時的な失敗でも、別の試行のためにキーを解放することがあります。ハンドルが存在しないだけでは、どの結果が該当するかはわかりません。
+
+SDK は一部の失敗を限られた予算内でリトライします。エラーを返したら、新しいものを生成するのではなく、リクエストとキーを保持してください。生の HTTP の場合、この例では 2 つの明示的な収集ヒントのみをリトライします:
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+元のモデル、ボディ、保存したキーを渡します。これは試行回数を制限するもので、合計の実時間を制限するものではありません。各呼び出しはクライアントのタイムアウトまで続く可能性があり、各待機は `Retry-After` に従います。HTTP エラーは検査用にレスポンスを保持し、トランスポートエラーはキーを置き換えることなく伝播します。アプリケーションがより長い回復ウィンドウを必要とする場合は、保存したキーで後で収集をスケジュールしてください。### モデル課金の仕様
+
+`GET /v2/models` とモデル詳細レスポンスには `billing.charges_on_policy_rejection` が含まれます。これはポリシーによる拒否について説明するものであり、すべての失敗や価格の見積もりを表すものではありません。
+
+| 値 | 意味 |
+| --- | --- |
+| `yes` | ポリシーによる拒否に対して課金されます。 |
+| `no` | ポリシーによる拒否に対して課金されません。 |
+| `unknown` | まだ誰も挙動を確定していません。課金される可能性があるものとして扱ってください。 |
+
+これらの文字列は明示的に比較してください。`"no"` は Python と JavaScript では真値（truthy）です。認識できない値はすべて `unknown`（不明）として扱ってください。クレジット不足により拒否されたリクエストは `insufficient_credits` を返します。
+
+プロバイダーのペイロードには独自のコストや使用量の数値が含まれることがありますが、それらは Comfy の課金ではありません。`X-Comfy-Credits-Used` は許可リストに登録されたプロバイダーでは表示されることがありますが、すべてに共通するものではなく、再送もされません。突き合わせには[ワークスペースの使用量と請求書](https://platform.comfy.org)を使用してください。課金を調査する際はリクエスト ID を保持してください。
+
+## モデル別の例
+
+- [Google Gemini](/ja/development/comfy-router/models/google/gemini/code)
+- [Nano Banana 2](/ja/development/comfy-router/models/google/nano-banana-2/code)
+- [Nano Banana 2 Lite](/ja/development/comfy-router/models/google/nano-banana-2-lite/code)
+- [Nano Banana Pro](/ja/development/comfy-router/models/google/nano-banana-pro/code)
+- [FLUX 1.1 Pro Ultra](/ja/development/comfy-router/models/black-forest-labs/flux-1-1-pro-ultra-image/code)
+- [FLUX Kontext](/ja/development/comfy-router/models/black-forest-labs/flux-1-kontext/code)
+- [FLUX Video Upscale](/ja/development/comfy-router/models/black-forest-labs/flux-video-upscale/code)
+- [FLUX 3 Video](/ja/development/comfy-router/models/black-forest-labs/flux-3-video/code)
+- [Ideogram 4](/ja/development/comfy-router/models/ideogram/ideogram-v4/code)
+
+## 次へ
+
+- [クイックスタート](/ja/development/comfy-router/quickstart): インストール、呼び出し、画像の保存。
+- [API リファレンス](/ja/development/comfy-router/reference): エンドポイントのパラメータ、スキーマ、レスポンスコード。

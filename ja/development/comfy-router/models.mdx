@@ -2,277 +2,337 @@
 title: "Comfy Router APIの使用"
 sidebarTitle: "Router APIの使用"
 description: "モデルの選択、スキーマの確認、Routerの安全な呼び出し、結果・エラー・再試行・請求の処理について説明します。"
-translationSourceHash: 0d8c3756
+translationSourceHash: 7bca7f7c
 translationFrom: development/comfy-router/models.mdx
 translationBlockHashes:
-  "_intro": 1b554933
-  "Discover the catalog": 9264e92d
-  "Read one model": 6d96021f
-  "Read input and output schemas": 0b7e6eaa
-  "Validation and fallback schemas": 9e039521
-  "Read the result": fab75186
-  "Handle errors, retries, and billing": 563281f5
-  "Per-model examples": ed06edba
-  "Next": 30e39619
+  "_intro": f10928e2
+  "Anthropic": 6b3a82aa
+  "Beeble": 3dbc8f79
+  "Black Forest Labs": f9ec2193
+  "Bria": 524538b9
+  "BytePlus": 153e22f7
+  "Elevenlabs": d6122bad
+  "fal": 8962295e
+  "Freepik": 9b9fc279
+  "Gemini Interactions": 772301fb
+  "Google": 5fb1cd15
+  "HeyGen": e63b341c
+  "Ideogram": a5b5a0ab
+  "Kling": 78f8dd06
+  "Krea": c09355fb
+  "LTX": 0454756a
+  "Luma": aaec5c26
+  "Luma 2": 7d46b851
+  "Meshy": ac9742cb
+  "MiniMax": 871fec64
+  "Moonvalley": 1bafd9a3
+  "OpenAI": 1ecffa94
+  "Pruna": 29b758ff
+  "Qwen": 07ff7742
+  "Recraft": b75cce53
+  "Runway": ec0c741f
+  "Tencent": 3b746819
+  "Veo": 886ab7ad
+  "Wan": fbd864f4
+  "WaveSpeed": 08c44be9
+  "xAI": ac264069
 ---
-モデルを選択し、そのスキーマを確認して、`POST /v2/models/{provider}/{model}` を呼び出します。ルートと認証は、どのモデルでも同じです。
 
-## カタログを確認する
 
-生成に使用したのと同じAPIキーでモデルを一覧表示します：
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  "https://api.comfy.org/v2/models?limit=50"
-```
-
-簡略化したカタログのレスポンス：
-
-```json
-{
-  "data": [
-    {
-      "id": "bfl/flux-2-pro",
-      "provider": "bfl",
-      "model": "flux-2-pro",
-      "billing": { "charges_on_policy_rejection": "no" }
-    }
-  ],
-  "has_more": true,
-  "next_cursor": "example-cursor",
-  "limit": 50
-}
-```
-
-呼び出しパスには `id` を使用します。`billing` オブジェクトには価格ではなく請求に関する事実が含まれます。これに依存する前に、[ポリシー拒否時の請求](/ja/development/comfy-router/models#モデルの課金に関する事実) をお読みください。
-
-### ページネーション
-
-- `has_more` が `true` の場合、返された `next_cursor` を `cursor` として渡します。`has_more` が `false` の場合、前のページが要求した件数より短くても停止します。
-- カーソルは不透明な値として扱います。値をURLエンコードしてください。たとえば、cURL の `--get --data-urlencode "cursor=$NEXT_CURSOR"` を使用します。オフセットを計算したり、カーソルを変更したりしないでください。
-- `limit` はデフォルトで20で、上限は100です。上限を超える値は上限値にクランプされます。0 および負の値はデフォルトが使用されます。レスポンスには、実際に使用された limit が報告されます。
-- 無効なカーソルは `400` / `invalid_input` を返します。リストを黙って先頭からやり直すことはありません。
-- カーソルはカタログの更新をまたいで有効なままの場合がありますが、走査はスナップショットではありません。現在位置より前に追加されたモデルは、その走査では表示されない場合があります。
-
-`503` / `service_unavailable` は一時的なものです。バックオフしながら再試行してください。空のカタログとして扱わないでください。SDK の run メソッドは選択済みモデルを直接呼び出します。
-
-## モデルを1件読み込む
-
-モデルIDがわかっている場合は、カタログエントリを直接取得できます：
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro
-```
-
-モデル詳細エンドポイントを使えば、カタログ全体を走査する必要はありません。完全なエントリフィールドについては、[APIリファレンス](/ja/development/comfy-router/reference)を参照してください。
-
-## 入力スキーマと出力スキーマを読む
-
-各モデルはスタンドアロンのOpenAPIドキュメントを公開しています：
-
-```bash
-curl --dump-header schema-headers.txt \
-  -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
-```
-
-モデルオペレーション内では、出力スキーマが作成されている場合、`requestBody`が入力を記述し、`200`レスポンスが出力を記述します。入力検証と出力ドキュメントは異なります：Routerは入力スキーマに基づいて検証しますが、返されたプロバイダー結果を出力スキーマに基づいて検証することはありません。
-
-出力のメディアタイプとそのフィールドを確認してください。未作成の出力は`*/*`を使用でき、一部のモデルはJSONではなくバイナリデータを返します。
-
-### スキーマをキャッシュする
-
-スキーマとその`ETag`を保存します。後でスキーマを取得する際は、そのETagを`If-None-Match`で渡します。`304`にはボディがないため、キャッシュされたドキュメントを保持します。`200`は置き換え用のドキュメントとETagを提供します。
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  -H 'If-None-Match: "previous-etag-value"' \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
-```
-
-スキーマルートは`Cache-Control: private, must-revalidate`を使用します。認証済みレスポンスを共有キャッシュに保存しないでください。このETag/304の動作はスキーマエンドポイントにのみ適用されます。
-
-## 検証とフォールバックスキーマ
-
-オーサリングされた入力スキーマは、プロバイダー呼び出しの前に無効なフィールドを `422` と `detail[]` 配列で拒否します。`loc` 内のフィールドパスを読み取ってください。[検証エラー](/ja/development/comfy-router/models#検証エラー) を参照してください。
-
-一部のスキーマは任意の JSON オブジェクトを受け入れ、`x-comfy-input-schema-authored: false` を設定します。ルーターはモデル固有の検証を行わずにこれらのリクエストを転送するため、プロバイダーがそれらを拒否できます。
-
-`bfl/flux-2-pro` は現在このフォールバックを使用しています。必須フィールドについては、プロバイダーのドキュメントまたはそのモデルページを確認してください。
-
-## 結果を読み取る
-
-Router は各モデルのターミナル結果の形状を返します。画像、ビデオ、テキストに共通のエンベロープはありません。BFL の画像出力は `result.sample` を使用しますが、他のモデルは URL リストやインラインバイトを返すことができます。
-
-一部のアセット URL は Comfy によってリホストされ、その他はプロバイダー URL またはインラインバイトのままです。[結果アセット](/ja/development/comfy-router/reference) を確認し、有効期限のあるアセットは速やかにダウンロードしてください。リプレイしても URL が更新されることはありません。
-
-## エラー・再試行・課金の処理
-
-### エラーの防御的な読み取り
-
-失敗したリクエストは、プロキシの HTML エラーページ、切り詰められた JSON、またはプレーンテキストを返すことがあります。JSON パースエラーで HTTP ステータスやリクエスト ID を見逃さないでください。これらのヘルパーは Python では `httpx.Response` を、TypeScript では Fetch `Response` を使用します。通常の SDK 呼び出しでは、SDK がすでにエラーフィールドを公開しています。
-
-<CodeGroup>
-
-```python
-def read_router_error(response):
-    body = None
-    if response.headers.get("content-type", "").startswith("application/json"):
-        try:
-            body = response.json()
-        except ValueError:
-            body = None
-
-    detail = body.get("detail") if isinstance(body, dict) else None
-    return {
-        "status": response.status_code,
-        "request_id": response.headers.get("X-Comfy-Request-Id"),
-        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
-        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
-        "validation": detail if isinstance(detail, list) else [],
-    }
-```
-
-```typescript
-async function readRouterError(response: Response) {
-  let body: unknown;
-  try {
-    body = JSON.parse(await response.text());
-  } catch {
-    body = undefined;
-  }
-
-  const detail =
-    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
-
-  return {
-    status: response.status,
-    requestId: response.headers.get("X-Comfy-Request-Id"),
-    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
-    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
-    validation: Array.isArray(detail) ? detail : [],
-  };
-}
-```
-
-</CodeGroup>
-
-### 検証エラー
-
-Router の `422` は、プロバイダー呼び出しの前に検証が失敗し、課金されないことを意味します。レスポンスボディには `detail[]` 配列があり、拒否されたフィールドごとに 1 つのエントリが含まれます。エラーカテゴリはボディではなく `X-Comfy-Error-Type` にあります。例:
-
-```json
-{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
-```
-
-これは例示用の形状です。寛容な入力スキーマを持つモデルは、Router の `422` を返す代わりに、不足しているフィールドをプロバイダーに転送することがあります。
-
-| Field | Meaning |
-| --- | --- |
-| `loc` | Path to the rejected field, outermost segment first. |
-| `msg` | Human-readable reason for the failure. |
-| `type` | Provider-specific reason, such as `missing`, `greater_than` or `image_too_small`. |
-| `ctx` | Optional bound or extra data for that provider error. |
-
-`400` は、このフィールドごとの検証ボディではなく、不正なカーソルなどのリクエストレベルの問題を示します。対応しているカテゴリは[エラーリファレンス](/ja/development/comfy-router/reference#エラーバケット)に一覧されています。未知のカテゴリは制御フローでは `internal_error` として扱いますが、診断用に元の値は保持してください。新しいエラー値を無条件に拒否したり、まだ発生していない予定のエラーカテゴリを既に存在するものとして実装したりしないでください。
-
-### 安全な再試行
-
-キーは**送信する前に**、モデル ID とリクエストボディと共に保存してください。その論理呼び出しのすべての試行で同じキーを再利用します。Router はレスポンスで `Idempotency-Key` を返しません。Python SDK は送出された例外にキーを含めますが、TypeScript では指定したキーを自分で保持してください。
-
-キーは、資格情報が属するワークスペース内で共有されます。ワークスペースがない場合はユーザーがスコープになります。そのスコープ内で一意の UUID を使用し、同じ資格情報で再試行してください。別のワークスペースメンバーのキーを再利用すると、そのメンバーが記録した結果が返ったり競合が発生したりします。資格情報を変更すると、別の課金対象の呼び出しが始まることがあります。
-
-Router はキーごとのレスポンスまたは収集状態を 24 時間保持します。再試行しても新しい保持期間は始まりません。その状態が失効した後は、古いキーで結果を復元したり新しいディスパッチを防止したりできると期待しないでください。キーによって失効したアセット URL が再び使えるようになることもありません。
-
-### 再試行の結果
-
-| Status | Bucket | What it means | What to do |
-| --- | --- | --- | --- |
-| `200` | `Idempotent-Replayed: true` header | Router replayed a result or returned a collected generation. | Use the result; the replay is not a second Comfy charge. |
-| `409` | `concurrency_limit_exceeded` | The original call for that key is still running. | Wait `Retry-After`, then resend the same key. |
-| `504` | `deadline_exceeded`, with `Retry-After` | Router retained a handle to accepted provider work. | Wait the stated interval and resend the same request and key to collect it. It may still be running. |
-| `429` | `rate_limited` | The request allowance is exhausted. | Wait `Retry-After`, then retry with the same key. |
-| `429` | `concurrency_limit_exceeded` | The concurrent-call or committed-spend limit refused the request. | Reduce concurrency and retry with the same key. Inspect the spend headers. |
-| `409` | `invalid_input` | The request differs from the key's original request, or its record cannot be replayed. | Inspect the conflict. Restore the original request if it changed. Start a new key only when you intend a new, potentially billable call. |
-| `504` without a collection hint, another `5xx`, or no response | Varies | The status alone does not identify whether work was accepted, retained, or released. | Preserve the same key and request. Use a bounded retry policy; recovery is not guaranteed. |
-
-競合の判定では、メソッド、モデルパス、クエリ、ボディが比較されます。 oversized なレスポンス、レスポンス書き込みの失敗、安全に再生できないアセットの後では、キーは再生不可になることがあります。待っていても消費された結果は復元されません。新しいキーは新しい呼び出しを開始するものであり、古い出力を取得するものではありません。
-
-プロバイダーへのディスパッチ前の拒否はキーを解放します。ディスパッチ済みの呼び出しは、プロバイダーのハンドルを保持するか、再生不可になる可能性があります。ステータスコードだけでキーの状態や課金を推測しないでください。
-
-呼び出しのタイムアウトや接続の切断を理由に、まったく新しいキーを作成しないでください。Router がすでに生成を受け付けている場合、新しいキーは 2 つ目の論理ランを作成し、その結果 2 つ目の課金対象の結果を生む可能性があります。元の呼び出しが回復不可能だと分かるまで、同じキーを再利用してください。
-
-#### タイムアウトと収集
-
-1 回の Router 呼び出しは、デフォルトで最大 10 分間接続を保持することがあります。クライアントのタイムアウトをこの上限より長く設定すれば、不透明なローカル中断ではなく、型付きの `504` とリクエスト ID を受け取れます。
-
-`deadline_exceeded` is Router's waiting limit; `provider_timeout` is the provider's deadline. A provider generation that completes can be billed even if the caller received a timeout or disconnected. Client cancellation stops the wait and SDK retries, but does not necessarily cancel accepted provider work.
-
-送信してポーリングするタイプのプロバイダーでは、保持されたハンドルにより、同じキーのリクエストが元の生成の収集を続けられます。回復可能なハンドルなしに切断されたディスパッチ済み呼び出しは、再生可能な結果なしにキーを消費することがあります。この場合、同じキーでの再試行は `409` を返します。成功を捕捉できなかったプロバイダー起因の一時的な障害でも、キーが解放されて再試行できる場合があります。ハンドルがないという事実だけでは、どの結果が該当するかは判断できません。
-
-SDK は限られた予算内で一部の障害を再試行します。エラーが返されたら、新しいリクエストを作成するのではなく、リクエストとキーを保持してください。生の HTTP の場合、この例では 2 つの明示的な収集ヒントのみを再試行します。
-
-```python
-import os
-import time
-
-import httpx
-
-
-def collect(model, arguments, key, attempts=3):
-    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
-        for attempt in range(attempts):
-            response = client.post(
-                f"https://api.comfy.org/v2/models/{model}",
-                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
-                         "Idempotency-Key": key},
-                json=arguments,
-            )
-            if response.is_success:
-                return response.json()
-
-            category = response.headers.get("X-Comfy-Error-Type")
-            collecting = (response.status_code, category) in {
-                (409, "concurrency_limit_exceeded"),
-                (504, "deadline_exceeded"),
-            }
-            delay = response.headers.get("Retry-After", "")
-            if not collecting or not delay.isdigit() or attempt == attempts - 1:
-                response.raise_for_status()
-            time.sleep(int(delay))
-    raise ValueError("attempts must be positive")
-```
-
-元のモデル、ボディ、保存したキーを渡します。これで制限されるのは試行回数であり、総経過時間ではありません。各呼び出しはクライアントのタイムアウトまで実行でき、各待機は `Retry-After` に従います。HTTP エラーは検査用にレスポンスを保持し、トランスポートエラーはキーを置き換えずに伝播します。アプリケーションにより長い回復期間が必要な場合は、保存したキーで後日の収集を予約してください。
-
-### モデルの課金に関する事実
-
-`GET /v2/models` and the model detail response include `billing.charges_on_policy_rejection`. This describes a policy refusal, not every failure or a price estimate.
-
-| Value | Meaning |
-| --- | --- |
-| `yes` | A policy refusal is charged. |
-| `no` | A policy refusal is not charged. |
-| `unknown` | Nobody has established the behavior yet. Treat it as maybe charged. |
-
-Compare these strings explicitly: `"no"` is truthy in Python and JavaScript. Treat any unrecognized value as `unknown`. A request refused for lack of credits reports `insufficient_credits`.
-
-Provider payloads may include their own cost or usage numbers; those are not the Comfy charge. `X-Comfy-Credits-Used` may appear for an allowlist of providers but is not universal and is not replayed. Use [workspace usage and invoices](https://platform.comfy.org) for reconciliation. Preserve the request ID when investigating a charge.
-
-## モデル別の例
-
-- Google Gemini
-- Nano Banana 2
-- Nano Banana 2 Lite
-- Nano Banana Pro
-- FLUX 1.1 Pro Ultra
-- FLUX Kontext
-- FLUX Video Upscale
-- FLUX 3 Video
-- Ideogram 4
-
-## 関連項目
-
-- [クイックスタート](/ja/development/comfy-router/quickstart): インストール、呼び出し、画像の保存。
-- [APIリファレンス](/ja/development/comfy-router/reference): エンドポイントのパラメータ、スキーマ、レスポンスコード。
+{/* 生成済みファイル。Router カタログから `pnpm code-pages:gen` によって生成されます。 */}
+
+以下に挙げるすべてのモデルは、同じルート `POST /v2/models/{provider}/{model}` で提供され、それぞれのモデル固有の JSON ボディを使用します。各ページには、Python、TypeScript、cURL での動作するリクエスト例を掲載しています。ディスカバリー、スキーマ、エラー、リトライ、課金については、[Comfy Router API の使用](/ja/development/comfy-router/api) を参照してください。
+
+## Anthropic
+
+- [Claude Fable 5.1](/ja/development/comfy-router/models/anthropic/claude-fable-5-1/code): `anthropic/claude-fable-5-1`
+- [Claude Fable 5](/ja/development/comfy-router/models/anthropic/claude-fable-5/code): `anthropic/claude-fable-5`
+- [Claude Haiku 4.5 20251001](/ja/development/comfy-router/models/anthropic/claude-haiku-4-5-20251001/code): `anthropic/claude-haiku-4-5-20251001`
+- [Claude Opus 4.6](/ja/development/comfy-router/models/anthropic/claude-opus-4-6/code): `anthropic/claude-opus-4-6`
+- [Claude Opus 4.7](/ja/development/comfy-router/models/anthropic/claude-opus-4-7/code): `anthropic/claude-opus-4-7`
+- [Claude Opus 4.8](/ja/development/comfy-router/models/anthropic/claude-opus-4-8/code): `anthropic/claude-opus-4-8`
+- [Claude Opus 5](/ja/development/comfy-router/models/anthropic/claude-opus-5/code): `anthropic/claude-opus-5`
+- [Claude Sonnet 4.5 20250929](/ja/development/comfy-router/models/anthropic/claude-sonnet-4-5-20250929/code): `anthropic/claude-sonnet-4-5-20250929`
+- [Claude Sonnet 4.6](/ja/development/comfy-router/models/anthropic/claude-sonnet-4-6/code): `anthropic/claude-sonnet-4-6`
+- [Claude Sonnet 5](/ja/development/comfy-router/models/anthropic/claude-sonnet-5/code): `anthropic/claude-sonnet-5`
+
+## Beeble
+
+- [SwitchX](/ja/development/comfy-router/models/beeble/switchx/code): `beeble/switchx`
+
+## Black Forest Labs
+
+- [Erase V1](/ja/development/comfy-router/models/black-forest-labs/erase-v1/code): `bfl/erase-v1`
+- [Flux 1.1 Pro Ultra Image](/ja/development/comfy-router/models/black-forest-labs/flux-1-1-pro-ultra-image/code): `bfl/flux-pro-1.1-ultra`
+- [FLUX.1 Kontext](/ja/development/comfy-router/models/black-forest-labs/flux-1-kontext/code): `bfl/flux-kontext-pro`
+- [FLUX 2 Max](/ja/development/comfy-router/models/black-forest-labs/flux-2-max/code): `bfl/flux-2-max`
+- [FLUX 2 Pro](/ja/development/comfy-router/models/black-forest-labs/flux-2-pro/code): `bfl/flux-2-pro`
+- [FLUX 3 Video](/ja/development/comfy-router/models/black-forest-labs/flux-3-video/code): `bfl/flux-3-video`
+- [FLUX Pro 1.0 Canny](/ja/development/comfy-router/models/black-forest-labs/flux-pro-1-0-canny/code): `bfl/flux-pro-1.0-canny`
+- [FLUX Pro 1.0 Depth](/ja/development/comfy-router/models/black-forest-labs/flux-pro-1-0-depth/code): `bfl/flux-pro-1.0-depth`
+- [FLUX Pro 1.0 Expand](/ja/development/comfy-router/models/black-forest-labs/flux-pro-1-0-expand/code): `bfl/flux-pro-1.0-expand`
+- [FLUX Pro 1.0 Fill](/ja/development/comfy-router/models/black-forest-labs/flux-pro-1-0-fill/code): `bfl/flux-pro-1.0-fill`
+- [FLUX Video Upscale](/ja/development/comfy-router/models/black-forest-labs/flux-video-upscale/code): `bfl/video-upscale-v1`
+- [Video Edit V1](/ja/development/comfy-router/models/black-forest-labs/video-edit-v1/code): `bfl/video-edit-v1`
+- [VTO V1](/ja/development/comfy-router/models/black-forest-labs/vto-v1/code): `bfl/vto-v1`
+
+## Bria
+
+- [Fibo](/ja/development/comfy-router/models/bria/fibo/code): `bria/fibo`
+- [画像編集 消去](/ja/development/comfy-router/models/bria/image-edit-erase/code): `bria/image-edit-erase`
+- [画像編集 展開](/ja/development/comfy-router/models/bria/image-edit-expand/code): `bria/image-edit-expand`
+- [画像編集 生成塗りつぶし](/ja/development/comfy-router/models/bria/image-edit-gen-fill/code): `bria/image-edit-gen-fill`
+- [画像編集 解像度を上げる](/ja/development/comfy-router/models/bria/image-edit-increase-resolution/code): `bria/image-edit-increase-resolution`
+- [画像編集 背景を除去](/ja/development/comfy-router/models/bria/image-edit-remove-background/code): `bria/image-edit-remove-background`
+- [構造化指示](/ja/development/comfy-router/models/bria/structured-instruction/code): `bria/structured-instruction`
+- [ビデオ編集 グリーンスクリーン](/ja/development/comfy-router/models/bria/video-edit-green-screen/code): `bria/video-edit-green-screen`
+- [ビデオ編集 背景を除去](/ja/development/comfy-router/models/bria/video-edit-remove-background/code): `bria/video-edit-remove-background`
+- [ビデオ編集 背景を置き換え](/ja/development/comfy-router/models/bria/video-edit-replace-background/code): `bria/video-edit-replace-background`
+
+## BytePlus
+
+- [Dreamina Seedance 2.0 260128](/ja/development/comfy-router/models/byteplus/dreamina-seedance-2-0-260128/code): `byteplus/dreamina-seedance-2-0-260128`
+- [Dreamina Seedance 2.0 Fast 260128](/ja/development/comfy-router/models/byteplus/dreamina-seedance-2-0-fast-260128/code): `byteplus/dreamina-seedance-2-0-fast-260128`
+- [Dreamina Seedance 2.0 Mini](/ja/development/comfy-router/models/byteplus/dreamina-seedance-2-0-mini/code): `byteplus/dreamina-seedance-2-0-mini`
+- [Dreamina Seedance 2.5 260628](/ja/development/comfy-router/models/byteplus/dreamina-seedance-2-5-260628/code): `byteplus/dreamina-seedance-2-5-260628`
+- [Seed 2.0 Lite 260228](/ja/development/comfy-router/models/byteplus/seed-2-0-lite-260228/code): `byteplus/seed-2-0-lite-260228`
+- [Seed 2.0 Mini 260215](/ja/development/comfy-router/models/byteplus/seed-2-0-mini-260215/code): `byteplus/seed-2-0-mini-260215`
+- [Seed 2.0 Pro 260328](/ja/development/comfy-router/models/byteplus/seed-2-0-pro-260328/code): `byteplus/seed-2-0-pro-260328`
+- [Seed Audio 1.0 Multilingual](/ja/development/comfy-router/models/byteplus/seed-audio-1-0-multilingual/code): `byteplus/seed-audio-1.0-multilingual`
+- [Seed Audio 1.0](/ja/development/comfy-router/models/byteplus/seed-audio-1-0/code): `byteplus/seed-audio-1.0`
+- [Seedance 1.0 Lite I2V 250428](/ja/development/comfy-router/models/byteplus/seedance-1-0-lite-i2v-250428/code): `byteplus/seedance-1-0-lite-i2v-250428`
+- [Seedance 1.0 Lite T2V 250428](/ja/development/comfy-router/models/byteplus/seedance-1-0-lite-t2v-250428/code): `byteplus/seedance-1-0-lite-t2v-250428`
+- [Seedance 1.0 Pro 250528](/ja/development/comfy-router/models/byteplus/seedance-1-0-pro-250528/code): `byteplus/seedance-1-0-pro-250528`
+- [Seedance 1.0 Pro Fast 251015](/ja/development/comfy-router/models/byteplus/seedance-1-0-pro-fast-251015/code): `byteplus/seedance-1-0-pro-fast-251015`
+- [Seedance 1.5 Pro 251215](/ja/development/comfy-router/models/byteplus/seedance-1-5-pro-251215/code): `byteplus/seedance-1-5-pro-251215`
+- [Seededit 3.0 I2I 250628](/ja/development/comfy-router/models/byteplus/seededit-3-0-i2i-250628/code): `byteplus/seededit-3-0-i2i-250628`
+- [Seedream 3.0 T2I 250415](/ja/development/comfy-router/models/byteplus/seedream-3-0-t2i-250415/code): `byteplus/seedream-3-0-t2i-250415`
+- [Seedream 4.0 250828](/ja/development/comfy-router/models/byteplus/seedream-4-0-250828/code): `byteplus/seedream-4-0-250828`
+- [Seedream 4.5 251128](/ja/development/comfy-router/models/byteplus/seedream-4-5-251128/code): `byteplus/seedream-4-5-251128`
+- [Seedream 5.0 260128](/ja/development/comfy-router/models/byteplus/seedream-5-0-260128/code): `byteplus/seedream-5-0-260128`
+- [Seedream 5.0 Pro 260628](/ja/development/comfy-router/models/byteplus/seedream-5-0-pro-260628/code): `byteplus/seedream-5-0-pro-260628`
+
+## Elevenlabs
+
+- [Eleven Sfx V2](/ja/development/comfy-router/models/elevenlabs/eleven-sfx-v2/code): `elevenlabs/eleven_sfx_v2`
+- [Eleven V3](/ja/development/comfy-router/models/elevenlabs/eleven-v3/code): `elevenlabs/eleven_v3`
+
+## fal
+
+- [H3 Max Turbo](/ja/development/comfy-router/models/fal/h3-max-turbo/code): `fal/h3-max-turbo`
+- [H3 Max](/ja/development/comfy-router/models/fal/h3-max/code): `fal/h3-max`
+- [Patina](/ja/development/comfy-router/models/fal/patina/code): `fal/patina`
+
+## Freepik
+
+- [AI Image Upscaler Precision V2](/ja/development/comfy-router/models/freepik/ai-image-upscaler-precision-v2/code): `freepik/ai-image-upscaler-precision-v2`
+- [AI Skin Enhancer Creative](/ja/development/comfy-router/models/freepik/ai-skin-enhancer-creative/code): `freepik/ai-skin-enhancer-creative`
+- [AI Skin Enhancer Faithful](/ja/development/comfy-router/models/freepik/ai-skin-enhancer-faithful/code): `freepik/ai-skin-enhancer-faithful`
+- [AI Skin Enhancer Flexible](/ja/development/comfy-router/models/freepik/ai-skin-enhancer-flexible/code): `freepik/ai-skin-enhancer-flexible`
+
+## Gemini Interactions
+
+- [Gemini Omni 1.1 Flash](/ja/development/comfy-router/models/gemini-interactions/gemini-omni-1-1-flash/code): `gemini-interactions/gemini-omni-1.1-flash`
+- [Gemini Omni Flash Preview](/ja/development/comfy-router/models/gemini-interactions/gemini-omni-flash-preview/code): `gemini-interactions/gemini-omni-flash-preview`
+
+## Google
+
+- [Gemini 2.5 Flash Image](/ja/development/comfy-router/models/google/gemini-2-5-flash-image/code): `vertexai/gemini-2.5-flash-image`
+- [Gemini 3.1 Flash Lite](/ja/development/comfy-router/models/google/gemini-3-1-flash-lite/code): `vertexai/gemini-3.1-flash-lite`
+- [Gemini 3.7 Flash](/ja/development/comfy-router/models/google/gemini-3-7-flash/code): `vertexai/gemini-3.7-flash`
+- [Gemini 3.8 Flash](/ja/development/comfy-router/models/google/gemini-3-8-flash/code): `vertexai/gemini-3.8-flash`
+- [Google Gemini](/ja/development/comfy-router/models/google/gemini/code): `vertexai/gemini-3.1-pro-preview`
+- [Imagen 3.0 Fast Generate 001](/ja/development/comfy-router/models/google/imagen-3-0-fast-generate-001/code): `vertexai/imagen-3.0-fast-generate-001`
+- [Imagen 3.0 Generate 001](/ja/development/comfy-router/models/google/imagen-3-0-generate-001/code): `vertexai/imagen-3.0-generate-001`
+- [Imagen 3.0 Generate 002](/ja/development/comfy-router/models/google/imagen-3-0-generate-002/code): `vertexai/imagen-3.0-generate-002`
+- [Nano Banana 2 Lite](/ja/development/comfy-router/models/google/nano-banana-2-lite/code): `vertexai/gemini-3.1-flash-lite-image`
+- [Nano Banana 2](/ja/development/comfy-router/models/google/nano-banana-2/code): `vertexai/gemini-3.1-flash-image`
+- [Nano Banana Pro](/ja/development/comfy-router/models/google/nano-banana-pro/code): `vertexai/gemini-3-pro-image`
+
+## HeyGen
+
+- [Starfish](/ja/development/comfy-router/models/heygen/starfish/code): `heygen/starfish`
+
+## Ideogram
+
+- [Ideogram V3](/ja/development/comfy-router/models/ideogram/ideogram-v3/code): `ideogram/ideogram-v3`
+- [Ideogram 4.0](/ja/development/comfy-router/models/ideogram/ideogram-v4/code): `ideogram/ideogram-v4`
+- [P Image Ideogram](/ja/development/comfy-router/models/ideogram/p-image-ideogram/code): `ideogram/p-image-ideogram`
+
+## Kling
+
+- [Kling 3.0 Turbo](/ja/development/comfy-router/models/kling/kling-3-0-turbo/code): `kling/kling-3.0-turbo`
+- [Kling Image O1](/ja/development/comfy-router/models/kling/kling-image-o1/code): `kling/kling-image-o1`
+- [Kling V1.5](/ja/development/comfy-router/models/kling/kling-v1-5/code): `kling/kling-v1-5`
+- [Kling V1.6](/ja/development/comfy-router/models/kling/kling-v1-6/code): `kling/kling-v1-6`
+- [Kling V1](/ja/development/comfy-router/models/kling/kling-v1/code): `kling/kling-v1`
+- [Kling V2.1 Master](/ja/development/comfy-router/models/kling/kling-v2-1-master/code): `kling/kling-v2-1-master`
+- [Kling V2.1](/ja/development/comfy-router/models/kling/kling-v2-1/code): `kling/kling-v2-1`
+- [Kling V2.5 Turbo](/ja/development/comfy-router/models/kling/kling-v2-5-turbo/code): `kling/kling-v2-5-turbo`
+- [Kling V2.6](/ja/development/comfy-router/models/kling/kling-v2-6/code): `kling/kling-v2-6`
+- [Kling V2 Master](/ja/development/comfy-router/models/kling/kling-v2-master/code): `kling/kling-v2-master`
+- [Kling V3 Omni](/ja/development/comfy-router/models/kling/kling-v3-omni/code): `kling/kling-v3-omni`
+- [Kling V3](/ja/development/comfy-router/models/kling/kling-v3/code): `kling/kling-v3`
+- [Kling Video O1](/ja/development/comfy-router/models/kling/kling-video-o1/code): `kling/kling-video-o1`
+- [Videos Avatar Image 2video](/ja/development/comfy-router/models/kling/videos-avatar-image2video/code): `kling/videos-avatar-image2video`
+- [Videos Lip Sync](/ja/development/comfy-router/models/kling/videos-lip-sync/code): `kling/videos-lip-sync`
+- [Videos Video Extend](/ja/development/comfy-router/models/kling/videos-video-extend/code): `kling/videos-video-extend`
+
+## Krea
+
+- [Krea 2 Large](/ja/development/comfy-router/models/krea/krea-2-large/code): `krea/krea-2-large`
+- [Krea 2 Medium Turbo](/ja/development/comfy-router/models/krea/krea-2-medium-turbo/code): `krea/krea-2-medium-turbo`
+- [Krea 2 Medium](/ja/development/comfy-router/models/krea/krea-2-medium/code): `krea/krea-2-medium`
+- [Krea 2](/ja/development/comfy-router/models/krea/krea-2/code): `krea/krea-2`
+
+## LTX
+
+- [LTX 2.5 Fast](/ja/development/comfy-router/models/ltx/ltx-2-5-fast/code): `ltx/ltx-2-5-fast`
+- [LTX 2.5 Pro](/ja/development/comfy-router/models/ltx/ltx-2-5-pro/code): `ltx/ltx-2-5-pro`
+
+## Luma
+
+- [Photon 1](/ja/development/comfy-router/models/luma/photon-1/code): `luma/photon-1`
+- [Photon Flash 1](/ja/development/comfy-router/models/luma/photon-flash-1/code): `luma/photon-flash-1`
+- [Ray 2](/ja/development/comfy-router/models/luma/ray-2/code): `luma/ray-2`
+- [Ray Flash 2](/ja/development/comfy-router/models/luma/ray-flash-2/code): `luma/ray-flash-2`
+
+## Luma 2
+
+- [Uni 1 Max](/ja/development/comfy-router/models/luma_2/uni-1-max/code): `luma_2/uni-1-max`
+- [Uni 1](/ja/development/comfy-router/models/luma_2/uni-1/code): `luma_2/uni-1`
+
+## Meshy
+
+- [アニメーション](/ja/development/comfy-router/models/meshy/animations/code): `meshy/animations`
+- [Meshy 5](/ja/development/comfy-router/models/meshy/meshy-5/code): `meshy/meshy-5`
+- [Meshy 6](/ja/development/comfy-router/models/meshy/meshy-6/code): `meshy/meshy-6`
+- [Meshy 7](/ja/development/comfy-router/models/meshy/meshy-7/code): `meshy/meshy-7`
+- [リメッシュ](/ja/development/comfy-router/models/meshy/remesh/code): `meshy/remesh`
+- [リギング](/ja/development/comfy-router/models/meshy/rigging/code): `meshy/rigging`
+
+## MiniMax
+
+- [MiniMax H3](/ja/development/comfy-router/models/minimax/minimax-h3/code): `minimax/minimax-h3`
+
+## Moonvalley
+
+- [画像から動画へ](/ja/development/comfy-router/models/moonvalley/image-to-video/code): `moonvalley/image-to-video`
+- [テキストから画像へ](/ja/development/comfy-router/models/moonvalley/text-to-image/code): `moonvalley/text-to-image`
+- [テキストから動画へ](/ja/development/comfy-router/models/moonvalley/text-to-video/code): `moonvalley/text-to-video`
+- [動画から動画へのリサイズ](/ja/development/comfy-router/models/moonvalley/video-to-video-resize/code): `moonvalley/video-to-video-resize`
+- [動画から動画へ](/ja/development/comfy-router/models/moonvalley/video-to-video/code): `moonvalley/video-to-video`
+
+## OpenAI
+
+- [GPT 4.1 Mini](/ja/development/comfy-router/models/openai/gpt-4-1-mini/code): `openai/gpt-4.1-mini`
+- [GPT 4.1 Nano](/ja/development/comfy-router/models/openai/gpt-4-1-nano/code): `openai/gpt-4.1-nano`
+- [GPT 4.1](/ja/development/comfy-router/models/openai/gpt-4-1/code): `openai/gpt-4.1`
+- [GPT 4o](/ja/development/comfy-router/models/openai/gpt-4o/code): `openai/gpt-4o`
+- [GPT 5.5 Pro](/ja/development/comfy-router/models/openai/gpt-5-5-pro/code): `openai/gpt-5.5-pro`
+- [GPT 5.5](/ja/development/comfy-router/models/openai/gpt-5-5/code): `openai/gpt-5.5`
+- [GPT 5.6 Luna](/ja/development/comfy-router/models/openai/gpt-5-6-luna/code): `openai/gpt-5.6-luna`
+- [GPT 5.6 Sol](/ja/development/comfy-router/models/openai/gpt-5-6-sol/code): `openai/gpt-5.6-sol`
+- [GPT 5.6 Terra](/ja/development/comfy-router/models/openai/gpt-5-6-terra/code): `openai/gpt-5.6-terra`
+- [GPT 5 Mini](/ja/development/comfy-router/models/openai/gpt-5-mini/code): `openai/gpt-5-mini`
+- [GPT 5 Nano](/ja/development/comfy-router/models/openai/gpt-5-nano/code): `openai/gpt-5-nano`
+- [GPT 5](/ja/development/comfy-router/models/openai/gpt-5/code): `openai/gpt-5`
+- [GPT 6 Astra](/ja/development/comfy-router/models/openai/gpt-6-astra/code): `openai/gpt-6-astra`
+- [GPT Image 1.5](/ja/development/comfy-router/models/openai/gpt-image-1-5/code): `openai/gpt-image-1.5`
+- [GPT Image 1](/ja/development/comfy-router/models/openai/gpt-image-1/code): `openai/gpt-image-1`
+- [GPT Image 2.5 Flare](/ja/development/comfy-router/models/openai/gpt-image-2-5-flare/code): `openai/gpt-image-2.5-flare`
+- [GPT Image 2.5 Sunburst](/ja/development/comfy-router/models/openai/gpt-image-2-5-sunburst/code): `openai/gpt-image-2.5-sunburst`
+- [GPT Image 2](/ja/development/comfy-router/models/openai/gpt-image-2/code): `openai/gpt-image-2`
+- [o1-pro](/ja/development/comfy-router/models/openai/o1-pro/code): `openai/o1-pro`
+- [o1](/ja/development/comfy-router/models/openai/o1/code): `openai/o1`
+- [o3](/ja/development/comfy-router/models/openai/o3/code): `openai/o3`
+- [o4-mini](/ja/development/comfy-router/models/openai/o4-mini/code): `openai/o4-mini`
+
+## Pruna
+
+- [P Video 2](/ja/development/comfy-router/models/pruna/p-video-2/code): `pruna/p-video-2`
+
+## Qwen
+
+- [Qwen Image 3.0 Pro](/ja/development/comfy-router/models/qwen/qwen-image-3-0-pro/code): `qwen/qwen-image-3.0-pro`
+- [Qwen Image 3.0](/ja/development/comfy-router/models/qwen/qwen-image-3-0/code): `qwen/qwen-image-3.0`
+
+## Recraft
+
+- [Recraft V2](/ja/development/comfy-router/models/recraft/recraftv2/code): `recraft/recraftv2`
+- [Recraft V3](/ja/development/comfy-router/models/recraft/recraftv3/code): `recraft/recraftv3`
+- [Recraft V4.1 プロ Vector](/ja/development/comfy-router/models/recraft/recraftv4-1-pro-vector/code): `recraft/recraftv4_1_pro_vector`
+- [Recraft V4.1 プロ](/ja/development/comfy-router/models/recraft/recraftv4-1-pro/code): `recraft/recraftv4_1_pro`
+- [Recraft V4.1 Utility プロ Vector](/ja/development/comfy-router/models/recraft/recraftv4-1-utility-pro-vector/code): `recraft/recraftv4_1_utility_pro_vector`
+- [Recraft V4.1 Utility プロ](/ja/development/comfy-router/models/recraft/recraftv4-1-utility-pro/code): `recraft/recraftv4_1_utility_pro`
+- [Recraft V4.1 Utility Vector](/ja/development/comfy-router/models/recraft/recraftv4-1-utility-vector/code): `recraft/recraftv4_1_utility_vector`
+- [Recraft V4.1 Utility](/ja/development/comfy-router/models/recraft/recraftv4-1-utility/code): `recraft/recraftv4_1_utility`
+- [Recraft V4.1 Vector](/ja/development/comfy-router/models/recraft/recraftv4-1-vector/code): `recraft/recraftv4_1_vector`
+- [Recraft V4.1](/ja/development/comfy-router/models/recraft/recraftv4-1/code): `recraft/recraftv4_1`
+- [Recraft V4 プロ](/ja/development/comfy-router/models/recraft/recraftv4-pro/code): `recraft/recraftv4_pro`
+- [Recraft V4 Styles プロ Vector](/ja/development/comfy-router/models/recraft/recraftv4-styles-pro-vector/code): `recraft/recraftv4_styles_pro_vector`
+- [Recraft V4 Styles プロ](/ja/development/comfy-router/models/recraft/recraftv4-styles-pro/code): `recraft/recraftv4_styles_pro`
+- [Recraft V4 Styles Vector](/ja/development/comfy-router/models/recraft/recraftv4-styles-vector/code): `recraft/recraftv4_styles_vector`
+- [Recraft V4 Styles](/ja/development/comfy-router/models/recraft/recraftv4-styles/code): `recraft/recraftv4_styles`
+- [Recraft V4](/ja/development/comfy-router/models/recraft/recraftv4/code): `recraft/recraftv4`
+
+## Runway
+
+- [Aleph 2](/ja/development/comfy-router/models/runway/aleph2/code): `runway/aleph2`
+- [Gen 4 Image](/ja/development/comfy-router/models/runway/gen4-image/code): `runway/gen4_image`
+- [Gen 4 Turbo](/ja/development/comfy-router/models/runway/gen4-turbo/code): `runway/gen4_turbo`
+
+## Tencent
+
+- [Hunyuan 3D Part](/ja/development/comfy-router/models/tencent/hunyuan-3d-part/code): `tencent/hunyuan-3d-part`
+- [Hunyuan 3D Smart Topology](/ja/development/comfy-router/models/tencent/hunyuan-3d-smart-topology/code): `tencent/hunyuan-3d-smart-topology`
+- [Hunyuan 3D Texture Edit](/ja/development/comfy-router/models/tencent/hunyuan-3d-texture-edit/code): `tencent/hunyuan-3d-texture-edit`
+- [Hunyuan 3D Uv](/ja/development/comfy-router/models/tencent/hunyuan-3d-uv/code): `tencent/hunyuan-3d-uv`
+
+## Veo
+
+- [Veo 2.0 Generate 001](/ja/development/comfy-router/models/veo/veo-2-0-generate-001/code): `veo/veo-2.0-generate-001`
+- [Veo 3.0 Fast Generate 001](/ja/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code): `veo/veo-3.0-fast-generate-001`
+- [Veo 3.0 Generate 001](/ja/development/comfy-router/models/veo/veo-3-0-generate-001/code): `veo/veo-3.0-generate-001`
+- [Veo 3.1 Fast Generate 001](/ja/development/comfy-router/models/veo/veo-3-1-fast-generate-001/code): `veo/veo-3.1-fast-generate-001`
+- [Veo 3.1 Generate 001](/ja/development/comfy-router/models/veo/veo-3-1-generate-001/code): `veo/veo-3.1-generate-001`
+- [Veo 3.1 Lite Generate 001](/ja/development/comfy-router/models/veo/veo-3-1-lite-generate-001/code): `veo/veo-3.1-lite-generate-001`
+
+## Wan
+
+- [HappyHorse 1.0 I2V](/ja/development/comfy-router/models/wan/happyhorse-1-0-i2v/code): `wan/happyhorse-1.0-i2v`
+- [HappyHorse 1.0 R2V](/ja/development/comfy-router/models/wan/happyhorse-1-0-r2v/code): `wan/happyhorse-1.0-r2v`
+- [HappyHorse 1.0 T2V](/ja/development/comfy-router/models/wan/happyhorse-1-0-t2v/code): `wan/happyhorse-1.0-t2v`
+- [HappyHorse 1.0 Video Edit](/ja/development/comfy-router/models/wan/happyhorse-1-0-video-edit/code): `wan/happyhorse-1.0-video-edit`
+- [HappyHorse 1.1 I2V](/ja/development/comfy-router/models/wan/happyhorse-1-1-i2v/code): `wan/happyhorse-1.1-i2v`
+- [HappyHorse 1.1 R2V](/ja/development/comfy-router/models/wan/happyhorse-1-1-r2v/code): `wan/happyhorse-1.1-r2v`
+- [HappyHorse 1.1 T2V](/ja/development/comfy-router/models/wan/happyhorse-1-1-t2v/code): `wan/happyhorse-1.1-t2v`
+- [Wan 2.5 I2I プレビュー](/ja/development/comfy-router/models/wan/wan2-5-i2i-preview/code): `wan/wan2.5-i2i-preview`
+- [Wan 2.5 I2V プレビュー](/ja/development/comfy-router/models/wan/wan2-5-i2v-preview/code): `wan/wan2.5-i2v-preview`
+- [Wan 2.5 T2I プレビュー](/ja/development/comfy-router/models/wan/wan2-5-t2i-preview/code): `wan/wan2.5-t2i-preview`
+- [Wan 2.5 T2V プレビュー](/ja/development/comfy-router/models/wan/wan2-5-t2v-preview/code): `wan/wan2.5-t2v-preview`
+- [Wan 2.6 I2V](/ja/development/comfy-router/models/wan/wan2-6-i2v/code): `wan/wan2.6-i2v`
+- [Wan 2.6 R2V](/ja/development/comfy-router/models/wan/wan2-6-r2v/code): `wan/wan2.6-r2v`
+- [Wan 2.6 T2V](/ja/development/comfy-router/models/wan/wan2-6-t2v/code): `wan/wan2.6-t2v`
+- [Wan 2.7 I2V](/ja/development/comfy-router/models/wan/wan2-7-i2v/code): `wan/wan2.7-i2v`
+- [Wan 2.7 R2V](/ja/development/comfy-router/models/wan/wan2-7-r2v/code): `wan/wan2.7-r2v`
+- [Wan 2.7 T2V](/ja/development/comfy-router/models/wan/wan2-7-t2v/code): `wan/wan2.7-t2v`
+- [Wan 2.7 ビデオ編集](/ja/development/comfy-router/models/wan/wan2-7-videoedit/code): `wan/wan2.7-videoedit`
+- [Wan 3.0 Video Prime](/ja/development/comfy-router/models/wan/wan3-0-video-prime/code): `wan/wan3.0-video-prime`
+- [Wan 3.0 ビデオ](/ja/development/comfy-router/models/wan/wan3-0-video/code): `wan/wan3.0-video`
+
+## WaveSpeed
+
+- [Flashvsr](/ja/development/comfy-router/models/wavespeed/flashvsr/code): `wavespeed/flashvsr`
+- [Seedvr 2](/ja/development/comfy-router/models/wavespeed/seedvr2/code): `wavespeed/seedvr2`
+- [Ultimate Image Upscaler](/ja/development/comfy-router/models/wavespeed/ultimate-image-upscaler/code): `wavespeed/ultimate-image-upscaler`
+
+## xAI
+
+- [Grok Imagine Image 2.0](/ja/development/comfy-router/models/xai/grok-imagine-image-2-0/code): `xai/grok-imagine-image-2.0`
+- [Grok Imagine Image Pro](/ja/development/comfy-router/models/xai/grok-imagine-image-pro/code): `xai/grok-imagine-image-pro`
+- [Grok Imagine Image Quality](/ja/development/comfy-router/models/xai/grok-imagine-image-quality/code): `xai/grok-imagine-image-quality`
+- [Grok Imagine Image](/ja/development/comfy-router/models/xai/grok-imagine-image/code): `xai/grok-imagine-image`
+- [Grok Imagine Video 1.5 Preview](/ja/development/comfy-router/models/xai/grok-imagine-video-1-5-preview/code): `xai/grok-imagine-video-1.5-preview`
+- [Grok Imagine Video 1.5](/ja/development/comfy-router/models/xai/grok-imagine-video-1-5/code): `xai/grok-imagine-video-1.5`
+- [Grok Imagine Video](/ja/development/comfy-router/models/xai/grok-imagine-video/code): `xai/grok-imagine-video`
