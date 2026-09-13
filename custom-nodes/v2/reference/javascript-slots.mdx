@@ -1,0 +1,311 @@
+---
+title: "JavaScript slots and links API"
+description: "Slot identity, connections, dynamic slots, link snapshots, and input resolution."
+---
+
+<Note>
+  This page is generated from the authoritative declaration file. Do not edit it by hand. Contract SHA-256: <code>152c7fab547f</code>.
+</Note>
+
+This reference contains 17 exported declarations: `LinkInfo`, `SlotType`, `SlotDirection`, `SlotPosition`, `SlotPatch`, `InputSlotPatch`, `InputWidgetConfig`, `SlotSnapshot`, `ResolvedInputSource`, `InputSlotHandle`, `OutputSlotHandle`, `SlotCollection`, `SlotShape`, `SlotOptions`, `SlotId`, `SlotRef`, `ResolveOptions`.
+
+Download the complete contract from the docs source: [TypeScript declaration](https://github.com/Comfy-Org/docs/blob/main/public/custom-nodes-sdk/v2/comfy-api.d.ts).
+
+## Contract
+
+````typescript
+// ─── slotHandle.ts ───────────────────────────────────────────────
+
+export interface LinkInfo {
+  readonly id: string
+  readonly sourceNodeId: string
+  readonly sourceSlotId: SlotId
+  readonly targetNodeId: string
+  readonly targetSlotId: SlotId
+  readonly type: string
+  /** Position at snapshot time. Do not store across mutations. */
+  readonly sourceIndex: number
+  readonly targetIndex: number
+}
+
+/**
+ * Fields a pack may change on an existing slot.
+ *
+ * Applied atomically as one command, so a retype-plus-rename is a single undo
+ * step rather than two. Retyping deliberately **keeps existing links**: dynamic
+ * retyping (`*` -> `MODEL`) is the whole point for `SetNode`-style packs, and
+ * silently dropping connections is the failure mode this API exists to end.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+/**
+ * A slot's type, which may be a union.
+ *
+ * An array spells "this slot accepts any of these" — rgthree's
+ * `addInput('input', ['IMAGE', 'LATENT', 'MASK'])` is the shipped example, so
+ * packs do write it even though litegraph's own `ISlotType` says
+ * `number | string`.
+ *
+ * Both forms are accepted and stored as the comma string, because that is what
+ * litegraph compares against: it normalises with `String(type).split(',')`, so
+ * `['IMAGE','LATENT','MASK']` and `'IMAGE,LATENT,MASK'` are the same slot to
+ * every connection check. The saved workflow therefore holds the string where
+ * the original held an array — a byte difference with no behavioural one, and
+ * the same call already taken for slot `shape`.
+ *
+ * Reads stay `string` for the same reason.
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export type SlotType = string | string[]
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type SlotDirection = 'none' | 'up' | 'down' | 'left' | 'right' | 'center'
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface SlotPosition {
+  readonly x: number
+  readonly y: number
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface SlotPatch {
+  name?: string
+  label?: string | undefined
+  /** The backend-provided translated caption. Null clears it. */
+  localizedName?: string | null
+  type?: SlotType
+  /** Slot centre relative to the node body. Null restores automatic layout. */
+  position?: SlotPosition | null
+  /** Direction in which links leave the slot. Null restores the default. */
+  direction?: SlotDirection | null
+  /**
+   * The dot's colour when connected and when not.
+   *
+   * Not decoration, despite appearances: both sit on `INodeSlot` and
+   * `ISerialisableNodeInput` omits only `boundingRect`, `widget` and `link`,
+   * so they are written into the saved workflow. A pack that coloured its
+   * slots and then stopped saves different bytes than it used to.
+   *
+   * `null` clears one back to the renderer's default.
+   */
+  color?: string | null
+  colorWhenUnconnected?: string | null
+  /**
+   * Sits on the same `INodeSlot` as the colours above and is omitted by the
+   * same `Omit`, so the argument made for them holds verbatim: a pack that
+   * shaped its slots and then stopped saves different bytes than it used to.
+   *
+   * `'default'` clears it back to the renderer's own choice.
+   */
+  shape?: SlotShape
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface InputSlotPatch extends SlotPatch {
+  /** Retargets the widget this input is the socket form of. Null clears it. */
+  widget?: string | null
+  /** Replaces the input declaration used by connected Primitive nodes. */
+  widgetConfig?: InputWidgetConfig
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface InputWidgetConfig {
+  /** Backend input type, or the choices for a COMBO input. */
+  readonly type: string | readonly (string | number)[]
+  readonly options?: Readonly<Record<string, unknown>>
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface SlotSnapshot {
+  readonly id: SlotId
+  readonly index: number
+  readonly name: string
+  readonly type: string
+  readonly label: string | undefined
+  readonly localizedName: string | undefined
+  readonly position: SlotPosition | undefined
+  readonly direction: SlotDirection | undefined
+  readonly shape: SlotShape
+  readonly isConnected: boolean
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type ResolvedInputSource =
+  | {
+      readonly kind: 'output'
+      readonly graphId: string
+      readonly nodeId: string
+      readonly outputIndex: number
+    }
+  | { readonly kind: 'literal'; readonly value: WidgetValue }
+  | { readonly kind: 'omitted'; readonly reason: string }
+
+export interface InputSlotHandle {
+  readonly id: SlotId
+  /** Volatile — shifts when other slots are added or removed. */
+  readonly index: number
+  readonly name: string
+  readonly type: string
+  readonly label: string | undefined
+  readonly isConnected: boolean
+  /** The type arriving through the link, including across a subgraph input. */
+  readonly connectedType: string | undefined
+  /** Whether this input is the socket form of a widget. */
+  readonly isWidgetInput: boolean
+  /** The declaration a connected Primitive node renders. */
+  widgetConfig(): Readonly<InputWidgetConfig> | undefined
+  /** Intersects this input's declaration with another compatible one. */
+  mergeWidgetConfig(
+    config: InputWidgetConfig
+  ): Readonly<InputWidgetConfig> | undefined
+  link(): LinkInfo | undefined
+  source(): { nodeId: string; outputIndex: number } | undefined
+  /**
+   * What ultimately feeds this input after frontend nodes resolve.
+   *
+   * `source()` reports the physical link, which is right for editing topology.
+   * This reports the executable source through reroutes, Get/Set nodes and any
+   * other frontend node declared with `defs.define({ resolve })`. Resolution is
+   * read-only and leaves the graph untouched.
+   */
+  resolvedSource(): ResolvedInputSource | undefined
+  disconnect(): boolean
+  modify(patch: InputSlotPatch): void
+  /** Replaces `{...input}`, which now yields nothing useful. */
+  snapshot(): Readonly<SlotSnapshot>
+}
+
+export interface OutputSlotHandle {
+  readonly id: SlotId
+  readonly index: number
+  readonly name: string
+  readonly type: string
+  readonly label: string | undefined
+  readonly isConnected: boolean
+  /** Frozen snapshot — safe to iterate while disconnecting. */
+  links(): readonly LinkInfo[]
+  targets(): readonly { nodeId: string; inputIndex: number }[]
+  connectTo(targetNodeId: string, input: SlotRef): LinkInfo | undefined
+  disconnect(targetNodeId?: string): boolean
+  modify(patch: SlotPatch): void
+  /**
+   * Moves every link on this output to another output of the same node,
+   * **preserving link ids**.
+   *
+   * Disconnect-and-reconnect is not equivalent: it allocates new ids, so the
+   * serialized workflow changes. Packs that re-home their own outputs during a
+   * migration depend on identity being kept.
+   *
+   * Slot types are **not** re-validated. The real-world sequence moves links
+   * off an output and then retypes it, so enforcing compatibility mid-move
+   * would reject exactly the case this exists for.
+   */
+  moveLinksTo(target: SlotRef): readonly LinkInfo[]
+  snapshot(): Readonly<SlotSnapshot>
+}
+
+export interface SlotCollection<THandle> {
+  readonly length: number
+  get(ref: SlotRef): THandle | undefined
+  byId(id: SlotId): THandle | undefined
+  byName(name: string): THandle | undefined
+  /** Explicit positional access. */
+  at(index: number): THandle | undefined
+  all(): readonly THandle[]
+  ids(): readonly SlotId[]
+  names(): readonly string[]
+  /**
+   * Adds a slot. 18 packs grow their inputs as the last one fills — the
+   * "Multi" combiner pattern — which needed `node.addInput` until now.
+   *
+   * `shape` is not decoration: it is written into the saved workflow, so a
+   * slot added without the one its pack used to set serialises differently
+   * from one the pack itself wrote. `'optional'` is the hollow circle
+   * ComfyUI draws for an input that need not be connected.
+   */
+  add(name: string, type: SlotType, options?: SlotOptions): THandle
+  /**
+   * Removes a slot by reference. Any link into it is dropped, as it would be
+   * on the legacy path.
+   */
+  remove(ref: SlotRef): boolean
+  /**
+   * Puts the slots in the given order. `names` must be a permutation of the
+   * current ones.
+   *
+   * Every link into or out of this node is re-pointed as part of the move, in
+   * one batch, so link ids — and therefore the saved workflow's `links` array
+   * — are unchanged. That is the whole reason this exists rather than being
+   * left to packs: a link stores its endpoint as a slot *index*, so a pack
+   * permuting the array itself silently re-points every connection, and the
+   * damage only shows when the workflow is next run.
+   *
+   * The slot *order* is serialized, so this changes the saved file by design —
+   * it is how a pack keeps its dynamic inputs matching what the backend
+   * declares.
+   */
+  reorder(names: readonly string[]): void
+  [Symbol.iterator](): Iterator<THandle>
+}
+
+/**
+ * How a slot is drawn, which ComfyUI overloads to mean how it behaves.
+ *
+ * Named rather than numbered: packs wrote `{ shape: 7 }`, and 7 is meaningless
+ * without litegraph's RenderShape enum in front of you.
+ */
+export type SlotShape = 'default' | 'optional' | 'list' | 'directional'
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface SlotOptions {
+  /**
+   * `'optional'` is the hollow circle for an input that need not be connected,
+   * `'list'` the grid ComfyUI draws for an output that yields many values, and
+   * `'directional'` the arrow a pack uses for a slot that only ever feeds one
+   * particular kind of node.
+   */
+  shape?: SlotShape
+  localizedName?: string
+  position?: SlotPosition
+  direction?: SlotDirection
+  /**
+   * Names the widget this slot is the socket form of — the "convert widget to
+   * input" shape.
+   *
+   * Not decoration either: a slot carrying it serialises as
+   * `{ widget: { name } }` where a plain socket serialises as `{ pos }`, and
+   * the widget keeps its place in `widgets_values`. A dynamic input added
+   * without it changes the saved file.
+   */
+  widget?: string
+  /** The declaration a connected Primitive node should render. */
+  widgetConfig?: InputWidgetConfig
+}
+
+// ─── slotRef.ts ──────────────────────────────────────────────────
+
+export type SlotId = string & { readonly __brand: 'SlotId' }
+
+/**
+ * A slot reference: a string (id or name), or an explicit `{ index }`.
+ *
+ * A bare `number` is deliberately not accepted so positional access is visible
+ * at the call site and greppable:
+ *
+ *     output.connectTo(node, 'image')       // by name — preferred
+ *     output.connectTo(node, { index: 0 })  // by position — explicit
+ */
+export type SlotRef = SlotId | string | { readonly index: number }
+
+export interface ResolveOptions {
+  /**
+   * Whether the backend supplies slot names yet. While false, a canonical
+   * integer string resolves positionally, so `'0'` addresses slot 0 and call
+   * sites need no rewrite once names arrive.
+   *
+   * Retire this together with the release that ships names — until then a pack
+   * passing `'2'` meaning a name would silently bind slot 2.
+   */
+  readonly namedSlotsAvailable: boolean
+}
+````
