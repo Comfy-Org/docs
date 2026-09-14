@@ -95,7 +95,7 @@ The partner model's native JSON input, forwarded to the provider unchanged.
 | Status | Body | Headers | Description |
 | --- | --- | --- | --- |
 | `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id`, `X-Content-Type-Options`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | OK - the partner model's native output, returned unchanged, under the partner's OWN media type. |
-| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | Invalid request. Check the error type and request body. |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `Idempotent-Replayed` | Invalid request. Check the error type and request body. |
 | `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
 | `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
 | `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
@@ -103,8 +103,9 @@ The partner model's native JSON input, forwarded to the provider unchanged.
 | `413` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request body is too large. |
 | `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | The request's contents were rejected against the model's schema. |
 | `429` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining` | Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means reduce in-flight calls; `rate_limited` means wait for the allowance window. |
+| `502` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status` | The provider's own response could not be turned into a result (`provider_error`). |
 | `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
-| `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` | The request exceeded a deadline. Check the error type before retrying. |
+| `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `Retry-After` | The request exceeded a deadline. Check the error type before retrying. |
 
 ### `GET /v2/models/{provider}/{model}/openapi.json`
 
@@ -132,7 +133,7 @@ Read one model's input and output schemas as a standalone OpenAPI document.
 | `500` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router could not complete the request. |
 | `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
 
-Table descriptions are brief. Use [Using the Comfy Router API](/development/comfy-router/models) for model selection, validation, retries, and billing, and [Headers](/development/comfy-router/headers) for header behavior.
+Table descriptions are brief. Use [Using the Comfy Router API](/development/comfy-router/api) for model selection, validation, retries, and billing, and [Headers](/development/comfy-router/headers) for header behavior.
 
 ## Error buckets
 
@@ -177,6 +178,7 @@ Raised by Router itself, before or around the call to the model.
 | `Retry-After` | integer | Seconds to wait before retrying the SAME request with the SAME `Idempotency-Key`. |
 | `X-Comfy-Error-Type` | [`RouterErrorType`](#routererrortype) | Coarse, machine-readable bucket for the failure, set by Router on every error response. |
 | `X-Comfy-Request-Id` | string | Server-generated identifier for this call, present on EVERY Router response - success, 4xx and 5xx alike, because an error response is exactly when a user needs an id to quote in a support request. |
+| `X-Comfy-Upstream-Status` | integer | The model provider's OWN HTTP status for this call. |
 | `X-Committed-Spend-Current` | integer | The USD cents the caller currently has committed to calls still in flight. |
 | `X-Committed-Spend-Limit` | integer | The ceiling, in USD cents, on the partner spend the caller may have committed to calls still in flight - money held from the moment a call is admitted and released when that call finishes. |
 | `X-Committed-Spend-Remaining` | integer | The USD cents of headroom left under the ceiling, floored at zero. |
@@ -200,8 +202,6 @@ These lifetimes start when the URL is signed, not when you open it. Cached or re
 Other models return provider asset references or inline bytes. Provider URLs follow the provider's expiry, which can be much shorter than the lifetimes above and is not specified by the Router contract.
 
 Copying is best effort per asset. If one copy fails, that entry keeps its provider reference; the response can contain both Comfy and provider URLs, with no explicit per-asset copy-status field. The generation still succeeds and is charged. Do not infer every URL's lifetime from one successfully rehosted asset.
-
-The `xai` and `minimax` adapters serialize through known provider types, so undeclared provider fields may be omitted. Consult the model's output schema rather than assuming that every field from a provider SDK is preserved.
 
 Whether a result is Comfy-hosted also decides whether a completed call can still be replayed from its `Idempotency-Key` record later; the `Idempotency-Key` parameter above says what a retry is answered with when it cannot be.
 
@@ -283,8 +283,8 @@ A model's ID and billing facts.
 | Field | Type | Required | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id` | [`RouterModelId`](#routermodelid) | yes | Model ID, e.g. `anthropic/claude-opus-4-6`, Up to 193 characters | A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator. |
-| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | yes | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase `provider` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart. |
-| `model` | [`RouterModelSegment`](#routermodelsegment) | yes | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase `model` segment of the canonical `{provider}/{model}[/{variant}]` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`. |
+| `provider` | [`RouterProviderSegment`](#routerprovidersegment) | yes | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase `provider` segment of the canonical `{provider}/{model}` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart. |
+| `model` | [`RouterModelSegment`](#routermodelsegment) | yes | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase `model` segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`. |
 | `billing` | [`RouterModelBilling`](#routermodelbilling) | yes | - | Per-model billing FACTS a caller needs before invoking - not prices. Usage and cost figures never appear here. |
 
 ### RouterModelListResponse
