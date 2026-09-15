@@ -336,11 +336,12 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
 ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = ${tsResultType(resultPath)};
-const { data } = await comfy.models.run<Result>("${model}", {
+const result = await comfy.models.run<Result>("${model}", {
 ${body}
 });
+if (result.kind !== "json") throw new Error("expected a JSON result");
 
-console.log("${label}:", data${tsPath(resultPath)});`;
+console.log("${label}:", result.data${tsPath(resultPath)});`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
