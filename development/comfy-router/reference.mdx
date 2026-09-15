@@ -133,6 +133,124 @@ Read one model's input and output schemas as a standalone OpenAPI document.
 | `500` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router could not complete the request. |
 | `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
 
+### `POST /v2/models/{provider}/{model}/requests`
+
+**Submit a partner model run to the queue and return immediately.**
+
+Comfy Router's QUEUED delivery mode. The request body is the same partner-native JSON input `POST /v2/models/{provider}/{model}` accepts for this model - one body shape, one per-model schema, two delivery modes - but this route does NOT hold the connection for the result. It admits the run, answers `201` with a handle, and the caller collects the result later through the three reads below.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. |
+| `Idempotency-Key` | header | no | string | 1–255 characters | Caller-generated key that makes retrying ONE logical call safe. |
+
+**Request body**
+
+`application/json` -- [`RouterModelInput`](#routermodelinput) (required)
+
+The partner model's native JSON input, identical to the body the synchronous route accepts for this model. Validated against the model's own input schema BEFORE the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later.
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `201` | [`RouterQueueSubmitResponse`](#routerqueuesubmitresponse) | `X-Comfy-Request-Id`, `Idempotent-Replayed` | Created - the run was admitted to the queue. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Invalid request. Check the error type and request body. |
+| `413` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request body is too large. |
+| `402` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
+| `409` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`) | Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. |
+| `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | The request's contents were rejected against the model's schema. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
+
+### `GET /v2/models/{provider}/{model}/requests/{request_id}`
+
+**Collect the result of one submitted request.**
+
+The collect endpoint. On a request that has finished successfully it returns the partner model's OWN native output, byte for byte what the synchronous route's `200` carries for the same model and the same input - so the two delivery modes produce one result shape and a caller can move between them without a second parser.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. |
+| `request_id` | path | yes | [`RouterQueueRequestId`](#routerqueuerequestid) | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | The queued request to address - the `request_id` the submission returned, which is also the value that submission's `X-Comfy-Request-Id` header carried. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterModelOutput`](#routermodeloutput) | `X-Comfy-Request-Id`, `X-Content-Type-Options` | OK - the partner model's native output for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner's OWN media type, exactly as the synchronous route's `200` returns it. |
+| `202` | [`RouterQueueStatusResponse`](#routerqueuestatusresponse) | `X-Comfy-Request-Id`, `Retry-After` | Accepted - the request has not finished. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
+| `410` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
+| `409` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is in a state that conflicts with the operation. Check the error type. |
+| `504` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request exceeded a deadline. Check the error type before retrying. |
+| `422` | [`RouterValidationErrorResponse`](#routervalidationerrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Idempotent-Replayed` | The request's contents were rejected against the model's schema. |
+| `default` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+
+### `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel`
+
+**Ask for one submitted request to be cancelled.**
+
+Asks Comfy to stop a request that has not finished. It is a REQUEST, not a guarantee, and the `202` says exactly that: `CANCELLATION_REQUESTED` means the ask was accepted, not that the run has stopped. A run already on the wire at a partner may complete anyway - and a partner generation that completes is charged, whether or not anyone collected it - so a caller who needs to know what actually happened reads the status endpoint afterwards, where a cancellation that took effect is `COMPLETED` carrying an `error_type` like every other terminal outcome.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. |
+| `request_id` | path | yes | [`RouterQueueRequestId`](#routerqueuerequestid) | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | The queued request to address - the `request_id` the submission returned, which is also the value that submission's `X-Comfy-Request-Id` header carried. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `202` | [`RouterQueueCancelResponse`](#routerqueuecancelresponse) | `X-Comfy-Request-Id` | Accepted - `CANCELLATION_REQUESTED`. |
+| `409` | [`RouterQueueCancelResponse`](#routerqueuecancelresponse) | `X-Comfy-Request-Id` | Conflict - `ALREADY_COMPLETED`. |
+| `400` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Invalid request. Check the error type and request body. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
+| `default` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+
+### `GET /v2/models/{provider}/{model}/requests/{request_id}/status`
+
+**Read the queue state of one submitted request.**
+
+The poll endpoint. It answers with the request's current state and never with the result, so a client can watch a long generation without transferring its output on every poll - the result is collected once, from the read below, when this says `COMPLETED`.
+
+**Parameters**
+
+| Name | In | Required | Type | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `provider` | path | yes | [`RouterProviderSegment`](#routerprovidersegment) | Alphanumeric slug, e.g. `anthropic`, Up to 64 characters | Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run. |
+| `model` | path | yes | [`RouterModelSegment`](#routermodelsegment) | Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters | Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. |
+| `request_id` | path | yes | [`RouterQueueRequestId`](#routerqueuerequestid) | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | The queued request to address - the `request_id` the submission returned, which is also the value that submission's `X-Comfy-Request-Id` header carried. |
+
+**Responses**
+
+| Status | Body | Headers | Description |
+| --- | --- | --- | --- |
+| `200` | [`RouterQueueStatusResponse`](#routerqueuestatusresponse) | `X-Comfy-Request-Id`, `Retry-After` | OK - the request's current queue state. |
+| `401` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Missing or invalid credentials. |
+| `403` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The request is not allowed for this caller or model. |
+| `404` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | The model ID was not found. |
+| `410` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+| `503` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | Router is temporarily unavailable. Retry with backoff. |
+| `default` | [`RouterErrorResponse`](#routererrorresponse) | `X-Comfy-Error-Type`, `X-Comfy-Request-Id` | A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. |
+
 Table descriptions are brief. Use [Using the Comfy Router API](/development/comfy-router/api) for model selection, validation, retries, and billing, and [Headers](/development/comfy-router/headers) for header behavior.
 
 ## Error buckets
@@ -167,6 +285,9 @@ Raised by Router itself, before or around the call to the model.
 | `not_enabled` | Comfy Router is not switched on for this caller yet. |
 | `service_unavailable` | A service Comfy Router depends on is temporarily unavailable and the caller did nothing wrong. |
 | `rate_limited` | The caller has spent an allowance measured over a WINDOW and must wait for that window to roll. |
+| `cancelled` | A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is TERMINAL, and it is not by itself a statement about the charge. |
+| `queue_timeout` | A queued request waited past its queue timeout without ever being admitted. |
+| `request_not_found` | The `request_id` names no request of the caller's under this model. |
 
 ## Response headers
 
@@ -321,6 +442,86 @@ Type: `string` -- Opaque cursor returned as `next_cursor`, 1–512 characters
 The provider portion of a `{provider}/{model}` model ID.
 
 Type: `string` -- Alphanumeric slug, e.g. `anthropic`, Up to 64 characters
+
+### RouterQueueCancelResponse
+
+The answer to a cancellation ask on the two statuses that describe a request this route resolved - the `202` and the `400`. One body shape across both rather than a success envelope plus an error envelope, because both are the same statement - what cancelling found - and a client that has to parse a different type per status code gains nothing from the split.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `request_id` | [`RouterQueueRequestId`](#routerqueuerequestid) | yes | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | Identifier of one queued Router request - the handle a caller polls, cancels and collects a result by. |
+| `status` | [`RouterQueueCancelStatus`](#routerqueuecancelstatus) | yes | - | What a cancellation ask found, for the two outcomes that describe a request this route actually resolved. Both are mirrored by the HTTP status, so a client may branch on either. |
+
+### RouterQueueCancelStatus
+
+What a cancellation ask found, for the two outcomes that describe a request this route actually resolved. Both are mirrored by the HTTP status, so a client may branch on either.
+
+Type: `string`
+
+### RouterQueuePosition
+
+How many requests are ahead of this one in the queue, at the instant the response was composed. Zero means this request is at the front.
+
+Type: `integer` -- At least 0
+
+### RouterQueueRequestId
+
+Identifier of one queued Router request - the handle a caller polls, cancels and collects a result by.
+
+Type: `string` -- `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters
+
+### RouterQueueStatus
+
+The state of a queued Router request. EXACTLY THREE VALUES, and unlike `RouterErrorType` this one IS a closed `enum`, because the two schemas are closed in opposite directions on purpose. `RouterErrorType` classifies failures and its set is expected to grow, so a generated client that hard-rejected an unrecognised bucket would fail hardest exactly when something had already gone wrong. This one is a lifecycle, and a lifecycle with a fourth state added later is a breaking change to every polling loop written against it whether it is declared as an enum or not - so it is declared as one, and the constraint is stated where a client can see it.
+
+Type: `string`
+
+### RouterQueueStatusFields
+
+The half of `RouterQueueStatusResponse` that is not the URL block: one queued request's identity, its current state, and - when that state is terminal and the run did not succeed - the coarse bucket saying why.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `request_id` | [`RouterQueueRequestId`](#routerqueuerequestid) | yes | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | Identifier of one queued Router request - the handle a caller polls, cancels and collects a result by. |
+| `status` | [`RouterQueueStatus`](#routerqueuestatus) | yes | - | The state of a queued Router request. EXACTLY THREE VALUES, and unlike `RouterErrorType` this one IS a closed `enum`, because the two schemas are closed in opposite directions on purpose. `RouterErrorType` classifies failures and its set is expected to grow, so a generated client that hard-rejected an unrecognised bucket would fail hardest exactly when something had already gone wrong. This one is a lifecycle, and a lifecycle with a fourth state added later is a breaking change to every polling loop written against it whether it is declared as an enum or not - so it is declared as one, and the constraint is stated where a client can see it. |
+| `queue_position` | [`RouterQueuePosition`](#routerqueueposition) | no | At least 0 | How many requests are ahead of this one in the queue, at the instant the response was composed. Zero means this request is at the front. |
+| `error_type` | [`RouterErrorType`](#routererrortype) | no | - | Present ONLY on a `COMPLETED` request that did not succeed, carrying the same coarse bucket the result read puts on `X-Comfy-Error-Type` when it returns that failure. It is what distinguishes a terminal request that succeeded from one that failed or was cancelled - there is no separate terminal status for either - and it is ABSENT on success rather than null, so branch on its presence. |
+
+### RouterQueueStatusResponse
+
+One queued request's current state, composed with the same three URLs the submission returned.
+
+Composes [`RouterQueueUrls`](#routerqueueurls), [`RouterQueueStatusFields`](#routerqueuestatusfields).
+
+Type: `object`
+
+### RouterQueueSubmitFields
+
+The half of `RouterQueueSubmitResponse` that is not the URL block: the new request's identity and its state at the instant it was admitted.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `request_id` | [`RouterQueueRequestId`](#routerqueuerequestid) | yes | `pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid, Up to 36 characters | Identifier of one queued Router request - the handle a caller polls, cancels and collects a result by. |
+| `status` | [`RouterQueueStatus`](#routerqueuestatus) | yes | - | The state of a queued Router request. EXACTLY THREE VALUES, and unlike `RouterErrorType` this one IS a closed `enum`, because the two schemas are closed in opposite directions on purpose. `RouterErrorType` classifies failures and its set is expected to grow, so a generated client that hard-rejected an unrecognised bucket would fail hardest exactly when something had already gone wrong. This one is a lifecycle, and a lifecycle with a fourth state added later is a breaking change to every polling loop written against it whether it is declared as an enum or not - so it is declared as one, and the constraint is stated where a client can see it. |
+| `queue_position` | [`RouterQueuePosition`](#routerqueueposition) | no | At least 0 | How many requests are ahead of this one in the queue, at the instant the response was composed. Zero means this request is at the front. |
+
+### RouterQueueSubmitResponse
+
+The handle returned when a run is admitted to the queue: the request's identity and state, composed with the three URLs that address the rest of its lifetime.
+
+Composes [`RouterQueueUrls`](#routerqueueurls), [`RouterQueueSubmitFields`](#routerqueuesubmitfields).
+
+Type: `object`
+
+### RouterQueueUrls
+
+The three URLs that address the rest of one queued request's lifetime, returned on every response that carries a live handle so a client never composes a queue URL itself.
+
+| Field | Type | Required | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `status_url` | string | yes | URI | Absolute URL of this request's status read. |
+| `response_url` | string | yes | URI | Absolute URL this request's result is collected from. |
+| `cancel_url` | string | yes | URI | Absolute URL a cancellation is asked for at. |
 
 ### RouterValidationErrorContext
 
