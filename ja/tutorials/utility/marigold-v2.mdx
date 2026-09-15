@@ -1,0 +1,214 @@
+---
+title: "ComfyUI Marigold V2 深度・ノーマル・アルベド推定ガイド"
+description: "Marigold V2 を使って ComfyUI で単一画像から深度、サーフェスノーマル、アルベドを推定します。専用 LoRA を備えた Qwen-Image Edit ベースの diffusion transformer です。"
+sidebarTitle: "Marigold V2"
+translationSourceHash: 8e359643
+translationFrom: tutorials/utility/marigold-v2.mdx
+translationBlockHashes:
+  "_intro": 0bf716f6
+  "Model Installation": 94dd4b48
+  "Depth Estimation {#image_marigold_v2_depth_estimation}": cc9d0c86
+  "Surface Normal Estimation {#image_marigold_v2_surface_normal_estimation}": 18c0257f
+  "Albedo Estimation {#image_marigold_v2_albedo_estimation}": d9b6b8f9
+  "Marigold V2 Post-Process Node": a2806428
+---
+
+import UpdateReminder from "/snippets/ja/tutorials/update-reminder.mdx";
+
+Marigold V2 は、Huawei Bayer Lab による単眼推定モデルのファミリーで、diffusion transformer（Qwen-Image Edit 2509）をジオメトリおよび intrinsic image の推定に転用したものです。単一の RGB 画像から、これらのモデルは深度マップ、サーフェスノーマル、またはアルベドを予測します。これは、同じタスクに Stable Diffusion を転用したオリジナルの Marigold（CVPR 2024）の発展形にあたります。V2 のモデルは共有のベース diffusion モデル上の LoRA として提供されるため、各ダウンロードを小さく抑えられ、3 つのタスクすべてでワークフロー構造が同一に保たれます。
+
+従来の深度推定ネットワークと比較して、この diffusion ベースのアプローチはシャープで境界を意識した予測を生成し、再学習なしでオープンドメインの画像にも汎化します。典型的な用途としては、画像およびビデオ生成のための深度ガイドによる制御、3D シーン再構成パイプライン、リライティング、推定されたアルベドを利用したマテリアル編集などがあります。
+
+Marigold V2 は ComfyUI でネイティブにサポートされています。開始する前に [ComfyUI](https://github.com/comfyanonymous/ComfyUI) を最新バージョンに更新してください。
+
+<UpdateReminder/>
+
+## モデルのインストール
+
+各ワークフローは4つのファイルを使用します: 共有ベース diffusion モデルと、タスク固有の LoRA、VAE、条件付け embedding です。3つのタスクはそれぞれ異なる LoRA、VAE、条件付けファイルを使用するため、以下の各ワークフローセクションには必要な正確なファイルへのリンクがあります。
+
+ベース diffusion モデルは3つのワークフローで共有されます:
+
+<Card title="Diffusion モデル" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors">
+  qwen_image_edit_2509_int8_convrot.safetensors &#8594; ComfyUI/models/diffusion_models/
+</Card>
+
+3つのタスクをすべて実行する予定の場合は、ワークフローの各セクションからタスクごとの LoRA、VAE、条件付け embedding をダウンロードし、各セクションに示されているとおりに保存してください。
+
+## 深度推定 {#image_marigold_v2_depth_estimation}
+
+1枚の画像からデプスマップを予測します。デコードされた予測は正規化され、手前の表面ほど明るく表示されます。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_marigold_v2_depth_estimation-1.webp" alt="Marigold V2 深度推定ワークフロー プレビュー" />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloudで実行" icon="cloud" href="https://cloud.comfy.org/?template=image_marigold_v2_depth_estimation&utm_source=docs&utm_medium=referral&utm_campaign=marigold-v2">
+    Comfy Cloudで開く
+  </Card>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_marigold_v2_depth_estimation.json">
+    JSONをダウンロードするか、テンプレートライブラリで &quot;深度推定: Marigold V2&quot; を検索
+  </Card>
+</CardGroup>
+
+**入力ファイル**
+
+このファイルを対応する `LoadImage` ノードにアップロードします:
+
+<CardGroup cols={2}>
+  <Card title="ev_suv_gold_desert_pavilion.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/ev_suv_gold_desert_pavilion.png">
+    `LoadImage` ノードにアップロードします · `ev_suv_gold_desert_pavilion.png`
+  </Card>
+</CardGroup>
+
+### 1. 実行手順
+
+1. `LoadImage` ノードで入力画像を読み込みます
+2. ワークフローを実行します: ベースモデルが深度 LoRA を適用して実行し、Marigold V2 Post-Process ノードがデコードされた予測を正規化します
+3. 生成されたデプスマップを保存またはプレビューします
+
+### 2. モデルのダウンロード
+
+<CardGroup cols={2}>
+  <Card title="深度LoRA" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_depth_log_stage2.safetensors">
+    marigold_v2_depth_log_stage2.safetensors &#8594; ComfyUI/models/loras/
+  </Card>
+  <Card title="深度VAE" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_depth_log_stage2_vae.safetensors">
+    marigold_v2_depth_log_stage2_vae.safetensors &#8594; ComfyUI/models/vae/
+  </Card>
+  <Card title="深度条件embedding" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_depth_conditioning.safetensors">
+    marigold_v2_depth_conditioning.safetensors &#8594; ComfyUI/models/embeddings/
+  </Card>
+</CardGroup>
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 loras/
+│   │   └── marigold_v2_depth_log_stage2.safetensors
+│   ├── 📂 vae/
+│   │   └── marigold_v2_depth_log_stage2_vae.safetensors
+│   └── 📂 embeddings/
+│       └── marigold_v2_depth_conditioning.safetensors
+```
+
+
+## サーフェス法線推定 {#image_marigold_v2_surface_normal_estimation}
+
+1枚の画像からピクセルごとのサーフェス法線を予測します。出力は各ピクセルを表面の向きに対応付け、リライティングやジオメトリ解析に役立ちます。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_marigold_v2_surface_normal_estimation-1.webp" alt="Marigold V2 サーフェス法線推定ワークフロー プレビュー" />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloudで実行" icon="cloud" href="https://cloud.comfy.org/?template=image_marigold_v2_surface_normal_estimation&utm_source=docs&utm_medium=referral&utm_campaign=marigold-v2">
+    Comfy Cloudで開く
+  </Card>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_marigold_v2_surface_normal_estimation.json">
+    JSONをダウンロードするか、テンプレートライブラリで &quot;サーフェス法線推定: Marigold V2&quot; を検索
+  </Card>
+</CardGroup>
+
+**入力ファイル**
+
+このファイルを対応する `LoadImage` ノードにアップロードします:
+
+<CardGroup cols={2}>
+  <Card title="greek_statue_orange_cloth.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/greek_statue_orange_cloth.png">
+    `LoadImage` ノードにアップロードします · `greek_statue_orange_cloth.png`
+  </Card>
+</CardGroup>
+
+### 1. 実行手順
+
+1. `LoadImage` ノードで入力画像を読み込みます
+2. 法線 LoRA を読み込んでワークフローを実行します
+3. 生成された法線マップを保存またはプレビューします
+
+### 2. モデルのダウンロード
+
+<CardGroup cols={2}>
+  <Card title="法線LoRA" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_normals.safetensors">
+    marigold_v2_normals.safetensors &#8594; ComfyUI/models/loras/
+  </Card>
+  <Card title="法線VAE" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_normals_vae.safetensors">
+    marigold_v2_normals_vae.safetensors &#8594; ComfyUI/models/vae/
+  </Card>
+  <Card title="法線条件embedding" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_normals_conditioning.safetensors">
+    marigold_v2_normals_conditioning.safetensors &#8594; ComfyUI/models/embeddings/
+  </Card>
+</CardGroup>
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 loras/
+│   │   └── marigold_v2_normals.safetensors
+│   ├── 📂 vae/
+│   │   └── marigold_v2_normals_vae.safetensors
+│   └── 📂 embeddings/
+│       └── marigold_v2_normals_conditioning.safetensors
+```
+
+
+## アルベド推定 {#image_marigold_v2_albedo_estimation}
+
+1枚の画像のアルベド（固有色）を予測し、マテリアルの色をライティングやシェーディングから分離します。出力は Marigold V2 Post-Process ノードによって sRGB に変換されます。
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_marigold_v2_albedo_estimation-1.webp" alt="Marigold V2 アルベド推定ワークフロー プレビュー" />
+
+<CardGroup cols={2}>
+  <Card title="Comfy Cloudで実行" icon="cloud" href="https://cloud.comfy.org/?template=image_marigold_v2_albedo_estimation&utm_source=docs&utm_medium=referral&utm_campaign=marigold-v2">
+    Comfy Cloudで開く
+  </Card>
+  <Card title="ワークフローをダウンロード" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_marigold_v2_albedo_estimation.json">
+    JSONをダウンロードするか、テンプレートライブラリで &quot;アルベド推定: Marigold V2&quot; を検索
+  </Card>
+</CardGroup>
+
+**入力ファイル**
+
+このファイルを対応する `LoadImage` ノードにアップロードします:
+
+<CardGroup cols={2}>
+  <Card title="flower_with_texture.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/flower_with_texture.png">
+    `LoadImage` ノードにアップロードします · `flower_with_texture.png`
+  </Card>
+</CardGroup>
+
+### 1. 実行手順
+
+1. `LoadImage` ノードで入力画像を読み込みます
+2. アルベド LoRA を読み込んでワークフローを実行します
+3. 生成されたアルベド画像を保存またはプレビューします
+
+### 2. モデルのダウンロード
+
+<CardGroup cols={2}>
+  <Card title="アルベドLoRA" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_albedo.safetensors">
+    marigold_v2_albedo.safetensors &#8594; ComfyUI/models/loras/
+  </Card>
+  <Card title="アルベドVAE" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_albedo_vae.safetensors">
+    marigold_v2_albedo_vae.safetensors &#8594; ComfyUI/models/vae/
+  </Card>
+  <Card title="アルベド条件embedding" icon="download" href="https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_albedo_conditioning.safetensors">
+    marigold_v2_albedo_conditioning.safetensors &#8594; ComfyUI/models/embeddings/
+  </Card>
+</CardGroup>
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 loras/
+│   │   └── marigold_v2_albedo.safetensors
+│   ├── 📂 vae/
+│   │   └── marigold_v2_albedo_vae.safetensors
+│   └── 📂 embeddings/
+│       └── marigold_v2_albedo_conditioning.safetensors
+```
+
+## Marigold V2 Post-Process ノード
+
+すべてのワークフローは **Marigold V2 Post-Process** ノードで終わり、デコードされた生の予測を閲覧可能な画像に変換します。**prediction** オプションはタスクと一致させる必要があります。
+
+- **depth**: 手前の面が明るくなるように予測を正規化します
+- **normals**: 生の値を単位表面法線にマッピングします
+- **albedo**: 予測を sRGB に変換します
