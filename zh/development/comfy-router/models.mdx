@@ -1,0 +1,278 @@
+---
+title: "使用 Comfy Router API"
+sidebarTitle: "使用 Router API"
+description: "选择模型、检查 schema、安全调用 Router，并处理结果、错误、重试和计费。"
+translationSourceHash: 0d8c3756
+translationFrom: development/comfy-router/models.mdx
+translationBlockHashes:
+  "_intro": 1b554933
+  "Discover the catalog": 9264e92d
+  "Read one model": 6d96021f
+  "Read input and output schemas": 0b7e6eaa
+  "Validation and fallback schemas": 9e039521
+  "Read the result": fab75186
+  "Handle errors, retries, and billing": 563281f5
+  "Per-model examples": ed06edba
+  "Next": 30e39619
+---
+选择一个模型，检查其模式，然后调用 `POST /v2/models/{provider}/{model}`。不同模型之间的路由和身份验证保持不变。
+
+## 发现目录
+
+使用与生成时相同的 API 密钥列出模型：
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  "https://api.comfy.org/v2/models?limit=50"
+```
+
+目录响应的精简示例：
+
+```json
+{
+  "data": [
+    {
+      "id": "bfl/flux-2-pro",
+      "provider": "bfl",
+      "model": "flux-2-pro",
+      "billing": { "charges_on_policy_rejection": "no" }
+    }
+  ],
+  "has_more": true,
+  "next_cursor": "example-cursor",
+  "limit": 50
+}
+```
+
+在调用路径中使用 `id`。`billing` 对象包含的是计费事实，而非价格。在依赖该字段之前，请先阅读[策略拒绝计费](/zh/development/comfy-router/models#模型计费事实)。
+
+### 分页
+
+- 当 `has_more` 为 `true` 时，将返回的 `next_cursor` 作为 `cursor` 传入。当 `has_more` 为 `false` 时停止，即使较早的页面返回的数量少于请求的数量。
+- 将游标视为不透明值。对值进行 URL 编码，例如使用 cURL `--get --data-urlencode "cursor=$NEXT_CURSOR"`；不要计算偏移量，也不要修改游标。
+- `limit` 默认为 20，上限为 100。超过上限的值会被钳制为上限值；零值和负值则使用默认值。响应会报告实际使用的 limit。
+- 无效的游标会返回 `400` / `invalid_input`，而不会静默地重新开始该列表。
+- 游标在目录更新后仍可保持有效，但遍历并非快照：在当前遍历位置之前添加的模型可能不会出现在该次遍历中。
+
+`503` / `service_unavailable` 是暂时性的。请使用退避策略重试；不要将其视为空目录。SDK 的 run 方法会直接调用已选择的模型。
+
+## 读取单个模型
+
+当您知道模型 ID 时，可直接获取目录条目：
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro
+```
+
+模型详情端点可避免遍历整个目录。请参阅 [API 参考](/zh/development/comfy-router/reference) 了解完整的条目字段。
+
+## 读取输入和输出模式
+
+每个模型都会公开一份独立的 OpenAPI 文档：
+
+```bash
+curl --dump-header schema-headers.txt \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+在该模型操作中，`requestBody` 描述输入；当已编写输出模式时，`200` 响应则描述输出。输入验证与输出文档是不同的：Router 会按其输入模式进行验证，但不会按其输出模式来验证提供商返回的结果。
+
+请同时检查输出的媒体类型及其字段。未编写输出模式的输出可能使用 `*/*`，而且有些模型返回的是二进制数据，而非 JSON。
+
+### 缓存模式
+
+保存该模式及其 `ETag`。之后再获取模式时，请将该 ETag 放入 `If-None-Match` 中传入。`304` 响应没有正文，应保留已缓存的文档。`200` 响应则会提供替换文档和 ETag。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  -H 'If-None-Match: "previous-etag-value"' \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+该模式路由使用 `Cache-Control: private, must-revalidate`。请勿将经过身份验证的响应放入共享缓存。此 ETag/304 行为仅适用于模式端点。
+
+## 验证与回退 schema
+
+已编写的输入 schema 会在提供商调用之前以 `422` 和 `detail[]` 数组拒绝无效字段。请在 `loc` 中查看字段路径；参见[验证错误](/zh/development/comfy-router/models#验证错误)。
+
+某些 schema 接受任意 JSON 对象，并设置 `x-comfy-input-schema-authored: false`。Router 会在不进行模型特定验证的情况下转发这些请求，因此提供商仍可以拒绝这些请求。
+
+`bfl/flux-2-pro` 当前使用此回退 schema。请查看提供商文档或其模型页面，了解必填字段。
+
+## 读取结果
+
+Router 会返回每个模型的终端结果形状。图像、视频或文本没有统一的封装格式：BFL 图像输出使用 `result.sample`，而其他模型可能返回 URL 列表或内联字节。
+
+部分资产 URL 由 Comfy 重新托管，其他的仍为提供商 URL 或内联字节。请查看[结果资产](/zh/development/comfy-router/reference)，并及时下载即将过期的资产。重放不会续期 URL。
+
+## 处理错误、重试和计费
+
+### 防御式读取错误
+
+失败的请求可能返回代理服务器的 HTML 错误页面、被截断的 JSON 或纯文本。不要让 JSON 解析错误掩盖 HTTP 状态或请求 ID。这些辅助函数在 Python 中使用 `httpx.Response`，在 TypeScript 中使用 Fetch `Response`；对于常规 SDK 调用，SDK 已经暴露了错误字段。
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+</CodeGroup>
+
+### 验证错误
+
+Router 返回 `422` 表示在调用提供商之前验证失败，且不会产生计费。其响应体包含一个 `detail[]` 数组，每个被拒绝的字段对应一个条目。错误类别位于 `X-Comfy-Error-Type` 中，而不是在响应体中。例如：
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+这只是一个示例结构。输入模式较为宽松的模型可能会把缺失字段直接转发给提供商，而不是返回 Router `422`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `loc` | 被拒绝字段的路径，最外层的片段在前。 |
+| `msg` | 人类可读的失败原因。 |
+| `type` | 提供商特定的原因，例如 `missing`、`greater_than` 或 `image_too_small`。 |
+| `ctx` | 该提供商错误的可选边界或附加数据。 |
+
+`400` 描述的是请求级别的问题，例如格式错误的游标，而不是这种逐字段验证的响应体。[错误参考](/zh/development/comfy-router/reference)列出了支持的类别。在控制流中，将未知类别视为 `internal_error`，但保留原始值用于诊断。不要硬性拒绝新的错误值，也不要像它们已经出现一样去实现尚在规划中的错误类别。
+
+### 安全重试
+
+在**发送之前**，请将密钥、模型 ID 和请求体一并持久化保存。该逻辑调用的每次尝试都应复用此密钥。Router 不会在响应中向你返回 `Idempotency-Key`。Python SDK 会把该密钥包含在抛出的异常中；在 TypeScript 中，请自行保存你提供的密钥。
+
+密钥在凭据所关联的工作区内共享；若凭据未关联工作区，则以该用户为作用域。请使用该作用域内唯一的 UUID，并使用同一凭据重试。复用其他工作区成员的密钥，可能会返回该成员已记录的结果或引发冲突；更换凭据则可能发起一次独立的计费调用。
+
+Router 会按密钥保留对应的响应或集合状态 24 小时；重试不会开启新的保留窗口。一旦该状态过期，不要指望旧密钥能恢复结果或阻止新的调度。此外，密钥也无法让已过期的资源 URL 重新可用。
+
+### 重试结果
+
+| 状态 | 类别 | 含义 | 应对方法 |
+| --- | --- | --- | --- |
+| `200` | `Idempotent-Replayed: true` 响应头 | Router 重放了结果或返回了已收集的生成结果。 | 使用该结果；重放不会产生第二次 Comfy 费用。 |
+| `409` | `concurrency_limit_exceeded` | 该键的原始调用仍在运行。 | 等待 `Retry-After` 后，使用相同的键重新发送。 |
+| `504` | `deadline_exceeded`，带有 `Retry-After` | Router 保留了已接受提供商作业的句柄。 | 等待指定间隔，然后重新发送相同的请求和键以收集结果。该作业可能仍在运行。 |
+| `429` | `rate_limited` | 请求配额已用尽。 | 等待 `Retry-After`，然后使用相同的键重试。 |
+| `429` | `concurrency_limit_exceeded` | 并发调用限制或已承诺消费限制拒绝了该请求。 | 降低并发并使用相同的键重试。检查消费相关请求头。 |
+| `409` | `invalid_input` | 请求与该键的原始请求不同，或其记录无法重放。 | 检查冲突。如果请求已更改，请恢复原始请求。仅当您打算发起一次新的、可能计费的调用时，才使用新键。 |
+| 没有收集提示的 `504`、其他 `5xx` 或无响应 | 因情况而异 | 仅凭状态无法判断作业是被接受、保留还是释放。 | 保留相同的键和请求。使用有界重试策略；不保证能够恢复。 |
+
+冲突会比较多方法：方法、模型路径、查询参数和请求体。在出现超大响应、响应写入失败或存在无法安全重放的资源后，键可能变为不可重放。等待不会恢复已消费的结果。新键会启动一次新的调用，而不会检索旧输出。
+
+提供商调度前发生的拒绝会释放该键。已调度的调用可能保留提供商句柄，也可能变为不可重放。不要仅根据状态码推断键的状态或计费情况。
+
+不要仅仅因为调用超时或连接断开就创建全新的键。如果 Router 已经接受了生成，新键可能会创建第二个逻辑运行，从而产生第二个计费结果。在确认原始调用无法恢复之前，请重复使用同一个键。
+
+#### 超时与收集
+
+默认情况下，一次 Router 调用可能占用连接 10 分钟。请将客户端超时设置得高于该上限，以便您收到明确的 `504` 和请求 ID，而不是一个不透明的本地中止。
+
+`deadline_exceeded` 是 Router 的等待限制；`provider_timeout` 是提供商的截止时间。提供商的生成如果完成，即使调用方收到了超时或已断开连接，也可能会被计费。客户端取消会停止等待和 SDK 重试，但不一定会取消已被接受的提供商作业。
+
+对于提交并轮询的提供商，保留的句柄允许同一键的请求继续收集原始生成结果。已调度的调用若缺少可恢复句柄而被中断，可能消耗该键却没有可重放的结果；随后使用同一键重试会返回 `409`。对于归因于提供商的瞬时故障，如果没有捕获成功，仍可能释放该键以进行另一次尝试。单凭句柄缺失并不能判断实际会发生哪种结果。
+
+SDK 会在有限预算内重试某些错误。一旦它们返回错误，请保留请求和键，而不是生成新的。对于原始 HTTP，以下示例仅重试两种明确的收集提示：
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+传入原始模型、请求体和已保存的键。这限制的是尝试次数，而非总挂钟时间：每次调用可持续至客户端超时，每次等待都遵循 `Retry-After`。HTTP 错误会保留响应以供检查；传输错误会向上传播，而不会替换键。如果您的应用需要更长的恢复窗口，请使用已保存的键安排稍后收集。
+
+### 模型计费事实
+
+`GET /v2/models` 和模型详情响应中包含 `billing.charges_on_policy_rejection`。它描述的是策略拒绝，而非每次失败或价格估算。
+
+| 值 | 含义 |
+| --- | --- |
+| `yes` | 策略拒绝会被计费。 |
+| `no` | 策略拒绝不会被计费。 |
+| `unknown` | 还没有人确定此行为。请将其视为可能已计费。 |
+
+请显式比较这些字符串：在 Python 和 JavaScript 中，`"no"` 为真值（truthy）。请将所有无法识别的值都视为 `unknown`。因积分不足而被拒绝的请求会报告 `insufficient_credits`。
+
+提供商（provider）的有效载荷可能包含其自身的成本或用量数字；这些并非 Comfy 的收费。`X-Comfy-Credits-Used` 可能会出现在允许列表内提供商的响应中，但并非普遍存在，也不会被重放。请使用[工作区用量和账单](https://platform.comfy.org)进行核对。在调查某项收费时，请保留请求 ID。
+
+## 各模型示例
+
+- Google Gemini
+- Nano Banana 2
+- Nano Banana 2 Lite
+- Nano Banana Pro
+- FLUX 1.1 Pro Ultra
+- FLUX Kontext
+- FLUX Video Upscale
+- FLUX 3 Video
+- Ideogram 4
+
+## 下一步
+
+- [快速入门](/zh/development/comfy-router/quickstart)：安装、调用和保存图像。
+- [API 参考](/zh/development/comfy-router/reference)：端点参数、数据模式与响应代码。

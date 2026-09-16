@@ -414,12 +414,18 @@ paths:
                   additionalProperties: true
                 extra_data:
                   type: object
-                  description: 'Per-prompt ComfyUI `extra_data`, same shape as Comfy Cloud and local ComfyUI. Closed object: only the enumerated keys are accepted, keeping the contract fully typed. Forwarded to the worker per-prompt, never persisted, and excluded from idempotency comparison.'
+                  description: 'Per-prompt ComfyUI `extra_data`, same shape as Comfy Cloud and local ComfyUI. Closed object: only the enumerated keys are accepted, keeping the contract fully typed. Forwarded to the worker per-prompt and excluded from idempotency comparison. On a deployment it is dispatch-only and never stored; on Comfy Cloud it is persisted with the prompt, because the worker needs it, and redacted on every path that returns a workflow to a caller.
+
+
+                    Send the one credential you hold: an API key as `api_key_comfy_org`, or the session token an interactively signed-in client has instead as `auth_token_comfy_org`. Sending both is accepted and both are forwarded, but it is not a supported combination and which one a node uses is not defined here. Note a session token is short-lived and is not re-minted for you, so one submitted long before it executes may expire in the queue.'
                   additionalProperties: false
                   properties:
                     api_key_comfy_org:
                       type: string
                       description: API key for partner (API) nodes.
+                    auth_token_comfy_org:
+                      type: string
+                      description: Session bearer token for partner (API) nodes — the equivalent of `api_key_comfy_org` for a caller authenticated by session rather than by key.
       responses:
         '201':
           description: Job created and queued.
@@ -516,6 +522,134 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/UpstreamError'
+  /api/v2/jobs/{id}/logs:
+    get:
+      operationId: getJobLogs
+      tags:
+      - jobs
+      summary: What the run printed
+      description: 'Returns the job''s captured execution log. Fetched on demand: a log
+
+        is a debugging artifact a caller wants occasionally, while
+
+        `GET /api/v2/jobs/{id}` is polled to terminal on every run, so the
+
+        log is a resource of its own rather than a field that would ride
+
+        every one of those polls to be read at most once.
+
+
+        Captured whenever the worker reports its own outcome, success and
+
+        failure alike, since a job that succeeds while producing the wrong
+
+        thing is exactly what a failure-only log cannot explain. A run the
+
+        platform or the provider killed — out of memory, a crashed worker, a
+
+        timeout, a job past its maximum runtime — never gets that far, so it
+
+        reaches a terminal status carrying no log at all. That is a real gap
+
+        and worth stating: the failures a caller most wants a log for are
+
+        the ones least likely to have produced one.
+
+
+        **`204` is the normal answer for a job with no log**, and the cases
+
+        behind it are deliberately not distinguished: this surface does not
+
+        capture logs at all, the job has not finished, the job predates log
+
+        capture, the run was killed before the worker could report one,
+
+        capture was attempted and failed, or the job ran on the public demo
+
+        deployment, which captures and stores the log like every other
+
+        serverless deployment but withholds it on read, because that surface
+
+        takes callers with no credential and a job id would otherwise be the
+
+        only thing between one anonymous caller and another''s run.
+
+
+        Because a `204` never says which of those it is, do not branch on the
+
+        reason — but do note that one of them resolves itself. A job that has
+
+        not finished may have a log once it does, so a caller that wants one
+
+        reads again after a terminal status. A `204` on a job already in a
+
+        terminal state is final, and so is a missing `urls.logs`; both mean
+
+        stop asking.
+
+
+        **Only jobs run on the serverless platform** (a
+
+        `{deployment}.run.comfy.app` host) have one today. An implementation
+
+        that captures no logs must still serve this operation, answering
+
+        `204` for every job it can read, so that the two answers stay
+
+        distinct — Comfy Cloud does. A self-hosted deployment on a build
+
+        predating this operation has not implemented it yet and will answer
+
+        a routing `404` instead, which is the case `job.urls.logs` exists to
+
+        keep a client out of: its absence says the surface has no logs at
+
+        all, without a request.
+
+
+        Tied to the job''s own retention: this `404`s under the same
+
+        conditions `GET /api/v2/jobs/{id}` does (unknown, not-yours, or past
+
+        its retention deadline). Nothing ages a log out ahead of the job''s
+
+        own `expires_at`, so a job never outlives its log.
+
+
+        Live tailing is not offered here yet. When it is, it arrives on this
+
+        same path under `Accept: text/event-stream`, leaving this
+
+        JSON snapshot the default; its resume semantics will be defined
+
+        then, against a capture that is incremental. Until then the SSE
+
+        `log` event on `GET /api/v2/jobs/{id}/events` is the reserved live
+
+        rail, and this is the authoritative snapshot it reconciles against.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The captured log.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobLogs'
+        '204':
+          description: This job has no log. A normal answer, not an error — see the description for the cases it covers.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/events:
     get:
       operationId: getJobEvents
@@ -556,7 +690,7 @@ paths:
           description: 'Emitted the moment each output asset is committed, carrying the same `Output` object that appears on `job.outputs[]`. A latency optimization only: it lets a client render each result as it lands instead of waiting for the terminal `status` event. It is delivered best-effort over the live broadcast path — an output whose durable asset record is not yet resolvable when its node finishes may be delivered on a slightly later event or, failing that, only in the terminal `status` snapshot — so the authoritative, complete set of outputs is always `job.outputs[]` on `GET /api/v2/jobs/{id}` and on the terminal `status` event. A client must therefore treat these as additive hints and must not assume it receives one per output.'
           schema: '#/components/schemas/Output'
         log:
-          description: Selected execution log lines. Best-effort diagnostics; the one event type with no snapshot equivalent. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet.
+          description: 'Selected execution log lines, carried while the run is still going. Best-effort diagnostics, and lossy by the same rule as the rest of this stream: lines emitted while a client was disconnected are gone and no `Last-Event-ID` replays them. The authoritative, complete log is the snapshot at `GET /api/v2/jobs/{id}/logs`, which a client re-reads after a terminal status to reconcile whatever it missed — on a surface that captures logs at all. Comfy Cloud does not, and answers `204` there for every job, so this event has nothing to be the live view of; see that operation for what a self-hosted deployment answers. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet: to get a log today, stream to a terminal status and read the snapshot.'
           x-sse-not-yet-emitted: true
           schema: '#/components/schemas/LogEvent'
       parameters:
@@ -821,6 +955,28 @@ components:
             execution_ms: 42000
         urls:
           $ref: '#/components/schemas/JobUrls'
+    JobLogs:
+      type: object
+      description: 'A job''s captured execution log — the body of `GET /api/v2/jobs/{id}/logs`. Diagnostics, not a contract on content: this is whatever the workflow''s own code and nodes wrote to standard output, in the order they wrote it, so nothing about its shape is stable between runs or between releases of a build. It is **untrusted text** — a workflow chooses what goes in it — and must be rendered as plain text rather than interpreted.'
+      required:
+      - text
+      - truncated
+      - captured_at
+      - complete
+      properties:
+        text:
+          type: string
+          description: The captured output.
+        truncated:
+          type: boolean
+          description: 'The BEGINNING of the captured output was discarded — `text` is the TAIL of a longer run. Implementations bound what they capture and store, so a workflow that prints megabytes keeps its last lines, where a failure normally is, instead of being dropped whole. True with an empty `text` means the log was captured and then shed entirely to fit. This describes the stored log, never the response: it does not mean a caller asked for part of one.'
+        captured_at:
+          type: string
+          format: date-time
+          description: When the run's output was read back off the worker.
+        complete:
+          type: boolean
+          description: No further output will be appended to this log. Always `true` today, because a log is read back off the worker once, when the run ends, so a log that exists is already whole. Sent so that a surface which later captures output while a run is still going can say so, and a client written now against `false` keeps working when it does. `false` does not promise that more output will arrive, only that this snapshot may not be the last one.
     JobWorkflowResponse:
       type: object
       description: The workflow behind a job. See GET /api/v2/jobs/{id}/workflow's description for exactly when `format` is `save` vs `api`.
@@ -872,6 +1028,12 @@ components:
         cancel:
           type: string
           format: uri-reference
+        logs:
+          type: string
+          format: uri-reference
+          description: 'Where to read what this run printed. Present on any surface that captures execution logs, which is why it is the one link here that is optional: absent means this surface captures none, for any job, so a client can stop looking without spending a request on an answer it already has.
+
+            Follow this link rather than building the path from the job id. The two are not interchangeable: a surface may be mounted under a prefix this link already carries and a hand-built path would not, and a surface that does not implement the operation at all answers a routing `404` — indistinguishable, to the client, from the `404` that means the job itself is gone. Present does NOT mean this job has a log, and it is deliberately not a signal about one: a surface that captures logs offers the link on every job, including those it will answer `204` for and those whose log it withholds. Read the log, not the link.'
     Progress:
       type: object
       description: Server-computed progress snapshot (node-count and sampler-step weighted). Complete per snapshot — one fully re-syncs a client.
@@ -929,6 +1091,7 @@ components:
       properties:
         node_id:
           type: string
+          description: The workflow node that reported this file; empty when the worker named none.
           example: '9'
         name:
           type: string

@@ -32,10 +32,13 @@ Emit only sections that have source items, in the order above. When open-source 
 **New Open-Source Model Support:**
 - Include every open-source model from the source (within the bullet limit)
 - Do not drop models to make room for partner items
+- Name the model or checkpoint family from the source, not loader plumbing (optional VAE, key wiring, skipped weights)
+- For LoRA or trainer-format items: say we support LoRAs trained in that format. Do not mention a previous load failure
 - Preserve 1–2 distinguishing traits per model from the source (variants, sizes, encoder, modality, key capability)
 
 **Partner Node Updates:**
 - Include partner/API node additions or updates from the source
+- Keep removals, deprecations, and EOL from the source. List the retired models or nodes. Do not drop them as housekeeping
 - Preserve scope or capability details when stated (e.g. number of new nodes, supported modality)
 - Always the second section when open-source models are also present (right after Open-Source Model Support)
 

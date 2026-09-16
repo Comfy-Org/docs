@@ -104,6 +104,8 @@ only re-translate changed `##` sections when `auto_chunk` applies).
 
 Do not add bullets for dependency-only version bumps. See also **`cms-changelog-sync`** for CMS popup rules.
 
+**Docs changelog bullet URLs** (same as local CMS): matching [blog.comfy.org](https://blog.comfy.org/) post first, then the GitHub PR, then the ComfyUI repo commit/tag/compare. Do not use Cloud `?template=` links on the docs changelog. Cloud popup URLs are a separate rule in **cms-changelog-sync**.
+
 ```bash
 pnpm translate -- changelog/index.mdx
 pnpm translate -- changelog/index.mdx --lang zh
