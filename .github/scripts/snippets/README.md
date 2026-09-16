@@ -80,10 +80,11 @@ commit.
 Every runnable Quick start is a tab pair: **Wait for the result** is the
 `models.run` call, **Queue and collect later** is the same body through
 `models.submit`, polled to completion and collected. Both tabs are emitted from
-the one `example`, so they cannot disagree about the request. The queued tab
-opens with `snippets/comfy-router/queue-preview-notice.mdx` while that file
-exists, on the same existence rule as the preview banner: once queued delivery
-is on for every workspace, `rm` the snippet and regen.
+the one `example`, so they cannot disagree about the request. During the
+gated preview the queued tab opened with
+`snippets/comfy-router/queue-preview-notice.mdx`, on the same existence rule as
+the preview banner; the file was removed once the queue was on for every
+workspace, and recreating it brings the note back on every page after a regen.
 
 ## Schema sections
 
