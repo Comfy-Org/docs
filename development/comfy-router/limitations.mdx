@@ -16,6 +16,7 @@ Router supports synchronous and queued delivery. Synchronous delivery returns th
 | Recover after a lost connection | After receiving a queued request handle, use its returned URLs. If submission is interrupted before that, retry with the same idempotency key. Synchronous calls can sometimes be collected the same way. | Preserve the idempotency key and follow [retry guidance](/development/comfy-router/api#retry-outcomes). |
 | Reconcile Comfy charges | No universal Comfy cost or credit-balance field on the response. | Use [workspace billing](https://platform.comfy.org). |
 | Store results permanently | Asset URLs can expire, including rehosted and replayed URLs. | Download the assets; see [result assets](/development/comfy-router/reference#result-assets). |
+| Send large media inline | The request body is capped, and base64-encoded media counts against that cap. | Keep bodies under the cap; see [request body size](#request-bodies-are-capped). |
 
 ## Queued delivery availability
 
@@ -34,6 +35,18 @@ Router's default deadline is **10 minutes**, configurable by the deployment. Set
 Router can retain a provider handle for an accepted submit-and-poll generation. Reuse the same `Idempotency-Key` to collect it later; completed replayable responses can also come from the key record.
 
 Not every disconnected call is recoverable. Preserve the request and key before sending, then use the [retry outcome table](/development/comfy-router/api#retry-outcomes). A new key creates a new call and may incur another charge.
+
+## Request bodies are capped
+
+Router refuses a request whose body is larger than **10 MiB (10,485,760 bytes)**. The bound is on the raw bytes you send, measured before Router parses anything, so it applies to every route and to both synchronous and queued delivery.
+
+Inline media is where callers meet it. Base64 encoding inflates binary data by about 4/3, so a body carrying encoded media clears the cap at roughly **7.5 MB of actual image, audio, or video bytes**. Size the encoded string, not the file on disk, and count every input in one call: a request carrying two reference images spends the allowance on both, and the prompt, parameters, and JSON structure count too.
+
+**What the refusal looks like.** `413`, with `invalid_input` on `X-Comfy-Error-Type` and `X-Comfy-Request-Id` set as on any other response. The body is a [`RouterErrorResponse`](/development/comfy-router/reference#routererrorresponse) whose `detail` describes the bound that was exceeded. Branch on `error_type` rather than parsing `detail`, and treat what the API returns as authoritative if it and this page ever disagree about the figure. Router raises the refusal before dispatching anything, so no generation ran and nothing was charged.
+
+The cap applies to every request, whether or not it carries an `Idempotency-Key`. It is not an idempotency limit, and re-sending the same key does not change the outcome: a body that is too large is too large on every attempt.
+
+**A provider can impose a lower limit of its own.** Providers publish their own bounds on inline media, and the binding constraint is whichever is smaller. Google's models, for example, accept up to 20 MB (decimal, 20,000,000 bytes) of inline payload, and the `Size limit: 20MB` line on the Google model pages is that per-field Google bound quoted from Google's own specification, not Router's bound on the whole request body. A body that clears Router's cap but exceeds a provider's own limit is refused by the provider rather than by Router, and it comes back as a provider error rather than a `413`.
 
 ## Requests are rate limited per caller
 
