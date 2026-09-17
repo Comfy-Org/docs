@@ -18,6 +18,8 @@ Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-ke
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
@@ -78,6 +80,101 @@ curl https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit \
   -d "{\"input\": {\"prompt\":\"restyle the clip as a hand-drawn ink sketch, keep the dancer's movement unchanged\",\"media\":[{\"type\":\"video\",\"url\":\"https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/street_dancer.mp4\"}]}, \"parameters\": {\"resolution\":\"720P\"}}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "wan/happyhorse-1.0-video-edit",
+        {
+            "input": {
+                "prompt": "restyle the clip as a hand-drawn ink sketch, keep the dancer's movement unchanged",
+                "media": [
+                    {
+                        "type": "video",
+                        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/street_dancer.mp4",
+                    },
+                ],
+            },
+            "parameters": {
+                "resolution": "720P",
+            },
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("video:", result["output"]["video_url"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { output: { video_url: string } };
+const handle = await comfy.models.submit<Result>("wan/happyhorse-1.0-video-edit", {
+  input: {
+    prompt: "restyle the clip as a hand-drawn ink sketch, keep the dancer's movement unchanged",
+    media: [
+      {
+        type: "video",
+        url: "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/street_dancer.mp4",
+      },
+    ],
+  },
+  parameters: {
+    resolution: "720P",
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.output.video_url);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": {\"prompt\":\"restyle the clip as a hand-drawn ink sketch, keep the dancer's movement unchanged\",\"media\":[{\"type\":\"video\",\"url\":\"https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/street_dancer.mp4\"}]}, \"parameters\": {\"resolution\":\"720P\"}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
@@ -92,12 +189,20 @@ curl https://api.comfy.org/v2/models/wan/happyhorse-1.0-video-edit \
 </ParamField>
 
 <ParamField body="input.img_url" type="string">
-  First frame image URL or Base64 encoded data. Required for I2V models. Image formats: JPEG, JPG, PNG, BMP, WEBP. Resolution: 360-2000 pixels. File size: max 10MB.
+  First frame image URL or Base64 encoded data.
+Required for the wan2.5-i2v-preview and wan2.6-i2v models only. The
+happyhorse-1.x i2v spellings do NOT take their first frame here: they
+take it as a `media` element of type `first_frame` (see `media` below),
+and an `img_url` body that succeeds on wan2.6-i2v is refused by the
+provider on happyhorse-1.0-i2v and happyhorse-1.1-i2v.
+Image formats: JPEG, JPG, PNG, BMP, WEBP. Resolution: 360-2000 pixels.
+File size: max 10MB.
 </ParamField>
 
 <ParamField body="input.media" type="object[]">
-  Media asset list for wan2.7 and wan3.0 models. Specifies reference materials (image, audio, video)
-for video generation. Each element contains a type and url field.
+  Media asset list for the wan2.7, wan3.0 and happyhorse-1.x models. Specifies reference
+materials (image, audio, video) for video generation. Each element contains a type and
+url field.
 Supported type values vary by model:
 - wan2.7-i2v: first_frame, last_frame, driving_audio, first_clip
 - wan2.7-r2v: reference_image, reference_video
@@ -108,6 +213,22 @@ Supported type values vary by model:
   be used with file). The reference_*/file/link types and first_frame/last_frame types
   are mutually exclusive within the same request. The array order defines the reference
   order of assets in the prompt (Image 1, Video 1, Audio 1, ...).
+- happyhorse-1.x-i2v: first_frame only, exactly 1. At least 300x300 pixels,
+  JPEG/JPG/PNG/WEBP, max 20MB, a public URL or a data:\{MIME_type};base64,... URL.
+  These spellings take NO img_url; the first frame goes here.
+- happyhorse-1.x-r2v: reference_image only, 1 to 9 of them. Shortest side at least
+  400 pixels, max 20MB, a public URL or a data: URL. reference_video is NOT an input
+  type for this operation.
+- happyhorse-1.x-video-edit: video
+The per-asset "max 20MB" figures above are the PARTNER's ceiling on the image it
+ends up with, and they apply as written when the asset is a public URL, because
+those bytes never travel through Comfy. An INLINE data: URL does travel through
+Comfy and meets a lower transport ceiling first: a Comfy Router POST body is
+capped at 10 MiB in total and answered 413 past it, and base64 inflates a payload
+by about 4/3, so a single inline asset above roughly 7.5 MiB is refused before
+any of the partner rules here are reached — sooner still when the body carries
+several of them, since the 10 MiB bounds the WHOLE request rather than each
+element. Send anything near these ceilings as a public URL.
 </ParamField>
 
 <ParamField body="input.media[].type" type="string" required>
@@ -117,7 +238,7 @@ Supported type values vary by model:
 </ParamField>
 
 <ParamField body="input.media[].url" type="string" required>
-  URL of the media file (public HTTP/HTTPS URL or OSS temporary URL)
+  URL of the media file: a public HTTP/HTTPS URL, an OSS temporary URL, or — where the model's entry in the `media` description above says so, as the happyhorse-1.x i2v and r2v spellings do — an inline `data:{MIME_type};base64,...` URL. See that description for the per-model size and pixel floors, and for the 10 MiB Router request-body cap that bounds an inline payload before any partner rule applies.
 </ParamField>
 
 <ParamField body="input.negative_prompt" type="string">

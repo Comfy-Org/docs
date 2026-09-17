@@ -18,6 +18,8 @@ Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-ke
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
@@ -57,6 +59,79 @@ curl https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2 \
   -d "{\"duration_seconds\": 5, \"text\": \"A distant rumble of thunder rolling across a valley.\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "elevenlabs/eleven_sfx_v2",
+        {
+            "duration_seconds": 5,
+            "text": "A distant rumble of thunder rolling across a valley.",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("elevenlabs/eleven_sfx_v2", {
+  duration_seconds: 5,
+  text: "A distant rumble of thunder rolling across a valley.",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"duration_seconds\": 5, \"text\": \"A distant rumble of thunder rolling across a valley.\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/elevenlabs/eleven_sfx_v2/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
@@ -80,14 +155,18 @@ This value is the quantity the request is metered on.
 <ParamField body="loop" type="boolean" default="false">
   Whether to create a sound effect that loops smoothly.
 ElevenLabs documents this as available only for the
-'eleven_text_to_sound_v2' model, which this route does NOT admit
-(see model_id), so it may have no effect here.
+'eleven_text_to_sound_v2' model, which is the model this route
+forwards 'eleven_sfx_v2' as (see model_id), so it applies here.
 </ParamField>
 
 <ParamField body="model_id" type="string">
   The model ID to use for the sound generation. This route admits
 'eleven_sfx_v2' and nothing else; any other value is rejected with
-400 before the request reaches ElevenLabs. It is NOT in this
+400 before the request reaches ElevenLabs. 'eleven_sfx_v2' is
+Comfy's id for the model ElevenLabs calls 'eleven_text_to_sound_v2';
+the proxy rewrites the forwarded body to that vendor spelling, which
+ElevenLabs' own enum requires (it refuses 'eleven_sfx_v2' with 422),
+so a caller never sends the vendor id. It is NOT in this
 schema's `required` list because Comfy Router fills it from the
 `{model}` path segment of /v2/models/elevenlabs/\{model}, so a Router
 caller omits it.
@@ -111,7 +190,9 @@ Generated from the schema Router serves at `GET /v2/models/elevenlabs/eleven_sfx
 
 ### Output
 
-Router does not publish an output schema for this model.
+<ResponseField name="*/*" type="string (binary)">
+  Raw audio bytes. The Content-Type and encoding follow the requested output_format and are forwarded from ElevenLabs. The example is a placeholder for the binary body, not JSON or base64.
+</ResponseField>
 
 ## Examples
 
@@ -123,6 +204,10 @@ Router does not publish an output schema for this model.
   "text": "A distant rumble of thunder rolling across a valley."
 }
 ```
+
+### Output
+
+Binary body: raw bytes rather than a JSON document, returned as `*/*`, so there is no JSON example to show. The response `Content-Type` and encoding follow the request, as the Output schema above describes.
 
 
 <RouterCodeFooter />

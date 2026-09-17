@@ -9,7 +9,8 @@
  *
  * The template below is the only place the page shape lives. Python, TypeScript
  * and cURL are all emitted from the same `example` object, so the three cannot
- * disagree about the request body.
+ * disagree about the request body, and both delivery modes (wait for the
+ * result, or queue it and collect later) are emitted from that one object too.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
@@ -21,6 +22,7 @@ const SCHEMA_GLOB = "router-schemas/*/*.json";
 const MODELS_DIR = "development/comfy-router/models";
 const DOCS_JSON = "docs.json";
 const PREVIEW_NOTICE = "snippets/comfy-router/preview-notice.mdx";
+const QUEUE_NOTICE = "snippets/comfy-router/queue-preview-notice.mdx";
 const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 
@@ -357,6 +359,152 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
   -d "${json}"`;
 }
 
+// ---------------------------------------------------------------------------
+// Queued delivery
+//
+// Every runnable page carries its request twice: through `models.run`, which
+// holds the connection until the result is ready, and through `models.submit`,
+// which returns a request handle at once and collects the result later. The
+// queued builders take the same `example` and file inputs as the synchronous
+// ones above, so the two tabs cannot disagree about the body either.
+// ---------------------------------------------------------------------------
+
+/**
+ * Python, queued. An empty `resultPath` means the page has no authored result
+ * path (a derived page), so the snippet prints the whole payload.
+ */
+function pythonQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
+    .join("\n\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print("${label}:", result${pyPath(resultPath)})` : "print(result)";
+  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+${reads ? `\n${reads}\n` : ""}
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "${model}",
+        {
+${body}
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+${show}`;
+}
+
+/** TypeScript, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
+function typescriptQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const imports = `import { comfy } from "@comfyorg/sdk";\n${files.length ? `import { readFile } from "node:fs/promises";\n` : ""}`;
+  const reads = files
+    .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
+    .join("\n");
+  const typed = resultPath ? `type Result = ${tsResultType(resultPath)};\n` : "";
+  const generic = resultPath ? "<Result>" : "";
+  const show = resultPath
+    ? `const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("${label}:", result.data${tsPath(resultPath)});`
+    : `const result = await handle.get();
+
+console.log(result.data);`;
+  return `${imports}
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+${typed}const handle = await comfy.models.submit${generic}("${model}", {
+${body}
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+${show}`;
+}
+
+/** cURL, queued: submit, then poll and collect by request id. */
+function curlQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
+  const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
+  const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
+  const entries = Object.entries(example).map(([k, v]) => {
+    const f = files.find((x) => x.key === k);
+    const value = f ? `\\"$${shellVar(f.varName)}\\"` : esc(v);
+    return `${esc(k)}: ${value}`;
+  });
+  const json = `{${entries.join(", ")}}`;
+  const requests = `${BASE_URL}${ROUTE}/${model}/requests`;
+  return `${reads ? `${reads}\n\n` : ""}# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl ${requests} \\
+  -H "X-API-Key: $COMFY_API_KEY" \\
+  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Content-Type: application/json" \\
+  -d "${json}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i ${requests}/$REQUEST_ID/status \\
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl ${requests}/$REQUEST_ID \\
+  -H "X-API-Key: $COMFY_API_KEY"`;
+}
+
+/** The three languages of one delivery mode. */
+function codeGroup(python: string, typescript: string, curl: string): string {
+  return `<CodeGroup>
+\`\`\`python Python
+${python}
+\`\`\`
+
+\`\`\`typescript TypeScript
+${typescript}
+\`\`\`
+
+\`\`\`bash cURL
+${curl}
+\`\`\`
+</CodeGroup>`;
+}
+
+/**
+ * The two delivery modes of one request as a tab pair: `sync` waits for the
+ * result, `queued` submits the same body and collects it later. The queued tab
+ * opens with the rollout notice while `snippets/comfy-router/queue-preview-notice.mdx`
+ * exists (see `queueNotice` below).
+ */
+function deliveryTabs(model: string, sync: string, queued: string): string {
+  return `<Tabs>
+  <Tab title="Wait for the result">
+${sync}
+  </Tab>
+  <Tab title="Queue and collect later">
+${queueNotice.body}The same body, sent to \`POST ${BASE_URL}${ROUTE}/${model}/requests\`. Router answers \`201\` with a \`request_id\` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+${queued}
+  </Tab>
+</Tabs>`;
+}
+
 function possessive(name: string): string {
   return name.endsWith("s") ? `${name}'` : `${name}'s`;
 }
@@ -383,10 +531,33 @@ type ModelSchema = {
   inputExample?: unknown;
   output?: any;
   outputExample?: unknown;
+  /** Media type the 200 response is keyed under; unset only when the 200 publishes no content. */
+  outputMediaType?: string;
   components: Record<string, any>;
 };
 
-function loadModelSchema(model: string): ModelSchema | null {
+/**
+ * The 200 response's content entry, whatever media type Router keyed it under.
+ *
+ * Most models answer `application/json`, but a Router output component may declare
+ * `x-comfy-router-output-media-type` (cloud `services/comfy-api/routerschema/routerschema.go`,
+ * whose own example is `video/mp4`) and then the served 200 is keyed by that instead: the two
+ * ElevenLabs models that return raw audio bytes publish theirs under the wildcard type. Reading only
+ * `application/json` made a published schema look unpublished on exactly those pages.
+ */
+export function outputContent(
+  content: Record<string, { schema?: any; example?: unknown }> | undefined
+): { mediaType: string; schema?: any; example?: unknown } | undefined {
+  if (!content) return undefined;
+  // Prefer JSON when it is offered; otherwise take the one remaining entry. A document with
+  // several non-JSON media types is not something Router emits today, and picking the first
+  // keyed entry keeps the page deterministic rather than dropping the schema entirely.
+  const mediaType = "application/json" in content ? "application/json" : Object.keys(content)[0];
+  if (mediaType === undefined) return undefined;
+  return { ...content[mediaType], mediaType };
+}
+
+export function loadModelSchema(model: string): ModelSchema | null {
   const file = join(ROOT, "router-schemas", `${model}.json`);
   if (!existsSync(file)) return null;
   let doc: SchemaDoc;
@@ -398,13 +569,14 @@ function loadModelSchema(model: string): ModelSchema | null {
   const op = doc.paths?.[`${ROUTE}/${model}`]?.post;
   if (!op) throw new Error(`router-schemas/${model}.json: no POST ${ROUTE}/${model} operation`);
   const req = op.requestBody?.content?.["application/json"];
-  const res = op.responses?.["200"]?.content?.["application/json"];
+  const res = outputContent(op.responses?.["200"]?.content);
   return {
     authored: doc["x-comfy-input-schema-authored"] !== false,
     input: req?.schema,
     inputExample: req?.example ?? req?.schema?.example,
     output: res?.schema,
     outputExample: res?.example ?? res?.schema?.example,
+    outputMediaType: res?.mediaType,
     components: doc.components?.schemas ?? {},
   };
 }
@@ -513,6 +685,53 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
   return blocks.join("\n\n");
 }
 
+/**
+ * True when a response schema describes an OPAQUE body — a scalar payload such as
+ * `{type: "string", format: "binary"}` — rather than a JSON document with named properties.
+ *
+ * `schemaFields` walks `properties`, so it has nothing to list for one of these and would
+ * fall through to its "does not declare named properties" line. An object (open or not), an
+ * array and a discriminated union all stay on the normal path; only a scalar root is opaque.
+ */
+export function isOpaqueBody(schema: any, components: Record<string, any>): boolean {
+  const root = deref(schema, components);
+  if (!root || root.discriminator || root.properties || root.oneOf || root.anyOf) return false;
+  return typeof root.type === "string" && root.type !== "object" && root.type !== "array";
+}
+
+/**
+ * The `### Output` schema body for a 200 the model DOES publish.
+ *
+ * An opaque body renders as a single ResponseField named for the media type Router serves it
+ * under, carrying the schema's own prose — the alternative is a page that reads as if Router
+ * published nothing, which is the opposite of the served contract.
+ */
+export function outputSchemaFields(s: ModelSchema, docBase?: string): string {
+  if (!isOpaqueBody(s.output, s.components)) return schemaFields(s.output, s.components, "response", docBase);
+  const root = deref(s.output, s.components);
+  const description = root.description
+    ? mdxText(resolveProviderLinks(String(root.description).trim(), docBase))
+    : " ";
+  const name = attr(s.outputMediaType ?? "application/json");
+  return `<ResponseField name="${name}" type="${attr(typeLabel(s.output, s.components))}">\n  ${description}\n</ResponseField>`;
+}
+
+/**
+ * The `## Examples` → `### Output` body for an opaque response.
+ *
+ * The published `example` for one of these is a placeholder for the bytes (`"(binary audio
+ * bytes)"`), so rendering it inside a ```json fence would present a string literal as if it
+ * were the response document. Say what the body is instead.
+ */
+export function opaqueOutputExample(s: ModelSchema): string {
+  const root = deref(s.output, s.components);
+  const body =
+    root.format === "binary"
+      ? "Binary body: raw bytes rather than a JSON document"
+      : `Non-JSON body: \`${typeLabel(s.output, s.components)}\` content rather than a JSON document`;
+  return `${body}, returned as \`${s.outputMediaType ?? "application/json"}\`, so there is no JSON example to show. The response \`Content-Type\` and encoding follow the request, as the Output schema above describes.`;
+}
+
 // ---------------------------------------------------------------------------
 // Page template
 // ---------------------------------------------------------------------------
@@ -541,7 +760,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
   const inputExample = JSON.stringify(example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
   let output: string;
   if (published?.output) {
-    output = schemaFields(published.output, published.components, "response", docBase);
+    output = outputSchemaFields(published, docBase);
   } else if (specOutput) {
     output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response", docBase)}`;
   } else {
@@ -556,23 +775,14 @@ function quickStart(v: Variant, spec: Spec): string {
   const example = v.example ?? spec.example;
   const files = fileInputs(example);
   const label = spec.result.label;
+  const path = spec.result.path;
+  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
+  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
   return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
 
-<CodeGroup>
-\`\`\`python Python
-${pythonSnippet(v.model, example, files, spec.result.path, label)}
-\`\`\`
-
-\`\`\`typescript TypeScript
-${typescriptSnippet(v.model, example, files, spec.result.path, label)}
-\`\`\`
-
-\`\`\`bash cURL
-${curlSnippet(v.model, example, files)}
-\`\`\`
-</CodeGroup>`;
+${deliveryTabs(v.model, sync, queued)}`;
 }
 
 /** Schema + Examples for one variant. `html` headings keep them out of the TOC when rendered inside tabs. */
@@ -626,6 +836,19 @@ const previewNotice = (() => {
   };
 })();
 
+/**
+ * As `previewNotice`: the queued-delivery rollout note at the top of every
+ * "Queue and collect later" tab, rendered while its snippet exists and retired
+ * with one `rm` plus a regen once the queue is on for everyone.
+ */
+const queueNotice = (() => {
+  const present = existsSync(join(ROOT, QUEUE_NOTICE));
+  return {
+    imports: present ? `import QueuedDeliveryNotice from "/${QUEUE_NOTICE}";\n` : "",
+    body: present ? "<QueuedDeliveryNotice />\n\n" : "",
+  };
+})();
+
 function renderPage(spec: Spec, dir: string): string {
   const both = spec.variants.length > 1;
   // The one-time setup a snippet cannot run without. Everything else that is
@@ -650,7 +873,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 {/* GENERATED FILE. Edit code.yaml in this directory and run \`pnpm code-pages:gen\`. */}
 
-${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
@@ -725,20 +948,9 @@ ${tsBody}
 });
 
 console.log(data);`;
-  const curl = curlSnippet(model, body, []);
-  return `<CodeGroup>
-\`\`\`python Python
-${python}
-\`\`\`
-
-\`\`\`typescript TypeScript
-${typescript}
-\`\`\`
-
-\`\`\`bash cURL
-${curl}
-\`\`\`
-</CodeGroup>`;
+  const sync = codeGroup(python, typescript, curlSnippet(model, body, []));
+  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
+  return deliveryTabs(model, sync, queued);
 }
 
 // Adapt shared response fixtures for display only; never rewrite synced schemas.
@@ -776,12 +988,18 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const input = s.authored && s.input
     ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
     : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${possessive(provider)} own API reference](${apiDocs})` : `${possessive(provider)} own API documentation`} is authoritative for the request fields, and Router does not perform model-specific input validation. Provider validation still applies.\n</Note>`;
+  // The placeholder is for a 200 that carries no schema at all. A 200 whose schema Router
+  // keyed under a non-JSON media type IS published, and used to land here because the loader
+  // only ever looked under `application/json`.
   const output = s.output
-    ? schemaFields(s.output, s.components, "response", docBase)
+    ? outputSchemaFields(s, docBase)
     : `Router does not publish an output schema for this model.`;
   const outputExample = responseExampleForModel(model, s.outputExample);
+  const outputExampleBlock = isOpaqueBody(s.output, s.components)
+    ? opaqueOutputExample(s)
+    : `\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\``;
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n${outputExampleBlock}\n` : ""}`
     : "";
   // Say WHY there is no snippet, not just that there isn't one. A model whose
   // input schema is unauthored has no documented fields on this page either, so
@@ -800,7 +1018,7 @@ sidebarTitle: ${JSON.stringify(title)}
 
 {/* GENERATED FILE. Generated from router-schemas/${model}.json by \`pnpm code-pages:gen\`. */}
 
-${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
 ${previewNotice.body}
@@ -953,142 +1171,146 @@ function validate(page: string, rel: string): string[] {
 
 // ---------------------------------------------------------------------------
 
-const check = process.argv.includes("--check");
-const doValidate = process.argv.includes("--validate");
-const prune = process.argv.includes("--prune");
+// The script half. Guarded so the helpers above can be imported by
+// `gen-code-pages.test.ts` without regenerating every page as a side effect.
+if (import.meta.main) {
+  const check = process.argv.includes("--check");
+  const doValidate = process.argv.includes("--validate");
+  const prune = process.argv.includes("--prune");
 
-type Page = { model: string; page: string; title: string; text: string; out: string };
+  type Page = { model: string; page: string; title: string; text: string; out: string };
 
-const pages: Page[] = [];
-const covered = new Set<string>();
-let problems: string[] = [];
+  const pages: Page[] = [];
+  const covered = new Set<string>();
+  let problems: string[] = [];
 
-// ---- curated pages: one hand-written code.yaml, one page, one or more models
-const specGlob = new Bun.Glob(SPEC_GLOB);
-let specCount = 0;
-for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
-  specCount++;
-  let spec: Spec;
-  try {
-    spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
-  } catch (e) {
-    problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
-    continue;
+  // ---- curated pages: one hand-written code.yaml, one page, one or more models
+  const specGlob = new Bun.Glob(SPEC_GLOB);
+  let specCount = 0;
+  for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
+    specCount++;
+    let spec: Spec;
+    try {
+      spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
+    } catch (e) {
+      problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
+      continue;
+    }
+    for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
+      if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+    }
+    if (problems.some((m) => m.startsWith(specPath))) continue;
+    const dir = dirname(specPath);
+    let text: string;
+    try {
+      // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
+      // remaining specs half written; report it against this spec and carry on, as YAML errors do.
+      text = renderPage(spec, dir);
+    } catch (e) {
+      problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
+      continue;
+    }
+    for (const v of spec.variants) covered.add(v.model);
+    pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
   }
-  for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
-    if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+  if (specCount === 0) {
+    console.error(`no specs matched ${SPEC_GLOB}`);
+    process.exit(1);
   }
-  if (problems.some((m) => m.startsWith(specPath))) continue;
-  const dir = dirname(specPath);
-  let text: string;
-  try {
-    // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
-    // remaining specs half written; report it against this spec and carry on, as YAML errors do.
-    text = renderPage(spec, dir);
-  } catch (e) {
-    problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
-    continue;
-  }
-  for (const v of spec.variants) covered.add(v.model);
-  pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
-}
-if (specCount === 0) {
-  console.error(`no specs matched ${SPEC_GLOB}`);
-  process.exit(1);
-}
 
-// ---- derived pages: one per synced router schema with no curated spec
-const schemaGlob = new Bun.Glob(SCHEMA_GLOB);
-const claimed = new Map<string, string>(pages.map((p) => [p.page, "a code.yaml spec"]));
-for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
-  const model = rel.slice("router-schemas/".length).replace(/\.json$/, "");
-  if (covered.has(model)) continue;
-  let schema: ModelSchema | null;
-  try {
-    schema = loadModelSchema(model);
-  } catch (e) {
-    problems.push(`${rel}: ${(e as Error).message}`);
-    continue;
+  // ---- derived pages: one per synced router schema with no curated spec
+  const schemaGlob = new Bun.Glob(SCHEMA_GLOB);
+  const claimed = new Map<string, string>(pages.map((p) => [p.page, "a code.yaml spec"]));
+  for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
+    const model = rel.slice("router-schemas/".length).replace(/\.json$/, "");
+    if (covered.has(model)) continue;
+    let schema: ModelSchema | null;
+    try {
+      schema = loadModelSchema(model);
+    } catch (e) {
+      problems.push(`${rel}: ${(e as Error).message}`);
+      continue;
+    }
+    if (!schema) {
+      problems.push(`${rel}: model id does not match its path (expected router-schemas/<provider>/<model>.json)`);
+      continue;
+    }
+    const dir = pageDir(model);
+    const owner = claimed.get(`${dir}/code`);
+    if (owner) {
+      // Two model ids that differ only in punctuation would silently overwrite one another.
+      problems.push(`${rel}: page directory ${dir} is already claimed by ${owner}`);
+      continue;
+    }
+    claimed.set(`${dir}/code`, rel);
+    pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
   }
-  if (!schema) {
-    problems.push(`${rel}: model id does not match its path (expected router-schemas/<provider>/<model>.json)`);
-    continue;
-  }
-  const dir = pageDir(model);
-  const owner = claimed.get(`${dir}/code`);
-  if (owner) {
-    // Two model ids that differ only in punctuation would silently overwrite one another.
-    problems.push(`${rel}: page directory ${dir} is already claimed by ${owner}`);
-    continue;
-  }
-  claimed.set(`${dir}/code`, rel);
-  pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
-}
 
-// ---- write or check
-const stale: string[] = [];
-const missing: string[] = [];
-for (const p of pages) {
-  if (doValidate) problems.push(...validate(p.text, relative(ROOT, p.out)));
+  // ---- write or check
+  const stale: string[] = [];
+  const missing: string[] = [];
+  for (const p of pages) {
+    if (doValidate) problems.push(...validate(p.text, relative(ROOT, p.out)));
+    if (check) {
+      if (!existsSync(p.out)) missing.push(relative(ROOT, p.out));
+      else if (readFileSync(p.out, "utf8") !== p.text) stale.push(relative(ROOT, p.out));
+    } else {
+      mkdirSync(dirname(p.out), { recursive: true });
+      writeFileSync(p.out, p.text);
+    }
+  }
+
+  // ---- catalog landing page
+  const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
+  const indexText = renderModelsIndex(pages);
   if (check) {
-    if (!existsSync(p.out)) missing.push(relative(ROOT, p.out));
-    else if (readFileSync(p.out, "utf8") !== p.text) stale.push(relative(ROOT, p.out));
+    if (!existsSync(indexOut)) missing.push(relative(ROOT, indexOut));
+    else if (readFileSync(indexOut, "utf8") !== indexText) stale.push(relative(ROOT, indexOut));
   } else {
-    mkdirSync(dirname(p.out), { recursive: true });
-    writeFileSync(p.out, p.text);
+    writeFileSync(indexOut, indexText);
   }
-}
 
-// ---- catalog landing page
-const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
-const indexText = renderModelsIndex(pages);
-if (check) {
-  if (!existsSync(indexOut)) missing.push(relative(ROOT, indexOut));
-  else if (readFileSync(indexOut, "utf8") !== indexText) stale.push(relative(ROOT, indexOut));
-} else {
-  writeFileSync(indexOut, indexText);
-}
-
-// A model that leaves the catalog leaves its schema and, without this, its page:
-// a dead page still in the sidebar, documenting a model that now answers 404.
-const wanted = new Set(pages.map((p) => p.out));
-const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
-  .filter((rel) => !wanted.has(join(ROOT, rel)))
-  .sort();
-for (const rel of orphans) {
-  if (prune && !check) {
-    rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
-    console.log(`pruned ${rel}`);
-  } else {
-    problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
+  // A model that leaves the catalog leaves its schema and, without this, its page:
+  // a dead page still in the sidebar, documenting a model that now answers 404.
+  const wanted = new Set(pages.map((p) => p.out));
+  const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
+    .filter((rel) => !wanted.has(join(ROOT, rel)))
+    .sort();
+  for (const rel of orphans) {
+    if (prune && !check) {
+      rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
+      console.log(`pruned ${rel}`);
+    } else {
+      problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
+    }
   }
-}
 
-// ---- sidebar
-let docsJson: string;
-try {
-  docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))));
-} catch (e) {
-  problems.push((e as Error).message);
-  docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
-}
-if (check) {
-  if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) stale.push(DOCS_JSON);
-} else if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) {
-  writeFileSync(join(ROOT, DOCS_JSON), docsJson);
-  console.log(`wrote ${DOCS_JSON}`);
-}
+  // ---- sidebar
+  let docsJson: string;
+  try {
+    docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))));
+  } catch (e) {
+    problems.push((e as Error).message);
+    docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
+  }
+  if (check) {
+    if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) stale.push(DOCS_JSON);
+  } else if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) {
+    writeFileSync(join(ROOT, DOCS_JSON), docsJson);
+    console.log(`wrote ${DOCS_JSON}`);
+  }
 
-if (missing.length) {
-  console.error(
-    `missing generated pages (run \`pnpm code-pages:gen\`) \u2014 a model Router serves has no page:\n  ${missing.join("\n  ")}`
-  );
+  if (missing.length) {
+    console.error(
+      `missing generated pages (run \`pnpm code-pages:gen\`) \u2014 a model Router serves has no page:\n  ${missing.join("\n  ")}`
+    );
+  }
+  if (stale.length) {
+    console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
+  }
+  if (problems.length) console.error(problems.join("\n"));
+  if (missing.length || stale.length || problems.length) process.exit(1);
+  const derivedCount = pages.length - specCount;
+  if (check) console.log(`${pages.length} code page(s) fresh (${specCount} curated, ${derivedCount} derived)`);
+  else console.log(`wrote ${pages.length} code page(s) (${specCount} curated, ${derivedCount} derived)`);
 }
-if (stale.length) {
-  console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
-}
-if (problems.length) console.error(problems.join("\n"));
-if (missing.length || stale.length || problems.length) process.exit(1);
-const derivedCount = pages.length - specCount;
-if (check) console.log(`${pages.length} code page(s) fresh (${specCount} curated, ${derivedCount} derived)`);
-else console.log(`wrote ${pages.length} code page(s) (${specCount} curated, ${derivedCount} derived)`);

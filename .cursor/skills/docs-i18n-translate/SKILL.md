@@ -27,6 +27,14 @@ pnpm translate:sync-docs-json       ← mirror nav paths in docs.json (opt-in)
 ```
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
+### Title / description frontmatter (localized pages)
+
+`title` and `description` frontmatter carry localized meaning, not word-for-word
+translation. Localized titles keep the official product name untranslated;
+descriptions convey the same scope as EN within 40-160 chars. When an EN page's
+title/description changes in this repo, the zh/ja/ko values are updated in the
+same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../.cursor/rules/docs-frontmatter.mdc).
+
 ## Environment (`.env.local`)
 
 | Variable | Purpose |

@@ -75,6 +75,17 @@ is deleted. The banner is a rollout artifact, so retiring it is one `rm` plus a
 regen rather than an edit to the template and every generated page in the same
 commit.
 
+## The two delivery tabs
+
+Every runnable Quick start is a tab pair: **Wait for the result** is the
+`models.run` call, **Queue and collect later** is the same body through
+`models.submit`, polled to completion and collected. Both tabs are emitted from
+the one `example`, so they cannot disagree about the request. During the
+gated preview the queued tab opened with
+`snippets/comfy-router/queue-preview-notice.mdx`, on the same existence rule as
+the preview banner; the file was removed once the queue was on for every
+workspace, and recreating it brings the note back on every page after a regen.
+
 ## Schema sections
 
 Every Code page includes a Schema section and the examples available for it.

@@ -26,6 +26,22 @@ When writing or editing English documentation, follow [.cursor/rules/docs-prose.
 **Instead of:** `**Discord** — #channel for questions.`  
 **Prefer:** `**Discord**: #channel for questions.`
 
+## Page titles and descriptions (frontmatter)
+
+Every MDX page's `title` and `description` frontmatter is what users see in
+search results and link previews. Generic titles ("Overview", "Tips") and
+vague or missing descriptions stop users from identifying page content before
+clicking. Follow [.cursor/rules/docs-frontmatter.mdc](.cursor/rules/docs-frontmatter.mdc)
+for every new or edited page:
+
+- Title leads with the specific subject (model/tool name or feature); a bare
+  generic word is not enough.
+- Description: 40 to 160 chars (target 120 to 155), states what the page
+  covers, never duplicates the title, no marketing superlatives.
+- Quote the description value when it contains a colon-space sequence.
+- zh/ja/ko pages carry localized titles/descriptions conveying the same scope;
+  sync them in the same commit as the EN change.
+
 ## Reference docs
 
 | Topic | Doc |

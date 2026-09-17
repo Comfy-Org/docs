@@ -18,6 +18,8 @@ Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-ke
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/luma/ray-2`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
@@ -61,6 +63,83 @@ curl https://api.comfy.org/v2/models/luma/ray-2 \
   -d "{\"aspect_ratio\": \"16:9\", \"duration\": \"5s\", \"prompt\": \"a single red maple leaf resting on a plain white background\", \"resolution\": \"540p\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/luma/ray-2/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "luma/ray-2",
+        {
+            "aspect_ratio": "16:9",
+            "duration": "5s",
+            "prompt": "a single red maple leaf resting on a plain white background",
+            "resolution": "540p",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("luma/ray-2", {
+  aspect_ratio: "16:9",
+  duration: "5s",
+  prompt: "a single red maple leaf resting on a plain white background",
+  resolution: "540p",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/luma/ray-2/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"aspect_ratio\": \"16:9\", \"duration\": \"5s\", \"prompt\": \"a single red maple leaf resting on a plain white background\", \"resolution\": \"540p\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/luma/ray-2/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/luma/ray-2/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
