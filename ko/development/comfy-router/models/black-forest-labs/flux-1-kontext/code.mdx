@@ -2,7 +2,7 @@
 title: "Comfy Router로 FLUX.1 Kontext 사용하기"
 description: "Comfy Router를 통해 HTTP로 FLUX.1 Kontext Pro와 Kontext Max를 호출하기 위한 Python, TypeScript, cURL 스니펫과 요청 필드 및 결과 형태"
 sidebarTitle: "FLUX.1 Kontext"
-translationSourceHash: 6016f7f5
+translationSourceHash: 0f8bd0ae
 translationFrom: development/comfy-router/models/black-forest-labs/flux-1-kontext/code.mdx
 ---
 
@@ -24,6 +24,8 @@ FLUX.1 Kontext API 레퍼런스입니다. FLUX.1 Kontext는 Black Forest Labs의
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 import base64
@@ -76,6 +78,93 @@ curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro \
   -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+동일한 본문을 `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests` 로 보냅니다. Router는 실행이 접수되는 즉시 `201` 과 `request_id` 를 응답하며, 결과는 준비가 되는 대로 이 프로세스나 다른 프로세스에서 수집할 수 있습니다. 상태, 취소, 수집 방법은 [Queued delivery](/development/comfy-router/queue) 를 참고하세요.
+
+<CodeGroup>
+```python Python
+import base64
+
+from comfy_sdk import Comfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-kontext-pro",
+        {
+            "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+            "input_image": input_image,
+            "aspect_ratio": "1:1",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-pro", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 <h2>Schema</h2>
 
@@ -238,6 +327,8 @@ URL은 임시입니다. 이미지를 보관해야 한다면 즉시 다운로드�
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 import base64
@@ -290,6 +381,93 @@ curl https://api.comfy.org/v2/models/bfl/flux-kontext-max \
   -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+동일한 본문을 `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests` 로 보냅니다. Router는 실행이 접수되는 즉시 `201` 과 `request_id` 를 응답하며, 결과는 준비가 되는 대로 이 프로세스나 다른 프로세스에서 수집할 수 있습니다. 상태, 취소, 수집 방법은 [Queued delivery](/development/comfy-router/queue) 를 참고하세요.
+
+<CodeGroup>
+```python Python
+import base64
+
+from comfy_sdk import Comfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-kontext-max",
+        {
+            "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+            "input_image": input_image,
+            "aspect_ratio": "1:1",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-max", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 <h2>Schema</h2>
 
