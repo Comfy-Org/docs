@@ -2,279 +2,337 @@
 title: "Comfy Router API 사용하기"
 sidebarTitle: "Router API 사용하기"
 description: "모델 선택, 스키마 검사, Router 안전 호출, 결과, 오류, 재시도, 결제 처리 방법을 알아보세요."
-translationSourceHash: 0d8c3756
+translationSourceHash: 7bca7f7c
 translationFrom: development/comfy-router/models.mdx
 translationBlockHashes:
-  "_intro": 1b554933
-  "Discover the catalog": 9264e92d
-  "Read one model": 6d96021f
-  "Read input and output schemas": 0b7e6eaa
-  "Validation and fallback schemas": 9e039521
-  "Read the result": fab75186
-  "Handle errors, retries, and billing": 563281f5
-  "Per-model examples": ed06edba
-  "Next": 30e39619
+  "_intro": f10928e2
+  "Anthropic": 6b3a82aa
+  "Beeble": 3dbc8f79
+  "Black Forest Labs": f9ec2193
+  "Bria": 524538b9
+  "BytePlus": 153e22f7
+  "Elevenlabs": d6122bad
+  "fal": 8962295e
+  "Freepik": 9b9fc279
+  "Gemini Interactions": 772301fb
+  "Google": 5fb1cd15
+  "HeyGen": e63b341c
+  "Ideogram": a5b5a0ab
+  "Kling": 78f8dd06
+  "Krea": c09355fb
+  "LTX": 0454756a
+  "Luma": aaec5c26
+  "Luma 2": 7d46b851
+  "Meshy": ac9742cb
+  "MiniMax": 871fec64
+  "Moonvalley": 1bafd9a3
+  "OpenAI": 1ecffa94
+  "Pruna": 29b758ff
+  "Qwen": 07ff7742
+  "Recraft": b75cce53
+  "Runway": ec0c741f
+  "Tencent": 3b746819
+  "Veo": 886ab7ad
+  "Wan": fbd864f4
+  "WaveSpeed": 08c44be9
+  "xAI": ac264069
 ---
-모델을 선택하고, 해당 스키마를 확인한 다음 `POST /v2/models/{provider}/{model}` 엔드포인트를 호출하세요. 라우트와 인증은 모델에 관계없이 동일하게 유지됩니다.
 
-## 카탈로그 둘러보기
 
-생성에 사용한 것과 동일한 API 키로 모델을 조회합니다:
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  "https://api.comfy.org/v2/models?limit=50"
-```
-
-축약된 카탈로그 응답:
-
-```json
-{
-  "data": [
-    {
-      "id": "bfl/flux-2-pro",
-      "provider": "bfl",
-      "model": "flux-2-pro",
-      "billing": { "charges_on_policy_rejection": "no" }
-    }
-  ],
-  "has_more": true,
-  "next_cursor": "example-cursor",
-  "limit": 50
-}
-```
-
-호출 경로에는 `id`를 사용합니다. `billing` 객체에는 가격이 아닌 청구 관련 사실이 포함됩니다. 이를 활용하기 이전에 [정책 거부 시 청구](/ko/development/comfy-router/models#모델-청구-관련-사실)를 읽어 보세요.
-
-### 페이지네이션
-
-- `has_more`가 `true`이면 반환된 `next_cursor`를 `cursor`로 전달합니다. `has_more`가 `false`이면 중단합니다. 이전 페이지가 요청한 길이보다 짧았더라도 계속 요청하지 마세요.
-- 커서는 불투명한 값으로 취급하세요. 예를 들어 cURL의 `--get --data-urlencode "cursor=$NEXT_CURSOR"`를 사용해 값을 URL 인코딩하세요. 오프셋을 계산하거나 커서를 수정하지 마세요.
-- `limit`의 기본값은 20이며 최대 100으로 제한됩니다. 상한을 초과하는 값은 상한으로 조정되고, 0 또는 음수 값은 기본값을 선택합니다. 응답에는 실제로 사용된 limit 값이 보고됩니다.
-- 잘못된 커서는 `400` / `invalid_input`을 반환하며, 목록을 조용히 재시작하지 않습니다.
-- 커서는 카탈로그가 업데이트된 이후에도 유효할 수 있지만, 순회는 스냅샷이 아닙니다. 현재 위치 이전에 추가된 모델은 해당 순회에 나타나지 않을 수 있습니다.
-
-`503` / `service_unavailable`은 일시적인 오류입니다. 백오프를 적용해 재시도하고, 빈 카탈로그로 취급하지 마세요. SDK의 run 메서드는 선택된 모델을 직접 호출합니다.
-
-## 모델 하나 조회하기
-
-모델 ID를 알고 있을 때는 카탈로그에서 해당 항목을 바로 조회할 수 있습니다:
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro
-```
-
-모델 상세 엔드포인트를 사용하면 전체 카탈로그를 탐색할 필요가 없습니다. 전체 항목 필드에 대한 자세한 내용은 [API 레퍼런스](/ko/development/comfy-router/reference)를 참조하세요.
-
-## 입력 및 출력 스키마 읽기
-
-각 모델은 독립형 OpenAPI 문서를 제공합니다.
-
-```bash
-curl --dump-header schema-headers.txt \
-  -H "X-API-Key: $COMFY_API_KEY" \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
-```
-
-모델 작업 내에서 `requestBody`는 입력을 설명하고, 출력 스키마가 작성된 경우 `200` 응답은 출력을 설명합니다. 입력 검증과 출력 문서화는 서로 다릅니다: Router는 입력 스키마를 기준으로 검증하지만, 반환된 공급자 결과를 출력 스키마로 검증하지는 않습니다.
-
-출력 미디어 유형과 해당 필드를 확인하세요. 작성되지 않은 출력은 `*/*`를 사용할 수 있으며, 일부 모델은 JSON 대신 이진 데이터를 반환합니다.
-
-### 스키마 캐시하기
-
-스키마와 해당 `ETag`를 저장하세요. 나중에 스키마를 가져올 때 `If-None-Match`에 해당 ETag를 전달하세요. `304`는 본문이 없으므로 캐시된 문서를 유지합니다. `200`은 대체 문서와 ETag를 제공합니다.
-
-```bash
-curl -H "X-API-Key: $COMFY_API_KEY" \
-  -H 'If-None-Match: "previous-etag-value"' \
-  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
-```
-
-스키마 라우트는 `Cache-Control: private, must-revalidate`를 사용합니다. 인증된 응답을 공유 캐시에 저장하지 마세요. 이 ETag/304 동작은 스키마 엔드포인트에만 적용됩니다.
-
-## 검증 및 폴백 스키마
-
-작성된 입력 스키마는 공급자 호출 이전에 잘못된 필드를 `422` 및 `detail[]` 배열로 거부합니다. `loc`에서 필드 경로를 확인하세요. [검증 오류](/ko/development/comfy-router/models#검증-오류)를 참조하세요.
-
-일부 스키마는 모든 JSON 객체를 허용하며 `x-comfy-input-schema-authored: false`를 설정합니다. 라우터는 모델별 검증 없이 해당 요청을 전달하므로, 공급자가 여전히 이를 거부할 수 있습니다.
-
-`bfl/flux-2-pro`는 현재 이 폴백을 사용합니다. 필수 필드는 공급자 문서 또는 해당 모델 페이지에서 확인하세요.
-
-## 결과 읽기
-
-Router는 각 모델의 터미널 결과 형태를 반환합니다. 결과를 감싸는 공통 이미지, 비디오, 텍스트 봉투는 없습니다. BFL 이미지 출력은 `result.sample`을 사용하는 반면, 다른 모델은 URL 목록이나 인라인 바이트를 반환할 수 있습니다.
-
-일부 에셋 URL은 Comfy에서 다시 호스팅되고, 나머지는 공급자 URL 또는 인라인 바이트로 유지됩니다. [결과 에셋](/ko/development/comfy-router/reference)을 확인하고 만료 예정인 에셋은 즉시 다운로드하세요. 리플레이를 실행해도 URL은 갱신되지 않습니다.
-
-## 오류, 재시도, 결제 처리하기
-
-### 오류를 방어적으로 읽기
-
-실패한 요청은 프록시의 HTML 오류 페이지, 잘린 JSON 또는 일반 텍스트를 반환할 수 있습니다. JSON 파싱 오류가 HTTP 상태나 요청 ID를 가리지 않도록 하세요. 이 헬퍼들은 Python에서는 `httpx.Response`를, TypeScript에서는 Fetch `Response`를 사용합니다. 일반 SDK 호출에서는 SDK가 이미 오류 필드를 노출합니다.
-
-<CodeGroup>
-
-```python
-def read_router_error(response):
-    body = None
-    if response.headers.get("content-type", "").startswith("application/json"):
-        try:
-            body = response.json()
-        except ValueError:
-            body = None
-
-    detail = body.get("detail") if isinstance(body, dict) else None
-    return {
-        "status": response.status_code,
-        "request_id": response.headers.get("X-Comfy-Request-Id"),
-        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
-        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
-        "validation": detail if isinstance(detail, list) else [],
-    }
-```
-
-```typescript
-async function readRouterError(response: Response) {
-  let body: unknown;
-  try {
-    body = JSON.parse(await response.text());
-  } catch {
-    body = undefined;
-  }
-
-  const detail =
-    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
-
-  return {
-    status: response.status,
-    requestId: response.headers.get("X-Comfy-Request-Id"),
-    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
-    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
-    validation: Array.isArray(detail) ? detail : [],
-  };
-}
-```
-
-</CodeGroup>
-
-### 검증 오류
-
-Router의 `422`는 공급자 호출 이전에 유효성 검사가 실패했으며 이 경우 청구되지 않음을 의미합니다. 본문에는 거부된 필드마다 하나씩 항목이 있는 `detail[]` 배열이 있으며, 오류 카테고리는 본문이 아닌 `X-Comfy-Error-Type`에 있습니다. 예를 들어:
-
-```json
-{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
-```
-
-이것은 예시 형태입니다. 입력 스키마가 유연한 모델은 Router `422`를 반환하는 대신 누락된 필드를 공급자에게 전달할 수 있습니다.
-
-| 필드 | 의미 |
-| --- | --- |
-| `loc` | 거부된 필드까지의 경로. 가장 바깥쪽 세그먼트가 먼저 옵니다. |
-| `msg` | 사람이 읽을 수 있는 실패 사유. |
-| `type` | `missing`, `greater_than` 또는 `image_too_small` 같은 공급자별 사유. |
-| `ctx` | 해당 공급자 오류에 대한 선택적 제한값 또는 추가 데이터. |
-
-`400`은 필드별 검증 본문이 아니라 잘못된 형식의 커서와 같은 요청 수준 문제를 설명합니다. [오류 참조](/ko/development/comfy-router/reference)에는 지원되는 카테고리가 나열되어 있습니다. 알 수 없는 카테고리는 제어 흐름을 위해 `internal_error`로 취급하되, 진단 목적의 원본 값은 유지하세요. 새 오류 값을 무조건 거부하거나, 아직 발생하지 않을 것으로 예측되는 오류 카테고리를 이미 발생하는 것처럼 구현하지 마세요.
-
-### 안전한 재시도
-
-키를 모델 ID 및 요청 본문과 함께 **전송 이전에** 저장하십시오. 해당 논리적 호출의 모든 시도에 동일한 키를 재사용하십시오. Router는 응답에서 `Idempotency-Key`를 반환하지 않습니다. Python SDK는 발생한 예외에 해당 키를 포함합니다. TypeScript에서는 직접 제공한 키를 직접 보관하십시오.
-
-키는 자격 증명에 연결된 워크스페이스 내에서 공유되거나, 자격 증명에 워크스페이스가 없는 경우 사용자 범위로 한정됩니다. 해당 범위에서 고유한 UUID를 사용하고 동일한 자격 증명으로 재시도하십시오. 다른 워크스페이스 멤버의 키를 재사용하면 해당 멤버의 기록된 결과가 반환되거나 충돌이 발생할 수 있으며, 자격 증명을 변경하면 과금이 발생하는 별도의 호출이 시작될 수 있습니다.
-
-Router는 키와 함께 저장된 응답 또는 컬렉션 상태를 24시간 동안 보존합니다. 재시도는 새로운 보존 창을 시작하지 않습니다. 해당 상태가 만료되면 이전 키가 결과를 복구하거나 새 디스패치를 방지할 것이라고 기대해서는 안 됩니다. 또한 키는 만료된 자산 URL을 다시 사용할 수 있게 만들지 않습니다.
-
-### 재시도 결과
-
-| 상태 | 버킷 | 의미 | 조치 |
-| --- | --- | --- | --- |
-| `200` | `Idempotent-Replayed: true` 헤더 | 라우터가 결과를 재생했거나 수집된 생성 결과를 반환했습니다. | 결과를 사용하세요. 재생은 추가 Comfy 요금이 부과되지 않습니다. |
-| `409` | `concurrency_limit_exceeded` | 해당 키의 원본 호출이 아직 실행 중입니다. | `Retry-After`에 지정된 시간을 기다린 후 동일한 키를 다시 전송하세요. |
-| `504` | `deadline_exceeded`이며 `Retry-After` 포함 | 라우터가 수락된 공급자 작업에 대한 핸들을 유지했습니다. | 지정된 간격을 기다린 후 동일한 요청과 키를 다시 전송하여 결과를 수집하세요. 아직 실행 중일 수 있습니다. |
-| `429` | `rate_limited` | 요청 허용량이 모두 소진되었습니다. | `Retry-After`에 지정된 시간을 기다린 후 동일한 키로 재시도하세요. |
-| `429` | `concurrency_limit_exceeded` | 동시 호출 또는 약정 지출 한도가 요청을 거부했습니다. | 동시성을 줄이고 동일한 키로 재시도하세요. 지출 헤더를 확인하세요. |
-| `409` | `invalid_input` | 요청이 키의 원본 요청과 다르거나 해당 기록을 재생할 수 없습니다. | 충돌 내용을 확인하세요. 요청이 변경된 경우 원본 요청을 복원하세요. 새롭고 잠재적으로 청구될 수 있는 호출을 의도하는 경우에만 새 키를 시작하세요. |
-| 수집 힌트가 없는 `504`, 기타 `5xx`, 또는 응답 없음 | 다양함 | 상태 코드만으로는 작업이 수락되었는지, 유지되었는지, 해제되었는지 알 수 없습니다. | 동일한 키와 요청을 유지하세요. 제한된 재시도 정책을 사용하세요. 복구가 보장되지는 않습니다. |
-
-충돌 여부는 메서드, 모델 경로, 쿼리, 본문을 비교하여 결정됩니다. 키는 과도하게 큰 응답, 실패한 응답 쓰기, 또는 안전하게 재생할 수 없는 자산이 발생한 이후에는 재생 불가 상태가 될 수 있습니다. 기다려도 이미 소비된 결과는 복구되지 않습니다. 새 키는 새 호출을 시작하며 이전 출력을 가져오지 않습니다.
-
-공급자 디스패치 이전의 거부는 키를 해제합니다. 디스패치된 호출은 공급자 핸들을 유지하거나 재생 불가 상태가 될 수 있습니다. 상태 코드만으로 키 상태나 청구 여부를 판단하지 마세요.
-
-호출 시간이 초과되거나 연결이 끊어졌다고 해서 아예 새로운 키를 만들지 마세요. 라우터가 이미 해당 생성을 수락했다면 새 키는 두 번째 논리적 실행을 만들어 두 번째 청구 대상 결과를 초래할 수 있습니다. 원본 호출이 복구 불가능하다는 사실을 확인하기 전까지는 동일한 키를 재사용하세요.
-
-#
-
-### 시간 초과 및 수집
-
-라우터 호출 한 건은 기본적으로 10분 동안 연결을 유지할 수 있습니다. 클라이언트 시간 초과를 이 상한보다 길게 설정하여 로컬에서 모호하게 중단되는 대신 명시적인 `504` 응답과 요청 ID를 받을 수 있게 하세요.
-
-`deadline_exceeded`는 라우터의 대기 제한이고 `provider_timeout`은 공급자의 마감 시간입니다. 공급자의 생성이 완료되면 호출자가 시간 초과를 수신했거나 연결이 해제되었더라도 청구될 수 있습니다. 클라이언트 취소는 대기와 SDK 재시도를 중단하지만, 수락된 공급자 작업을 반드시 취소하지는 않습니다.
-
-제출 후 폴링(submit-and-poll) 방식의 공급자의 경우, 유지된 핸들을 통해 동일 키의 요청이 원본 생성 결과를 계속 수집할 수 있습니다. 복구 가능한 핸들 없이 중단된 디스패치 호출은 재생 가능한 결과 없이 키를 소비할 수 있으며, 이후 동일 키로 재시도하면 `409`가 반환됩니다. 성공이 포착되지 않은 공급자 측 일시적 오류는 여전히 키를 해제하여 다른 시도를 가능하게 할 수 있습니다. 핸들이 없다는 사실만으로는 어떤 결과가 적용될지 알 수 없습니다.
-
-SDK는 제한된 예산 범위 내에서 일부 오류를 자동으로 재시도합니다. SDK가 오류를 반환하면 새 요청이나 키를 생성하지 말고 기존 요청과 키를 유지하세요. 원시 HTTP의 경우 다음 예제는 두 가지 명시적 수집 힌트에 대해서만 재시도합니다.
-
-```python
-import os
-import time
-
-import httpx
-
-
-def collect(model, arguments, key, attempts=3):
-    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
-        for attempt in range(attempts):
-            response = client.post(
-                f"https://api.comfy.org/v2/models/{model}",
-                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
-                         "Idempotency-Key": key},
-                json=arguments,
-            )
-            if response.is_success:
-                return response.json()
-
-            category = response.headers.get("X-Comfy-Error-Type")
-            collecting = (response.status_code, category) in {
-                (409, "concurrency_limit_exceeded"),
-                (504, "deadline_exceeded"),
-            }
-            delay = response.headers.get("Retry-After", "")
-            if not collecting or not delay.isdigit() or attempt == attempts - 1:
-                response.raise_for_status()
-            time.sleep(int(delay))
-    raise ValueError("attempts must be positive")
-```
-
-함수에 원본 모델, 본문, 저장된 키를 전달합니다. 이 방식은 총 경과 시간이 아닌 시도 횟수를 제한합니다. 각 호출은 클라이언트 시간 초과까지 지속될 수 있으며 각 대기는 `Retry-After`를 따릅니다. HTTP 오류는 검사할 수 있도록 응답을 유지하고, 전송 오류는 키를 대체하지 않고 전파됩니다. 애플리케이션에 더 긴 복구 창이 필요하다면 저장된 키로 나중에 수집을 예약하세요.
-
-### 모델 청구 관련 사실
-
-`GET /v2/models` 및 모델 세부 응답에는 `billing.charges_on_policy_rejection`이 포함됩니다. 이는 정책 거부에 대한 청구 여부를 나타내며, 모든 실패 또는 가격 견적을 의미하지는 않습니다.
-
-| 값 | 의미 |
-| --- | --- |
-| `yes` | 정책 거부에 대해 청구됩니다. |
-| `no` | 정책 거부에 대해 청구되지 않습니다. |
-| `unknown` | 아직 아무도 해당 동작을 확립하지 않았습니다. 청구될 가능성이 있다고 간주하세요. |
-
-이 문자열들은 명시적으로 비교하세요. Python과 JavaScript에서 `"no"`는 truthy입니다. 인식할 수 없는 값은 모두 `unknown`으로 처리하세요. 크레딧 부족으로 거부된 요청은 `insufficient_credits`를 보고합니다.
-
-공급자 페이로드에는 공급자 자체의 비용 또는 사용량 수치가 포함될 수 있지만, 이는 Comfy 청구 금액이 아닙니다. `X-Comfy-Credits-Used`는 허용 목록에 있는 공급자에게는 표시될 수 있지만, 모든 공급자에게 나타나는 것은 아니며 재전송되지 않습니다. 정산에는 [워크스페이스 사용량 및 청구서](https://platform.comfy.org)를 사용하세요. 청구 금액을 조사할 때는 요청 ID를 보존하세요.
-
-## 모델별 예시
-
-- Google Gemini
-- Nano Banana 2
-- Nano Banana 2 Lite
-- Nano Banana Pro
-- FLUX 1.1 Pro Ultra
-- FLUX Kontext
-- FLUX Video Upscale
-- FLUX 3 Video
-- Ideogram 4
-
-## 다음
-
-- [Quickstart](/ko/development/comfy-router/quickstart): 설치, 호출, 이미지 저장.
-- [API reference](/ko/development/comfy-router/reference): 엔드포인트 파라미터, 스키마, 응답 코드.
+{/* GENERATED FILE. Generated from the Router catalog by `pnpm code-pages:gen`. */}
+
+아래의 모든 모델은 동일한 라우트인 `POST /v2/models/{provider}/{model}`로 제공되며, 각 모델의 JSON 본문을 함께 전달합니다. 각 페이지에는 Python, TypeScript, cURL로 작성된 실제 동작하는 요청 예시가 있습니다. 검색, 스키마, 오류, 재시도, 청구에 대해서는 [Comfy Router API 사용하기](/ko/development/comfy-router/api)를 참고하세요.
+
+## Anthropic
+
+- [Claude Fable 5.1](/ko/development/comfy-router/models/anthropic/claude-fable-5-1/code): `anthropic/claude-fable-5-1`
+- [Claude Fable 5](/ko/development/comfy-router/models/anthropic/claude-fable-5/code): `anthropic/claude-fable-5`
+- [Claude Haiku 4.5 20251001](/ko/development/comfy-router/models/anthropic/claude-haiku-4-5-20251001/code): `anthropic/claude-haiku-4-5-20251001`
+- [Claude Opus 4.6](/ko/development/comfy-router/models/anthropic/claude-opus-4-6/code): `anthropic/claude-opus-4-6`
+- [Claude Opus 4.7](/ko/development/comfy-router/models/anthropic/claude-opus-4-7/code): `anthropic/claude-opus-4-7`
+- [Claude Opus 4.8](/ko/development/comfy-router/models/anthropic/claude-opus-4-8/code): `anthropic/claude-opus-4-8`
+- [Claude Opus 5](/ko/development/comfy-router/models/anthropic/claude-opus-5/code): `anthropic/claude-opus-5`
+- [Claude Sonnet 4.5 20250929](/ko/development/comfy-router/models/anthropic/claude-sonnet-4-5-20250929/code): `anthropic/claude-sonnet-4-5-20250929`
+- [Claude Sonnet 4.6](/ko/development/comfy-router/models/anthropic/claude-sonnet-4-6/code): `anthropic/claude-sonnet-4-6`
+- [Claude Sonnet 5](/ko/development/comfy-router/models/anthropic/claude-sonnet-5/code): `anthropic/claude-sonnet-5`
+
+## Beeble
+
+- [SwitchX](/ko/development/comfy-router/models/beeble/switchx/code): `beeble/switchx`
+
+## Black Forest Labs
+
+- [Erase V1](/ko/development/comfy-router/models/black-forest-labs/erase-v1/code): `bfl/erase-v1`
+- [Flux 1.1 Pro Ultra Image](/ko/development/comfy-router/models/black-forest-labs/flux-1-1-pro-ultra-image/code): `bfl/flux-pro-1.1-ultra`
+- [FLUX.1 Kontext](/ko/development/comfy-router/models/black-forest-labs/flux-1-kontext/code): `bfl/flux-kontext-pro`
+- [FLUX 2 Max](/ko/development/comfy-router/models/black-forest-labs/flux-2-max/code): `bfl/flux-2-max`
+- [FLUX 2 Pro](/ko/development/comfy-router/models/black-forest-labs/flux-2-pro/code): `bfl/flux-2-pro`
+- [FLUX 3 Video](/ko/development/comfy-router/models/black-forest-labs/flux-3-video/code): `bfl/flux-3-video`
+- [FLUX Pro 1.0 Canny](/ko/development/comfy-router/models/black-forest-labs/flux-pro-1-0-canny/code): `bfl/flux-pro-1.0-canny`
+- [FLUX Pro 1.0 Depth](/ko/development/comfy-router/models/black-forest-labs/flux-pro-1-0-depth/code): `bfl/flux-pro-1.0-depth`
+- [FLUX Pro 1.0 Expand](/ko/development/comfy-router/models/black-forest-labs/flux-pro-1-0-expand/code): `bfl/flux-pro-1.0-expand`
+- [FLUX Pro 1.0 Fill](/ko/development/comfy-router/models/black-forest-labs/flux-pro-1-0-fill/code): `bfl/flux-pro-1.0-fill`
+- [FLUX Video Upscale](/ko/development/comfy-router/models/black-forest-labs/flux-video-upscale/code): `bfl/video-upscale-v1`
+- [Video Edit V1](/ko/development/comfy-router/models/black-forest-labs/video-edit-v1/code): `bfl/video-edit-v1`
+- [VTO V1](/ko/development/comfy-router/models/black-forest-labs/vto-v1/code): `bfl/vto-v1`
+
+## Bria
+
+- [Fibo](/ko/development/comfy-router/models/bria/fibo/code): `bria/fibo`
+- [이미지 편집 지우기](/ko/development/comfy-router/models/bria/image-edit-erase/code): `bria/image-edit-erase`
+- [이미지 편집 확장](/ko/development/comfy-router/models/bria/image-edit-expand/code): `bria/image-edit-expand`
+- [이미지 편집 Gen Fill](/ko/development/comfy-router/models/bria/image-edit-gen-fill/code): `bria/image-edit-gen-fill`
+- [이미지 편집 해상도 높이기](/ko/development/comfy-router/models/bria/image-edit-increase-resolution/code): `bria/image-edit-increase-resolution`
+- [이미지 편집 배경 제거](/ko/development/comfy-router/models/bria/image-edit-remove-background/code): `bria/image-edit-remove-background`
+- [구조화된 지시](/ko/development/comfy-router/models/bria/structured-instruction/code): `bria/structured-instruction`
+- [비디오 편집 초록색 스크린](/ko/development/comfy-router/models/bria/video-edit-green-screen/code): `bria/video-edit-green-screen`
+- [비디오 편집 배경 제거](/ko/development/comfy-router/models/bria/video-edit-remove-background/code): `bria/video-edit-remove-background`
+- [비디오 편집 배경 교체](/ko/development/comfy-router/models/bria/video-edit-replace-background/code): `bria/video-edit-replace-background`
+
+## BytePlus
+
+- [Dreamina Seedance 2.0 260128](/ko/development/comfy-router/models/byteplus/dreamina-seedance-2-0-260128/code): `byteplus/dreamina-seedance-2-0-260128`
+- [Dreamina Seedance 2.0 Fast 260128](/ko/development/comfy-router/models/byteplus/dreamina-seedance-2-0-fast-260128/code): `byteplus/dreamina-seedance-2-0-fast-260128`
+- [Dreamina Seedance 2.0 Mini](/ko/development/comfy-router/models/byteplus/dreamina-seedance-2-0-mini/code): `byteplus/dreamina-seedance-2-0-mini`
+- [Dreamina Seedance 2.5 260628](/ko/development/comfy-router/models/byteplus/dreamina-seedance-2-5-260628/code): `byteplus/dreamina-seedance-2-5-260628`
+- [Seed 2.0 Lite 260228](/ko/development/comfy-router/models/byteplus/seed-2-0-lite-260228/code): `byteplus/seed-2-0-lite-260228`
+- [Seed 2.0 Mini 260215](/ko/development/comfy-router/models/byteplus/seed-2-0-mini-260215/code): `byteplus/seed-2-0-mini-260215`
+- [Seed 2.0 Pro 260328](/ko/development/comfy-router/models/byteplus/seed-2-0-pro-260328/code): `byteplus/seed-2-0-pro-260328`
+- [Seed Audio 1.0 Multilingual](/ko/development/comfy-router/models/byteplus/seed-audio-1-0-multilingual/code): `byteplus/seed-audio-1.0-multilingual`
+- [Seed Audio 1.0](/ko/development/comfy-router/models/byteplus/seed-audio-1-0/code): `byteplus/seed-audio-1.0`
+- [Seedance 1.0 Lite I2V 250428](/ko/development/comfy-router/models/byteplus/seedance-1-0-lite-i2v-250428/code): `byteplus/seedance-1-0-lite-i2v-250428`
+- [Seedance 1.0 Lite T2V 250428](/ko/development/comfy-router/models/byteplus/seedance-1-0-lite-t2v-250428/code): `byteplus/seedance-1-0-lite-t2v-250428`
+- [Seedance 1.0 Pro 250528](/ko/development/comfy-router/models/byteplus/seedance-1-0-pro-250528/code): `byteplus/seedance-1-0-pro-250528`
+- [Seedance 1.0 Pro Fast 251015](/ko/development/comfy-router/models/byteplus/seedance-1-0-pro-fast-251015/code): `byteplus/seedance-1-0-pro-fast-251015`
+- [Seedance 1.5 Pro 251215](/ko/development/comfy-router/models/byteplus/seedance-1-5-pro-251215/code): `byteplus/seedance-1-5-pro-251215`
+- [Seededit 3.0 I2I 250628](/ko/development/comfy-router/models/byteplus/seededit-3-0-i2i-250628/code): `byteplus/seededit-3-0-i2i-250628`
+- [Seedream 3.0 T2I 250415](/ko/development/comfy-router/models/byteplus/seedream-3-0-t2i-250415/code): `byteplus/seedream-3-0-t2i-250415`
+- [Seedream 4.0 250828](/ko/development/comfy-router/models/byteplus/seedream-4-0-250828/code): `byteplus/seedream-4-0-250828`
+- [Seedream 4.5 251128](/ko/development/comfy-router/models/byteplus/seedream-4-5-251128/code): `byteplus/seedream-4-5-251128`
+- [Seedream 5.0 260128](/ko/development/comfy-router/models/byteplus/seedream-5-0-260128/code): `byteplus/seedream-5-0-260128`
+- [Seedream 5.0 Pro 260628](/ko/development/comfy-router/models/byteplus/seedream-5-0-pro-260628/code): `byteplus/seedream-5-0-pro-260628`
+
+## Elevenlabs
+
+- [Eleven Sfx V2](/ko/development/comfy-router/models/elevenlabs/eleven-sfx-v2/code): `elevenlabs/eleven_sfx_v2`
+- [Eleven V3](/ko/development/comfy-router/models/elevenlabs/eleven-v3/code): `elevenlabs/eleven_v3`
+
+## fal
+
+- [H3 Max Turbo](/ko/development/comfy-router/models/fal/h3-max-turbo/code): `fal/h3-max-turbo`
+- [H3 Max](/ko/development/comfy-router/models/fal/h3-max/code): `fal/h3-max`
+- [Patina](/ko/development/comfy-router/models/fal/patina/code): `fal/patina`
+
+## Freepik
+
+- [AI Image Upscaler Precision V2](/ko/development/comfy-router/models/freepik/ai-image-upscaler-precision-v2/code): `freepik/ai-image-upscaler-precision-v2`
+- [AI Skin Enhancer Creative](/ko/development/comfy-router/models/freepik/ai-skin-enhancer-creative/code): `freepik/ai-skin-enhancer-creative`
+- [AI Skin Enhancer Faithful](/ko/development/comfy-router/models/freepik/ai-skin-enhancer-faithful/code): `freepik/ai-skin-enhancer-faithful`
+- [AI Skin Enhancer Flexible](/ko/development/comfy-router/models/freepik/ai-skin-enhancer-flexible/code): `freepik/ai-skin-enhancer-flexible`
+
+## Gemini Interactions
+
+- [Gemini Omni 1.1 Flash](/ko/development/comfy-router/models/gemini-interactions/gemini-omni-1-1-flash/code): `gemini-interactions/gemini-omni-1.1-flash`
+- [Gemini Omni Flash Preview](/ko/development/comfy-router/models/gemini-interactions/gemini-omni-flash-preview/code): `gemini-interactions/gemini-omni-flash-preview`
+
+## Google
+
+- [Gemini 2.5 Flash Image](/ko/development/comfy-router/models/google/gemini-2-5-flash-image/code): `vertexai/gemini-2.5-flash-image`
+- [Gemini 3.1 Flash Lite](/ko/development/comfy-router/models/google/gemini-3-1-flash-lite/code): `vertexai/gemini-3.1-flash-lite`
+- [Gemini 3.7 Flash](/ko/development/comfy-router/models/google/gemini-3-7-flash/code): `vertexai/gemini-3.7-flash`
+- [Gemini 3.8 Flash](/ko/development/comfy-router/models/google/gemini-3-8-flash/code): `vertexai/gemini-3.8-flash`
+- [Google Gemini](/ko/development/comfy-router/models/google/gemini/code): `vertexai/gemini-3.1-pro-preview`
+- [Imagen 3.0 Fast Generate 001](/ko/development/comfy-router/models/google/imagen-3-0-fast-generate-001/code): `vertexai/imagen-3.0-fast-generate-001`
+- [Imagen 3.0 Generate 001](/ko/development/comfy-router/models/google/imagen-3-0-generate-001/code): `vertexai/imagen-3.0-generate-001`
+- [Imagen 3.0 Generate 002](/ko/development/comfy-router/models/google/imagen-3-0-generate-002/code): `vertexai/imagen-3.0-generate-002`
+- [Nano Banana 2 Lite](/ko/development/comfy-router/models/google/nano-banana-2-lite/code): `vertexai/gemini-3.1-flash-lite-image`
+- [Nano Banana 2](/ko/development/comfy-router/models/google/nano-banana-2/code): `vertexai/gemini-3.1-flash-image`
+- [Nano Banana Pro](/ko/development/comfy-router/models/google/nano-banana-pro/code): `vertexai/gemini-3-pro-image`
+
+## HeyGen
+
+- [Starfish](/ko/development/comfy-router/models/heygen/starfish/code): `heygen/starfish`
+
+## Ideogram
+
+- [Ideogram V3](/ko/development/comfy-router/models/ideogram/ideogram-v3/code): `ideogram/ideogram-v3`
+- [Ideogram 4.0](/ko/development/comfy-router/models/ideogram/ideogram-v4/code): `ideogram/ideogram-v4`
+- [P Image Ideogram](/ko/development/comfy-router/models/ideogram/p-image-ideogram/code): `ideogram/p-image-ideogram`
+
+## Kling
+
+- [Kling 3.0 Turbo](/ko/development/comfy-router/models/kling/kling-3-0-turbo/code): `kling/kling-3.0-turbo`
+- [Kling Image O1](/ko/development/comfy-router/models/kling/kling-image-o1/code): `kling/kling-image-o1`
+- [Kling V1.5](/ko/development/comfy-router/models/kling/kling-v1-5/code): `kling/kling-v1-5`
+- [Kling V1.6](/ko/development/comfy-router/models/kling/kling-v1-6/code): `kling/kling-v1-6`
+- [Kling V1](/ko/development/comfy-router/models/kling/kling-v1/code): `kling/kling-v1`
+- [Kling V2.1 Master](/ko/development/comfy-router/models/kling/kling-v2-1-master/code): `kling/kling-v2-1-master`
+- [Kling V2.1](/ko/development/comfy-router/models/kling/kling-v2-1/code): `kling/kling-v2-1`
+- [Kling V2.5 Turbo](/ko/development/comfy-router/models/kling/kling-v2-5-turbo/code): `kling/kling-v2-5-turbo`
+- [Kling V2.6](/ko/development/comfy-router/models/kling/kling-v2-6/code): `kling/kling-v2-6`
+- [Kling V2 Master](/ko/development/comfy-router/models/kling/kling-v2-master/code): `kling/kling-v2-master`
+- [Kling V3 Omni](/ko/development/comfy-router/models/kling/kling-v3-omni/code): `kling/kling-v3-omni`
+- [Kling V3](/ko/development/comfy-router/models/kling/kling-v3/code): `kling/kling-v3`
+- [Kling Video O1](/ko/development/comfy-router/models/kling/kling-video-o1/code): `kling/kling-video-o1`
+- [Videos Avatar Image 2video](/ko/development/comfy-router/models/kling/videos-avatar-image2video/code): `kling/videos-avatar-image2video`
+- [Videos Lip Sync](/ko/development/comfy-router/models/kling/videos-lip-sync/code): `kling/videos-lip-sync`
+- [Videos Video Extend](/ko/development/comfy-router/models/kling/videos-video-extend/code): `kling/videos-video-extend`
+
+## Krea
+
+- [Krea 2 Large](/ko/development/comfy-router/models/krea/krea-2-large/code): `krea/krea-2-large`
+- [Krea 2 Medium Turbo](/ko/development/comfy-router/models/krea/krea-2-medium-turbo/code): `krea/krea-2-medium-turbo`
+- [Krea 2 Medium](/ko/development/comfy-router/models/krea/krea-2-medium/code): `krea/krea-2-medium`
+- [Krea 2](/ko/development/comfy-router/models/krea/krea-2/code): `krea/krea-2`
+
+## LTX
+
+- [LTX 2.5 Fast](/ko/development/comfy-router/models/ltx/ltx-2-5-fast/code): `ltx/ltx-2-5-fast`
+- [LTX 2.5 Pro](/ko/development/comfy-router/models/ltx/ltx-2-5-pro/code): `ltx/ltx-2-5-pro`
+
+## Luma
+
+- [Photon 1](/ko/development/comfy-router/models/luma/photon-1/code): `luma/photon-1`
+- [Photon Flash 1](/ko/development/comfy-router/models/luma/photon-flash-1/code): `luma/photon-flash-1`
+- [Ray 2](/ko/development/comfy-router/models/luma/ray-2/code): `luma/ray-2`
+- [Ray Flash 2](/ko/development/comfy-router/models/luma/ray-flash-2/code): `luma/ray-flash-2`
+
+## Luma 2
+
+- [Uni 1 Max](/ko/development/comfy-router/models/luma_2/uni-1-max/code): `luma_2/uni-1-max`
+- [Uni 1](/ko/development/comfy-router/models/luma_2/uni-1/code): `luma_2/uni-1`
+
+## Meshy
+
+- [애니메이션](/ko/development/comfy-router/models/meshy/animations/code): `meshy/animations`
+- [Meshy 5](/ko/development/comfy-router/models/meshy/meshy-5/code): `meshy/meshy-5`
+- [Meshy 6](/ko/development/comfy-router/models/meshy/meshy-6/code): `meshy/meshy-6`
+- [Meshy 7](/ko/development/comfy-router/models/meshy/meshy-7/code): `meshy/meshy-7`
+- [리메시](/ko/development/comfy-router/models/meshy/remesh/code): `meshy/remesh`
+- [리깅](/ko/development/comfy-router/models/meshy/rigging/code): `meshy/rigging`
+
+## MiniMax
+
+- [MiniMax H3](/ko/development/comfy-router/models/minimax/minimax-h3/code): `minimax/minimax-h3`
+
+## Moonvalley
+
+- [이미지 기반 비디오 생성](/ko/development/comfy-router/models/moonvalley/image-to-video/code): `moonvalley/image-to-video`
+- [텍스트 기반 이미지 생성](/ko/development/comfy-router/models/moonvalley/text-to-image/code): `moonvalley/text-to-image`
+- [텍스트 기반 비디오 생성](/ko/development/comfy-router/models/moonvalley/text-to-video/code): `moonvalley/text-to-video`
+- [비디오 기반 비디오 생성 크기 조정](/ko/development/comfy-router/models/moonvalley/video-to-video-resize/code): `moonvalley/video-to-video-resize`
+- [비디오 기반 비디오 생성](/ko/development/comfy-router/models/moonvalley/video-to-video/code): `moonvalley/video-to-video`
+
+## OpenAI
+
+- [GPT 4.1 Mini](/ko/development/comfy-router/models/openai/gpt-4-1-mini/code): `openai/gpt-4.1-mini`
+- [GPT 4.1 Nano](/ko/development/comfy-router/models/openai/gpt-4-1-nano/code): `openai/gpt-4.1-nano`
+- [GPT 4.1](/ko/development/comfy-router/models/openai/gpt-4-1/code): `openai/gpt-4.1`
+- [GPT 4o](/ko/development/comfy-router/models/openai/gpt-4o/code): `openai/gpt-4o`
+- [GPT 5.5 Pro](/ko/development/comfy-router/models/openai/gpt-5-5-pro/code): `openai/gpt-5.5-pro`
+- [GPT 5.5](/ko/development/comfy-router/models/openai/gpt-5-5/code): `openai/gpt-5.5`
+- [GPT 5.6 Luna](/ko/development/comfy-router/models/openai/gpt-5-6-luna/code): `openai/gpt-5.6-luna`
+- [GPT 5.6 Sol](/ko/development/comfy-router/models/openai/gpt-5-6-sol/code): `openai/gpt-5.6-sol`
+- [GPT 5.6 Terra](/ko/development/comfy-router/models/openai/gpt-5-6-terra/code): `openai/gpt-5.6-terra`
+- [GPT 5 Mini](/ko/development/comfy-router/models/openai/gpt-5-mini/code): `openai/gpt-5-mini`
+- [GPT 5 Nano](/ko/development/comfy-router/models/openai/gpt-5-nano/code): `openai/gpt-5-nano`
+- [GPT 5](/ko/development/comfy-router/models/openai/gpt-5/code): `openai/gpt-5`
+- [GPT 6 Astra](/ko/development/comfy-router/models/openai/gpt-6-astra/code): `openai/gpt-6-astra`
+- [GPT Image 1.5](/ko/development/comfy-router/models/openai/gpt-image-1-5/code): `openai/gpt-image-1.5`
+- [GPT Image 1](/ko/development/comfy-router/models/openai/gpt-image-1/code): `openai/gpt-image-1`
+- [GPT Image 2.5 Flare](/ko/development/comfy-router/models/openai/gpt-image-2-5-flare/code): `openai/gpt-image-2.5-flare`
+- [GPT Image 2.5 Sunburst](/ko/development/comfy-router/models/openai/gpt-image-2-5-sunburst/code): `openai/gpt-image-2.5-sunburst`
+- [GPT Image 2](/ko/development/comfy-router/models/openai/gpt-image-2/code): `openai/gpt-image-2`
+- [o1-pro](/ko/development/comfy-router/models/openai/o1-pro/code): `openai/o1-pro`
+- [o1](/ko/development/comfy-router/models/openai/o1/code): `openai/o1`
+- [o3](/ko/development/comfy-router/models/openai/o3/code): `openai/o3`
+- [o4-mini](/ko/development/comfy-router/models/openai/o4-mini/code): `openai/o4-mini`
+
+## Pruna
+
+- [P 비디오 2](/ko/development/comfy-router/models/pruna/p-video-2/code): `pruna/p-video-2`
+
+## Qwen
+
+- [Qwen 이미지 3.0 Pro](/ko/development/comfy-router/models/qwen/qwen-image-3-0-pro/code): `qwen/qwen-image-3.0-pro`
+- [Qwen 이미지 3.0](/ko/development/comfy-router/models/qwen/qwen-image-3-0/code): `qwen/qwen-image-3.0`
+
+## Recraft
+
+- [Recraft V2](/ko/development/comfy-router/models/recraft/recraftv2/code): `recraft/recraftv2`
+- [Recraft V3](/ko/development/comfy-router/models/recraft/recraftv3/code): `recraft/recraftv3`
+- [Recraft V4.1 Pro Vector](/ko/development/comfy-router/models/recraft/recraftv4-1-pro-vector/code): `recraft/recraftv4_1_pro_vector`
+- [Recraft V4.1 Pro](/ko/development/comfy-router/models/recraft/recraftv4-1-pro/code): `recraft/recraftv4_1_pro`
+- [Recraft V4.1 Utility Pro Vector](/ko/development/comfy-router/models/recraft/recraftv4-1-utility-pro-vector/code): `recraft/recraftv4_1_utility_pro_vector`
+- [Recraft V4.1 Utility Pro](/ko/development/comfy-router/models/recraft/recraftv4-1-utility-pro/code): `recraft/recraftv4_1_utility_pro`
+- [Recraft V4.1 Utility Vector](/ko/development/comfy-router/models/recraft/recraftv4-1-utility-vector/code): `recraft/recraftv4_1_utility_vector`
+- [Recraft V4.1 Utility](/ko/development/comfy-router/models/recraft/recraftv4-1-utility/code): `recraft/recraftv4_1_utility`
+- [Recraft V4.1 Vector](/ko/development/comfy-router/models/recraft/recraftv4-1-vector/code): `recraft/recraftv4_1_vector`
+- [Recraft V4.1](/ko/development/comfy-router/models/recraft/recraftv4-1/code): `recraft/recraftv4_1`
+- [Recraft V4 Pro](/ko/development/comfy-router/models/recraft/recraftv4-pro/code): `recraft/recraftv4_pro`
+- [Recraft V4 Styles Pro Vector](/ko/development/comfy-router/models/recraft/recraftv4-styles-pro-vector/code): `recraft/recraftv4_styles_pro_vector`
+- [Recraft V4 Styles Pro](/ko/development/comfy-router/models/recraft/recraftv4-styles-pro/code): `recraft/recraftv4_styles_pro`
+- [Recraft V4 Styles Vector](/ko/development/comfy-router/models/recraft/recraftv4-styles-vector/code): `recraft/recraftv4_styles_vector`
+- [Recraft V4 Styles](/ko/development/comfy-router/models/recraft/recraftv4-styles/code): `recraft/recraftv4_styles`
+- [Recraft V4](/ko/development/comfy-router/models/recraft/recraftv4/code): `recraft/recraftv4`
+
+## Runway
+
+- [Aleph 2](/ko/development/comfy-router/models/runway/aleph2/code): `runway/aleph2`
+- [Gen 4 Image](/ko/development/comfy-router/models/runway/gen4-image/code): `runway/gen4_image`
+- [Gen 4 Turbo](/ko/development/comfy-router/models/runway/gen4-turbo/code): `runway/gen4_turbo`
+
+## Tencent
+
+- [Hunyuan 3D Part](/ko/development/comfy-router/models/tencent/hunyuan-3d-part/code): `tencent/hunyuan-3d-part`
+- [Hunyuan 3D Smart Topology](/ko/development/comfy-router/models/tencent/hunyuan-3d-smart-topology/code): `tencent/hunyuan-3d-smart-topology`
+- [Hunyuan 3D Texture Edit](/ko/development/comfy-router/models/tencent/hunyuan-3d-texture-edit/code): `tencent/hunyuan-3d-texture-edit`
+- [Hunyuan 3D Uv](/ko/development/comfy-router/models/tencent/hunyuan-3d-uv/code): `tencent/hunyuan-3d-uv`
+
+## Veo
+
+- [Veo 2.0 Generate 001](/ko/development/comfy-router/models/veo/veo-2-0-generate-001/code): `veo/veo-2.0-generate-001`
+- [Veo 3.0 Fast Generate 001](/ko/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code): `veo/veo-3.0-fast-generate-001`
+- [Veo 3.0 Generate 001](/ko/development/comfy-router/models/veo/veo-3-0-generate-001/code): `veo/veo-3.0-generate-001`
+- [Veo 3.1 Fast Generate 001](/ko/development/comfy-router/models/veo/veo-3-1-fast-generate-001/code): `veo/veo-3.1-fast-generate-001`
+- [Veo 3.1 Generate 001](/ko/development/comfy-router/models/veo/veo-3-1-generate-001/code): `veo/veo-3.1-generate-001`
+- [Veo 3.1 Lite Generate 001](/ko/development/comfy-router/models/veo/veo-3-1-lite-generate-001/code): `veo/veo-3.1-lite-generate-001`
+
+## Wan
+
+- [HappyHorse 1.0 I2V](/ko/development/comfy-router/models/wan/happyhorse-1-0-i2v/code): `wan/happyhorse-1.0-i2v`
+- [HappyHorse 1.0 R2V](/ko/development/comfy-router/models/wan/happyhorse-1-0-r2v/code): `wan/happyhorse-1.0-r2v`
+- [HappyHorse 1.0 T2V](/ko/development/comfy-router/models/wan/happyhorse-1-0-t2v/code): `wan/happyhorse-1.0-t2v`
+- [HappyHorse 1.0 비디오 편집](/ko/development/comfy-router/models/wan/happyhorse-1-0-video-edit/code): `wan/happyhorse-1.0-video-edit`
+- [HappyHorse 1.1 I2V](/ko/development/comfy-router/models/wan/happyhorse-1-1-i2v/code): `wan/happyhorse-1.1-i2v`
+- [HappyHorse 1.1 R2V](/ko/development/comfy-router/models/wan/happyhorse-1-1-r2v/code): `wan/happyhorse-1.1-r2v`
+- [HappyHorse 1.1 T2V](/ko/development/comfy-router/models/wan/happyhorse-1-1-t2v/code): `wan/happyhorse-1.1-t2v`
+- [Wan 2.5 I2I 미리보기](/ko/development/comfy-router/models/wan/wan2-5-i2i-preview/code): `wan/wan2.5-i2i-preview`
+- [Wan 2.5 I2V 미리보기](/ko/development/comfy-router/models/wan/wan2-5-i2v-preview/code): `wan/wan2.5-i2v-preview`
+- [Wan 2.5 T2I 미리보기](/ko/development/comfy-router/models/wan/wan2-5-t2i-preview/code): `wan/wan2.5-t2i-preview`
+- [Wan 2.5 T2V 미리보기](/ko/development/comfy-router/models/wan/wan2-5-t2v-preview/code): `wan/wan2.5-t2v-preview`
+- [Wan 2.6 I2V](/ko/development/comfy-router/models/wan/wan2-6-i2v/code): `wan/wan2.6-i2v`
+- [Wan 2.6 R2V](/ko/development/comfy-router/models/wan/wan2-6-r2v/code): `wan/wan2.6-r2v`
+- [Wan 2.6 T2V](/ko/development/comfy-router/models/wan/wan2-6-t2v/code): `wan/wan2.6-t2v`
+- [Wan 2.7 I2V](/ko/development/comfy-router/models/wan/wan2-7-i2v/code): `wan/wan2.7-i2v`
+- [Wan 2.7 R2V](/ko/development/comfy-router/models/wan/wan2-7-r2v/code): `wan/wan2.7-r2v`
+- [Wan 2.7 T2V](/ko/development/comfy-router/models/wan/wan2-7-t2v/code): `wan/wan2.7-t2v`
+- [Wan 2.7 비디오 편집](/ko/development/comfy-router/models/wan/wan2-7-videoedit/code): `wan/wan2.7-videoedit`
+- [Wan 3.0 비디오 Prime](/ko/development/comfy-router/models/wan/wan3-0-video-prime/code): `wan/wan3.0-video-prime`
+- [Wan 3.0 비디오](/ko/development/comfy-router/models/wan/wan3-0-video/code): `wan/wan3.0-video`
+
+## WaveSpeed
+
+- [Flashvsr](/ko/development/comfy-router/models/wavespeed/flashvsr/code): `wavespeed/flashvsr`
+- [Seedvr 2](/ko/development/comfy-router/models/wavespeed/seedvr2/code): `wavespeed/seedvr2`
+- [Ultimate Image Upscaler](/ko/development/comfy-router/models/wavespeed/ultimate-image-upscaler/code): `wavespeed/ultimate-image-upscaler`
+
+## xAI
+
+- [Grok Imagine 이미지 2.0](/ko/development/comfy-router/models/xai/grok-imagine-image-2-0/code): `xai/grok-imagine-image-2.0`
+- [Grok Imagine 이미지 Pro](/ko/development/comfy-router/models/xai/grok-imagine-image-pro/code): `xai/grok-imagine-image-pro`
+- [Grok Imagine 이미지 Quality](/ko/development/comfy-router/models/xai/grok-imagine-image-quality/code): `xai/grok-imagine-image-quality`
+- [Grok Imagine 이미지](/ko/development/comfy-router/models/xai/grok-imagine-image/code): `xai/grok-imagine-image`
+- [Grok Imagine 비디오 1.5 미리보기](/ko/development/comfy-router/models/xai/grok-imagine-video-1-5-preview/code): `xai/grok-imagine-video-1.5-preview`
+- [Grok Imagine 비디오 1.5](/ko/development/comfy-router/models/xai/grok-imagine-video-1-5/code): `xai/grok-imagine-video-1.5`
+- [Grok Imagine 비디오](/ko/development/comfy-router/models/xai/grok-imagine-video/code): `xai/grok-imagine-video`
