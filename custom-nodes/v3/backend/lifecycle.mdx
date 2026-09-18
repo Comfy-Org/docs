@@ -1,0 +1,75 @@
+---
+title: "Lifecycle (V3)"
+description: "Understand how ComfyUI loads custom nodes: the comfy_entrypoint function and ComfyExtension class that register V3 nodes, plus WEB_DIRECTORY for deploying client-side JavaScript."
+---
+
+## How Comfy loads custom nodes
+
+When Comfy starts, it scans the directory `custom_nodes` for Python modules, and attempts to load them.
+A module is treated as an extension when it exports a `comfy_entrypoint` function (the V3 schema) or a
+`NODE_CLASS_MAPPINGS` dictionary (the legacy V1 schema). See the
+[V3 Migration guide](/custom-nodes/v3_migration) for the differences between the two.
+
+<Tip>A custom-node package is a directory containing an `__init__.py` file.
+`__all__` affects wildcard imports only and does not control custom-node discovery.</Tip>
+
+### __init__.py
+
+`__init__.py` is executed when Comfy attempts to import the module. If the import succeeds, Comfy calls
+the module's `comfy_entrypoint` function, which returns a `ComfyExtension` instance. The extension's
+`get_node_list` method provides the node classes defined by the module, and those nodes become available
+in Comfy. If there is an error in your code, Comfy will continue, but will report the module as having
+failed to load. So check the Python console!
+
+A very simple `__init__.py` file would look like this:
+
+```python
+from comfy_api.latest import ComfyExtension
+
+from .python_file import MyCustomNode
+
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[MyCustomNode]]:
+        return [MyCustomNode]
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+#### comfy_entrypoint
+
+`comfy_entrypoint` is the function Comfy calls to discover the nodes in your module. It may be declared
+`async` or not, but it must return an instance of `ComfyExtension`. The `get_node_list` method on the
+extension must be `async`, and returns the list of node classes the extension provides.
+
+The `node_id` of each node (its unique name across the Comfy install) and its display name, category and
+other properties are defined in the node class's `define_schema` method, rather than in the
+`__init__.py`. See [Properties](./server_overview) for the schema fields.
+
+#### NODE_CLASS_MAPPINGS (legacy V1)
+
+Modules written against the legacy V1 schema can still export `NODE_CLASS_MAPPINGS`, a `dict` mapping
+each custom node name (unique across the Comfy install) to its node class. Comfy loads those modules
+without calling `comfy_entrypoint`.
+
+```python
+from .python_file import MyCustomNode
+NODE_CLASS_MAPPINGS = {"MyCustomNode": MyCustomNode}
+```
+
+`NODE_DISPLAY_NAME_MAPPINGS` was the legacy way to give a node a display name different from its unique
+name. In V3 this is done with the `display_name` field of the schema.
+
+#### WEB_DIRECTORY
+
+If you are deploying client side code, you will also need to export the path, relative to the module, in
+which the JavaScript files are to be found. It is conventional to place these in a subdirectory of your
+custom node named `js`. Comfy also registers a web directory automatically when your `pyproject.toml`
+contains a `[tool.comfy]` section with a `web` key pointing at one.
+
+<Tip>*Only* `.js` files will be served; you can't deploy `.css` or other types in this way</Tip>
+
+<Warning>In previous versions of Comfy, `__init__.py` was required to copy the JavaScript files into the main Comfy web
+subdirectory. You will still see code that does this. Don't.</Warning>
