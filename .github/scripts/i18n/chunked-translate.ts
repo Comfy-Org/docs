@@ -328,9 +328,16 @@ const BLOCK_COMMENT_LANGS = new Set([
   "java", "kotlin", "swift", "c", "cpp", "csharp", "cs", "php", "dart", "scala",
 ]);
 
+/**
+ * The language tag of a fenced block. Mintlify info strings are
+ * `<lang> [title]` (for example `python Python` or `bash Install`), so only the
+ * first token identifies the language. Comparing the first token also keeps a
+ * localized fence title from failing the language check.
+ */
 function codeFenceLang(block: string): string {
   const first = block.split("\n", 1)[0] ?? "";
-  return first.trim().replace(/^`+/, "").trim();
+  const info = first.trim().replace(/^`+/, "").trim();
+  return info.split(/\s+/)[0] ?? "";
 }
 
 function commentMarkersFor(langTag: string): string[] {

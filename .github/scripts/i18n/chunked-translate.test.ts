@@ -533,6 +533,24 @@ def f():
     expect(codeBlocksMatch(en, tr)).toBe(true);
   });
 
+  test("handles fence info strings that carry a title", () => {
+    const en = '```python Python\ndef f():\n    """doc"""\n    return 1\n```';
+    const translated = '```python Python\ndef f():\n    """説明"""\n    return 1\n```';
+    expect(codeBlocksMatch(en, translated)).toBe(true);
+    const localizedTitle = '```python パイソン\ndef f():\n    """説明"""\n    return 1\n```';
+    expect(codeBlocksMatch(en, localizedTitle)).toBe(true);
+    const changedCode = '```python Python\ndef f():\n    """説明"""\n    return 2\n```';
+    expect(codeBlocksMatch(en, changedCode)).toBe(false);
+  });
+
+  test("strips comments in a fence whose info string carries a title", () => {
+    const en = '```bash Install\npip install comfy-cli  # install the CLI\n```';
+    const translated = '```bash Install\npip install comfy-cli  # 설치\n```';
+    expect(codeBlocksMatch(en, translated)).toBe(true);
+    const changedCode = '```bash Install\npip install other-cli  # 설치\n```';
+    expect(codeBlocksMatch(en, changedCode)).toBe(false);
+  });
+
   test("tracks block comments across lines", () => {
     const en = '```javascript\nconst a = 1; /* note\n   still note */\nconst b = 2;\n```';
     const localized = '```javascript\nconst a = 1; /* 説明\n   続き */\nconst b = 2;\n```';
