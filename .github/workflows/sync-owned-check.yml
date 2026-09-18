@@ -1,0 +1,85 @@
+name: Sync-Owned Files Check
+
+# Refuse a pull request that edits a file the Comfy API spec sync owns and
+# rewrites on every run. Such an edit publishes now and is reverted by the next
+# sync; this fails it while its author can still move the change upstream.
+#
+# The path filter is the guarded set plus this check's own files, so a pull
+# request that touches none of them never starts this workflow. `docs.json`
+# (co-owned) and the hand-curated `development/comfy-router/models/**/code.yaml`
+# generator inputs are deliberately absent. See the script's header comment.
+
+on:
+  pull_request:
+    paths:
+      - 'openapi-v2.yaml'
+      - 'development/comfy-router/reference.mdx'
+      - 'development/comfy-router/quickstart.mdx'
+      - 'development/comfy-router/limitations.mdx'
+      - 'development/comfy-router/models.mdx'
+      - 'development/comfy-router/models/**/code.mdx'
+      - 'router-schemas/**'
+      - '.github/scripts/sync-owned/**'
+      - '.github/workflows/sync-owned-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync-owned:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # A generated page that matches the generator's output is that output,
+      # however it got there, so it is a regeneration rather than a hand-edit and
+      # the guard lets it through. `code-pages-check.yml` asserts the same thing,
+      # but its path filter omits `development/comfy-router/models.mdx`, so a pull
+      # request that hand-edits only the provider index never starts it.
+      - name: Are the generated code pages fresh?
+        id: fresh
+        continue-on-error: true
+        run: bun run code-pages:check
+
+      - name: Check for edits to sync-owned files
+        env:
+          # Read through the environment rather than interpolated into the shell:
+          # a head branch name is contributor-controlled text.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GENERATED_PAGES_FRESH: ${{ steps.fresh.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          # --no-renames so a guarded file renamed away is reported as a deletion
+          # of the guarded path rather than only as its new name.
+          git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" \
+            | bun .github/scripts/sync-owned/check-sync-owned.ts
+
+  sync-owned-script-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run the sync-owned check unit tests
+        run: bun test ./.github/scripts/sync-owned/
