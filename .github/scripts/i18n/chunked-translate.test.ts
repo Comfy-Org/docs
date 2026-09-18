@@ -537,8 +537,10 @@ def f():
     const en = '```python Python\ndef f():\n    """doc"""\n    return 1\n```';
     const translated = '```python Python\ndef f():\n    """説明"""\n    return 1\n```';
     expect(codeBlocksMatch(en, translated)).toBe(true);
+    // The fence line itself stays identical to English, titles included, so a
+    // localized title is rejected rather than silently accepted.
     const localizedTitle = '```python パイソン\ndef f():\n    """説明"""\n    return 1\n```';
-    expect(codeBlocksMatch(en, localizedTitle)).toBe(true);
+    expect(codeBlocksMatch(en, localizedTitle)).toBe(false);
     const changedCode = '```python Python\ndef f():\n    """説明"""\n    return 2\n```';
     expect(codeBlocksMatch(en, changedCode)).toBe(false);
   });
