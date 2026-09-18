@@ -1,46 +1,52 @@
 ---
 title: "Comfy Router 的局限性"
 description: "Comfy Router 目前无法做到的事、存在替代方案时该改用何种方案，以及其中哪些限制预计将会改变。"
-translationSourceHash: 6f3ecaeb
+translationSourceHash: 1a4e4a4c
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
-  "_intro": a9ea202f
-  "What Router supports": e2096907
-  "Queued delivery availability": 70d5b60a
-  "Synchronous calls are cut off at a server deadline": 6732cc7c
+  "_intro": 6b871cf3
+  "What Router supports": f7da4bd0
+  "Queued submission": bfb591cc
+  "Calls are cut off at a server deadline": 2466a237
   "Recovery depends on the provider": 610f0ec8
   "Requests are rate limited per caller": 421194d9
-  "No live progress while a request runs": dde97e12
+  "No progress while a call runs": 75d42d8d
   "Comfy charges and usage": 90cd7670
   "Router does not cover every partner operation": 4de37c36
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
 
-Comfy Router 是一次同步调用：你使用一个凭据，将合作伙伴模型的原生输入发送到一个主机，连接保持打开，`200` 响应携带该模型的原生输出。这种形状正是让首次集成变得简短的原因，也是本页所有限制的来源。在围绕 Router 进行设计之前阅读本页，而不是之后：下文大部分内容都有直接的替代方案，而那些没有替代方案的内容，值得你在基于 Router 并不成立的假设进行构建之前了解。
+Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个已排队的请求运行：你提交请求，稍后再收集结果。当你的应用能够等待一个已完成的结果，或稍后收集结果，并且能够处理模型自身的输入和输出字段时，就使用它。
 
-## Router 支持什么
+## Router 支持的功能
 
 | 需求 | Router 支持情况 | 备选方案或后续步骤 |
 | --- | --- | --- |
-| 使用单个请求生成 | `POST /v2/models/{provider}/{model}` 返回已完成的结果。 | 从[快速入门](/zh/development/comfy-router/quickstart)开始。 |
-| 提交任务并稍后收集 | 没有常规的任务/状态 API 或完成 webhook。 | 在 worker 中运行 Router，或使用具备提交并轮询操作的合作伙伴代理。 |
+| 通过单个请求生成 | `POST /v2/models/{provider}/{model}` 返回已完成的结果。 | 从[快速入门](/zh/development/comfy-router/quickstart)开始。 |
+| 提交任务并稍后收集结果 | 已执行投递：`POST /v2/models/{provider}/{model}/requests` 返回一个 `request_id`，可用于轮询并收集结果。不提供完成 webhook。 | 使用[已执行投递](/zh/development/comfy-router/queue)。具备提交并轮询操作的合作伙伴代理会公开提供商自身的控制项。 |
 | 显示进度或流式输出 | 调用期间没有实时进度、流式传输或预览帧。 | 显示不确定状态，或使用受支持的代理操作。 |
 | 连接丢失后恢复 | 当 Router 保留了已接受生成的句柄时，可使用同键收集。 | 保留该键并遵循[重试引导](/zh/development/comfy-router/api#retry-outcomes)。 |
 | 对账 Comfy 费用 | 响应中没有通用的 Comfy 成本或信用余额字段。 | 使用[工作区计费](https://platform.comfy.org)。 |
 | 永久存储结果 | 资产 URL 可能会过期，包括重新托管和重放的 URL。 | 下载资产；参见[结果资产](/zh/development/comfy-router/reference#结果资产)。 |
 
-## 不支持排队提交
+<span id="no-queued-submission" />
 
-模型运行期间，Router 会保持连接。对于异步提供商，Router 会提交任务并在内部轮询。它不会暴露 Router 任务ID、状态端点、回调或 webhook。
+## 队列提交
 
-如果你的请求无法保持足够长的连接，可以从 worker 调用 Router，并在自己的应用中跟踪任务。当你需要提供商自身的提交和轮询控制时，请使用[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)。
+同步路由在模型运行期间会一直保持连接；对于异步提供商，Router 会提交任务并在内部轮询。排队式投递（提交、获取 `request_id`、轮询、收集）则是另一种选择：参见[队列投递](/zh/development/comfy-router/queue)。它的作用域限定在凭据所属的工作区内，因此需要使用在你的 Comfy 工作区中创建的密钥。没有工作区的传统密钥、自带密钥的请求，或队列无法运行的模型，都会在提交路由上返回 `403` 和 `not_enabled`。两种模式都不提供回调或 webhook。
 
-## 调用会在服务器截止时间被切断
+如果你的请求无法保持打开足够长的时间，就把它放入队列。当你需要使用提供商自己的提交与轮询控制时，请使用[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)。
 
-Router 的默认截止时间为 **10 分钟**，可由部署方配置。请将客户端超时设置为高于该值，以便 Router 能先返回其错误和请求 ID。
+目前有两个模型仅支持同步方式，若将它们提交到队列，会被以 `403` / `not_enabled` 拒绝：`elevenlabs/eleven_sfx_v2` 和 `elevenlabs/eleven_v3`。它们返回的是原始音频字节，而不是 JSON 结果文档，队列投递无处存储这些内容。请在同步路由上运行它们，该路由会正常返回这些字节。
 
-`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接丢失并不能证明某次生成未被计费，也不会取消提供商已接受的工作。重试之前，请阅读[超时与计费](/zh/development/comfy-router/api#timeouts-and-collection)。
+LTX v1 的文生视频和图生视频操作出于同样的原因返回原始视频字节，队列投递同样无法存储它们，但它们只能通过位于 `/proxy/ltx/v1/…` 的[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)访问，而不能通过 Router 模型 ID 访问：每个 `ltx/*` 目录模型都会解析为可排队的 v2 提交与轮询操作。
+
+## 调用会在服务器截止时间被中断
+
+Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。请将你的客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
+
+`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收费](/zh/development/comfy-router/api#timeouts-and-collection)。
 
 <span id="no-way-to-resume-a-call-you-lost" />
 
@@ -61,11 +67,11 @@ Router 的默认截止时间为 **10 分钟**，可由部署方配置。请将�
 
 缓存目录与 schema 读取。使用 `ETag` 和 `If-None-Match` 重新验证 schema。重试字段与承诺支出字段见[响应头](/zh/development/comfy-router/headers)。
 
-## 调用运行期间无进度
+## 调用运行期间没有进度更新
 
-Router 只返回最终响应，不提供流式 token、服务器发送事件、百分比更新或中间预览帧。提供商内部的轮询状态不会在请求期间转发。
+Router 只返回最终响应，不提供流式 token、服务器发送事件、百分比更新或中间预览帧。在请求过程中，提供商的内部轮询状态不会被转发。
 
-请显示不确定的进度指示器。如果您需要进度或流式输出，请使用可暴露这些信息的合作伙伴代理操作。
+请显示一个不确定进度的指示器。如果你需要进度或流式输出，请使用能够暴露这些信息的合作伙伴代理操作。
 
 <span id="no-cost-or-credit-figures-on-a-response" />
 
