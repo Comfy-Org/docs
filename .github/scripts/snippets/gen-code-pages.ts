@@ -6,6 +6,7 @@
  *   bun .github/scripts/snippets/gen-code-pages.ts            # write every code.mdx
  *   bun .github/scripts/snippets/gen-code-pages.ts --check    # exit 1 if any code.mdx is stale
  *   bun .github/scripts/snippets/gen-code-pages.ts --validate # also syntax-check the emitted snippets
+ *   bun .github/scripts/snippets/gen-code-pages.ts --prune    # also delete the page of a model that left the catalog, redirecting its URL
  *
  * The template below is the only place the page shape lives. Python, TypeScript
  * and cURL are all emitted from the same `example` object, so the three cannot
@@ -21,6 +22,8 @@ const SPEC_GLOB = "development/comfy-router/models/**/code.yaml";
 const SCHEMA_GLOB = "router-schemas/*/*.json";
 const MODELS_DIR = "development/comfy-router/models";
 const DOCS_JSON = "docs.json";
+/** Where a retired model's page URL redirects: the generated catalog landing page. */
+const MODELS_INDEX_URL = `/${MODELS_DIR}`;
 const PREVIEW_NOTICE = "snippets/comfy-router/preview-notice.mdx";
 const QUEUE_NOTICE = "snippets/comfy-router/queue-preview-notice.mdx";
 const BASE_URL = "https://api.comfy.org";
@@ -1097,7 +1100,7 @@ ${sections}
 
 type NavGroup = { group: string; pages: (string | NavGroup)[] };
 
-function modelsNav(pages: { model: string; page: string }[]): NavGroup {
+export function modelsNav(pages: { model: string; page: string }[]): NavGroup {
   const byProvider = new Map<string, string[]>();
   for (const { model, page } of pages) {
     const label = providerLabel(providerOf(model));
@@ -1116,10 +1119,49 @@ function modelsNav(pages: { model: string; page: string }[]): NavGroup {
   };
 }
 
-/** Replace the `Models` group under `Comfy Router` in the `en` nav. Returns the new file text. */
-function renderDocsJson(nav: NavGroup): string {
+// ---------------------------------------------------------------------------
+// Redirects for retired pages
+//
+// A model that leaves the catalog loses its page (`--prune`), but the URL that
+// page answered on is already in the wild: search results, chat logs, the
+// Router changelog. Mintlify has no "gone" state, so without a `docs.json`
+// redirect the retired URL is a 404, and the repo's redirect check fails any PR
+// that deletes a page without one. The generator owns these pages, so it owns
+// their redirects too: every pruned page gets one, pointing at the catalog
+// landing page, and a page that comes BACK loses its redirect again, or Mintlify
+// would serve the redirect instead of the page. Redirects the generator did not
+// write (hand-maintained ones, or one someone wrote for a pruned page with a
+// better destination) pass through untouched.
+// ---------------------------------------------------------------------------
+
+type Redirect = { source: string; destination: string; [key: string]: unknown };
+
+/** `development/comfy-router/models/kling/kling-v1/code` -> `/development/comfy-router/models/kling/kling-v1/code`. */
+const pageUrl = (page: string) => `/${page.replace(/^\//, "")}`;
+
+/**
+ * Settle the redirects for the model pages: drop any that would shadow a live
+ * page, add one for every pruned page that lacks one, keep everything else.
+ */
+export function modelPageRedirects(existing: Redirect[], live: Iterable<string>, pruned: Iterable<string>): Redirect[] {
+  const liveUrls = new Set([...live].map(pageUrl));
+  const kept = existing.filter((r) => !liveUrls.has(r.source));
+  const have = new Set(kept.map((r) => r.source));
+  const added = [...new Set([...pruned].map(pageUrl))]
+    .filter((source) => !have.has(source) && !liveUrls.has(source))
+    .sort()
+    .map((source) => ({ source, destination: MODELS_INDEX_URL }));
+  return [...kept, ...added];
+}
+
+/**
+ * Replace the `Models` group under `Comfy Router` in the `en` nav and settle the
+ * model-page redirects (see `modelPageRedirects`). Returns the new file text.
+ */
+export function renderDocsJson(nav: NavGroup, pages: { live: Iterable<string>; pruned: Iterable<string> }): string {
   const raw = readFileSync(join(ROOT, DOCS_JSON), "utf8");
   const doc = JSON.parse(raw);
+  doc.redirects = modelPageRedirects(Array.isArray(doc.redirects) ? doc.redirects : [], pages.live, pages.pruned);
   const en = doc.navigation?.languages?.find((l: any) => l.language === "en");
   if (!en) throw new Error(`${DOCS_JSON}: no \`en\` language in navigation.languages`);
   const groups: NavGroup[] = [];
@@ -1273,13 +1315,16 @@ if (import.meta.main) {
   // A model that leaves the catalog leaves its schema and, without this, its page:
   // a dead page still in the sidebar, documenting a model that now answers 404.
   const wanted = new Set(pages.map((p) => p.out));
+  const pruned: string[] = [];
   const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
     .filter((rel) => !wanted.has(join(ROOT, rel)))
     .sort();
   for (const rel of orphans) {
     if (prune && !check) {
       rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
-      console.log(`pruned ${rel}`);
+      const page = rel.replace(/\.mdx$/, "");
+      pruned.push(page);
+      console.log(`pruned ${rel} (redirect for ${pageUrl(page)} kept in ${DOCS_JSON})`);
     } else {
       problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
     }
@@ -1288,7 +1333,7 @@ if (import.meta.main) {
   // ---- sidebar
   let docsJson: string;
   try {
-    docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))));
+    docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))), { live: pages.map((p) => p.page), pruned });
   } catch (e) {
     problems.push((e as Error).message);
     docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
