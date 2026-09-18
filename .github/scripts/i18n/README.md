@@ -36,14 +36,25 @@ A fenced code block splits into two halves that are treated differently:
 |------|------|
 | Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
 | Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
-| Python docstrings: a triple-quoted string that opens a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
+| Python docstrings: a triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
 
 `validateTranslatedBlock` in `chunked-translate.ts` compares code with
 `codeBlocksMatch()`, which strips comments (per the fence's language tag) and
-Python docstrings before comparing. A translated comment passes; a changed, dropped or commented-out code
-line still fails, and the block is rejected and retried. Shebang lines (`#!...`)
-are code, never comments. `--` only counts as a comment at the start of a line,
-so CLI flags such as `--deployment` are never mistaken for comments.
+Python docstrings before comparing. A translated comment passes; a changed,
+dropped or commented-out code line still fails, and the block is rejected and retried.
+
+Boundary rules keep the comparison honest:
+
+- shebang lines (`#!...`) are code, never comments
+- Python-style `#` and every `//` open a comment anywhere outside a string
+  literal, so `value=1# note` and `run();// note` are recognized too
+- shell-style `#` and every `--` need a word boundary, so a CLI flag such as
+  `--deployment` is never mistaken for a comment
+- C-style block comments are tracked across lines, and a generator method that
+  starts with `*` stays code
+- a docstring is only a triple-quoted string that opens a suite (first statement
+  after a `def`, `class` or module): a triple-quoted value inside an expression
+  stays code
 
 When editing a translation by hand, translate the comments and docstrings too,
 and keep every code line untouched.

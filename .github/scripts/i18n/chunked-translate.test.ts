@@ -500,9 +500,44 @@ def f():
     expect(codeBlocksMatch(en, tr)).toBe(false);
   });
 
-  test("flags only docstring lines in python blocks", () => {
-    const lines = ['x = f(\'\'\'inline\'\'\')', '"""doc', 'more doc', '"""', 'y = 1'];
-    expect(docstringLineFlags(lines, "python")).toEqual([false, true, true, true, false]);
-    expect(docstringLineFlags(lines, "bash")).toEqual([false, false, false, false, false]);
+  test("flags docstring lines only at suite position", () => {
+    const suite = ['def f():', '    """doc', '    more doc', '    """', '    return 1'];
+    expect(docstringLineFlags(suite, "python")).toEqual([false, true, true, true, false]);
+    const blockStart = ['"""module doc"""', 'x = 1'];
+    expect(docstringLineFlags(blockStart, "python")).toEqual([true, false]);
+    const value = ['labels = (', '    """English"""', ')'];
+    expect(docstringLineFlags(value, "python")).toEqual([false, false, false]);
+    expect(docstringLineFlags(suite, "bash")).toEqual([false, false, false, false, false]);
+  });
+
+  test("rejects a translated triple-quoted value", () => {
+    const en = '```python\nlabels = (\n    """English"""\n)\n```';
+    const tr = '```python\nlabels = (\n    """中文"""\n)\n```';
+    expect(codeBlocksMatch(en, tr)).toBe(false);
+  });
+
+  test("keeps a generator method line as code", () => {
+    const en = '```javascript\nclass C {\n  *values() { yield 1; }\n}\n```';
+    const changed = '```javascript\nclass C {\n  *values() { yield 2; }\n}\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+    const commented = '```javascript\nclass C {\n  *values() { yield 1; }  // 로컬 주석\n}\n```';
+    expect(codeBlocksMatch(en, commented)).toBe(true);
+  });
+
+  test("recognizes trailing comments written without a space", () => {
+    expect(stripTrailingComment("value=1# note", ["#"], "python")).toBe("value=1");
+    expect(stripTrailingComment("run();// note", ["//"], "javascript")).toBe("run();");
+    expect(stripTrailingComment("echo a#b", ["#"], "bash")).toBe("echo a#b");
+    const en = '```python\nvalue=1# the value\n```';
+    const tr = '```python\nvalue=1# 値\n```';
+    expect(codeBlocksMatch(en, tr)).toBe(true);
+  });
+
+  test("tracks block comments across lines", () => {
+    const en = '```javascript\nconst a = 1; /* note\n   still note */\nconst b = 2;\n```';
+    const localized = '```javascript\nconst a = 1; /* 説明\n   続き */\nconst b = 2;\n```';
+    expect(codeBlocksMatch(en, localized)).toBe(true);
+    const changed = '```javascript\nconst a = 1; /* 説明\n   続き */\nconst b = 3;\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
   });
 });

@@ -319,6 +319,15 @@ const LINE_COMMENT_MARKERS: Record<string, string[]> = {
 };
 const DEFAULT_COMMENT_MARKERS = ["#", "//"];
 
+/** Languages where `#` opens a comment anywhere outside a string literal. */
+const HASH_COMMENT_ANYWHERE = new Set(["python", "py", "ruby", "rb", "perl", "r"]);
+
+/** Fence languages whose C-style block comments span several lines. */
+const BLOCK_COMMENT_LANGS = new Set([
+  "ts", "typescript", "js", "javascript", "tsx", "jsx", "jsonc", "go", "rust",
+  "java", "kotlin", "swift", "c", "cpp", "csharp", "cs", "php", "dart", "scala",
+]);
+
 function codeFenceLang(block: string): string {
   const first = block.split("\n", 1)[0] ?? "";
   return first.trim().replace(/^`+/, "").trim();
@@ -333,24 +342,34 @@ function isShebang(line: string): boolean {
   return line.trimStart().startsWith("#!");
 }
 
-/** True for lines that carry no code: blanks and whole-line comments. */
+/**
+ * True when `marker` at position `index` opens a comment in this language.
+ * Python-style `#` and `//` open a comment anywhere outside a string literal.
+ * Shell-style `#` and `--` need a word boundary, so a CLI flag such as
+ * `--deployment` in a `bash` block is never mistaken for a comment.
+ */
+function isCommentStart(line: string, index: number, marker: string, langTag: string): boolean {
+  if (marker === "//") return true;
+  const atBoundary = index === 0 || /\s/.test(line[index - 1] as string);
+  if (marker === "#") return HASH_COMMENT_ANYWHERE.has(langTag.toLowerCase()) || atBoundary;
+  return atBoundary;
+}
+
+/** True for lines that carry no code: blanks and whole-line line-comments. */
 function isCommentOnlyLine(line: string, markers: string[]): boolean {
   const trimmed = line.trimStart();
   if (!trimmed) return true;
   if (isShebang(line)) return false;
-  if (markers.some((marker) => trimmed.startsWith(marker))) return true;
-  if (markers.includes("//")) {
-    return trimmed.startsWith("/*") || trimmed.startsWith("*/") || trimmed.startsWith("*");
-  }
-  return false;
+  return markers.some((marker) => trimmed.startsWith(marker));
 }
 
 /**
  * Drop a trailing line comment from `line`, honouring quotes so a marker inside
- * a string literal stays part of the code. `--` only counts at line start, so
- * CLI flags such as `--deployment` are never mistaken for a comment.
+ * a string literal stays part of the code. Boundary rules come from the fence
+ * language: `value=1# comment` and `run();// comment` are comments, while
+ * `comfy deploy --deployment dep_1` is not.
  */
-export function stripTrailingComment(line: string, markers: string[]): string {
+export function stripTrailingComment(line: string, markers: string[], langTag = ""): string {
   if (isShebang(line)) return line;
   let quote: string | null = null;
   for (let i = 0; i < line.length; i += 1) {
@@ -367,12 +386,9 @@ export function stripTrailingComment(line: string, markers: string[]): string {
       quote = char;
       continue;
     }
-    if (i === 0 || /\s/.test(line[i - 1] as string)) {
-      const marker = markers.find((candidate) => line.startsWith(candidate, i));
-      if (marker) {
-        const isFullLinePrefix = /^\s*$/.test(line.slice(0, i));
-        if (marker !== "--" || isFullLinePrefix) return line.slice(0, i).trimEnd();
-      }
+    const found = markers.find((candidate) => line.startsWith(candidate, i));
+    if (found && isCommentStart(line, i, found, langTag)) {
+      return line.slice(0, i).trimEnd();
     }
   }
   return line;
@@ -380,46 +396,104 @@ export function stripTrailingComment(line: string, markers: string[]): string {
 
 /**
  * The byte-identical part of a fenced block: every line that carries code, with
- * trailing comments removed. Comment-only lines are dropped, so translations
- * may localize comments without failing validation.
+ * comments removed. Comment-only lines are dropped, so translations may
+ * localize comments without failing validation. Block comments are tracked
+ * across lines, so a generator method that starts with `*` stays code.
  */
 export function codeSignature(block: string, langTag: string): string[] {
   const markers = commentMarkersFor(langTag);
+  const blockComments = BLOCK_COMMENT_LANGS.has(langTag.toLowerCase());
   const lines = block.split("\n");
   const body = lines.length >= 2 ? lines.slice(1, -1) : [];
   const docstrings = docstringLineFlags(body, langTag);
-  return body
-    .filter((line, index) => !docstrings[index] && !isCommentOnlyLine(line, markers))
-    .map((line) => stripTrailingComment(line, markers));
+  const out: string[] = [];
+  let inBlockComment = false;
+
+  body.forEach((line, index) => {
+    if (docstrings[index]) return;
+
+    if (inBlockComment) {
+      const close = line.indexOf("*/");
+      if (close === -1) return;
+      inBlockComment = false;
+      const tail = stripTrailingComment(line.slice(close + 2), markers, langTag);
+      if (tail.trim()) out.push(tail);
+      return;
+    }
+
+    if (isCommentOnlyLine(line, markers)) return;
+
+    if (blockComments) {
+      const open = line.indexOf("/*");
+      if (open !== -1) {
+        const close = line.indexOf("*/", open + 2);
+        if (close === -1) {
+          inBlockComment = true;
+          const kept = stripTrailingComment(line.slice(0, open), markers, langTag);
+          if (kept.trim()) out.push(kept);
+          return;
+        }
+        const merged = `${line.slice(0, open)}${line.slice(close + 2)}`;
+        const kept = stripTrailingComment(merged, markers, langTag);
+        if (kept.trim()) out.push(kept);
+        return;
+      }
+    }
+
+    out.push(stripTrailingComment(line, markers, langTag));
+  });
+
+  return out;
 }
 
 /** Languages whose triple-quoted strings are documentation (docstrings). */
 const DOCSTRING_LANGS = new Set(["python", "py"]);
 
 /**
+ * A docstring opens a suite: it is the first statement after a `:` header line,
+ * or the first statement of the block. A triple-quoted string used as a value
+ * (a line inside a parenthesized assignment, say) opens at a different
+ * position, so its text stays code and changing it is still rejected.
+ */
+function opensSuite(previousMeaningful: string): boolean {
+  if (!previousMeaningful) return true;
+  return previousMeaningful.endsWith(":");
+}
+
+/**
  * Flag the lines that belong to a docstring. A docstring is documentation, the
  * same as a comment, so its text may be localized while the code around it must
- * not change. Only lines that start a triple-quoted string (or continue one)
- * are flagged, so a triple-quoted string used as a value inside code stays code.
+ * not change.
  */
 export function docstringLineFlags(lines: string[], langTag: string): boolean[] {
   const flags = lines.map(() => false);
   if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
   let open: string | null = null;
-  lines.forEach((line, index) => {
+  let previousMeaningful = "";
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
     const trimmed = line.trimStart();
+
     if (open) {
       flags[index] = true;
       if (line.includes(open)) open = null;
-      return;
+      continue;
     }
-    for (const delim of ['"""', "'''"]) {
-      if (!trimmed.startsWith(delim)) continue;
-      flags[index] = true;
-      if (trimmed.indexOf(delim, delim.length) === -1) open = delim;
-      return;
+
+    if (opensSuite(previousMeaningful)) {
+      const delimiters = ['"""', "'''"];
+      const delim = delimiters.find((candidate) => trimmed.startsWith(candidate));
+      if (delim) {
+        flags[index] = true;
+        if (trimmed.indexOf(delim, delim.length) === -1) open = delim;
+        continue;
+      }
     }
-  });
+
+    if (trimmed) previousMeaningful = trimmed;
+  }
+
   return flags;
 }
 
