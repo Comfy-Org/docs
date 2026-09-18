@@ -4,7 +4,6 @@ import { join } from "node:path";
 import {
   SYNC_PR_AUTHOR,
   SYNC_PR_BRANCH,
-  changedGeneratorInput,
   check,
   classify,
   exemptionReason,
@@ -23,17 +22,14 @@ const ALWAYS_GUARDED = [
   "router-schemas/openai/gpt-image-1.json",
 ];
 
-/** Guarded only when the pull request changes no generator input. */
+/** Guarded only when the committed pages are stale, i.e. hand-edited. */
 const GENERATED_GUARDED = [
   "development/comfy-router/models.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.mdx",
 ];
 
-/** Every path the acceptance criteria name, minus the one that is also an input. */
-const GUARDED_TOGETHER = [
-  ...ALWAYS_GUARDED.filter((p) => !p.startsWith("router-schemas/")),
-  ...GENERATED_GUARDED,
-];
+/** Every path the guard covers, as a single stale-page pull request would present them. */
+const GUARDED_TOGETHER = [...ALWAYS_GUARDED, ...GENERATED_GUARDED];
 
 /** Paths the sync touches partially or not at all, which must stay editable. */
 const EDITABLE = [
@@ -41,6 +37,9 @@ const EDITABLE = [
   "development/comfy-router/api.mdx",
   "development/comfy-router/queue.mdx",
   "development/comfy-router/headers.mdx",
+  "development/comfy-router/models/openai/gpt-image-1/code.yaml",
+  "snippets/comfy-router/model-code-footer.mdx",
+  ".github/scripts/snippets/gen-code-pages.ts",
   "zh/development/comfy-router/limitations.mdx",
   "ja/development/comfy-router/quickstart.mdx",
   "ko/development/comfy-router/reference.mdx",
@@ -106,53 +105,51 @@ describe("classify: what stays editable", () => {
 });
 
 /**
- * `code-pages:check` FAILS a pull request whose generated pages are stale, so any
- * change to a generator input must ship the regenerated pages in the same diff.
- * Guarding those pages unconditionally would make the two checks contradict each
- * other and a `code.yaml` edit unshippable.
+ * Committing a regenerated page is mandatory whenever a generator input changes,
+ * and an honest "regenerate to restore freshness" pull request changes no input
+ * at all. Freshness, not the shape of the diff, is what separates a regeneration
+ * from a hand-edit: a page that matches the generator's output IS its output.
  */
-describe("generated pages are a regeneration when an input changed in the same diff", () => {
+describe("generated pages are guarded on freshness", () => {
   const CODE_MDX = "development/comfy-router/models/openai/gpt-image-1/code.mdx";
+  const MODELS_MDX = "development/comfy-router/models.mdx";
+  const FRESH = { generatedPagesFresh: true };
 
   test("a code.yaml edit plus its regenerated page passes", () => {
-    expect(classify(["development/comfy-router/models/openai/gpt-image-1/code.yaml", CODE_MDX])).toEqual([]);
+    expect(classify(["development/comfy-router/models/openai/gpt-image-1/code.yaml", CODE_MDX], FRESH)).toEqual([]);
   });
 
-  test("a snippets/comfy-router fragment edit plus regenerated pages passes", () => {
-    expect(classify(["snippets/comfy-router/model-code-footer.mdx", CODE_MDX, "development/comfy-router/models.mdx"])).toEqual([]);
-  });
-
-  test("a generator change plus regenerated pages passes", () => {
-    expect(classify([".github/scripts/snippets/gen-code-pages.ts", CODE_MDX])).toEqual([]);
+  test("a regeneration that changes no input at all passes", () => {
+    expect(classify([CODE_MDX, MODELS_MDX, "docs.json"], FRESH)).toEqual([]);
   });
 
   test("the excusal is reported, so the log says why the pages were allowed", () => {
-    const report = check(["development/comfy-router/models/openai/gpt-image-1/code.yaml", CODE_MDX]);
-    expect(report.excused).toEqual([CODE_MDX]);
-    expect(report.regeneratedBecause).toContain("code.yaml");
+    const report = check([CODE_MDX, MODELS_MDX], FRESH);
+    expect(report.excused).toEqual([CODE_MDX, MODELS_MDX]);
+    expect(report.offences).toEqual([]);
   });
 
-  test("a router-schemas edit excuses the regenerated pages but is itself still flagged", () => {
-    expect(classify(["router-schemas/openai/gpt-image-1.json", CODE_MDX]).map((o) => o.path)).toEqual([
+  test("a router-schemas edit beside fresh pages is still flagged on its own", () => {
+    expect(classify(["router-schemas/openai/gpt-image-1.json", CODE_MDX], FRESH).map((o) => o.path)).toEqual([
       "router-schemas/openai/gpt-image-1.json",
     ]);
   });
 
   test("the excusal does not spill onto the hand-written pages", () => {
-    expect(
-      classify([
-        "development/comfy-router/models/openai/gpt-image-1/code.yaml",
-        CODE_MDX,
-        "development/comfy-router/quickstart.mdx",
-      ]).map((o) => o.path),
-    ).toEqual(["development/comfy-router/quickstart.mdx"]);
+    expect(classify([CODE_MDX, "development/comfy-router/quickstart.mdx"], FRESH).map((o) => o.path)).toEqual([
+      "development/comfy-router/quickstart.mdx",
+    ]);
   });
 
-  test("a hand-edited generated page with no input change is still refused", () => {
-    const report = check([CODE_MDX, "development/comfy-router/api.mdx"]);
+  test("a stale generated page is a hand-edit and is refused", () => {
+    const report = check([CODE_MDX, MODELS_MDX], { generatedPagesFresh: false });
     expect(report.excused).toEqual([]);
-    expect(report.regeneratedBecause).toBeNull();
-    expect(report.offences.map((o) => o.path)).toEqual([CODE_MDX]);
+    expect(report.offences.map((o) => o.path)).toEqual([CODE_MDX, MODELS_MDX]);
+    for (const offence of report.offences) expect(offence.guidance).toContain("hand-edit");
+  });
+
+  test("an unknown freshness verdict guards rather than waving through", () => {
+    expect(classify([CODE_MDX])).toHaveLength(1);
   });
 });
 
@@ -232,8 +229,6 @@ describe("the guarded paths exist in this repository", () => {
     "development/comfy-router/limitations.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",
-    "snippets/comfy-router",
-    ".github/scripts/snippets",
   ];
   for (const path of present) {
     test(`${path} is present`, () => {
@@ -252,22 +247,5 @@ describe("the guarded paths exist in this repository", () => {
     const first = new Bun.Glob("development/comfy-router/models/**/code.mdx").scanSync(ROOT).next().value;
     expect(first).toBeString();
     expect(classify([first!.replaceAll("\\", "/")])).toHaveLength(1);
-  });
-});
-
-describe("changedGeneratorInput", () => {
-  test("names the most direct input, not whichever the diff listed first", () => {
-    const report = check([
-      ".github/scripts/snippets/README.md",
-      "snippets/comfy-router/queue-preview-notice.mdx",
-      "development/comfy-router/models/openai/gpt-image-1/code.mdx",
-    ]);
-    expect(report.regeneratedBecause).toBe("a snippets/comfy-router fragment");
-    expect(report.offences).toEqual([]);
-  });
-
-  test("prose beside the generator is not an input on its own", () => {
-    expect(changedGeneratorInput([".github/scripts/snippets/README.md"])).toBeNull();
-    expect(changedGeneratorInput([".github/scripts/snippets/gen-code-pages.ts"])).toBe("the code-page generator");
   });
 });

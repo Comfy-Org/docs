@@ -27,14 +27,19 @@
  *     edit to a generated model page belongs.
  *
  * The two GENERATED page kinds (`development/comfy-router/models.mdx` and the
- * per-model `code.mdx`) are guarded CONDITIONALLY, because committing them is
- * mandatory whenever a generator input changes: `code-pages:check` fails a pull
- * request whose pages are stale, so guarding them unconditionally would put the
- * two checks in direct contradiction and make a `code.yaml` edit unshippable. A
- * pull request that also changes one of the generator's inputs is therefore
- * regenerating rather than hand-editing, and its generated pages pass; the
- * freshness check is what proves the regeneration is honest. With no input
- * changed, an edit to a generated page is a hand-edit and is refused.
+ * per-model `code.mdx`) are guarded CONDITIONALLY, on FRESHNESS. Committing them
+ * is mandatory whenever a generator input changes, so guarding them
+ * unconditionally would make a `code.yaml` edit unshippable and would fail an
+ * honest "regenerate to restore freshness" pull request as well. A page that
+ * matches `bun run code-pages:gen`'s output is that generator's output by
+ * definition, however it got there; a page that does NOT match is a hand-edit.
+ * The caller passes the verdict in as `generatedPagesFresh`, since running the
+ * generator is the workflow's job and not this script's.
+ *
+ * `code-pages-check.yml` makes the same freshness assertion, but its path filter
+ * does not list `development/comfy-router/models.mdx`, so a pull request that
+ * hand-edits only the generated provider index never starts it. That gap is why
+ * this check re-asserts freshness rather than deferring to it.
  *
  * Exempt: the sync's own pull request, identified by its author or its fixed head
  * branch. Both are accepted because the sync is allowed to rewrite what it owns.
@@ -51,53 +56,17 @@ export const SYNC_PR_BRANCH = "chore/sync-comfy-api-v2-spec";
 const MODELS_DIR = "development/comfy-router/models";
 
 export type SyncOwnedRule = {
-  /** Stable id, used by the tests and by nothing else. */
+  /** Stable label for this rule, for readers and diagnostics. */
   id: string;
   test: (path: string) => boolean;
   /** Where the edit belongs instead. One sentence, rendered under the file. */
   guidance: string;
   /**
-   * True for the pages `bun run code-pages:gen` writes. They are excused when the
-   * same pull request changes a generator input, since the freshness check then
-   * requires them to be committed.
+   * True for the pages `bun run code-pages:gen` writes. Excused when those pages
+   * are fresh, which makes them the generator's output rather than a hand-edit.
    */
   generated?: true;
 };
-
-/**
- * The inputs `bun run code-pages:gen` reads. Mirrors the path filter of
- * `code-pages-check.yml`, minus its two outputs (`docs.json`, and the generated
- * pages themselves) and minus `package.json`, which only names the script.
- */
-export const GENERATOR_INPUTS: { label: string; test: (path: string) => boolean }[] = [
-  {
-    label: "a model's code.yaml spec",
-    test: (p) => p.startsWith(`${MODELS_DIR}/`) && p.endsWith("/code.yaml"),
-  },
-  {
-    label: "the router-schemas mirror",
-    test: (p) => p === "router-schemas" || p.startsWith("router-schemas/"),
-  },
-  {
-    label: "a snippets/comfy-router fragment",
-    test: (p) => p.startsWith("snippets/comfy-router/"),
-  },
-  {
-    // `.ts` only: the prose beside the generator cannot change what it emits.
-    label: "the code-page generator",
-    test: (p) => p.startsWith(".github/scripts/snippets/") && p.endsWith(".ts"),
-  },
-];
-
-/**
- * The generator input this diff changes, if any. Iterates the inputs rather than
- * the paths, so the label names the most direct input the pull request touches
- * instead of whichever one the diff happened to list first.
- */
-export function changedGeneratorInput(paths: readonly string[]): string | null {
-  const input = GENERATOR_INPUTS.find((i) => paths.some((p) => i.test(p)));
-  return input ? input.label : null;
-}
 
 /**
  * First match wins, so the `code.mdx` rule is written to exclude `code.yaml`
@@ -138,14 +107,14 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     id: "models-index",
     test: (p) => p === `${MODELS_DIR}.mdx`,
     guidance:
-      "GENERATED provider index, hand-edited: this pull request changes none of the generator's inputs. Change a model's code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
+      "GENERATED provider index, and it does not match the generator's output, so this is a hand-edit. Change a model's code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
     generated: true,
   },
   {
     id: "model-code-page",
     test: (p) => p.startsWith(`${MODELS_DIR}/`) && p.endsWith("/code.mdx"),
     guidance:
-      "GENERATED model page, hand-edited: this pull request changes none of the generator's inputs. Edit the sibling code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
+      "GENERATED model page, and it does not match the generator's output, so this is a hand-edit. Edit the sibling code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
     generated: true,
   },
 ];
@@ -157,15 +126,21 @@ const normalize = (path: string) => path.trim().replace(/^\.\//, "");
 
 export type Report = {
   offences: Offence[];
-  /** Generated pages let through because the same diff changes a generator input. */
+  /** Generated pages let through because they match the generator's output. */
   excused: string[];
-  /** Set when generated-page rules were suppressed, naming the input that did it. */
-  regeneratedBecause: string | null;
   /** How many paths were considered, after normalizing and de-duplicating. */
   checked: number;
 };
 
-export function check(rawPaths: readonly string[]): Report {
+export type CheckOptions = {
+  /**
+   * Whether the checkout's generated pages match `bun run code-pages:gen`.
+   * Defaults to `false`, so an unknown verdict guards rather than waves through.
+   */
+  generatedPagesFresh?: boolean;
+};
+
+export function check(rawPaths: readonly string[], options: CheckOptions = {}): Report {
   const paths: string[] = [];
   const seen = new Set<string>();
   for (const raw of rawPaths) {
@@ -175,23 +150,23 @@ export function check(rawPaths: readonly string[]): Report {
     paths.push(path);
   }
 
-  const regeneratedBecause = changedGeneratorInput(paths);
   const offences: Offence[] = [];
   const excused: string[] = [];
   for (const path of paths) {
     const rule = SYNC_OWNED_RULES.find((r) => r.test(path));
     if (!rule) continue;
-    if (rule.generated && regeneratedBecause) {
+    if (rule.generated && options.generatedPagesFresh) {
       excused.push(path);
       continue;
     }
     offences.push({ path, guidance: rule.guidance });
   }
-  return { offences, excused, regeneratedBecause, checked: paths.length };
+  return { offences, excused, checked: paths.length };
 }
 
 /** Convenience wrapper for callers that only want the offending files. */
-export const classify = (paths: readonly string[]): Offence[] => check(paths).offences;
+export const classify = (paths: readonly string[], options?: CheckOptions): Offence[] =>
+  check(paths, options).offences;
 
 /**
  * The exemption reason, or `null` when the pull request is not the sync's own.
@@ -235,10 +210,11 @@ async function main() {
     return;
   }
 
-  const report = check(parsePaths(await Bun.stdin.text()));
+  const generatedPagesFresh = process.env.GENERATED_PAGES_FRESH === "true";
+  const report = check(parsePaths(await Bun.stdin.text()), { generatedPagesFresh });
   if (report.excused.length > 0) {
     console.log(
-      `ℹ️ ${report.excused.length} generated page(s) allowed: this pull request also changes ${report.regeneratedBecause}, so they are a regeneration. code-pages:check verifies they are fresh.`,
+      `ℹ️ ${report.excused.length} generated page(s) allowed: they match what \`bun run code-pages:gen\` emits, so they are a regeneration and not a hand-edit.`,
     );
   }
   if (report.offences.length === 0) {
