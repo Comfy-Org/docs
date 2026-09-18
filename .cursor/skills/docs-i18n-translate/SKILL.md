@@ -27,6 +27,36 @@ pnpm translate:sync-docs-json       ← mirror nav paths in docs.json (opt-in)
 ```
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
+### Code and comments inside fenced blocks
+
+Code lines (identifiers, keywords, string literals, numeric values, indentation,
+blank lines, the language tag, the closing fence) stay byte-for-byte identical to
+the English source. The **comment text** inside a fenced block is translated: it
+is documentation prose the reader is meant to understand, so whole-line comments
+and trailing comments after code are localized, on the same line and position as
+in English.
+
+Python docstrings (a standalone triple-quoted string that opens a `def`, `class` or module)
+count as documentation, so their text is translated too; a triple-quoted string
+used as a value inside code stays code.
+
+Boundary rules: Python-style `#` and `//` open a comment outside a string or
+regex literal, so `value=1# note` counts as a comment; shell-style `#` and
+`--` need a word boundary, so a CLI flag such as `--deployment` stays code.
+C-style block comments are tracked across lines, so a generator method starting
+with `*` stays code. Comment markers inside quoted strings or JavaScript regex
+literals and multiline template literals stay code. A docstring is only a
+standalone triple-quoted string that opens a suite, not a triple-quoted value
+inside an expression or conditional. A line with other executable code stays
+byte-identical. Opening and closing fence lines stay byte-identical too.
+
+- Never translate a shebang (`#!...`), a string literal used as a value, a
+  variable name or any code token.
+- `validateTranslatedBlock` compares code via `codeBlocksMatch()`, which strips
+  comments per the fence's language tag. A translated comment passes; a changed,
+  dropped or commented-out code line still fails and the block is retried.
+- When editing a translation by hand, translate its comments and docstrings too.
+
 ### Title / description frontmatter (localized pages)
 
 `title` and `description` frontmatter carry localized meaning, not word-for-word

@@ -24,6 +24,42 @@ changelog/index.mdx
 - Do **not** commit `.github/i18n-logs/`.
 - Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
 - Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
+- **Code in translations**: code lines must stay byte-for-byte identical to the
+  English source; the comment text inside a fenced block **is** translated, as
+  it is documentation prose. See [Code and comments in translations](#code-and-comments-in-translations).
+
+## Code and comments in translations
+
+A fenced code block splits into two halves that are treated differently:
+
+| Part | Rule |
+|------|------|
+| Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
+| Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
+| Python docstrings: a standalone triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
+
+`validateTranslatedBlock` in `chunked-translate.ts` compares code with
+`codeBlocksMatch()`, which strips comments (per the fence's language tag) and
+Python docstrings before comparing. A translated comment passes; a changed,
+dropped or commented-out code line still fails, and the block is rejected and retried.
+
+Boundary rules keep the comparison honest:
+
+- shebang lines (`#!...`) are code, never comments
+- Python-style `#` and `//` open a comment outside a string or regex literal,
+  so `value=1# note` and `run();// note` are recognized too
+- shell-style `#` and every `--` need a word boundary, so a CLI flag such as
+  `--deployment` is never mistaken for a comment
+- C-style block comments are tracked across lines, and a generator method that
+  starts with `*` stays code; comment markers inside quoted strings or JavaScript
+  regex and multiline template literals stay code
+- a docstring is only a standalone triple-quoted string that opens a suite (first statement
+  after a `def`, `class` or module): a triple-quoted value inside an expression
+  or conditional stays code; a line with other executable code stays code too
+- opening and closing fence lines must match the English source exactly
+
+When editing a translation by hand, translate the comments and docstrings too,
+and keep every code line untouched.
 
 ## How translation works
 
