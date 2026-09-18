@@ -1,0 +1,298 @@
+---
+title: "キューによる配信"
+sidebarTitle: "キューによる配信"
+description: "Comfy Router にリクエストを送信すると、すぐにリクエスト ID が返ります。その後はステータスを追跡し、結果を取得するかキャンセルできます。Python、TypeScript、cURL に対応し、各 SDK の submit、subscribe、handle を使用します。"
+translationSourceHash: 3c4b3346
+translationFrom: development/comfy-router/queue.mdx
+translationBlockHashes:
+  "_intro": 22be5ac5
+  "Two delivery modes, one request": 568bbcea
+  "The four routes": c1baed5a
+  "Queue a request": 5afd30d4
+  "What the responses look like": 67d7093a
+  "Idempotency and billing": b03b4156
+  "Errors": 3ce9124d
+  "Next": f52db897
+---
+`POST /v2/models/{provider}/{model}` は、モデルの処理が完了するまで接続を保持します。キュー経由の配信は同じモデル ID と同じネイティブなリクエストボディを使用しますが、Router が実行を受理した時点で応答を返します。`request_id` をすぐに受け取り、準備ができたときに同じプロセスまたは別のプロセスから結果を取得します。
+
+キューは、1 回の生成が保持できる接続時間よりも長くかかる場合、Web リクエストが今すぐ応答を返す必要がある場合、あるプロセスで送信して別のプロセスで収集する場合、あるいは多数の生成を同時に進行させたい場合に使用します。順序付け、受付、リトライ、タイムアウト、課金、有効期限はすべてサーバー側で決定されます。SDK はその上にポーリングと使いやすさを追加するだけで、それ以外は何も行いません。
+
+## 2つの配信モード、1つのリクエスト
+
+| | 同期 | キュー中 |
+| --- | --- | --- |
+| ルート | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
+| 応答 | モデルのネイティブ出力を含む `200` | `request_id` と3つのURLを含む `201` |
+| 結果 | レスポンス内 | 後で収集され、バイト単位で同一の出力 |
+
+SDK（`comfy-sdk` および `@comfyorg/sdk`、0.3.0 以降）は、`run` の隣にキューを3つのメソッドとして公開しています:
+
+- **`submit(model, body)`** はリクエストを送信し、すぐにハンドルを返します。ハンドルは `status()`、`get()`、`cancel()`、そしてイベントイテレータ（Python では `iter_events()`、TypeScript では `events()`）を備えています。
+- **`subscribe(model, body, ...)`** は送信、ポーリング、収集を1回の呼び出しで行い、進捗コールバックを備えています。
+- **`handle(model, request_id)`** は2つのIDから別のプロセスでハンドルを再構築します。呼び出しは発生しません。
+
+両方の ID がリクエストの指定に関わるため、どの場面でも両方の ID が必要です。ルートは `/v2/models/{provider}/{model}/requests/{request_id}` です。
+
+## 4つのルート
+
+| ルート | 応答 |
+| --- | --- |
+| `POST /v2/models/{provider}/{model}/requests` | `request_id`、`status`、`queue_position`、`status_url`、`response_url`、`cancel_url` を含む `201` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | 現在の `status` と `queue_position`、および `Retry-After` ヒントを含む `200` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | 完了後はモデルネイティブの出力を含む `200`、未完了の間はステータスボディを含む `202` |
+| `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED`、または `409` `ALREADY_COMPLETED` |
+
+`status` は `IN_QUEUE`、`IN_PROGRESS`、`COMPLETED` のいずれかです。失敗やキャンセル済みを表す独立したステータスはありません。成功しなかったリクエストは `error_type` を持つ `COMPLETED` になるため、4つ目のステータス値ではなく、このフィールドの有無で分岐してください。SDK はこれを自動で処理します。`get()` は失敗を結果として返すのではなく、型付きの Router エラーを送出または reject します。
+
+進捗イベント、webhook、優先度レベルはありません。リクエストを追跡する手段はステータスルートです。[API リファレンス](/ja/development/comfy-router/reference#エンドポイント)に、各ルートの完全なコントラクトが記載されています。
+
+## Queue a request
+
+This queues the same request the [quickstart](/ja/development/comfy-router/quickstart) sends and collects the image. Export your key as `COMFY_API_KEY` first.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type FluxResult = { result: { sample: string } };
+const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
+  prompt: "a red teapot on a windowsill, morning light",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+BASE="https://api.comfy.org/v2/models/bfl/flux-2-pro"
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+
+# 4. Cancel a request that has not finished. A request, not a guarantee.
+curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+
+Every [model page](/ja/development/comfy-router/models) carries this shape for its own model under **Queue and collect later**, beside the synchronous snippet.
+
+### Follow progress and collect in one call
+
+When you do want to wait but also want to show progress, `subscribe` folds submit, poll and collect into one call:
+
+<CodeGroup>
+```python Python
+def on_update(update):
+    print(update.status, update.queue_position)
+
+result = client.models.subscribe(
+    "bfl/flux-2-pro",
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    on_queue_update=on_update,
+    timeout=300,
+)
+```
+
+```typescript TypeScript
+const result = await comfy.models.subscribe<FluxResult>(
+  "bfl/flux-2-pro",
+  { prompt: "a red teapot on a windowsill, morning light" },
+  {
+    onQueueUpdate: (update) => console.log(update.status, update.queuePosition),
+    timeoutMs: 300_000,
+  },
+);
+```
+</CodeGroup>
+
+The timeout is a client-side bound with no server-side meaning. When it runs out, `subscribe` makes one best-effort cancel before raising. A cancel only takes effect on a request that has not started running: a generation already in flight at the partner completes and is charged whether or not anyone collects it. Use `submit` when the request should outlive the caller.
+
+### Collect from another process
+
+Store the `request_id` next to the model ID. Both are needed to rebuild a handle, and no call is made until you use it.
+
+<CodeGroup>
+```python Python
+handle = client.models.handle("bfl/flux-2-pro", request_id)
+result = handle.get()
+```
+
+```typescript TypeScript
+const handle = comfy.models.handle<FluxResult>("bfl/flux-2-pro", requestId);
+const result = await handle.get();
+```
+</CodeGroup>
+
+### Check status or cancel
+
+`status()` is one poll and returns the current state. `cancel()` asks the server to stop a request that has not finished. It is a request, not a guarantee: a run already on the wire at the partner may complete anyway, and the next `status()` is what is true.
+
+<CodeGroup>
+```python Python
+update = handle.status()
+print(update.status, update.queue_position, update.error_type)
+
+handle.cancel()
+```
+
+```typescript TypeScript
+const update = await handle.status();
+console.log(update.status, update.queuePosition, update.errorType);
+
+await handle.cancel();
+```
+</CodeGroup>
+
+### Async Python
+
+`AsyncComfy` mirrors every name, argument and argument order. There is no `submit_async`, for the same reason there is no `run_async`.
+
+```python
+from comfy_sdk import AsyncComfy
+
+async with AsyncComfy() as client:
+    handle = await client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    async for update in handle.iter_events():
+        print(update.status, update.queue_position)
+    result = await handle.get()
+```
+
+### Errors the SDKs raise
+
+A request that finished without succeeding is reported as `COMPLETED` with an `error_type`. `get()` and `subscribe()` turn that into the typed Router error for the bucket: the classes in `comfy_sdk.router_exceptions` in Python, and `routerErrors.*` in TypeScript. The event iterator does not raise for that case, because it is a view of the queue's progress: a completion carrying an `error_type` is yielded as the last observation, and `get()` is what collects. A `403` `not_enabled` on submit arrives as `NotEnabled` and is terminal, so the SDKs do not retry it.
+
+## レスポンスの形式
+
+**送信、`201`。** この時点で `status` は常に `IN_QUEUE` です。3 つの URL は絶対 URL で、送信時と同じキーで認証されます。
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_QUEUE",
+  "queue_position": 3,
+  "status_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status",
+  "response_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "cancel_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel"
+}
+```
+
+`request_id` は送信時の `X-Comfy-Request-Id` ヘッダーの値でもあります。モデル ID も一緒に控えておいてください。リクエストはその両方で指定されます。
+
+**ステータス、`200`。** 同じ形状で、現在の状態が入ります。`queue_position` は自分の前にあるリクエストを数え、実行が先頭に来ると `0` になります。このレスポンスの `Retry-After` は、再度ポーリングする価値があるのはいつかについての Router の推定値です。これはヒントであり制約ではなく、キューの後方にあるリクエストはすでに実行中のものよりも長く待つよう通知されます。より速くポーリングしても早く何かが分かるわけではなく、自身のレート制限の許容量を消費するだけです。
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_PROGRESS",
+  "queue_position": 0,
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+成功せずに完了したリクエストは `COMPLETED` で、`error_type` を持ち、結果の読み取りが `X-Comfy-Error-Type` に付けるのと同じ粗いバケットを運びます。このフィールドは成功時には `null` ではなく存在しません。
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "COMPLETED",
+  "error_type": "content_policy_violation",
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+**結果。** `200` はモデル自身のネイティブ出力を、同じモデルと入力に対して同期ルートが返すものとバイト単位で完全に同一のまま、プロバイダー自身の `Content-Type` で返します。リクエストが未完了の間、読み取りは上記のステータスボディを伴う `202` を返すため、結果 URL だけをポーリングするクライアントは 1 つの型だけを解析します。失敗したリクエストは、`X-Comfy-Error-Type` が設定されたエラーレスポンスとして返り、同期ルートと同じバケットです。
+
+**キャンセル。** `CANCELLATION_REQUESTED` を伴う `202` は、要求が受け付けられたことを意味し、実行が停止したことを意味するものではありません。パートナー側ですでに実行中のランはそのまま完了する可能性があり、完了したパートナー生成は、誰かがそれを取得するかどうかに関わらず課金されます。その後ステータスを読み取ってください。有効になったキャンセルは `error_type: cancelled` を伴う `COMPLETED` として表示されます。実行される前に期限切れになったリクエストも同様に `queue_timeout` を表示します。すでに完了していたリクエストは `ALREADY_COMPLETED` を伴う `409` を返します。
+
+## 冪等性と課金
+
+- **同期ルートと同じ課金。** 課金はプロバイダーが Comfy に課金したタイミングで発生します。キューでの待機に費やした時間は課金されません。
+- **送信ごとに 1 つの `Idempotency-Key`。** SDK は `submit` 呼び出しごとに新しいキーを生成するため、同じ入力に対する意図的な 2 回の送信は 2 つのリクエストになります。同じキーでの同じ呼び出しの再試行は、2 回目の実行をキューに入れません。オリジナルのハンドルを `Idempotent-Replayed: true` とともに返します。レスポンスの消失によって `request_id` を失う可能性がある場合は、独自のキーを渡してください。[Headers](/ja/development/comfy-router/headers) を参照してください。
+- **結果は失効します。** 完了したリクエストは、完了後 24 時間保持されます。その後、ステータスと結果の読み取りは `410` を返し、結果は失われます。速やかに収集し、出力が持つアセット URL をダウンロードしてください。
+- **ポーリングもリクエストです。** ステータスと結果の読み取りも、[呼び出し元ごとのリクエストレート](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)にカウントされます。固定の短い間隔でポーリングするのではなく、`Retry-After` に従ってください。
+
+## エラー
+
+| Status | `X-Comfy-Error-Type` | 意味 |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | ワークスペースがこの実行を賄えない。何もキューに入らず、課金もされない。資金が確保されれば、同じ `Idempotency-Key` を再送できる。 |
+| `403` | `not_enabled` | この呼び出し元はキューを使用できない。背後にワークスペースが存在しないキー（ワークスペース以前のレガシーキー）、独自キーを持ち込むリクエスト、またはキューで実行できないモデルのいずれかである。そのリクエストはターミナルエラーであり、再試行しないこと。 |
+| `404` | `model_not_found` | `{provider}/{model}` ID がどの Router モデルにも解決されない。 |
+| `404` | `request_not_found` | この呼び出し元とモデルに対して、その ID のリクエストは存在しない。 |
+| `409` | `concurrency_limit_exceeded` | 同じ `Idempotency-Key` がまだ受け付け処理中である。`Retry-After` の時間だけ待ち、同じキーを再送してオリジナルのハンドルを取得すること。 |
+| `409` | `invalid_input` | その `Idempotency-Key` は別のリクエストによって保持されている。このリクエストは新しいキーで送信すること。 |
+| `409` | ボディ内の `ALREADY_COMPLETED` | キャンセルルートのみ: リクエストはすでに完了していたため、キャンセルするものは何もなかった。 |
+| `410` | | リクエストは存在していたが、保持ウィンドウを過ぎている。完了から 24 時間後。その ID に対しては恒久的なもの。 |
+| `422` | `invalid_input` | モデルが入力を受け付けなかった。ボディには、同期ルートとまったく同じように、フィールドごとの詳細が含まれる。 |
+
+すべてのエラーレスポンスには `X-Comfy-Request-Id` が含まれる。サポートに連絡する際はこれを伝えること。
+
+## Next {#next}
+
+<CardGroup cols={2}>
+  <Card title="クイックスタート" icon="rocket" href="/ja/development/comfy-router/quickstart">
+    同じモデルに対する同期呼び出しを、ゼロから画像生成まで。
+  </Card>
+  <Card title="モデル" icon="grid" href="/ja/development/comfy-router/models">
+    各モデルのページには、そのモデルとボディに対応するキュー用スニペットがあります。
+  </Card>
+  <Card title="ヘッダー" icon="list" href="/ja/development/comfy-router/headers">
+    認証、冪等性、リクエスト ID、エラーバケット、リトライのペーシング。
+  </Card>
+  <Card title="API リファレンス" icon="book" href="/ja/development/comfy-router/reference#エンドポイント">
+    4 つのキュールートを、フィールドごとに解説します。
+  </Card>
+</CardGroup>
