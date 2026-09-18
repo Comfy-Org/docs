@@ -41,7 +41,7 @@ tutorials/partner-nodes/black-forest-labs/flux-1-kontext.mdx   Overview (hand-wr
 ```bash
 pnpm code-pages:gen             # regenerate every code.mdx, and the Models nav in docs.json
 pnpm code-pages:check           # CI: fail if any page is stale OR MISSING, and syntax-check the snippets
-pnpm code-pages:gen --prune     # also delete pages whose model has left the catalog
+pnpm code-pages:gen --prune     # also delete pages whose model has left the catalog, redirecting their URLs
 ```
 
 `code-pages-check.yml` runs the check on any PR touching a spec, a generated
@@ -60,7 +60,12 @@ The gate can only see models whose schema has been synced. `GET /v2/models` is
 the full catalog and is ahead of `router-schemas/` (202 vs 162 on 2026-09-04);
 closing that gap is the sync bot's job upstream, not this generator's. A page
 whose model leaves the catalog is reported as an orphan and deleted by `--prune`
-— a dead page in the sidebar documents a model that now answers 404.
+— a dead page in the sidebar documents a model that now answers 404. The URL the
+page answered on is already in the wild, so `--prune` also writes a `docs.json`
+redirect from it to the catalog landing page (`/development/comfy-router/models`);
+that is what the repo's redirect check requires of any PR that deletes a page. A
+redirect someone already wrote for that URL is kept as written, and a model that
+comes back has its redirect removed again so it does not shadow the live page.
 
 The `Models` group in `docs.json` is generated too, one sub-group per provider,
 so a new page is in the sidebar the moment it is generated. Provider labels come
