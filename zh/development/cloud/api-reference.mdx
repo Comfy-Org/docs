@@ -274,7 +274,7 @@ def upload_mask(file_path: str, original_ref: dict) -> dict:
 提交工作流以执行。
 
 <Info>
-  **支持并发提交：** 根据您的订阅等级，您可以提交多个工作流而无需等待之前的任务完成。任务会根据您的等级限制并行运行——超出的任务会自动排队。详情及并发限制请参阅[并行执行](/zh/development/cloud/overview#错误处理)。
+  **支持并发提交：** 根据您的订阅等级，您可以提交多个工作流而无需等待之前的任务完成。任务会根据您的等级限制并行运行——超出的任务会自动排队。详情及并发限制请参阅[并行执行](/zh/development/deploy/cloud#并行执行（并发任务）)。
 </Info>
 
 ### 提交工作流
@@ -572,6 +572,8 @@ workflow = set_workflow_input(workflow, "6", "text", "a beautiful landscape")
 
 <CodeGroup>
 ```typescript TypeScript
+import { mkdir, readFile, writeFile } from "fs/promises";
+
 const BASE_URL = "https://cloud.comfy.org";
 const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
 
@@ -604,6 +606,9 @@ async function waitForCompletion(
     }, timeout);
 
     ws.onmessage = (event) => {
+      // Binary frames carry preview images, not JSON.
+      if (typeof event.data !== "string") return;
+
       const data = JSON.parse(event.data);
       if (data.data?.prompt_id !== promptId) return;
 
@@ -636,6 +641,7 @@ async function downloadOutputs(
   outputs: Record<string, any>,
   outputDir: string
 ): Promise<void> {
+  await mkdir(outputDir, { recursive: true });
   for (const nodeOutputs of Object.values(outputs)) {
     for (const key of ["images", "video", "audio"]) {
       for (const fileInfo of (nodeOutputs as any)[key] ?? []) {
@@ -729,7 +735,9 @@ async def wait_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
     outputs = {}
     
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(ws_url) as ws:
+        # receive_timeout bounds each wait for a frame, so a silent
+        # connection cannot hang past the deadline
+        async with session.ws_connect(ws_url, receive_timeout=timeout) as ws:
             start = asyncio.get_event_loop().time()
             async for msg in ws:
                 if asyncio.get_event_loop().time() - start > timeout:
