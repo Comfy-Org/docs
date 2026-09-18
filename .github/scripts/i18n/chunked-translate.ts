@@ -387,9 +387,40 @@ export function codeSignature(block: string, langTag: string): string[] {
   const markers = commentMarkersFor(langTag);
   const lines = block.split("\n");
   const body = lines.length >= 2 ? lines.slice(1, -1) : [];
+  const docstrings = docstringLineFlags(body, langTag);
   return body
-    .filter((line) => !isCommentOnlyLine(line, markers))
+    .filter((line, index) => !docstrings[index] && !isCommentOnlyLine(line, markers))
     .map((line) => stripTrailingComment(line, markers));
+}
+
+/** Languages whose triple-quoted strings are documentation (docstrings). */
+const DOCSTRING_LANGS = new Set(["python", "py"]);
+
+/**
+ * Flag the lines that belong to a docstring. A docstring is documentation, the
+ * same as a comment, so its text may be localized while the code around it must
+ * not change. Only lines that start a triple-quoted string (or continue one)
+ * are flagged, so a triple-quoted string used as a value inside code stays code.
+ */
+export function docstringLineFlags(lines: string[], langTag: string): boolean[] {
+  const flags = lines.map(() => false);
+  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
+  let open: string | null = null;
+  lines.forEach((line, index) => {
+    const trimmed = line.trimStart();
+    if (open) {
+      flags[index] = true;
+      if (line.includes(open)) open = null;
+      return;
+    }
+    for (const delim of ['"""', "'''"]) {
+      if (!trimmed.startsWith(delim)) continue;
+      flags[index] = true;
+      if (trimmed.indexOf(delim, delim.length) === -1) open = delim;
+      return;
+    }
+  });
+  return flags;
 }
 
 /**

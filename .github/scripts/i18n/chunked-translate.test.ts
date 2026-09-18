@@ -13,6 +13,7 @@ import {
   codeBlocksMatch,
   codeSignature,
   stripTrailingComment,
+  docstringLineFlags,
 } from "./chunked-translate.ts";
 
 const FM = `---
@@ -441,5 +442,67 @@ image = load_image("photo.png")  # 输入图像
     const en = "```python\nprint('hi')\n```";
     const tr = "```bash\nprint('hi')\n```";
     expect(codeBlocksMatch(en, tr)).toBe(false);
+  });
+});
+
+describe("docstrings are documentation", () => {
+  test("accepts a translated python docstring", () => {
+    const en = `\`\`\`python
+class Example(io.ComfyNode):
+    """Return the list of node classes this extension provides."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="Example")
+\`\`\``;
+    const tr = `\`\`\`python
+class Example(io.ComfyNode):
+    """この拡張機能が提供するノードクラスの一覧を返します。"""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="Example")
+\`\`\``;
+    expect(codeBlocksMatch(en, tr)).toBe(true);
+  });
+
+  test("accepts a translated single-line docstring", () => {
+    const en = `\`\`\`python
+def f():
+    """Process an image."""
+    return 1
+\`\`\``;
+    const tr = `\`\`\`python
+def f():
+    """画像を処理します。"""
+    return 1
+\`\`\``;
+    expect(codeBlocksMatch(en, tr)).toBe(true);
+  });
+
+  test("still rejects a code change next to a docstring", () => {
+    const en = `\`\`\`python
+def f():
+    """Process an image."""
+    return 1
+\`\`\``;
+    const tr = `\`\`\`python
+def f():
+    """画像を処理します。"""
+    return 2
+\`\`\``;
+    expect(codeBlocksMatch(en, tr)).toBe(false);
+  });
+
+  test("rejects a translated string literal used as a value", () => {
+    const en = '```python\ntooltip="3D model file or path string",\n```';
+    const tr = '```python\ntooltip="3D モデルファイルまたはパス文字列",\n```';
+    expect(codeBlocksMatch(en, tr)).toBe(false);
+  });
+
+  test("flags only docstring lines in python blocks", () => {
+    const lines = ['x = f(\'\'\'inline\'\'\')', '"""doc', 'more doc', '"""', 'y = 1'];
+    expect(docstringLineFlags(lines, "python")).toEqual([false, true, true, true, false]);
+    expect(docstringLineFlags(lines, "bash")).toEqual([false, false, false, false, false]);
   });
 });

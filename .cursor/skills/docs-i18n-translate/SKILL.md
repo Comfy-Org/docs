@@ -36,12 +36,16 @@ is documentation prose the reader is meant to understand, so whole-line comments
 and trailing comments after code are localized, on the same line and position as
 in English.
 
-- Never translate a shebang (`#!...`), a string literal, a variable name or any
-  code token.
+Python docstrings (a triple-quoted string that opens a `def`, `class` or module)
+count as documentation, so their text is translated too; a triple-quoted string
+used as a value inside code stays code.
+
+- Never translate a shebang (`#!...`), a string literal used as a value, a
+  variable name or any code token.
 - `validateTranslatedBlock` compares code via `codeBlocksMatch()`, which strips
   comments per the fence's language tag. A translated comment passes; a changed,
   dropped or commented-out code line still fails and the block is retried.
-- When editing a translation by hand, translate its comments too.
+- When editing a translation by hand, translate its comments and docstrings too.
 
 ### Title / description frontmatter (localized pages)
 

@@ -36,16 +36,17 @@ A fenced code block splits into two halves that are treated differently:
 |------|------|
 | Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
 | Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
+| Python docstrings: a triple-quoted string that opens a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
 
 `validateTranslatedBlock` in `chunked-translate.ts` compares code with
-`codeBlocksMatch()`, which strips comments (per the fence's language tag) before
-comparing. A translated comment passes; a changed, dropped or commented-out code
+`codeBlocksMatch()`, which strips comments (per the fence's language tag) and
+Python docstrings before comparing. A translated comment passes; a changed, dropped or commented-out code
 line still fails, and the block is rejected and retried. Shebang lines (`#!...`)
 are code, never comments. `--` only counts as a comment at the start of a line,
 so CLI flags such as `--deployment` are never mistaken for comments.
 
-When editing a translation by hand, translate the comments too, and keep every
-code line untouched.
+When editing a translation by hand, translate the comments and docstrings too,
+and keep every code line untouched.
 
 ## How translation works
 
