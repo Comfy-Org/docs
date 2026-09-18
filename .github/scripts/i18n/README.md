@@ -24,6 +24,28 @@ changelog/index.mdx
 - Do **not** commit `.github/i18n-logs/`.
 - Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
 - Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
+- **Code in translations**: code lines must stay byte-for-byte identical to the
+  English source; the comment text inside a fenced block **is** translated, as
+  it is documentation prose. See [Code and comments in translations](#code-and-comments-in-translations).
+
+## Code and comments in translations
+
+A fenced code block splits into two halves that are treated differently:
+
+| Part | Rule |
+|------|------|
+| Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
+| Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
+
+`validateTranslatedBlock` in `chunked-translate.ts` compares code with
+`codeBlocksMatch()`, which strips comments (per the fence's language tag) before
+comparing. A translated comment passes; a changed, dropped or commented-out code
+line still fails, and the block is rejected and retried. Shebang lines (`#!...`)
+are code, never comments. `--` only counts as a comment at the start of a line,
+so CLI flags such as `--deployment` are never mistaken for comments.
+
+When editing a translation by hand, translate the comments too, and keep every
+code line untouched.
 
 ## How translation works
 

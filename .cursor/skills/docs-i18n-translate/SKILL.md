@@ -27,6 +27,22 @@ pnpm translate:sync-docs-json       ← mirror nav paths in docs.json (opt-in)
 ```
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
+### Code and comments inside fenced blocks
+
+Code lines (identifiers, keywords, string literals, numeric values, indentation,
+blank lines, the language tag, the closing fence) stay byte-for-byte identical to
+the English source. The **comment text** inside a fenced block is translated: it
+is documentation prose the reader is meant to understand, so whole-line comments
+and trailing comments after code are localized, on the same line and position as
+in English.
+
+- Never translate a shebang (`#!...`), a string literal, a variable name or any
+  code token.
+- `validateTranslatedBlock` compares code via `codeBlocksMatch()`, which strips
+  comments per the fence's language tag. A translated comment passes; a changed,
+  dropped or commented-out code line still fails and the block is retried.
+- When editing a translation by hand, translate its comments too.
+
 ### Title / description frontmatter (localized pages)
 
 `title` and `description` frontmatter carry localized meaning, not word-for-word

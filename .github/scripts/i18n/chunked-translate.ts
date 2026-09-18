@@ -302,6 +302,111 @@ function extractCodeFences(content: string): string[] {
   return blocks;
 }
 
+/**
+ * Line-comment markers per language tag. Comments inside a fenced block are
+ * documentation prose, so they may be localized; code lines may not change.
+ * The markers are used to strip comments before comparing code.
+ */
+const LINE_COMMENT_MARKERS: Record<string, string[]> = {
+  python: ["#"], py: ["#"], bash: ["#"], sh: ["#"], shell: ["#"], zsh: ["#"],
+  yaml: ["#"], yml: ["#"], toml: ["#"], ini: ["#"], conf: ["#"],
+  dockerfile: ["#"], ruby: ["#"], rb: ["#"], perl: ["#"], r: ["#"],
+  ts: ["//"], typescript: ["//"], js: ["//"], javascript: ["//"],
+  tsx: ["//"], jsx: ["//"], jsonc: ["//"], go: ["//"], rust: ["//"],
+  java: ["//"], kotlin: ["//"], swift: ["//"], c: ["//"], cpp: ["//"],
+  csharp: ["//"], cs: ["//"], php: ["//"], dart: ["//"], scala: ["//"],
+  sql: ["--"], lua: ["--"],
+};
+const DEFAULT_COMMENT_MARKERS = ["#", "//"];
+
+function codeFenceLang(block: string): string {
+  const first = block.split("\n", 1)[0] ?? "";
+  return first.trim().replace(/^`+/, "").trim();
+}
+
+function commentMarkersFor(langTag: string): string[] {
+  return LINE_COMMENT_MARKERS[langTag.toLowerCase()] ?? DEFAULT_COMMENT_MARKERS;
+}
+
+/** A shebang is executable, not documentation: never treat it as a comment. */
+function isShebang(line: string): boolean {
+  return line.trimStart().startsWith("#!");
+}
+
+/** True for lines that carry no code: blanks and whole-line comments. */
+function isCommentOnlyLine(line: string, markers: string[]): boolean {
+  const trimmed = line.trimStart();
+  if (!trimmed) return true;
+  if (isShebang(line)) return false;
+  if (markers.some((marker) => trimmed.startsWith(marker))) return true;
+  if (markers.includes("//")) {
+    return trimmed.startsWith("/*") || trimmed.startsWith("*/") || trimmed.startsWith("*");
+  }
+  return false;
+}
+
+/**
+ * Drop a trailing line comment from `line`, honouring quotes so a marker inside
+ * a string literal stays part of the code. `--` only counts at line start, so
+ * CLI flags such as `--deployment` are never mistaken for a comment.
+ */
+export function stripTrailingComment(line: string, markers: string[]): string {
+  if (isShebang(line)) return line;
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i] as string;
+    if (quote) {
+      if (char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (i === 0 || /\s/.test(line[i - 1] as string)) {
+      const marker = markers.find((candidate) => line.startsWith(candidate, i));
+      if (marker) {
+        const isFullLinePrefix = /^\s*$/.test(line.slice(0, i));
+        if (marker !== "--" || isFullLinePrefix) return line.slice(0, i).trimEnd();
+      }
+    }
+  }
+  return line;
+}
+
+/**
+ * The byte-identical part of a fenced block: every line that carries code, with
+ * trailing comments removed. Comment-only lines are dropped, so translations
+ * may localize comments without failing validation.
+ */
+export function codeSignature(block: string, langTag: string): string[] {
+  const markers = commentMarkersFor(langTag);
+  const lines = block.split("\n");
+  const body = lines.length >= 2 ? lines.slice(1, -1) : [];
+  return body
+    .filter((line) => !isCommentOnlyLine(line, markers))
+    .map((line) => stripTrailingComment(line, markers));
+}
+
+/**
+ * A translated fenced block passes when its language tag and every code line
+ * match the English block byte-for-byte. Comments are excluded: they are
+ * documentation and are allowed to be localized.
+ */
+export function codeBlocksMatch(enBlock: string, translatedBlock: string): boolean {
+  const enLang = codeFenceLang(enBlock);
+  const trLang = codeFenceLang(translatedBlock);
+  if (enLang !== trLang) return false;
+  const enCode = codeSignature(enBlock, enLang);
+  const trCode = codeSignature(translatedBlock, trLang);
+  if (enCode.length !== trCode.length) return false;
+  return enCode.every((line, index) => line === trCode[index]);
+}
+
 function isH2SectionLine(line: string, inFence: boolean): boolean {
   return !inFence && H2_HEADING_RE.test(line);
 }
@@ -953,12 +1058,14 @@ export function validateTranslatedBlock(
   if (hasUnclosedCodeFence(translated)) return false;
 
   // Code is executable documentation. Never accept a translation that
-  // changes, drops, or truncates a fenced code block.
+  // changes, drops, or truncates a line of code. Comments inside the block are
+  // documentation prose, so a localized comment is accepted while a changed,
+  // dropped or commented-out code line still fails (see codeBlocksMatch).
   const enCode = extractCodeFences(enBlock.content);
   const translatedCode = extractCodeFences(translated);
   if (
     enCode.length !== translatedCode.length ||
-    enCode.some((block, index) => block !== translatedCode[index])
+    enCode.some((block, index) => !codeBlocksMatch(block, translatedCode[index] as string))
   ) {
     return false;
   }

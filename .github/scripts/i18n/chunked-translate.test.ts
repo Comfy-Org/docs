@@ -10,6 +10,9 @@ import {
   splitByMintlifyTabs,
   splitOversizedBlock,
   validateTranslatedBlock,
+  codeBlocksMatch,
+  codeSignature,
+  stripTrailingComment,
 } from "./chunked-translate.ts";
 
 const FM = `---
@@ -345,5 +348,98 @@ describe("validateTranslatedBlock heading_sections", () => {
     expect(
       validateTranslatedBlock("heading_sections", installBlock, tr, { finishReason: "length" })
     ).toBe(false);
+  });
+});
+
+describe("code block comparison (comments may be localized)", () => {
+  const enBlock = {
+    label: "Examples",
+    content: `## Examples
+
+\`\`\`python
+# Process the image
+image = load_image("photo.png")  # input image
+return image
+\`\`\`
+`,
+  };
+
+  test("accepts a translated whole-line comment", () => {
+    const tr = `## 示例
+
+\`\`\`python
+# 处理图像
+image = load_image("photo.png")  # 输入图像
+return image
+\`\`\`
+`;
+    expect(validateTranslatedBlock("heading_sections", enBlock, tr)).toBe(true);
+  });
+
+  test("rejects a changed code line", () => {
+    const tr = `## 示例
+
+\`\`\`python
+# 处理图像
+image = load_image("other.png")  # 输入图像
+return image
+\`\`\`
+`;
+    expect(validateTranslatedBlock("heading_sections", enBlock, tr)).toBe(false);
+  });
+
+  test("rejects a dropped code line", () => {
+    const tr = `## 示例
+
+\`\`\`python
+# 处理图像
+image = load_image("photo.png")  # 输入图像
+\`\`\`
+`;
+    expect(validateTranslatedBlock("heading_sections", enBlock, tr)).toBe(false);
+  });
+
+  test("rejects a code line that was commented out", () => {
+    const tr = `## 示例
+
+\`\`\`python
+# 处理图像
+image = load_image("photo.png")  # 输入图像
+# return image
+\`\`\`
+`;
+    expect(validateTranslatedBlock("heading_sections", enBlock, tr)).toBe(false);
+  });
+
+  test("rejects a changed string literal that looks like a comment marker", () => {
+    const en = "```javascript\nconsole.log('# not a comment');\n```";
+    const tr = "```javascript\nconsole.log('# changed');\n```";
+    expect(codeBlocksMatch(en, tr)).toBe(false);
+  });
+
+  test("keeps a shebang byte-identical", () => {
+    const en = "```bash\n#!/usr/bin/env bash\n# install\ncomfy install\n```";
+    const tr = "```bash\n#!/usr/bin/env bash\n# 安装\ncomfy install\n```";
+    expect(codeBlocksMatch(en, tr)).toBe(true);
+    const translatedShebang = "```bash\n#!/bin/sh\n# 安装\ncomfy install\n```";
+    expect(codeBlocksMatch(en, translatedShebang)).toBe(false);
+  });
+
+  test("does not treat bash CLI flags as comments", () => {
+    expect(stripTrailingComment("comfy deploy scale --min 2 --max 5", ["#"])).toBe(
+      "comfy deploy scale --min 2 --max 5"
+    );
+    expect(stripTrailingComment("comfy build ls  # list builds", ["#"])).toBe("comfy build ls");
+  });
+
+  test("drops comment-only lines from the code signature", () => {
+    const block = "```bash\n# step one\ncomfy install\n\n# step two\ncomfy run\n```";
+    expect(codeSignature(block, "bash")).toEqual(["comfy install", "comfy run"]);
+  });
+
+  test("rejects a different fence language tag", () => {
+    const en = "```python\nprint('hi')\n```";
+    const tr = "```bash\nprint('hi')\n```";
+    expect(codeBlocksMatch(en, tr)).toBe(false);
   });
 });
