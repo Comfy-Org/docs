@@ -190,7 +190,7 @@ export function formatFailure(offences: readonly Offence[]): string {
     lines.push("");
   }
   lines.push(
-    "These files are rewritten from upstream sources on every sync run, so an edit made here is published now and reverted by the next sync. Move the change upstream (or into the generator input named above) and drop it from this pull request.",
+    "These files are rewritten from upstream sources on every sync run, so an edit made here is published now and reverted by the next sync. Move each change to where its entry above says it belongs, then drop it from this pull request.",
   );
   lines.push(
     "The open sync pull request on the chore/sync-comfy-api-v2-spec branch describes each file's source; see also \"Sync-owned files\" in README.md.",
