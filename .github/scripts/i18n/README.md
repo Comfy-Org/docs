@@ -36,7 +36,7 @@ A fenced code block splits into two halves that are treated differently:
 |------|------|
 | Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
 | Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
-| Python docstrings: a triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
+| Python docstrings: a standalone triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
 
 `validateTranslatedBlock` in `chunked-translate.ts` compares code with
 `codeBlocksMatch()`, which strips comments (per the fence's language tag) and
@@ -52,11 +52,11 @@ Boundary rules keep the comparison honest:
   `--deployment` is never mistaken for a comment
 - C-style block comments are tracked across lines, and a generator method that
   starts with `*` stays code; comment markers inside quoted strings or JavaScript
-  regex literals stay code
-- a docstring is only a triple-quoted string that opens a suite (first statement
+  regex and multiline template literals stay code
+- a docstring is only a standalone triple-quoted string that opens a suite (first statement
   after a `def`, `class` or module): a triple-quoted value inside an expression
-  or conditional stays code; executable code after a docstring on the same line
-  stays code too
+  or conditional stays code; a line with other executable code stays code too
+- opening and closing fence lines must match the English source exactly
 
 When editing a translation by hand, translate the comments and docstrings too,
 and keep every code line untouched.

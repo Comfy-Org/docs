@@ -369,17 +369,17 @@ function isCommentOnlyLine(line: string, markers: string[]): boolean {
  * language: `value=1# comment` and `run();// comment` are comments, while
  * `comfy deploy --deployment dep_1` is not.
  */
-export function stripTrailingComment(line: string, markers: string[], langTag = ""): string {
+export function stripTrailingComment(line: string, markers: string[], langTag = "", state = { templateOpen: false }): string {
   if (isShebang(line)) return line;
-  const start = findCommentToken(line, markers, langTag, false);
+  const start = findCommentToken(line, markers, langTag, false, state);
   return start === -1 ? line : line.slice(0, start).trimEnd();
 }
 
 const REGEX_LITERAL_LANGS = new Set(["js", "javascript", "jsx", "ts", "typescript", "tsx"]);
 
 /** Find the first comment token outside strings and JavaScript regex literals. */
-function findCommentToken(line: string, markers: string[], langTag: string, includeBlock: boolean): number {
-  let quote: string | null = null;
+function findCommentToken(line: string, markers: string[], langTag: string, includeBlock: boolean, state = { templateOpen: false }): number {
+  let quote: string | null = state.templateOpen ? "`" : null;
   let regex = false;
   let regexClass = false;
   for (let i = 0; i < line.length; i += 1) {
@@ -401,14 +401,21 @@ function findCommentToken(line: string, markers: string[], langTag: string, incl
       quote = char;
       continue;
     }
-    if (includeBlock && line.startsWith("/*", i)) return i;
+    if (includeBlock && line.startsWith("/*", i)) {
+      state.templateOpen = quote === "`";
+      return i;
+    }
     const found = markers.find((candidate) => line.startsWith(candidate, i));
-    if (found && isCommentStart(line, i, found, langTag)) return i;
+    if (found && isCommentStart(line, i, found, langTag)) {
+      state.templateOpen = quote === "`";
+      return i;
+    }
     if (char === "/" && REGEX_LITERAL_LANGS.has(langTag.toLowerCase())) {
       const before = line.slice(0, i).trimEnd();
       if (/[=(:,!\[{?]$/.test(before) || /\b(?:return|case|throw)$/.test(before)) regex = true;
     }
   }
+  state.templateOpen = quote === "`";
   return -1;
 }
 
@@ -426,6 +433,7 @@ export function codeSignature(block: string, langTag: string): string[] {
   const withoutDocstringText = stripDocstringText(body, langTag);
   const out: string[] = [];
   let inBlockComment = false;
+  const scanState = { templateOpen: false };
 
   body.forEach((line, index) => {
     const codeLine = withoutDocstringText[index];
@@ -440,34 +448,34 @@ export function codeSignature(block: string, langTag: string): string[] {
       return;
     }
 
-    if (isCommentOnlyLine(codeLine, markers)) return;
+    if (!scanState.templateOpen && isCommentOnlyLine(codeLine, markers)) return;
 
     if (blockComments) {
-      const open = findBlockCommentStart(codeLine, markers, langTag);
+      const open = findBlockCommentStart(codeLine, markers, langTag, scanState);
       if (open !== -1) {
         const close = codeLine.indexOf("*/", open + 2);
         if (close === -1) {
           inBlockComment = true;
-          const kept = stripTrailingComment(codeLine.slice(0, open), markers, langTag);
+          const kept = stripTrailingComment(codeLine.slice(0, open), markers, langTag, scanState);
           if (kept.trim()) out.push(kept);
           return;
         }
         const merged = `${codeLine.slice(0, open)}${codeLine.slice(close + 2)}`;
-        const kept = stripTrailingComment(merged, markers, langTag);
+        const kept = stripTrailingComment(merged, markers, langTag, scanState);
         if (kept.trim()) out.push(kept);
         return;
       }
     }
 
-    out.push(stripTrailingComment(codeLine, markers, langTag));
+    out.push(stripTrailingComment(codeLine, markers, langTag, scanState));
   });
 
   return out;
 }
 
 /** Locate a block comment only before a line comment and outside quoted strings. */
-function findBlockCommentStart(line: string, markers: string[], langTag: string): number {
-  const start = findCommentToken(line, markers, langTag, true);
+function findBlockCommentStart(line: string, markers: string[], langTag: string, state: { templateOpen: boolean }): number {
+  const start = findCommentToken(line, markers, langTag, true, { ...state });
   return start !== -1 && line.startsWith("/*", start) ? start : -1;
 }
 
@@ -494,6 +502,7 @@ function stripDocstringText(lines: string[], langTag: string): (string | null)[]
   if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return [...lines];
   const result: (string | null)[] = [];
   let open: string | null = null;
+  let openAt = -1;
   let previousMeaningful = "";
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -504,8 +513,14 @@ function stripDocstringText(lines: string[], langTag: string): (string | null)[]
       const close = line.indexOf(open);
       if (close === -1) result.push(null);
       else {
-        result.push(`${line.slice(0, line.length - trimmed.length)}${open}${line.slice(close + open.length)}`);
+        const suffix = line.slice(close + open.length);
+        if (!/^\s*(?:#.*)?$/.test(suffix)) {
+          for (let from = openAt; from <= index; from += 1) result[from] = lines[from] as string;
+        } else {
+          result.push(`${line.slice(0, line.length - trimmed.length)}${open}${suffix}`);
+        }
         open = null;
+        openAt = -1;
       }
       continue;
     }
@@ -519,8 +534,12 @@ function stripDocstringText(lines: string[], langTag: string): (string | null)[]
         if (close === -1) {
           result.push(`${prefix}${delim}`);
           open = delim;
+          openAt = index;
         } else {
-          result.push(`${prefix}${delim}${delim}${trimmed.slice(close + delim.length)}`);
+          const suffix = trimmed.slice(close + delim.length);
+          result.push(/^\s*(?:#.*)?$/.test(suffix)
+            ? `${prefix}${delim}${delim}${suffix}`
+            : line);
         }
         continue;
       }
@@ -537,20 +556,32 @@ export function docstringLineFlags(lines: string[], langTag: string): boolean[] 
   const flags = lines.map(() => false);
   if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
   let open: string | null = null;
+  let openAt = -1;
   let previousMeaningful = "";
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
     const trimmed = line.trimStart();
     if (open) {
-      flags[index] = true;
-      if (line.includes(open)) open = null;
+      const close = line.indexOf(open);
+      if (close !== -1) {
+        if (/^\s*(?:#.*)?$/.test(line.slice(close + open.length))) {
+          for (let from = openAt; from <= index; from += 1) flags[from] = true;
+        }
+        open = null;
+        openAt = -1;
+      }
       continue;
     }
     if (opensSuite(previousMeaningful)) {
       const delim = ['"""', "'''"].find((candidate) => trimmed.startsWith(candidate));
       if (delim) {
-        flags[index] = true;
-        if (trimmed.indexOf(delim, delim.length) === -1) open = delim;
+        const close = trimmed.indexOf(delim, delim.length);
+        if (close === -1) {
+          open = delim;
+          openAt = index;
+        } else if (/^\s*(?:#.*)?$/.test(trimmed.slice(close + delim.length))) {
+          flags[index] = true;
+        }
         continue;
       }
     }
@@ -565,6 +596,9 @@ export function docstringLineFlags(lines: string[], langTag: string): boolean[] 
  * documentation and are allowed to be localized.
  */
 export function codeBlocksMatch(enBlock: string, translatedBlock: string): boolean {
+  const enLines = enBlock.split("\n");
+  const trLines = translatedBlock.split("\n");
+  if (enLines[0] !== trLines[0] || enLines.at(-1) !== trLines.at(-1)) return false;
   const enLang = codeFenceLang(enBlock);
   const trLang = codeFenceLang(translatedBlock);
   if (enLang !== trLang) return false;

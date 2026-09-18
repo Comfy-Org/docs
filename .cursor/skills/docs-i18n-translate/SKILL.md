@@ -36,7 +36,7 @@ is documentation prose the reader is meant to understand, so whole-line comments
 and trailing comments after code are localized, on the same line and position as
 in English.
 
-Python docstrings (a triple-quoted string that opens a `def`, `class` or module)
+Python docstrings (a standalone triple-quoted string that opens a `def`, `class` or module)
 count as documentation, so their text is translated too; a triple-quoted string
 used as a value inside code stays code.
 
@@ -45,9 +45,10 @@ regex literal, so `value=1# note` counts as a comment; shell-style `#` and
 `--` need a word boundary, so a CLI flag such as `--deployment` stays code.
 C-style block comments are tracked across lines, so a generator method starting
 with `*` stays code. Comment markers inside quoted strings or JavaScript regex
-literals stay code. A docstring is only the triple-quoted string that opens a
-suite, not a triple-quoted value inside an expression or conditional. Code after
-a docstring on the same line stays code too.
+literals and multiline template literals stay code. A docstring is only a
+standalone triple-quoted string that opens a suite, not a triple-quoted value
+inside an expression or conditional. A line with other executable code stays
+byte-identical. Opening and closing fence lines stay byte-identical too.
 
 - Never translate a shebang (`#!...`), a string literal used as a value, a
   variable name or any code token.

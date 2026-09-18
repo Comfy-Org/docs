@@ -562,8 +562,31 @@ def f():
     const en = '```python\ndef f():\n    """docs"""; return 1\n```';
     const localized = '```python\ndef f():\n    """文档"""; return 1\n```';
     const changed = '```python\ndef f():\n    """文档"""; return 2\n```';
-    expect(codeBlocksMatch(en, localized)).toBe(true);
+    expect(codeBlocksMatch(en, localized)).toBe(false);
     expect(codeBlocksMatch(en, changed)).toBe(false);
+  });
+
+  test("rejects changes inside multiline template literals", () => {
+    const enSlash = '```js\nconst x = `start\n// value 1\nend`;\n```';
+    const changedSlash = '```js\nconst x = `start\n// value 2\nend`;\n```';
+    const enBlock = '```js\nconst x = `start\n/* value 1 */\nend`;\n```';
+    const changedBlock = '```js\nconst x = `start\n/* value 2 */\nend`;\n```';
+    expect(codeBlocksMatch(enSlash, changedSlash)).toBe(false);
+    expect(codeBlocksMatch(enBlock, changedBlock)).toBe(false);
+  });
+
+  test("rejects changed closing fences", () => {
+    const en = '```python\nprint(1)\n```';
+    expect(codeBlocksMatch(en, '```python\nprint(1)\n````')).toBe(false);
+    expect(codeBlocksMatch(en, '```python\nprint(1)\n~~~')).toBe(false);
+  });
+
+  test("does not treat a Python expression as a docstring", () => {
+    const en = '```python\ndef f(mode):\n    """allow""" == mode and grant()\n```';
+    const changed = '```python\ndef f(mode):\n    """deny""" == mode and grant()\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+    expect(docstringLineFlags(['def f(mode):', '    """allow""" == mode and grant()'], "python"))
+      .toEqual([false, false]);
   });
 
   test("treats a string under an if statement as code", () => {
