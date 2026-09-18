@@ -73,6 +73,24 @@ Or talk to us on our [discord](https://discord.com/invite/comfyorg)
 
 The documentation is built with Mintlify, please refer to [Mintlify documentation](https://mintlify.com/docs) to learn how to use it.
 
+### Sync-owned files
+
+Some files in this repository are written by the Comfy API v2 specification sync and rewritten from upstream sources every time it runs. Editing them here publishes the change until the next sync, which then silently reverts it. Do not edit these files in a PR:
+
+| File | Where the edit belongs |
+|------|------------------------|
+| `openapi-v2.yaml` | The API contract upstream. This file is a vendored projection of it. |
+| `development/comfy-router/reference.mdx` | The API contract upstream. This page is generated from it. |
+| `development/comfy-router/quickstart.mdx` | The upstream `quickstart.mdx`, which is published here verbatim. |
+| `development/comfy-router/limitations.mdx` | The upstream `limitations.mdx`, which is published here verbatim. |
+| `router-schemas/**` | The API contract upstream. The whole directory is re-mirrored on every sync. |
+| `development/comfy-router/models.mdx` | A model's `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+| `development/comfy-router/models/**/code.mdx` | The sibling `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+
+Two things inside that tree stay editable: `docs.json` (the sync rewrites only the `Models` nav group and the model-page redirects) and the hand-curated `development/comfy-router/models/**/code.yaml` generator inputs, which are where a change to a generated model page belongs.
+
+The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
+
 ### i18n Contributions
 
 English MDX at the repo root is the **source of truth**. Translations mirror the same relative paths under language directories (for example `zh/get_started/introduction.mdx`, `ja/get_started/introduction.mdx`, `ko/get_started/introduction.mdx`). Reusable fragments live in `snippets/` with per-language copies under `snippets/zh/`, `snippets/ja/`, `snippets/ko/`, and so on.
