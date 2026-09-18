@@ -163,11 +163,15 @@ describe("modelPageRedirects: a pruned page keeps answering on its URL", () => {
 });
 
 describe("renderDocsJson: the redirect lands in the real docs.json", () => {
-  const retired = "development/comfy-router/models/kling/kling-v1/code";
+  // A page no provider will ever ship. The real `docs.json` already carries a
+  // redirect for every model the generator has retired so far, so a real
+  // retired id would find its redirect already present and append nothing.
+  const retired = "development/comfy-router/models/test-provider/never-shipped/code";
   const before = JSON.parse(readFileSync(join(ROOT, "docs.json"), "utf8"));
   const nav = modelsNav([{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }]);
 
   test("a pruned page appends exactly one redirect and leaves the others alone", () => {
+    expect(before.redirects.some((r: { source: string }) => r.source === `/${retired}`)).toBe(false);
     const after = JSON.parse(renderDocsJson(nav, { live: [], pruned: [retired] }));
     expect(after.redirects.length).toBe(before.redirects.length + 1);
     expect(after.redirects.slice(0, -1)).toEqual(before.redirects);
