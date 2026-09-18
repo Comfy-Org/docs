@@ -371,27 +371,45 @@ function isCommentOnlyLine(line: string, markers: string[]): boolean {
  */
 export function stripTrailingComment(line: string, markers: string[], langTag = ""): string {
   if (isShebang(line)) return line;
+  const start = findCommentToken(line, markers, langTag, false);
+  return start === -1 ? line : line.slice(0, start).trimEnd();
+}
+
+const REGEX_LITERAL_LANGS = new Set(["js", "javascript", "jsx", "ts", "typescript", "tsx"]);
+
+/** Find the first comment token outside strings and JavaScript regex literals. */
+function findCommentToken(line: string, markers: string[], langTag: string, includeBlock: boolean): number {
   let quote: string | null = null;
+  let regex = false;
+  let regexClass = false;
   for (let i = 0; i < line.length; i += 1) {
     const char = line[i] as string;
-    if (quote) {
+    if (quote || regex) {
       if (char === "\\") {
         i += 1;
         continue;
       }
-      if (char === quote) quote = null;
+      if (quote && char === quote) quote = null;
+      if (regex) {
+        if (char === "[") regexClass = true;
+        if (char === "]") regexClass = false;
+        if (char === "/" && !regexClass) regex = false;
+      }
       continue;
     }
     if (char === '"' || char === "'" || char === "`") {
       quote = char;
       continue;
     }
+    if (includeBlock && line.startsWith("/*", i)) return i;
     const found = markers.find((candidate) => line.startsWith(candidate, i));
-    if (found && isCommentStart(line, i, found, langTag)) {
-      return line.slice(0, i).trimEnd();
+    if (found && isCommentStart(line, i, found, langTag)) return i;
+    if (char === "/" && REGEX_LITERAL_LANGS.has(langTag.toLowerCase())) {
+      const before = line.slice(0, i).trimEnd();
+      if (/[=(:,!\[{?]$/.test(before) || /\b(?:return|case|throw)$/.test(before)) regex = true;
     }
   }
-  return line;
+  return -1;
 }
 
 /**
@@ -405,12 +423,13 @@ export function codeSignature(block: string, langTag: string): string[] {
   const blockComments = BLOCK_COMMENT_LANGS.has(langTag.toLowerCase());
   const lines = block.split("\n");
   const body = lines.length >= 2 ? lines.slice(1, -1) : [];
-  const docstrings = docstringLineFlags(body, langTag);
+  const withoutDocstringText = stripDocstringText(body, langTag);
   const out: string[] = [];
   let inBlockComment = false;
 
   body.forEach((line, index) => {
-    if (docstrings[index]) return;
+    const codeLine = withoutDocstringText[index];
+    if (codeLine === null) return;
 
     if (inBlockComment) {
       const close = line.indexOf("*/");
@@ -421,29 +440,35 @@ export function codeSignature(block: string, langTag: string): string[] {
       return;
     }
 
-    if (isCommentOnlyLine(line, markers)) return;
+    if (isCommentOnlyLine(codeLine, markers)) return;
 
     if (blockComments) {
-      const open = line.indexOf("/*");
+      const open = findBlockCommentStart(codeLine, markers, langTag);
       if (open !== -1) {
-        const close = line.indexOf("*/", open + 2);
+        const close = codeLine.indexOf("*/", open + 2);
         if (close === -1) {
           inBlockComment = true;
-          const kept = stripTrailingComment(line.slice(0, open), markers, langTag);
+          const kept = stripTrailingComment(codeLine.slice(0, open), markers, langTag);
           if (kept.trim()) out.push(kept);
           return;
         }
-        const merged = `${line.slice(0, open)}${line.slice(close + 2)}`;
+        const merged = `${codeLine.slice(0, open)}${codeLine.slice(close + 2)}`;
         const kept = stripTrailingComment(merged, markers, langTag);
         if (kept.trim()) out.push(kept);
         return;
       }
     }
 
-    out.push(stripTrailingComment(line, markers, langTag));
+    out.push(stripTrailingComment(codeLine, markers, langTag));
   });
 
   return out;
+}
+
+/** Locate a block comment only before a line comment and outside quoted strings. */
+function findBlockCommentStart(line: string, markers: string[], langTag: string): number {
+  const start = findCommentToken(line, markers, langTag, true);
+  return start !== -1 && line.startsWith("/*", start) ? start : -1;
 }
 
 /** Languages whose triple-quoted strings are documentation (docstrings). */
@@ -457,7 +482,7 @@ const DOCSTRING_LANGS = new Set(["python", "py"]);
  */
 function opensSuite(previousMeaningful: string): boolean {
   if (!previousMeaningful) return true;
-  return previousMeaningful.endsWith(":");
+  return /^(?:async\s+def|def|class)\b.*:\s*$/.test(previousMeaningful);
 }
 
 /**
@@ -465,9 +490,9 @@ function opensSuite(previousMeaningful: string): boolean {
  * same as a comment, so its text may be localized while the code around it must
  * not change.
  */
-export function docstringLineFlags(lines: string[], langTag: string): boolean[] {
-  const flags = lines.map(() => false);
-  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
+function stripDocstringText(lines: string[], langTag: string): (string | null)[] {
+  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return [...lines];
+  const result: (string | null)[] = [];
   let open: string | null = null;
   let previousMeaningful = "";
 
@@ -476,8 +501,12 @@ export function docstringLineFlags(lines: string[], langTag: string): boolean[] 
     const trimmed = line.trimStart();
 
     if (open) {
-      flags[index] = true;
-      if (line.includes(open)) open = null;
+      const close = line.indexOf(open);
+      if (close === -1) result.push(null);
+      else {
+        result.push(`${line.slice(0, line.length - trimmed.length)}${open}${line.slice(close + open.length)}`);
+        open = null;
+      }
       continue;
     }
 
@@ -485,15 +514,48 @@ export function docstringLineFlags(lines: string[], langTag: string): boolean[] 
       const delimiters = ['"""', "'''"];
       const delim = delimiters.find((candidate) => trimmed.startsWith(candidate));
       if (delim) {
+        const close = trimmed.indexOf(delim, delim.length);
+        const prefix = line.slice(0, line.length - trimmed.length);
+        if (close === -1) {
+          result.push(`${prefix}${delim}`);
+          open = delim;
+        } else {
+          result.push(`${prefix}${delim}${delim}${trimmed.slice(close + delim.length)}`);
+        }
+        continue;
+      }
+    }
+
+    result.push(line);
+    if (trimmed && !trimmed.startsWith("#")) previousMeaningful = trimmed;
+  }
+
+  return result;
+}
+
+export function docstringLineFlags(lines: string[], langTag: string): boolean[] {
+  const flags = lines.map(() => false);
+  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
+  let open: string | null = null;
+  let previousMeaningful = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    const trimmed = line.trimStart();
+    if (open) {
+      flags[index] = true;
+      if (line.includes(open)) open = null;
+      continue;
+    }
+    if (opensSuite(previousMeaningful)) {
+      const delim = ['"""', "'''"].find((candidate) => trimmed.startsWith(candidate));
+      if (delim) {
         flags[index] = true;
         if (trimmed.indexOf(delim, delim.length) === -1) open = delim;
         continue;
       }
     }
-
-    if (trimmed) previousMeaningful = trimmed;
+    if (trimmed && !trimmed.startsWith("#")) previousMeaningful = trimmed;
   }
-
   return flags;
 }
 

@@ -540,4 +540,41 @@ def f():
     const changed = '```javascript\nconst a = 1; /* 説明\n   続き */\nconst b = 3;\n```';
     expect(codeBlocksMatch(en, changed)).toBe(false);
   });
+
+  test("keeps code after a block-comment marker inside a string", () => {
+    const en = '```javascript\nconst marker = "/*";\nconst value = 1;\n```';
+    const changed = '```javascript\nconst marker = "/*";\nconst value = 2;\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+    expect(validateTranslatedBlock(
+      "heading_sections",
+      { label: "Examples", content: `## Examples\n\n${en}` },
+      `## 示例\n\n${changed}`
+    )).toBe(false);
+  });
+
+  test("keeps code after slashes inside a regex literal", () => {
+    const en = '```javascript\nconst re = /a\\/\\/b/; const value = 1;\n```';
+    const changed = '```javascript\nconst re = /a\\/\\/b/; const value = 2;\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+  });
+
+  test("keeps code on a docstring line", () => {
+    const en = '```python\ndef f():\n    """docs"""; return 1\n```';
+    const localized = '```python\ndef f():\n    """文档"""; return 1\n```';
+    const changed = '```python\ndef f():\n    """文档"""; return 2\n```';
+    expect(codeBlocksMatch(en, localized)).toBe(true);
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+  });
+
+  test("treats a string under an if statement as code", () => {
+    const en = '```python\nif enabled:\n    """English value"""\n```';
+    const changed = '```python\nif enabled:\n    """Translated value"""\n```';
+    expect(codeBlocksMatch(en, changed)).toBe(false);
+  });
+
+  test("accepts a module docstring after a comment", () => {
+    const en = '```python\n# module name\n"""English docs"""\nvalue = 1\n```';
+    const localized = '```python\n# 模块名称\n"""中文文档"""\nvalue = 1\n```';
+    expect(codeBlocksMatch(en, localized)).toBe(true);
+  });
 });

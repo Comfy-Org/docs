@@ -40,12 +40,14 @@ Python docstrings (a triple-quoted string that opens a `def`, `class` or module)
 count as documentation, so their text is translated too; a triple-quoted string
 used as a value inside code stays code.
 
-Boundary rules: Python-style `#` and `//` open a comment anywhere outside a
-string literal, so `value=1# note` counts as a comment; shell-style `#` and
+Boundary rules: Python-style `#` and `//` open a comment outside a string or
+regex literal, so `value=1# note` counts as a comment; shell-style `#` and
 `--` need a word boundary, so a CLI flag such as `--deployment` stays code.
 C-style block comments are tracked across lines, so a generator method starting
-with `*` stays code. A docstring is only the triple-quoted string that opens a
-suite, not a triple-quoted value inside an expression.
+with `*` stays code. Comment markers inside quoted strings or JavaScript regex
+literals stay code. A docstring is only the triple-quoted string that opens a
+suite, not a triple-quoted value inside an expression or conditional. Code after
+a docstring on the same line stays code too.
 
 - Never translate a shebang (`#!...`), a string literal used as a value, a
   variable name or any code token.

@@ -46,15 +46,17 @@ dropped or commented-out code line still fails, and the block is rejected and re
 Boundary rules keep the comparison honest:
 
 - shebang lines (`#!...`) are code, never comments
-- Python-style `#` and every `//` open a comment anywhere outside a string
-  literal, so `value=1# note` and `run();// note` are recognized too
+- Python-style `#` and `//` open a comment outside a string or regex literal,
+  so `value=1# note` and `run();// note` are recognized too
 - shell-style `#` and every `--` need a word boundary, so a CLI flag such as
   `--deployment` is never mistaken for a comment
 - C-style block comments are tracked across lines, and a generator method that
-  starts with `*` stays code
+  starts with `*` stays code; comment markers inside quoted strings or JavaScript
+  regex literals stay code
 - a docstring is only a triple-quoted string that opens a suite (first statement
   after a `def`, `class` or module): a triple-quoted value inside an expression
-  stays code
+  or conditional stays code; executable code after a docstring on the same line
+  stays code too
 
 When editing a translation by hand, translate the comments and docstrings too,
 and keep every code line untouched.
