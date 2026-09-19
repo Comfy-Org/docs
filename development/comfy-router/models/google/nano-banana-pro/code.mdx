@@ -711,6 +711,45 @@ Generated from the schema Router serves at `GET /v2/models/vertexai/gemini-3-pro
 }
 ```
 
-By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created. An upload failure leaves that image inline, so inspect each part for `inlineData` or `fileData`; text parts can also appear, and the image is not guaranteed to be the first part.
+### Reading the parts
+
+By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created.
+
+**`fileData` can appear on a response that did not ask for it.** The two shapes are per part, not per response: when `uploadImagesToStorage: true` is set, an image whose upload fails is left as `inlineData`, so one response can mix both. Branch on which key is present rather than on what you requested. The one case that cannot happen is the reverse: with the field unset or false, every generated image comes back as `inlineData` and no `fileData` image part is produced. Text parts can also appear, and the image is not guaranteed to be the first part, so select a part by the field you need rather than by index.
+
+**`thoughtSignature` is a part field too, and it is large.** A part can carry `thoughtSignature`, an opaque base64 signature of the model's reasoning that exists so the thought can be replayed in a later request. It is absent from the generated schema above, which follows the request/response document Router publishes. Measured on real responses it runs roughly 1 to 2 MB per part, comparable to the image itself, so it is worth budgeting for or discarding explicitly if you are logging responses, forwarding them through a serverless function, or storing them.
+
+### `imageSize` is a class, not a width
+
+`generationConfig.imageConfig.imageSize` takes `1K`, `2K` or `4K`, and each step up doubles both edges rather than setting a width. A 16:9 request measured 1376x768 at about 1.35 MB under `1K` and 2752x1536 at about 5.6 MB under `2K`: the same aspect ratio, four times the pixels and roughly four times the bytes. `2K` therefore does not mean a 2048-pixel-wide image, and sizing an upload path, a response body limit or a storage bucket against `2K` as if it were a width will under-provision it by about four times.
+
+### Reference chaining
+
+Feeding a previously generated image straight back in as an `inlineData` part is the way to get a new camera angle on the same subject. Architecture, materials and lighting hold across generations, so a sequence of shots of one scene is a chain of calls rather than one prompt that has to describe everything at once. Take the base64 bytes out of the first response's `inlineData.data`, send them back unchanged as a `user` part, and ask for the change you want:
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "inlineData": {
+            "mimeType": "image/png",
+            "data": "<the base64 from candidates[0].content.parts[].inlineData.data of the previous response>"
+          }
+        },
+        { "text": "the same room, viewed from the opposite corner at eye level" }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "16:9" }
+  }
+}
+```
+
+Each call is independent, so pass the image you want to build on rather than relying on conversation history. Watch the request body size when you chain: the inline image counts against Router's [request body cap](/development/comfy-router/limitations#request-bodies-are-capped), and a `2K` image is about four times the bytes of a `1K` one.
 
 <RouterCodeFooter />
