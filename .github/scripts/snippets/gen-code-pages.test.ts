@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isOpaqueBody, loadModelSchema, opaqueOutputExample, outputContent, outputSchemaFields } from "./gen-code-pages.ts";
+import { isOpaqueBody, loadModelSchema, modelPageRedirects, modelsNav, opaqueOutputExample, outputContent, outputSchemaFields, renderDocsJson } from "./gen-code-pages.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 
@@ -117,4 +117,71 @@ describe("the generated pages the Router serves as binary", () => {
       expect(mdx).toContain("Binary body: raw bytes rather than a JSON document");
     });
   }
+});
+
+describe("modelPageRedirects: a pruned page keeps answering on its URL", () => {
+  const INDEX = "/development/comfy-router/models";
+  const retired = "development/comfy-router/models/kling/kling-v1/code";
+  const retiredToo = "development/comfy-router/models/byteplus/seedream-3-0-t2i-250415/code";
+  const alive = "development/comfy-router/models/kling/kling-v3/code";
+  const handWritten = { source: "/comfy-router-quickstart", destination: "/development/comfy-router/quickstart" };
+
+  test("every pruned page gets a redirect to the catalog landing page, appended in a stable order", () => {
+    const out = modelPageRedirects([handWritten], [alive], [retired, retiredToo]);
+    expect(out).toEqual([
+      handWritten,
+      { source: `/${retiredToo}`, destination: INDEX },
+      { source: `/${retired}`, destination: INDEX },
+    ]);
+  });
+
+  test("the source is the form the redirect check compares against: leading slash, no .mdx", () => {
+    const [r] = modelPageRedirects([], [], [retired]);
+    expect(r.source).toBe("/development/comfy-router/models/kling/kling-v1/code");
+    expect(r.source.replace(/^\//, "")).toBe(retired);
+  });
+
+  test("a redirect someone already wrote for the pruned page is kept as written, not duplicated", () => {
+    const better = { source: `/${retired}`, destination: `/${alive}`, permanent: true };
+    const out = modelPageRedirects([better], [alive], [retired]);
+    expect(out).toEqual([better]);
+  });
+
+  test("a model that comes back loses the redirect that would shadow its page", () => {
+    const stale = { source: `/${alive}`, destination: INDEX };
+    expect(modelPageRedirects([handWritten, stale], [alive], [])).toEqual([handWritten]);
+  });
+
+  test("a page that is both live and pruned is live: no redirect is written over it", () => {
+    expect(modelPageRedirects([], [alive], [alive])).toEqual([]);
+  });
+
+  test("with nothing pruned and nothing stale, the redirects are returned unchanged", () => {
+    const existing = [handWritten, { source: `/${retired}`, destination: INDEX }];
+    expect(modelPageRedirects(existing, [alive], [])).toEqual(existing);
+  });
+});
+
+describe("renderDocsJson: the redirect lands in the real docs.json", () => {
+  // A page no provider will ever ship. The real `docs.json` already carries a
+  // redirect for every model the generator has retired so far, so a real
+  // retired id would find its redirect already present and append nothing.
+  const retired = "development/comfy-router/models/test-provider/never-shipped/code";
+  const before = JSON.parse(readFileSync(join(ROOT, "docs.json"), "utf8"));
+  const nav = modelsNav([{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }]);
+
+  test("a pruned page appends exactly one redirect and leaves the others alone", () => {
+    expect(before.redirects.some((r: { source: string }) => r.source === `/${retired}`)).toBe(false);
+    const after = JSON.parse(renderDocsJson(nav, { live: [], pruned: [retired] }));
+    expect(after.redirects.length).toBe(before.redirects.length + 1);
+    expect(after.redirects.slice(0, -1)).toEqual(before.redirects);
+    expect(after.redirects.at(-1)).toEqual({ source: `/${retired}`, destination: "/development/comfy-router/models" });
+  });
+
+  test("nothing pruned means the redirects are byte-for-byte what was there", () => {
+    const after = JSON.parse(renderDocsJson(nav, { live: [], pruned: [] }));
+    expect(after.redirects).toEqual(before.redirects);
+    // `redirects` stays the last key, so the file's shape does not churn.
+    expect(Object.keys(after).at(-1)).toBe("redirects");
+  });
 });
