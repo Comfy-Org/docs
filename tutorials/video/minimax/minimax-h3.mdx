@@ -97,3 +97,14 @@ If you see morphing near the end of a clip or garbled on-screen text while using
 Note: Comfy Kitchen attention has a known incompatibility with the INT8-convrot quantized H3 checkpoints (for example `minimax_h3_fl2va_pruned_int8_convrot.safetensors`), where sampling crashes with an alignment error. Use the bfloat16 workaround below with those checkpoints. See [ComfyUI issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529).
 
 To switch backends, add the built-in **Model Attention Backend** node (category `model/patch`) to the workflow, connect it between the `UNETLoader` and the `BasicGuider` node, and set backend to `comfy kitchen attention`. Alternatively, launch ComfyUI with the `--use-ck-attention` flag (available in ComfyUI 0.32.0 or later). The backend uses the `comfy-kitchen` package that ships with ComfyUI, but the option only appears when the INT8 kernels are available on your hardware; otherwise the node falls back to PyTorch attention. Running the affected blocks in bfloat16 attention instead also fixes the artifacts, at the cost of longer render times.
+
+## Speeding up generation with sparse attention
+
+Attention cost grows quickly with clip length. ComfyUI's built-in **Model Sparse Attention** node (category `model/patch`) runs block-sparse attention on eligible layers to cut that cost, and the gain grows with sequence length. Community testing on H3 found that the node's default schedule sparsifies too early and ends too late, which costs quality:
+
+- **Keep sparse attention out of the first and last steps.** The defaults are `start_percent` `0.2` and `end_percent` `1.0`, so sparsity runs from 20% of the schedule through the final step. Starting later (around `0.4`) lets the overall motion of the shot resolve with dense attention first, and ending earlier (around `0.9`) keeps the last steps dense. Reported results with `0.4` and `0.9`: less morphing early in the clip and less flicker on the closing frames, at a modest cost in speed.
+- **Leave `sink_conditioning` at its default** (`exact_kv_and_rows`) on H3. It keeps the packed text, audio, and reference rows exact and the generated audio query rows dense, so the sparse path does not degrade the audio track.
+- **`tau` controls how sparse `sol-attn` is**: `1.0` keeps roughly 16% of key blocks exact, `1.5` about 7%, and `2.0` about 2.7%. The default is `1.3`, and higher values are faster but riskier.
+- **Short clips gain little.** Sequences below `min_tokens` (default `12288`) and blocks listed in `dense_blocks` stay dense.
+
+FastH3 checkpoints use the same node in `vsa` mode, which is trained for its sparse pattern at `keep_percent` `10`. See the [FastH3 workflow page](/tutorials/video/minimax/minimax-h3-fastvideo) for details.
