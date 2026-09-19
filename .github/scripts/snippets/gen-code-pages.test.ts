@@ -178,7 +178,11 @@ describe("swiftLiteral: the [String: Any] input literal", () => {
   });
 
   test("an empty object is [:], where a Swift dictionary literal differs from JSON", () => {
+    // Verified against Swift 6.1: in [String: Any] value position an empty [] infers
+    // Array<Any> and an empty [:] infers Dictionary<AnyHashable, Any>, and both BUILD.
+    // An explicit [Any]() / [String: Any]() is therefore not needed here.
     expect(f({})).toBe("[:]");
+    expect(f([])).toBe("[]");
   });
 
   test("a primitive array is inline; a string never leaks a raw \\u escape", () => {
@@ -224,7 +228,10 @@ describe("swiftSnippet / swiftQueueSnippet: both delivery modes", () => {
     expect(q).toContain('let handle = try await client.models.submit(');
     expect(q).toContain("print(\"requestId:\", handle.requestId)");
     expect(q).toContain("for try await update in handle.events() {");
-    expect(q).toContain("print(update.state.rawValue, update.queuePosition ?? 0)");
+    // queuePosition is Int?, and the SDK is explicit that "nil is not position zero",
+    // so an absent position must not be reported as a real place in line.
+    expect(q).toContain('print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")');
+    expect(q).not.toContain("update.queuePosition ?? 0");
     expect(q).toContain("let result = try await handle.result()");
     expect(q).toContain('print("image:", result.output["result"]["sample"].stringValue ?? "")');
   });
