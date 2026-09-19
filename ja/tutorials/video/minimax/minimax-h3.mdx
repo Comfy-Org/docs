@@ -2,15 +2,16 @@
 title: "ComfyUI MiniMax H3 動画生成ガイド"
 description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
 sidebarTitle: "概要"
-translationSourceHash: 409b82a5
+translationSourceHash: 8490d612
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": bcfdbb95
   "Key features": 7bfa7de1
   "Getting started": fddf949c
   "Workflow index": 208e71ea
-  "Setting the output resolution": b3a75643
-  "Speeding up generation with Sage Attention": 1b231e7c
+  "Setting the output resolution": 1ece1dc7
+  "Speeding up generation with Sage Attention": cc061bad
+  "Speeding up generation with sparse attention": bfc451cb
 ---
 
 [MiniMax H3](https://www.minimax.io/blog/minimax-h3) は、MiniMaxの汎用オムニモーダル生成モデルで、現在はオープンウェイトとして公開されています。テキスト、画像、ビデオ、オーディオを単一のコンテキストで統合的に理解し、**ネイティブステレオオーディオ**付きのビデオを生成します。つまり、音声、サウンドエフェクト、音楽は、後から重ね合わせるのではなく、単一のフォワードパスでまとめてモデル化されます。出力は最大2K解像度、24fps、約15秒です。
@@ -83,6 +84,8 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
 
 テンプレートは高速なプレビューサイズになっています。フル品質で出力するには、16:9 で Resolution Selector のメガピクセルを `0.98` に設定します。これは H3 のネイティブキャンバス（短辺 768px、16:9 では 1344x768）です。あるいは、MiniMax H3 ノードの `width` と `height` に直接 `1344 x 768` を入力します（デフォルト値）。`1.0` メガピクセルは 1376x768 になり、モデルの 768x1344 ピクセルの面積上限を超えるため、使用しないでください。
 
+H3 のコミュニティテスト（2026 年 9 月）でも、この上限が裏付けられています。モデルの学習解像度は約 100 万ピクセルのため、ネイティブキャンバスを大きく超えるフレームは、後からどんなアップスケールのテクニックを使ってもディテールの一貫性を失いがちです。2K 出力が必要な場合は、ネイティブキャンバスで生成してから別パスでアップスケールするのが確実です。また、ステップ数を 50 程度に上げると、フレームのシャープさではなくモーションの品質が向上するというテスト結果もあります。ステップ数を増やすのは、ディテールが柔らかいときよりも、動きが硬いときに効果的です。
+
 ## Sage Attention で生成を高速化
 
 サンプルワークフローはデフォルトで標準のアテンション実装を使用します。[Sage Attention](https://github.com/woct0rdho/SageAttention) を使用すると、品質の低下を最小限に抑えながら生成速度をおよそ2倍にできます。Sage Attention はオプションの依存関係のため、自分でインストールする必要があります：
@@ -96,3 +99,22 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
 
 - Sage Attention は float16 または bfloat16 テンソルを必要とします。MiniMax H3 の一部のレイヤーは他の dtype で実行されるため、コンソールに "Input tensors must be in dtype of torch.float16 or torch.bfloat16, using pytorch attention instead" というメッセージが表示されることがあります。これは正常です。影響を受けるレイヤーは標準アテンションにフォールバックし、生成は正常に動作します。
 - 別の方法として、ノードを追加せずに `--use-sage-attention` フラグ付きで ComfyUI を起動して、Sage Attention をグローバルに有効にすることもできます。
+
+### INT8 アテンションによる品質劣化
+
+Sage Attention 使用時にクリップの終盤でモーフィングや画面内テキストの文字化けが発生する場合、原因は INT8 アテンションの量子化である可能性が高いです。H3 の終盤ブロックはアテンションキーの信号の大部分を少数のチャンネルに集中させており、単一の共有スケールで行全体を丸める INT8 カーネルはその信号の一部を失います。H3 でのコミュニティ検証済み: デンスアテンションバックエンドを **Comfy Kitchen attention** に切り替えると、これらのアーティファクトが解消されます。この INT8 カーネルは量子化の前にチャンネル回転を適用し、Sage Attention と同程度の速度で信号を保持します。
+
+注意: Comfy Kitchen attention には、INT8-convrot 量子化された H3 チェックポイント（例: `minimax_h3_fl2va_pruned_int8_convrot.safetensors`）との既知の非互換性があり、サンプリング中にアライメントエラーでクラッシュします。これらのチェックポイントでは、下記の bfloat16 の回避策を使用してください。詳細は [ComfyUI issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529) を参照してください。
+
+バックエンドを切り替えるには、組み込みの **Model Attention Backend** ノード（カテゴリ `model/patch`）をワークフローに追加し、`UNETLoader` と `BasicGuider` ノードの間に接続して、バックエンドを `comfy kitchen attention` に設定します。または、`--use-ck-attention` フラグ付きで ComfyUI を起動してください（ComfyUI 0.32.0 以降で利用可能）。このバックエンドは ComfyUI に同梱される `comfy-kitchen` パッケージを使用しますが、INT8 カーネルがハードウェアで利用可能な場合にのみオプションが表示されます。利用できない場合、ノードは PyTorch アテンションにフォールバックします。該当ブロックを bfloat16 アテンションで実行することでもアーティファクトは解消されますが、レンダリング時間が長くなります。
+
+## スパースアテンションによる生成の高速化
+
+アテンションのコストはクリップが長くなるほど急増します。ComfyUI 内蔵の **Model Sparse Attention** ノード（カテゴリ `model/patch`）は、対象となるレイヤーでブロックスパースアテンションを実行してこのコストを削減します。シーケンスが長いほど効果が大きくなります。H3 でのコミュニティ検証では、このノードの既定スケジュールは疎化の開始が早すぎ、終了が遅すぎるため画質を損ないます。
+
+- **サンプリングの最初と最後のステップではスパースアテンションを使わないでください。** 既定値は `start_percent` が `0.2`、`end_percent` が `1.0` で、スケジュールの 20% から最終ステップまで疎化が有効になります。開始を `0.4` 程度まで遅らせるとショット全体の動きをデンスアテンションで先に確定でき、終了を `0.9` 程度まで早めると最後のステップをデンスに保てます。`0.4` と `0.9` の報告では、クリップ前半のモーフィングが減り終盤フレームのちらつきも軽減され、代わりに速度がやや低下します。
+- **H3 では `sink_conditioning` を既定値（`exact_kv_and_rows`）のままにしてください。** パックされたテキスト、オーディオ、参照の行を正確に計算し、生成オーディオのクエリ行をデンスに保つため、スパース経路でも音声トラックが劣化しません。
+- **`tau` は `sol-attn` の疎さを決めます**: `1.0` でキーブロックの約 16% を正確に保持、`1.5` で約 7%、`2.0` で約 2.7%。既定は `1.3` で、値が大きいほど高速ですがリスクも大きくなります。
+- **短いクリップでは効果がほとんどありません。** `min_tokens`（既定 `12288`）未満のシーケンスと、`dense_blocks` に記載したブロックはデンスのまま実行されます。
+
+FastH3 チェックポイントは同じノードの `vsa` モードを使用し、`keep_percent` `10` のスパースパターンで学習されています。詳しくは [FastH3 ワークフローのページ](/ja/tutorials/video/minimax/minimax-h3-fastvideo)を参照してください。

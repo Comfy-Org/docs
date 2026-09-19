@@ -2,15 +2,16 @@
 title: "ComfyUI MiniMax H3 视频生成指南"
 description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
 sidebarTitle: "概述"
-translationSourceHash: 409b82a5
+translationSourceHash: 8490d612
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": bcfdbb95
   "Key features": 7bfa7de1
   "Getting started": fddf949c
   "Workflow index": 208e71ea
-  "Setting the output resolution": b3a75643
-  "Speeding up generation with Sage Attention": 1b231e7c
+  "Setting the output resolution": 1ece1dc7
+  "Speeding up generation with Sage Attention": cc061bad
+  "Speeding up generation with sparse attention": bfc451cb
 ---
 
 [MiniMax H3](https://www.minimax.io/blog/minimax-h3) 是 MiniMax 推出的通用全模态生成模型，现已以开放权重形式提供。它能在单一上下文中联合理解文本、图像、视频和音频，并生成带**原生立体声音频**的视频：语音、音效和音乐在单次前向传播中一并建模，而非事后叠加。输出最高支持 2K 分辨率、24fps，时长约 15 秒。
@@ -83,6 +84,8 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 
 模板默认使用一个较快的预览尺寸。要获得全质量输出，请在 16:9 下将分辨率选择器的百万像素设为 `0.98`，即 H3 的原生画布（短边 768px，16:9 下为 1344x768）；或在 MiniMax H3 节点的 `width` 和 `height` 中直接输入 `1344 x 768`（默认值）。请跳过 `1.0` 百万像素档：它得到 1376x768，超出模型 768x1344 像素的面积上限。
 
+H3 社区实测（2026 年 9 月）也印证了这个上限：模型的训练分辨率在 100 万像素左右，远超原生画布的帧无论后续使用什么放大技巧，都容易丢失细节一致性。如果需要 2K 输出，更可靠的做法是先在原生画布下生成，再单独跑一次放大。社区测试还表明，把步数提高到 50 左右改善的是运动质量而不是画面锐度，因此步数更适合用在运动显得僵硬的时候，而不是细节偏软的时候。
+
 ## 使用 Sage Attention 加速生成
 
 示例工作流默认使用标准注意力实现。使用 [Sage Attention](https://github.com/woct0rdho/SageAttention) 可以将生成速度大约提升一倍，质量损失极小。Sage Attention 是可选依赖，需要你自行安装：
@@ -96,3 +99,22 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 
 - Sage Attention 要求 float16 或 bfloat16 张量。MiniMax H3 的部分层使用其他数据类型，因此你可能会在控制台看到 "Input tensors must be in dtype of torch.float16 or torch.bfloat16, using pytorch attention instead" 消息。这是正常现象；受影响的层会回退到标准注意力，生成仍然可以正常工作。
 - 另一种方式是使用 `--use-sage-attention` 启动参数启动 ComfyUI 来全局启用 Sage Attention，无需添加节点。
+
+### INT8 注意力导致的质量劣化
+
+使用 Sage Attention 时，如果视频片段末尾附近出现画面形变或屏幕文字乱码，最可能的原因是 INT8 注意力量化。H3 的最后几个 Transformer 块将大部分注意力键信号集中到少数通道中，而使用单一共享缩放对整行进行取整的 INT8 内核会丢失部分信号。社区实测（H3）：将稠密注意力后端切换为 **Comfy Kitchen attention** 可以修复这些伪影。它的 INT8 内核在量化前先进行通道旋转，从而在保留信号的同时保持与 Sage Attention 相近的速度。
+
+注意：Comfy Kitchen attention 与 INT8-convrot 量化的 H3 检查点（如 `minimax_h3_fl2va_pruned_int8_convrot.safetensors`）存在已知的不兼容问题，采样时会因对齐错误而崩溃。使用这些检查点时请采用下方的 bfloat16 方案。参见 [ComfyUI issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)。
+
+要切换后端，请在工作流中添加内置的 **Model Attention Backend** 节点（分类 `model/patch`），将其连接在 `UNETLoader` 和 `BasicGuider` 节点之间，并将后端设置为 `comfy kitchen attention`。也可以使用 `--use-ck-attention` 启动参数启动 ComfyUI（ComfyUI 0.32.0 及以上版本可用）。该后端使用随 ComfyUI 自带的 `comfy-kitchen` 包，但只有当 INT8 内核在你的硬件上可用时该选项才会出现；否则节点会回退到 PyTorch attention。将受影响的块改为以 bfloat16 注意力运行同样能修复伪影，但渲染时间会更长。
+
+## 使用稀疏注意力加速生成
+
+注意力开销会随视频时长快速上升。ComfyUI 内置的 **Model Sparse Attention** 节点（分类 `model/patch`）会在符合条件的层上执行块稀疏注意力来降低这部分开销，序列越长收益越明显。社区在 H3 上的实测发现，该节点的默认调度稀疏得过早、结束得太晚，会损失画质：
+
+- **不要在采样的最开始和最后几步启用稀疏注意力。** 默认值为 `start_percent` `0.2`、`end_percent` `1.0`，也就是从调度的 20% 一直稀疏到最后一步。把开始时间推迟到 `0.4` 左右，可以让画面的整体运动先用稠密注意力确定下来；把结束时间提前到 `0.9` 左右，则能让最后几步保持稠密。报告显示使用 `0.4` 与 `0.9` 后，片段前段的形变减少、结尾几帧的闪烁减轻，代价是速度略有下降。
+- **H3 上保持 `sink_conditioning` 的默认值**（`exact_kv_and_rows`）。它会让打包的文本、音频和参考行保持精确计算，并让生成音频的查询行保持稠密，因此稀疏路径不会降低音轨质量。
+- **`tau` 决定 `sol-attn` 的稀疏程度**：`1.0` 大约保留 16% 的关键块做精确计算，`1.5` 约 7%，`2.0` 约 2.7%。默认值为 `1.3`，数值越高越快，风险也越大。
+- **短视频片段收益有限。** 长度低于 `min_tokens`（默认 `12288`）的序列，以及 `dense_blocks` 中列出的块都会保持稠密。
+
+FastH3 检查点使用同一个节点的 `vsa` 模式，该模式按 `keep_percent` `10` 的稀疏模式训练。详见 [FastH3 工作流页面](/zh/tutorials/video/minimax/minimax-h3-fastvideo)。
