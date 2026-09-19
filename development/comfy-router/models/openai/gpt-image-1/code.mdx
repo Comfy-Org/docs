@@ -205,7 +205,11 @@ Accepts one image or an array of them; gpt-image-1 and later take up to 16, whic
 <ParamField body="mask" type="string">
   One image, as either an https URL Router fetches on the caller's behalf or a `data:image/<format>;base64,<payload>` URI carrying the bytes inline. Accepted image types are png, webp and jpeg, and that set is ENFORCED at resolve time rather than left to the provider -- an svg, gif, avif or tiff is refused here, naming the image you sent, instead of becoming a partner error two hops from the cause.
 Prefer the URL form. A base64 payload inflates roughly 4/3 and the whole request body is capped at 20 MiB, so the inline form caps out near a 15 MB source image; a URL sidesteps that entirely.
-THE URL MUST RESOLVE WITHOUT YOUR CREDENTIALS. Router fetches it server-side and sends no caller credential with the request, so a Comfy-signed asset URL -- one whose signature is in the query string -- is the supported form. An authenticated endpoint such as `/api/assets/{id}/content` answers Router 401 rather than the image; request that URL yourself and pass the signed URL it redirects to. The fetch is confined to Comfy's own asset buckets rather than the open internet, on every redirect hop as well as the URL you send, so a third-party or redirecting URL is refused.
+THE URL MUST RESOLVE WITHOUT YOUR CREDENTIALS. Router fetches it server-side and sends no caller credential with the request, so a presigned URL -- one whose signature is in the query string -- is the supported form. An authenticated endpoint such as `/api/assets/{id}/content` answers Router 401 rather than the image; request that URL yourself and pass the signed URL it redirects to.
+THE FETCH IS CONFINED TO A NAMED SET OF HOSTS rather than the open internet, and the same list is re-applied to every redirect hop as well as to the URL you send -- so a URL on any other host, or one that redirects off the list, is refused before any provider is contacted. Today that list is Comfy's own asset delivery only: a signed `storage.googleapis.com` URL under a Comfy asset bucket, which is the form `/api/assets/{id}/content` redirects you to. A partner CDN or a plain https host is NOT on the list.
+TWO WIDENINGS ARE BEING ROLLED OUT AND ARE BOTH OFF BY DEFAULT TODAY. They ship behind ONE switch and are enabled together, so treat everything below as forthcoming rather than as something to build against yet -- ask before you rely on either.
+The FIRST is the bucket `POST /customers/storage` signs your upload into. Until the rollout reaches your environment an upload URL from that endpoint is refused here, even though the bucket is Comfy's own and the host is the same one -- so "upload to Comfy, then pass the URL" does NOT work yet, and the form that does is the signed URL `/api/assets/{id}/content` redirects to.
+The SECOND additionally admits these third-party object-storage hosts, where the bucket is yours and Router makes no ownership claim on it: Cloudflare R2 (`<account>.r2.cloudflarestorage.com`, `<id>.r2.dev`), Amazon S3 (`s3.amazonaws.com` and `s3.<region>.amazonaws.com`, in either the path-style or the `<bucket>.`-prefixed form), Azure Blob Storage (`<account>.blob.core.windows.net`) and Alibaba Cloud OSS (`<bucket>.oss-<region>.aliyuncs.com`, including the `oss-accelerate` endpoint). Those are object-storage endpoints specifically: a general-purpose endpoint on the same provider domain, such as an Alibaba Function Compute trigger, is not on the list and is refused.
 The example below shows the shape only: a real value also carries the signing query parameters, which are deliberately omitted here because a published example lives in the spec forever and a real signature is both a leaked credential and a link that stops working.
 Each image is capped at 25 MiB and one request's images at 64 MiB in total.
 </ParamField>
@@ -317,25 +321,25 @@ Generated from the schema Router serves at `GET /v2/models/openai/gpt-image-1/op
 </ResponseField>
 
 <ResponseField name="background" type="string">
-  Whether the generated image's background is opaque or transparent. Populated on the fal-served branch only, which reports `opaque`.
+  Whether the generated image's background is `opaque` or `transparent`, as OpenAI resolved it for this generation. The request parameter defaults to `auto`, so this is where a caller who did not pin it learns which one was produced.
 </ResponseField>
 
 <ResponseField name="created" type="integer">
-  Unix timestamp, in seconds, of when the generation completed. Declared `int64` because a present-day epoch value is close enough to 2^31 that an unformatted `integer` generates a 32-bit field in many SDK generators.
+  Unix timestamp, in seconds, of when the generation completed. It is the one member OpenAI declares REQUIRED on an image-generation response, so it is present whenever OpenAI is the producer; a fal-served `openai/gpt-image-2` response omits it entirely, like the other four resolved-parameter members. Declared `int64` because a present-day epoch value is close enough to 2^31 that an unformatted `integer` generates a 32-bit field in many SDK generators.
 
   Format: `int64`
 </ResponseField>
 
 <ResponseField name="output_format" type="string">
-  The encoding of the bytes in `data[].b64_json` (for example `png`). Populated on the fal-served branch; absent on the OpenAI-served one, where the caller's requested `output_format` is authoritative.
+  The encoding of the bytes in `data[].b64_json` — `png`, `webp` or `jpeg`. It is the format OpenAI actually encoded, which is the request's `output_format` when one was sent and `png` when none was, so a decoder can key off it rather than re-deriving the format from the request.
 </ResponseField>
 
 <ResponseField name="quality" type="string">
-  The quality tier the generation actually ran at. Populated on the fal-served branch when it can resolve one; absent otherwise.
+  The quality tier the generation actually ran at — OpenAI reports one of `low`, `medium`, `high`, `xhigh` or `max`. It is the RESOLVED tier, not an echo of the request, whose own `quality` defaults to `auto`.
 </ResponseField>
 
 <ResponseField name="size" type="string">
-  The pixel dimensions the generation actually ran at, as `<width>x<height>`. Populated on the fal-served branch when it can resolve one; absent otherwise.
+  The pixel dimensions the generation actually ran at, as `<width>x<height>`. It is the RESOLVED size: the request's `size` defaults to `auto` and explicitly admits `auto`, so this is the only place the dimensions actually used are reported.
 </ResponseField>
 
 ## Examples
