@@ -1,14 +1,15 @@
 ---
 title: "Comfy Router 제한 사항"
 description: "현재 Comfy Router가 지원하지 않는 기능, 대안이 존재하는 경우 대신 사용할 도구, 그리고 변경될 것으로 예상되는 제한 사항을 설명합니다."
-translationSourceHash: 1a4e4a4c
+translationSourceHash: 16ec0142
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
-  "What Router supports": f7da4bd0
+  "What Router supports": b168a936
   "Queued submission": bfb591cc
   "Calls are cut off at a server deadline": 2466a237
   "Recovery depends on the provider": 610f0ec8
+  "Request bodies are capped": 31946e7e
   "Requests are rate limited per caller": 421194d9
   "No progress while a call runs": 75d42d8d
   "Comfy charges and usage": 90cd7670
@@ -16,6 +17,7 @@ translationBlockHashes:
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
 
 Router는 파트너 모델을 하나의 동기식 HTTP 호출로 실행하거나, 제출한 뒤 나중에 수집하는 대기 중 요청을 통해 실행합니다. 애플리케이션이 완료된 결과를 기다리거나 나중에 결과를 수집할 수 있고, 모델 자체의 입력 및 출력 필드를 처리할 수 있는 경우에 사용하십시오.
 
@@ -29,6 +31,7 @@ Router는 파트너 모델을 하나의 동기식 HTTP 호출로 실행하거나
 | 연결이 끊긴 이후 복구 | Router가 수락된 생성에 대한 핸들을 보관한 경우 동일 키 수집을 사용할 수 있습니다. | 키를 보존하고 [재시도 가이드](/ko/development/comfy-router/api#retry-outcomes)를 따르세요. |
 | Comfy 청구 내역 대사 | 응답에 범용 Comfy 비용 또는 크레딧 잔액 필드가 없습니다. | [워크스페이스 청구](https://platform.comfy.org)를 사용하세요. |
 | 결과를 영구적으로 저장 | 에셋 URL은 재호스팅 및 재생된 URL을 포함해 만료될 수 있습니다. | 에셋을 다운로드하세요. [결과 에셋](/ko/development/comfy-router/reference#결과-에셋)을 참고하세요. |
+| 대용량 미디어를 인라인으로 전송 | 요청 본문에는 크기 상한이 있으며, base64로 인코딩된 미디어도 이 상한에 포함됩니다. | 본문을 상한 이하로 유지하세요. [요청 본문 크기](#요청-본문-크기-상한)를 참고하세요. |
 
 <span id="no-queued-submission" />
 
@@ -55,6 +58,18 @@ Router의 기본 데드라인은 **10분**이며, 배포 시 구성할 수 있�
 Router는 수락된 submit-and-poll 생성에 대해 공급자 핸들을 보유할 수 있습니다. 동일한 `Idempotency-Key`를 재사용하면 나중에 이를 수집할 수 있으며, 완료된 재생 가능 응답도 키 기록에서 가져올 수 있습니다.
 
 연결 해제된 모든 호출이 복구 가능한 것은 아닙니다. 전송하기 전에 요청과 키를 보존한 다음, [재시도 결과 표](/ko/development/comfy-router/api#retry-outcomes)를 사용하십시오. 새 키는 새 호출을 생성하며 추가 요금이 발생할 수 있습니다.
+
+## 요청 본문 크기 상한
+
+Router는 본문이 **10 MiB(10,485,760바이트)**보다 큰 요청을 거부합니다. 이 상한은 Router가 무엇이든 파싱하기 전에 측정한, 전송한 원시 바이트에 적용되므로 모든 라우트와 동기 및 대기 중 전달 모두에 적용됩니다.
+
+인라인 미디어는 호출자가 이 상한을 마주치는 지점입니다. Base64 인코딩은 바이너리 데이터를 약 4/3로 부풀리므로, 인코딩된 미디어를 담은 본문은 대략 **실제 이미지, 오디오, 비디오 바이트 7.5 MB**에서 상한에 도달합니다. 디스크상의 파일이 아니라 인코딩된 문자열의 크기를 기준으로 하고, 한 번의 호출에 포함된 모든 입력을 계산하세요. 참조 이미지 두 개를 담은 요청은 두 이미지 모두에 여유분을 사용하며, 프롬프트, 파라미터, JSON 구조도 포함됩니다.
+
+**거부의 형태.** `413`, `X-Comfy-Error-Type`에 `invalid_input`, 그리고 다른 응답과 마찬가지로 `X-Comfy-Request-Id`가 설정됩니다. 본문은 [`RouterErrorResponse`](/ko/development/comfy-router/reference#routererrorresponse)이며, 이 응답의 `detail`은 초과된 상한을 설명합니다. `detail`을 파싱하기보다 `error_type`을 기준으로 분기하고, API가 반환하는 수치와 이 페이지의 수치가 다르면 API가 반환하는 값을 권위 있는 것으로 취급하세요. Router는 무엇이든 전달하기 전에 거부를 발생시키므로 생성이 실행되지 않았고 아무것도 청구되지 않았습니다.
+
+이 상한은 `Idempotency-Key`를 포함하든 하지 않든 모든 요청에 적용됩니다. 이는 멱등성 제한이 아니며, 동일한 키를 다시 보내도 결과는 달라지지 않습니다. 너무 큰 본문은 시도할 때마다 너무 큽니다.
+
+**공급자가 자체적으로 더 낮은 제한을 부과할 수 있습니다.** 공급자는 인라인 미디어에 대한 자체 상한을 게시하며, 구속력 있는 제약은 둘 중 더 작은 쪽입니다. 예를 들어 Google의 모델은 최대 20 MB(십진수 20,000,000바이트)의 인라인 페이로드를 허용하며, Google 모델 페이지의 `Size limit: 20MB` 줄은 전체 요청 본문에 대한 Router의 상한이 아니라 Google 자체 사양에서 인용된 Google의 필드별 상한입니다. Router의 상한은 통과하지만 공급자의 자체 제한을 초과하는 본문은 Router가 아니라 공급자가 거부하며, `413`이 아닌 공급자 오류로 반환됩니다.
 
 ## 요청은 호출자별로 속도 제한됨
 
