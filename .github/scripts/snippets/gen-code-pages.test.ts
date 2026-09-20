@@ -10,6 +10,7 @@ import {
   outputContent,
   outputSchemaFields,
   providerCoverage,
+  providerRelationRows,
   readRelations,
   renderDocsJson,
   renderProvidersPage,
@@ -510,5 +511,90 @@ describe("modelPageRedirects: an alias page redirects to its native page", () =>
   test("the alias destination wins even when the catalog fallback is scanned first", () => {
     const dupes = [aliasPage, { page: aliasPage, destination: `/${NATIVE_PAGE}` }];
     expect(modelPageRedirects([], [], dupes)).toEqual([{ source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` }]);
+  });
+});
+
+describe("resolving the alt-provider relationship to Providers rows", () => {
+  const pages = new Map([[NATIVE, { page: NATIVE_PAGE, title: "Nano Banana Pro" }]]);
+
+  test("a native document's legs each become one row against the native page", () => {
+    const { rows, problems } = providerRelationRows(new Map([[NATIVE, [FAL_LEG, WAVESPEED_LEG]]]), [], pages);
+    expect(problems).toEqual([]);
+    expect(rows).toEqual([
+      { provider: "fal", model: NATIVE, aliasId: FAL_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
+      { provider: "wavespeed", model: NATIVE, aliasId: WAVESPEED_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
+    ]);
+  });
+
+  test("a native leg and the matching alias document are one row, not two", () => {
+    const aliasDocs = [{ model: FAL_LEG.model_id, aliasOf: NATIVE, provider: "fal" }];
+    const { rows, problems } = providerRelationRows(new Map([[NATIVE, [FAL_LEG]]]), aliasDocs, pages);
+    expect(problems).toEqual([]);
+    expect(rows).toHaveLength(1);
+  });
+
+  test("an alias document alone still earns a row, for a native list that has not caught up", () => {
+    const aliasDocs = [{ model: FAL_LEG.model_id, aliasOf: NATIVE, provider: "fal" }];
+    const { rows } = providerRelationRows(new Map(), aliasDocs, pages);
+    expect(rows).toEqual([{ provider: "fal", model: NATIVE, aliasId: FAL_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" }]);
+  });
+
+  test("the two sides disagreeing on one provider's alias id is a reported conflict", () => {
+    const aliasDocs = [{ model: "fal/fal-nano-banana-pro-v2", aliasOf: NATIVE, provider: "fal" }];
+    const { rows, problems } = providerRelationRows(new Map([[NATIVE, [FAL_LEG]]]), aliasDocs, pages);
+    // The native document's list is canonical, so its alias id is the row that stands.
+    expect(rows.map((r) => r.aliasId)).toEqual([FAL_LEG.model_id]);
+    expect(problems).toEqual([
+      `${NATIVE}: provider \`fal\` is aliased as both \`${FAL_LEG.model_id}\` and \`fal/fal-nano-banana-pro-v2\`; the native model's alt-providers list is canonical`,
+    ]);
+  });
+
+  // A row whose link would 404 is worse than no row, but the relation is still
+  // checked: the duplicate test runs before the page lookup, so a spec bug is
+  // reported even while the model it serves is undocumented here.
+  test("a leg on an undocumented native model yields no row", () => {
+    const { rows, problems } = providerRelationRows(new Map([["vertexai/not-here", [FAL_LEG]]]), [], new Map());
+    expect(rows).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("two alias documents claiming one provider conflict even with no native page", () => {
+    const aliasDocs = [
+      { model: "fal/fal-unsynced", aliasOf: "vertexai/not-here", provider: "fal" },
+      { model: "fal/fal-unsynced-v2", aliasOf: "vertexai/not-here", provider: "fal" },
+    ];
+    const { rows, problems } = providerRelationRows(new Map(), aliasDocs, new Map());
+    expect(rows).toEqual([]);
+    expect(problems).toEqual([
+      "vertexai/not-here: provider `fal` is aliased as both `fal/fal-unsynced` and `fal/fal-unsynced-v2`; the native model's alt-providers list is canonical",
+    ]);
+  });
+
+  test("one provider serving two different native models is two rows, not a conflict", () => {
+    const other = "openai/gpt-image-2";
+    const otherPage = "development/comfy-router/models/openai/gpt-image-2/code";
+    const { rows, problems } = providerRelationRows(
+      new Map([
+        [NATIVE, [FAL_LEG]],
+        [other, [{ provider: "fal", model_id: "fal/fal-gpt-image-2" }]],
+      ]),
+      [],
+      new Map([...pages, [other, { page: otherPage, title: "GPT Image 2" }]])
+    );
+    expect(problems).toEqual([]);
+    expect(rows.map((r) => r.model)).toEqual([NATIVE, other]);
+  });
+
+  test("the provider/model key cannot be forged by a punctuated model id", () => {
+    // The two halves of the key are separated by NUL, which no slug can contain.
+    const { problems } = providerRelationRows(
+      new Map([
+        ["a/b", [{ provider: "fal", model_id: "fal/one" }]],
+        ["b", [{ provider: "fal/a", model_id: "fal/two" }]],
+      ]),
+      [],
+      new Map()
+    );
+    expect(problems).toEqual([]);
   });
 });

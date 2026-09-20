@@ -1357,6 +1357,49 @@ ${sections}
 type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string };
 
 /**
+ * Resolve the declared alt-provider relationship to Providers-index rows.
+ *
+ * Every relation is validated whether or not its native model has a page in this
+ * repository: a provider that two documents alias differently is a spec bug worth
+ * reporting even while the model it serves is still undocumented, so the duplicate
+ * check runs BEFORE the page lookup. Only the ROW is conditional, because a row
+ * whose link would 404 is worse than a row that is not there.
+ *
+ * Keyed on provider + native model, not on the alias id: a native document's own
+ * `x-comfy-router-alt-providers` entry is canonical, so a later alias document
+ * naming a different alias id for the same leg is a cross-document conflict to
+ * report, not a second row for the same leg.
+ */
+export function providerRelationRows(
+  legsByModel: Map<string, AltProvider[]>,
+  aliasDocs: { model: string; aliasOf: string; provider: string }[],
+  pageByModel: Map<string, { page: string; title: string }>
+): { rows: Coverage[]; problems: string[] } {
+  const rows: Coverage[] = [];
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  const add = (provider: string, model: string, aliasId: string) => {
+    const key = `${provider}\u0000${model}`;
+    const known = seen.get(key);
+    if (known !== undefined) {
+      if (known !== aliasId) problems.push(`${model}: provider \`${provider}\` is aliased as both \`${known}\` and \`${aliasId}\`; the native model's alt-providers list is canonical`);
+      return;
+    }
+    seen.set(key, aliasId);
+    const target = pageByModel.get(model);
+    // A leg pointing at a model with no page of its own has nothing to link.
+    if (!target) return;
+    rows.push({ provider, model, aliasId, page: target.page, title: target.title });
+  };
+  // The native documents first: their lists win when the two sides disagree.
+  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id);
+  // Then every alias document, including the ones that kept a page of their own
+  // because the model they alias is not documented here yet.
+  for (const a of aliasDocs) add(a.provider, a.aliasOf, a.model);
+  return { rows, problems };
+}
+
+/**
  * Group the legs by serving provider, in the order the page renders them:
  * providers by label, and each provider's models by the page they link to.
  */
@@ -1701,28 +1744,8 @@ if (import.meta.main) {
   // native ones: an alias names its own native target, so a Providers row exists
   // for a leg even if the native document's `x-comfy-router-alt-providers` has not
   // caught up, and the native page's section still comes from the native document.
-  const coverage: Coverage[] = [];
-  // Keyed on provider + native model, not aliasId: the native document's own
-  // `x-comfy-router-alt-providers` entry (added first, below) is canonical, so a
-  // later alias document naming a different alias ID for the same leg is a
-  // cross-document conflict to report, not a second row for the same leg.
-  const seenCoverage = new Map<string, string>();
-  const addCoverage = (provider: string, model: string, aliasId: string) => {
-    const target = pageByModel.get(model);
-    // A leg pointing at a model with no page of its own has nothing to link, and a
-    // row whose link would 404 is worse than a row that is not there.
-    if (!target) return;
-    const key = `${provider} ${model}`;
-    const known = seenCoverage.get(key);
-    if (known !== undefined) {
-      if (known !== aliasId) problems.push(`${model}: provider \`${provider}\` is aliased as both \`${known}\` and \`${aliasId}\`; the native model's alt-providers list is canonical`);
-      return;
-    }
-    seenCoverage.set(key, aliasId);
-    coverage.push({ provider, model, aliasId, page: target.page, title: target.title });
-  };
-  for (const [model, legs] of legsByModel) for (const leg of legs) addCoverage(leg.provider, model, leg.model_id);
-  for (const a of aliases) addCoverage(a.provider, a.aliasOf, a.model);
+  const { rows: coverage, problems: relationProblems } = providerRelationRows(legsByModel, aliasDocs, pageByModel);
+  problems.push(...relationProblems);
 
   // ---- the serving-provider index, written only while some model has a leg
   const providersOut = join(ROOT, `${PROVIDERS_PAGE}.mdx`);
