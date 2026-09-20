@@ -1,6 +1,6 @@
 ---
 title: "Use Nano Banana 2 with Comfy Router"
-description: "Python, TypeScript and cURL snippets for generating images with Nano Banana 2 (Gemini 3.1 Flash Image) over HTTP through Comfy Router, plus the request fields and the result shape"
+description: "Python, TypeScript, Swift and cURL snippets for Nano Banana 2 (Gemini 3.1 Flash Image) image generation through Comfy Router, plus request fields"
 sidebarTitle: "Nano Banana 2"
 ---
 
@@ -12,7 +12,7 @@ API Reference for Nano Banana 2. Nano Banana 2 (Gemini 3.1 Flash Image) generate
 
 ## Quick start
 
-Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python, TypeScript and Swift snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`, and the [`ComfySwiftSDK`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `vertexai/gemini-3.1-flash-image`
 
@@ -79,6 +79,38 @@ const result = await comfy.models.run<Result>("vertexai/gemini-3.1-flash-image",
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
 console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "vertexai/gemini-3.1-flash-image",
+    input: [
+        "contents": [
+            [
+                "role": "user",
+                "parts": [
+                    [
+                        "text": "a single red maple leaf on a plain white background, studio lighting",
+                    ],
+                ],
+            ],
+        ],
+        "generationConfig": [
+            "responseModalities": ["IMAGE"],
+            "imageConfig": [
+                "aspectRatio": "1:1",
+            ],
+        ],
+    ]
+)
+
+print("image (base64):", result.output["candidates"][0]["content"]["parts"][0]["inlineData"]["data"].stringValue ?? "")
 ```
 
 ```bash cURL
@@ -172,6 +204,48 @@ if (result.kind !== "json") throw new Error("expected a JSON result");
 console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
 ```
 
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "vertexai/gemini-3.1-flash-image",
+    input: [
+        "contents": [
+            [
+                "role": "user",
+                "parts": [
+                    [
+                        "text": "a single red maple leaf on a plain white background, studio lighting",
+                    ],
+                ],
+            ],
+        ],
+        "generationConfig": [
+            "responseModalities": ["IMAGE"],
+            "imageConfig": [
+                "aspectRatio": "1:1",
+            ],
+        ],
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+print("image (base64):", result.output["candidates"][0]["content"]["parts"][0]["inlineData"]["data"].stringValue ?? "")
+```
+
 ```bash cURL
 # 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
 curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests \
@@ -192,6 +266,15 @@ curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/$R
 </CodeGroup>
   </Tab>
 </Tabs>
+
+## Serving providers
+
+This model is served by Comfy Router directly unless the request names another provider. The providers below serve it too, on the same endpoint and with the same model ID, selected with the `model_provider` query parameter.
+
+- **Comfy** (default): `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image`
+- **fal**, as `fal/fal-nano-banana-2`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image?model_provider=fal`
+
+`strict_mode` defaults to false, so Router translates the native request body documented on this page into the provider's own schema and translates the response back. See [`model_provider`, `strict_mode` and `fallback_provider`](/development/comfy-router/reference#post-v2modelsprovidermodel) in the API reference, and [Serving providers](/development/comfy-router/providers) for every model routed this way.
 
 ## Schema
 
@@ -711,6 +794,6 @@ Generated from the schema Router serves at `GET /v2/models/vertexai/gemini-3.1-f
 }
 ```
 
-By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created. An upload failure leaves that image inline, so inspect each part for `inlineData` or `fileData`; text parts can also appear, and the image is not guaranteed to be the first part.
+By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created. An upload failure leaves that image inline, so inspect each part for `inlineData` or `fileData`; text parts can also appear, and the image is not guaranteed to be the first part. The `candidates[0].content.parts[0].inlineData.data` path in the quickstart samples above reads the single inline part of the sample response on this page; against a real response, scan `parts` for the key you want instead of indexing position 0.
 
 <RouterCodeFooter />

@@ -2,7 +2,7 @@
 
 Every Router-addressable partner model has a `code.mdx` page under
 `development/comfy-router/models/<provider>/<model>/`, showing how to call the
-model through Comfy Router from Python, TypeScript and cURL.
+model through Comfy Router from Python, TypeScript, Swift and cURL.
 
 Pages come in two kinds, and both are generated:
 
@@ -204,8 +204,11 @@ a provider's host is down.
 6. Run `pnpm code-pages:gen` (it writes the page and the `docs.json` nav entry)
    and link it from the overview's "Use it" cards.
 
-Python, TypeScript and cURL are all emitted from the same `example`, so the
-three snippets cannot disagree about the body. `--validate` compiles each
-emitted snippet (`py_compile`, `bun build`, `bash -n`); nothing is executed and
-nothing is billed. Live verification against Router is a separate, nightly,
+Python, TypeScript, Swift and cURL are all emitted from the same `example`, so
+the four snippets cannot disagree about the body. `--validate` syntax-checks each
+emitted snippet (`py_compile`, `bun build`, `swiftc -parse`, `bash -n`); nothing
+is executed and nothing is billed, so no `ComfySwiftSDK` package resolution is
+needed. `swiftc -parse` needs a Swift toolchain, so the `code-pages` CI job (and
+only that job) installs one; `pnpm code-pages:gen` on its own runs on `bun` alone
+and installs nothing. Live verification against Router is a separate, nightly,
 credentialed job.

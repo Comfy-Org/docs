@@ -32,7 +32,7 @@ By default it proxies the ComfyUI on `127.0.0.1:8188` and serves the v2 API on `
 ## Design Principles
 
 - **Poll first.** Every capability is reachable via plain GET polling. The SSE stream is a live enhancement, never the source of truth.
-- **Everything is resumable.** Submission is idempotent, and job state and outputs are retrievable by ID until `expires_at`.
+- **Everything is resumable.** Submission is idempotent, and job state and outputs are retrievable by ID until `expires_at`. The URL you get back for an output is shorter-lived than that: see [Output URLs and How Long They Last](#output-urls-and-how-long-they-last).
 - **Content-addressed assets.** Assets are UUID-identified records over blobs keyed by a server-computed blake3 hash, so identical inputs are not uploaded twice.
 - **Follow links, do not build URLs.** Responses embed their follow-up URLs.
 
@@ -52,6 +52,44 @@ See [Design Notes](/development/api-development/sdks-design) for the reasoning b
 |----------|-------------|
 | Assets | UUID-identified records over content-addressed blobs. Upload inputs, download outputs. |
 | Jobs | One execution of a workflow. Durable, pollable, and cancelable. |
+
+## Output URLs and How Long They Last
+
+Three different lifetimes govern "the URL for my output" and they are not the same number. Any application that shows outputs to its own users has to plan for all three.
+
+### The Two URL Shapes
+
+| Shape | Where you get it | Can a third party open it? | How long it lasts |
+|-------|------------------|----------------------------|-------------------|
+| Content endpoint, `{base}/api/v2/assets/{id}/content` | `url` on each entry of a job's `outputs` | No. It is an authenticated route and answers `401` without your API key. | Stable. It resolves for as long as the asset exists. |
+| Signed storage URL | `url` on an `Asset` response, the `302` `Location` the content endpoint redirects to, and `getDownloadUrl()` in both SDKs | Yes. It carries its own authorization, so a browser or another service reads it with no key of its own. | Short. Roughly 6 hours on Comfy Cloud today. |
+
+The practical consequence: `Output.url` is not a shareable link. Put it in an `<img src>` that your users' browsers load and they get a `401`, because their browser does not carry your API key. The signed URL is the one you can hand out.
+
+Self-hosted ComfyUI behind [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) has no signed URLs at all. The proxy serves the bytes from the content endpoint, normal authentication applies, and the SDKs report the expiry as `null` (Python: `None`).
+
+### Reading the Signed URL's Expiry
+
+On Comfy Cloud and Comfy API deployments a signed URL is minted with a validity of **approximately 6 hours**. That number is a server-side setting rather than part of the API contract, so treat it as an order of magnitude and never hard-code it. Read the expiry off the response you were given:
+
+- `url_expires_at` on an `Asset` response is the real expiry of the `url` in that same response.
+- `getDownloadUrl()` returns it alongside the URL, as `expiresAt` in TypeScript and `expires_at` in Python.
+
+### `url_expires_at` on a Job Output Is a Different Number
+
+`url_expires_at` on an entry of a job's `outputs` is **not** the signed URL's expiry. On Comfy Cloud it repeats the job's own `expires_at`, which today is the job's `created_at` plus a fixed 30 day window.
+
+That window is a placeholder. The platform has no job retention or garbage-collection policy behind it yet, so the 30 days is a stand-in that lets the field be non-null, not a commitment about how long an output stays fetchable. Do not read it as a promise, and do not key a cache off it. This page will be updated if a real retention policy replaces it.
+
+### Showing an Output in Your Own Product
+
+To still be showing an output a day later, do one of these:
+
+- **Re-host the bytes.** Download the output once and copy it into your own storage. Most applications end up here.
+- **Re-mint on demand.** Persist the asset `id`, then resolve it to a fresh URL (`GET /api/v2/assets/{id}`, or `getDownloadUrl()`) at the moment you render, and use that URL immediately.
+- **Proxy it.** Fetch `Output.url` from your own backend, which already holds the API key, and stream the bytes to your user.
+
+What does not work is persisting a signed URL. It is good for hours, not days, so a stored copy keeps working through local testing and then breaks for your users once it expires.
 
 ## Comfy Router
 

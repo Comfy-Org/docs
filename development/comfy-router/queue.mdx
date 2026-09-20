@@ -6,6 +6,8 @@ description: "Submit a Comfy Router request, get a request ID back at once, then
 
 `POST /v2/models/{provider}/{model}` holds the connection until the model finishes. Queued delivery takes the same model ID and the same native request body, but returns as soon as Router has admitted the run. You get a `request_id` back at once and collect the result when it is ready, from the same process or another one.
 
+**The synchronous route is bounded at 10 minutes.** That bound is the reason this page exists: Router's default deadline is 10 minutes (configurable per deployment), and a synchronous call that reaches it is cut off with `504` / `deadline_exceeded` whether or not the provider is still working. A generation that can run longer than that, or a caller that cannot hold a connection open for ten minutes, has to queue. See [Calls are cut off at a server deadline](/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline) for what the deadline does and does not tell you about billing.
+
 Use the queue when a generation can outlast the connection you can hold, when a web request has to return now, when you submit in one process and collect in another, or when you want many generations in flight at once. Ordering, admission, retries, timeouts, billing and expiry are all decided on the server. The SDKs add polling and ergonomics on top, nothing else.
 
 ## Two delivery modes, one request
@@ -15,6 +17,7 @@ Use the queue when a generation can outlast the connection you can hold, when a 
 | Route | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
 | Answer | `200` with the model's native output | `201` with a `request_id` and three URLs |
 | Result | In the response | Collected later, byte for byte the same output |
+| Time bound | Router's [10-minute deadline](/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline), then `504` / `deadline_exceeded` | None on the run. The finished result is [kept 24 hours](#idempotency-and-billing) |
 
 The SDKs (`comfy-sdk` and `@comfyorg/sdk`, 0.3.0 or later) expose the queue as three methods next to `run`:
 
@@ -23,6 +26,10 @@ The SDKs (`comfy-sdk` and `@comfyorg/sdk`, 0.3.0 or later) expose the queue as t
 - **`handle(model, request_id)`** rebuilds a handle in another process from the two IDs, with no call made.
 
 Both ids are needed everywhere because both address the request: the route is `/v2/models/{provider}/{model}/requests/{request_id}`.
+
+<Note>
+  `events()` here is **not** the Comfy Cloud client's `job.events()`. This one polls the status route and yields queue observations (status and queue position) for a Router request. The Cloud one is a live SSE stream of a ComfyUI workflow job carrying progress, previews and outputs. `subscribe()` is a third thing again: not an iterator at all, but submit, poll and collect folded into one call. See [`events()` is not `subscribe()`](/development/api-development/sdks#events-is-not-subscribe).
+</Note>
 
 ## The four routes
 

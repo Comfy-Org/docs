@@ -8,8 +8,8 @@
  *   bun .github/scripts/snippets/gen-code-pages.ts --validate # also syntax-check the emitted snippets
  *   bun .github/scripts/snippets/gen-code-pages.ts --prune    # also delete the page of a model that left the catalog, redirecting its URL
  *
- * The template below is the only place the page shape lives. Python, TypeScript
- * and cURL are all emitted from the same `example` object, so the three cannot
+ * The template below is the only place the page shape lives. Python, TypeScript,
+ * Swift and cURL are all emitted from the same `example` object, so the four cannot
  * disagree about the request body, and both delivery modes (wait for the
  * result, or queue it and collect later) are emitted from that one object too.
  */
@@ -254,6 +254,31 @@ function shellVar(s: string): string {
   return s.toUpperCase();
 }
 
+/**
+ * A JSON string value -> a valid Swift string literal.
+ *
+ * Not `JSON.stringify`: JSON spells a control character `\uXXXX`, and Swift's
+ * unicode escape is `\u{XXXX}` (and it has no `\b` / `\f` at all), so a
+ * JSON-escaped string can fail `swiftc -parse`. Escaping the raw value against
+ * Swift's own grammar keeps every emitted literal parseable. Backslash is
+ * escaped first, so a literal `\(` can never become string interpolation, and
+ * non-ASCII (accents, emoji) passes through as UTF-8, which Swift source is.
+ */
+function swiftString(s: string): string {
+  let out = '"';
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (ch === "\\") out += "\\\\";
+    else if (ch === '"') out += '\\"';
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (code < 0x20 || code === 0x7f) out += `\\u{${code.toString(16)}}`;
+    else out += ch;
+  }
+  return out + '"';
+}
+
 /** Result path like `candidates[0].content.parts[0].inlineData.data` -> segments. */
 function pathSegments(path: string): (string | number)[] {
   const out: (string | number)[] = [];
@@ -272,6 +297,16 @@ function pyPath(path: string): string {
 
 function tsPath(path: string): string {
   return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
+}
+
+/**
+ * Result path -> a chain of subscripts on the SDK's `result.output` view, e.g.
+ * `["result"]["sample"]` or `["images"][0]["url"]`. The view subscripts by
+ * string key and by integer index and returns `null` on a miss, so the same
+ * path the Python and TypeScript emitters walk reads a field here too.
+ */
+function swiftPath(path: string): string {
+  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `[${swiftString(p)}]`)).join("");
 }
 
 function tsResultType(path: string): string {
@@ -315,6 +350,29 @@ function tsLiteral(v: unknown, indent: number, files: FileInput[], topKey?: stri
   return `{\n${entries.map(([k, x]) => `${pad}  ${key(k)}: ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}}`;
 }
 
+/**
+ * JSON value -> a Swift literal for the SDK's `input: [String: Any]` parameter,
+ * multi-line, at the given indent. A file input is substituted by its variable
+ * name (camelCased, as in TypeScript). JSON `null` is `NSNull()` and an empty
+ * object is `[:]`, the two places a Swift dictionary literal differs from JSON.
+ */
+export function swiftLiteral(v: unknown, indent: number, files: FileInput[], topKey?: string): string {
+  const pad = " ".repeat(indent);
+  const f = topKey !== undefined ? files.find((x) => x.key === topKey) : undefined;
+  if (f) return camel(f.varName);
+  if (v === null) return "NSNull()";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return JSON.stringify(v);
+  if (typeof v === "string") return swiftString(v);
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x !== "object" || x === null)) return `[${v.map((x) => swiftLiteral(x, indent, files)).join(", ")}]`;
+    return `[\n${v.map((x) => `${pad}    ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
+  }
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length === 0) return "[:]";
+  return `[\n${entries.map(([k, x]) => `${pad}    ${swiftString(k)}: ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
+}
+
 function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
@@ -355,6 +413,36 @@ ${body}
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
 console.log("${label}:", result.data${tsPath(resultPath)});`;
+}
+
+/**
+ * Swift, synchronous. `client.models.run` holds the connection until the model
+ * answers, the same call and step order as the Python and TypeScript snippets.
+ * An empty `resultPath` (a derived page) prints the whole payload instead of a
+ * field read.
+ */
+export function swiftSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
+  return `import Foundation
+import ComfySwiftSDK
+${reads ? `\n${reads}\n` : ""}
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "${model}",
+    input: [
+${body}
+    ]
+)
+
+${show}`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -455,6 +543,41 @@ for await (const update of handle.events()) {
 ${show}`;
 }
 
+/** Swift, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
+export function swiftQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
+  return `import Foundation
+import ComfySwiftSDK
+${reads ? `\n${reads}\n` : ""}
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "${model}",
+    input: [
+${body}
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+${show}`;
+}
+
 /** cURL, queued: submit, then poll and collect by request id. */
 function curlQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
   const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
@@ -483,8 +606,8 @@ curl ${requests}/$REQUEST_ID \\
   -H "X-API-Key: $COMFY_API_KEY"`;
 }
 
-/** The three languages of one delivery mode. */
-function codeGroup(python: string, typescript: string, curl: string): string {
+/** The four languages of one delivery mode. Tab order (SDKs first, raw HTTP last) is the same on every page. */
+function codeGroup(python: string, typescript: string, swift: string, curl: string): string {
   return `<CodeGroup>
 \`\`\`python Python
 ${python}
@@ -492,6 +615,10 @@ ${python}
 
 \`\`\`typescript TypeScript
 ${typescript}
+\`\`\`
+
+\`\`\`swift Swift
+${swift}
 \`\`\`
 
 \`\`\`bash cURL
@@ -895,8 +1022,8 @@ function quickStart(v: Variant, spec: Spec): string {
   const files = fileInputs(example);
   const label = spec.result.label;
   const path = spec.result.path;
-  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
-  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
+  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), swiftSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
+  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), swiftQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
   return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
@@ -973,7 +1100,7 @@ function renderPage(spec: Spec, dir: string): string {
   // The one-time setup a snippet cannot run without. Everything else that is
   // shared across models (idempotency, deadline, request IDs) lives on the
   // headers page the footer links to.
-  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`;
   // Every model this page documents, with the legs its own schema document
   // publishes. A spec with no aliased model renders no section at all.
   const serving = servingProvidersSection(spec.variants.map((v) => ({ model: v.model, legs: loadModelSchema(v.model)?.altProviders ?? [] })));
@@ -1042,10 +1169,10 @@ function bodyExample(example: unknown): Record<string, unknown> | undefined {
 }
 
 function derivedSnippets(model: string, example?: unknown): string {
-  // Rendered through the same pyLiteral/tsLiteral/esc helpers the curated
-  // snippets use, so the three languages cannot drift from one another or from
-  // the JSON in the Examples section -- the invariant stated at the top of this
-  // file. Derived pages have no file inputs, so the FileInput list is empty.
+  // Rendered through the same pyLiteral/tsLiteral/swiftLiteral/esc helpers the
+  // curated snippets use, so the four languages cannot drift from one another or
+  // from the JSON in the Examples section -- the invariant stated at the top of
+  // this file. Derived pages have no file inputs, so the FileInput list is empty.
   const body = bodyExample(example);
   if (!body) return "";
   const pyBody = Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n");
@@ -1072,8 +1199,8 @@ ${tsBody}
 });
 
 console.log(data);`;
-  const sync = codeGroup(python, typescript, curlSnippet(model, body, []));
-  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
+  const sync = codeGroup(python, typescript, swiftSnippet(model, body, [], "", ""), curlSnippet(model, body, []));
+  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), swiftQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
   return deliveryTabs(model, sync, queued);
 }
 
@@ -1104,8 +1231,8 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const requestExample = bodyExample(s.inputExample);
   const clients = requestExample
-    ? `The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`
-    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. cURL uses raw HTTP.`;
+    ? `The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`
+    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. For Swift, add the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) package. cURL uses raw HTTP.`;
   const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
@@ -1205,7 +1332,7 @@ description: "Every model available through Comfy Router, grouped by provider."
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
-Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
+Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, Swift, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
 ${hasProviders ? `\nSome of these models can also be served by an aggregator on the same route and the same model ID. [Serving providers](${PROVIDERS_URL}) lists which provider covers which model, and how to select one.\n` : ""}
 ${sections}
 `;
@@ -1401,17 +1528,20 @@ function validate(page: string, rel: string): string[] {
   const problems: string[] = [];
   const tmp = mkdtempSync(join(tmpdir(), "code-pages-"));
   try {
-    const fences = [...page.matchAll(/```(python|typescript|bash)[^\n]*\n([\s\S]*?)```/g)];
+    const fences = [...page.matchAll(/```(python|typescript|swift|bash)[^\n]*\n([\s\S]*?)```/g)];
     fences.forEach((m, i) => {
       const [, lang, code] = m;
-      const file = join(tmp, `s${i}.${lang === "python" ? "py" : lang === "typescript" ? "ts" : "sh"}`);
+      const ext = lang === "python" ? "py" : lang === "typescript" ? "ts" : lang === "swift" ? "swift" : "sh";
+      const file = join(tmp, `s${i}.${ext}`);
       writeFileSync(file, code);
       const cmd =
         lang === "python"
           ? ["python3", "-m", "py_compile", file]
           : lang === "typescript"
             ? ["bun", "build", "--target=node", "--no-bundle", file, "--outfile", `${file}.out.js`]
-            : ["bash", "-n", file];
+            : lang === "swift"
+              ? ["swiftc", "-parse", file]
+              : ["bash", "-n", file];
       const r = Bun.spawnSync(cmd, { stderr: "pipe", stdout: "pipe" });
       if (r.exitCode !== 0) problems.push(`${rel}: ${lang} snippet #${i + 1} failed syntax check:\n${r.stderr.toString()}`);
     });
