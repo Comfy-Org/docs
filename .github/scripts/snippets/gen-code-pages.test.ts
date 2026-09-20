@@ -336,7 +336,7 @@ describe("the Providers page", () => {
   });
 
   test("every row links the NATIVE model's page and names the alias id and the query parameter", () => {
-    const page = renderProvidersPage(rows, 210);
+    const page = renderProvidersPage(rows);
     expect(page).toContain(
       `- [Nano Banana Pro](/${NATIVE_PAGE}): \`${NATIVE}\`, served as \`${FAL_LEG.model_id}\` with \`?model_provider=fal\``
     );
@@ -347,14 +347,14 @@ describe("the Providers page", () => {
   });
 
   test("Comfy is listed first, as the default that covers the whole catalog", () => {
-    const page = renderProvidersPage(rows, 210);
+    const page = renderProvidersPage(rows);
     expect(page).toContain("## Comfy (direct)");
-    expect(page).toContain("All 210 models in the [model catalog](/development/comfy-router/models)");
+    expect(page).toContain("Every model in the [model catalog](/development/comfy-router/models) is served by Comfy Router directly");
     expect(page.indexOf("## Comfy (direct)")).toBeLessThan(page.indexOf("## fal"));
   });
 
   test("its frontmatter follows the repo's title/description rules", () => {
-    const page = renderProvidersPage(rows, 210);
+    const page = renderProvidersPage(rows);
     const description = page.match(/^description: "(.+)"$/m)![1];
     expect(page).toContain('title: "Comfy Router serving providers"');
     expect(page).toContain('sidebarTitle: "Serving providers"');

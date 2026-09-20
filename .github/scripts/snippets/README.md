@@ -87,7 +87,10 @@ The generator reads both and organises the docs by model rather than by route:
   `--prune` deletes it and writes a `docs.json` redirect from its URL to the page
   that documents the **native** model, not to the catalog index. Only the page
   goes; the alias JSON under `router-schemas/` stays published, which is what
-  keeps model discovery working for an agent that reads the alias id.
+  keeps model discovery working for an agent that reads the alias id. An alias is
+  retired only when the model it points at is documented here: if the native
+  document has not synced yet the alias keeps its page, rather than leaving a live
+  model with no page at all, and the generator says so on stderr.
 - A **native page gains a `## Serving providers` section** after its request
   setup: Comfy first (the default when the call names no provider), then one row
   per leg with the provider's label, the leg's alias model id, and the same call
