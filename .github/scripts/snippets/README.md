@@ -72,6 +72,43 @@ so a new page is in the sidebar the moment it is generated. Provider labels come
 from `PROVIDER_LABEL` in the generator; an unlisted slug is title-cased, so a new
 provider renders sanely without a code change.
 
+## Serving providers
+
+Some models can be served by more than one provider. Router publishes the
+relationship on the schema documents themselves: a **native** document lists its
+legs in `x-comfy-router-alt-providers` (`[{provider, model_id}]`), and each leg
+also has an **alias** document of its own carrying `x-comfy-router-alias-of` (the
+native model id) and `x-comfy-router-alias-provider` (the provider serving it).
+
+The generator reads both and organises the docs by model rather than by route:
+
+- An **alias document renders no page**: no `code.mdx`, no sidebar entry, no row
+  on the catalog index. An alias page that already exists is an orphan, so
+  `--prune` deletes it and writes a `docs.json` redirect from its URL to the page
+  that documents the **native** model, not to the catalog index. Only the page
+  goes; the alias JSON under `router-schemas/` stays published, which is what
+  keeps model discovery working for an agent that reads the alias id.
+- A **native page gains a `## Serving providers` section** after its request
+  setup: Comfy first (the default when the call names no provider), then one row
+  per leg with the provider's label, the leg's alias model id, and the same call
+  on the same endpoint with `?model_provider=<provider>` added. A native model
+  with no leg renders no section.
+- A **`development/comfy-router/providers.mdx`** index is generated listing each
+  serving provider and the native models it covers, and is added to the `Models`
+  nav group beside the catalog index. Comfy is described rather than enumerated:
+  it serves the whole catalog, and the catalog index one link away already is
+  that list. The page exists only while some model publishes a leg, so a catalog
+  with no alternate routing gains no page, no nav entry and no diff.
+
+The redirect destination is resolved through the page the native model is
+actually documented on, which is not always `models/<provider>/<model>/code`: a
+curated spec can cover a model under a different name, so
+`vertexai/gemini-3-pro-image` lives at `models/google/nano-banana-pro/code`.
+
+`bun test ./.github/scripts/snippets/` covers all four cases against inline
+fixtures. `router-schemas/` is sync-owned, so a fixture document cannot be
+committed there.
+
 ## The preview banner
 
 `snippets/comfy-router/preview-notice.mdx` is rendered on every page while that

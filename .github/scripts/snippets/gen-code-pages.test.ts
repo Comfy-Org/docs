@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isOpaqueBody, loadModelSchema, modelPageRedirects, modelsNav, opaqueOutputExample, outputContent, outputSchemaFields, renderDocsJson } from "./gen-code-pages.ts";
+import {
+  isOpaqueBody,
+  loadModelSchema,
+  modelPageRedirects,
+  modelsNav,
+  opaqueOutputExample,
+  outputContent,
+  outputSchemaFields,
+  providerCoverage,
+  readRelations,
+  renderDocsJson,
+  renderProvidersPage,
+  servingProvidersSection,
+} from "./gen-code-pages.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 
@@ -183,5 +196,216 @@ describe("renderDocsJson: the redirect lands in the real docs.json", () => {
     expect(after.redirects).toEqual(before.redirects);
     // `redirects` stays the last key, so the file's shape does not churn.
     expect(Object.keys(after).at(-1)).toBe("redirects");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Alt-provider legs: `x-comfy-router-alt-providers` on a native document,
+// `x-comfy-router-alias-of` on the alias document the exporter publishes for it.
+// Fixtures are inline: `router-schemas/` is sync-owned, so a fixture document
+// cannot live there, and none of the functions below reads the disk.
+// ---------------------------------------------------------------------------
+
+const NATIVE = "vertexai/gemini-3-pro-image";
+const NATIVE_PAGE = "development/comfy-router/models/google/nano-banana-pro/code";
+const FAL_LEG = { provider: "fal", model_id: "fal/fal-nano-banana-pro" };
+const WAVESPEED_LEG = { provider: "wavespeed", model_id: "wavespeed/wavespeed-nano-banana-pro" };
+
+describe("readRelations: the two extensions BE-15959 publishes", () => {
+  test("a native document lists its legs, sorted by provider so the page does not churn", () => {
+    const r = readRelations(NATIVE, { paths: {}, "x-comfy-router-alt-providers": [WAVESPEED_LEG, FAL_LEG] });
+    expect(r.alias).toBeUndefined();
+    expect(r.altProviders).toEqual([FAL_LEG, WAVESPEED_LEG]);
+  });
+
+  test("an alias document names its native target and the provider serving it", () => {
+    const r = readRelations("fal/fal-nano-banana-pro", {
+      paths: {},
+      "x-comfy-router-alias-of": NATIVE,
+      "x-comfy-router-alias-provider": "fal",
+    });
+    expect(r).toEqual({ altProviders: [], alias: { aliasOf: NATIVE, provider: "fal" } });
+  });
+
+  test("an alias with no `alias-provider` falls back to its own namespace", () => {
+    const r = readRelations("fal/fal-nano-banana-pro", { paths: {}, "x-comfy-router-alias-of": NATIVE });
+    expect(r.alias).toEqual({ aliasOf: NATIVE, provider: "fal" });
+  });
+
+  test("a document from before the extensions existed has no relationship at all", () => {
+    expect(readRelations(NATIVE, { paths: {} })).toEqual({ altProviders: [] });
+  });
+
+  test("malformed values are dropped rather than rendered as `undefined`", () => {
+    const r = readRelations(NATIVE, {
+      paths: {},
+      "x-comfy-router-alt-providers": [
+        null,
+        "fal",
+        { provider: "fal" },
+        { model_id: "fal/x" },
+        { provider: "", model_id: "fal/x" },
+        { provider: "fal", model_id: "no-slash" },
+        FAL_LEG,
+        { provider: "fal", model_id: "fal/duplicate-provider" },
+      ],
+    });
+    expect(r.altProviders).toEqual([FAL_LEG]);
+  });
+
+  test("a non-array `alt-providers` is ignored, not spread", () => {
+    expect(readRelations(NATIVE, { paths: {}, "x-comfy-router-alt-providers": { provider: "fal" } }).altProviders).toEqual([]);
+  });
+
+  // A self-reference would redirect a page to itself, or claim a model is served
+  // by an alternate provider that is the page the reader is already on.
+  test("a document that names itself is neither an alias nor its own leg", () => {
+    expect(readRelations(NATIVE, { paths: {}, "x-comfy-router-alias-of": NATIVE }).alias).toBeUndefined();
+    expect(readRelations(NATIVE, { paths: {}, "x-comfy-router-alt-providers": [{ provider: "fal", model_id: NATIVE }] }).altProviders).toEqual([]);
+  });
+
+  test("an `alias-of` that is not a `provider/model` id is ignored", () => {
+    expect(readRelations(NATIVE, { paths: {}, "x-comfy-router-alias-of": "gemini-3-pro-image" }).alias).toBeUndefined();
+    expect(readRelations(NATIVE, { paths: {}, "x-comfy-router-alias-of": 42 as unknown as string }).alias).toBeUndefined();
+  });
+});
+
+describe("servingProvidersSection: the block on the native model's page", () => {
+  test("a model with two legs lists Comfy first, then one row per leg", () => {
+    const out = servingProvidersSection([{ model: NATIVE, legs: [FAL_LEG, WAVESPEED_LEG] }]);
+    expect(out).toContain("## Serving providers");
+    expect(out).toContain("- **Comfy** (default): `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image`");
+    expect(out).toContain(
+      "- **fal**, as `fal/fal-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=fal`"
+    );
+    expect(out).toContain(
+      "- **WaveSpeed**, as `wavespeed/wavespeed-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=wavespeed`"
+    );
+    // Comfy is first, and the call example is the NATIVE endpoint throughout.
+    expect(out.indexOf("**Comfy**")).toBeLessThan(out.indexOf("**fal**"));
+    expect(out).not.toContain("/v2/models/fal/fal-nano-banana-pro");
+  });
+
+  test("it says what `strict_mode` defaults to and links the three routing parameters", () => {
+    const out = servingProvidersSection([{ model: NATIVE, legs: [FAL_LEG] }]);
+    expect(out).toContain("`strict_mode` defaults to false");
+    expect(out).toContain(
+      "[`model_provider`, `strict_mode` and `fallback_provider`](/development/comfy-router/reference#post-v2modelsprovidermodel)"
+    );
+    expect(out).toContain("[Serving providers](/development/comfy-router/providers)");
+  });
+
+  test("a native model with no legs renders no section at all", () => {
+    expect(servingProvidersSection([{ model: NATIVE, legs: [] }])).toBe("");
+    expect(servingProvidersSection([])).toBe("");
+  });
+
+  test("a curated page covering several models heads each one, and skips the ones with no leg", () => {
+    const out = servingProvidersSection([
+      { model: NATIVE, legs: [FAL_LEG] },
+      { model: "vertexai/gemini-3.1-flash-image", legs: [{ provider: "fal", model_id: "fal/fal-nano-banana-2" }] },
+      { model: "vertexai/gemini-2-5-flash-image", legs: [] },
+    ]);
+    expect(out).toContain("**`vertexai/gemini-3-pro-image`**");
+    expect(out).toContain("**`vertexai/gemini-3.1-flash-image`**");
+    expect(out).not.toContain("gemini-2-5-flash-image");
+  });
+
+  test("a single-model page carries no redundant model heading above its rows", () => {
+    expect(servingProvidersSection([{ model: NATIVE, legs: [FAL_LEG] }])).not.toContain(`**\`${NATIVE}\`**`);
+  });
+
+  // The repo's prose rule (AGENTS.md): em dashes read as generic AI copy.
+  test("the generated prose carries no em dash", () => {
+    expect(servingProvidersSection([{ model: NATIVE, legs: [FAL_LEG, WAVESPEED_LEG] }])).not.toContain("—");
+  });
+});
+
+describe("the Providers page", () => {
+  const rows = [
+    { provider: "wavespeed", model: NATIVE, aliasId: WAVESPEED_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
+    { provider: "fal", model: NATIVE, aliasId: FAL_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
+    { provider: "fal", model: "openai/gpt-image-2", aliasId: "fal/fal-gpt-image-2", page: "development/comfy-router/models/openai/gpt-image-2/code", title: "GPT Image 2" },
+  ];
+
+  test("providers come out alphabetically by label, each with its own models", () => {
+    const grouped = providerCoverage(rows);
+    expect(grouped.map((g) => g.label)).toEqual(["fal", "WaveSpeed"]);
+    // Rows sort by the page they link, as the catalog index does.
+    expect(grouped[0].rows.map((r) => r.aliasId)).toEqual(["fal/fal-nano-banana-pro", "fal/fal-gpt-image-2"]);
+  });
+
+  test("every row links the NATIVE model's page and names the alias id and the query parameter", () => {
+    const page = renderProvidersPage(rows, 210);
+    expect(page).toContain(
+      `- [Nano Banana Pro](/${NATIVE_PAGE}): \`${NATIVE}\`, served as \`${FAL_LEG.model_id}\` with \`?model_provider=fal\``
+    );
+    expect(page).toContain("## fal");
+    expect(page).toContain("## WaveSpeed");
+    // No alias page exists to link, so no row may point at one.
+    expect(page).not.toContain("(/development/comfy-router/models/fal/fal-nano-banana-pro/code)");
+  });
+
+  test("Comfy is listed first, as the default that covers the whole catalog", () => {
+    const page = renderProvidersPage(rows, 210);
+    expect(page).toContain("## Comfy (direct)");
+    expect(page).toContain("All 210 models in the [model catalog](/development/comfy-router/models)");
+    expect(page.indexOf("## Comfy (direct)")).toBeLessThan(page.indexOf("## fal"));
+  });
+
+  test("its frontmatter follows the repo's title/description rules", () => {
+    const page = renderProvidersPage(rows, 210);
+    const description = page.match(/^description: "(.+)"$/m)![1];
+    expect(page).toContain('title: "Comfy Router serving providers"');
+    expect(page).toContain('sidebarTitle: "Serving providers"');
+    expect(description.length).toBeGreaterThanOrEqual(40);
+    expect(description.length).toBeLessThanOrEqual(160);
+    expect(page).not.toContain("—");
+  });
+});
+
+describe("modelsNav: the Providers page sits beside the catalog index", () => {
+  const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
+
+  test("with legs, it is the second entry of the Models group, ahead of every provider sub-group", () => {
+    expect(modelsNav(live, true).pages.slice(0, 2)).toEqual([
+      "development/comfy-router/models",
+      "development/comfy-router/providers",
+    ]);
+  });
+
+  test("with no legs the nav is exactly what it is today", () => {
+    expect(modelsNav(live, false)).toEqual(modelsNav(live));
+    expect(JSON.stringify(modelsNav(live))).not.toContain("providers");
+  });
+});
+
+describe("modelPageRedirects: an alias page redirects to its native page", () => {
+  const aliasPage = "development/comfy-router/models/fal/fal-nano-banana-pro/code";
+
+  test("the pruned alias page points at the native model's page, not the catalog index", () => {
+    const [r] = modelPageRedirects([], [NATIVE_PAGE], [{ page: aliasPage, destination: `/${NATIVE_PAGE}` }]);
+    expect(r).toEqual({ source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` });
+  });
+
+  test("per-page and default destinations mix in one run, still sorted by source", () => {
+    const retired = "development/comfy-router/models/kling/kling-v1/code";
+    expect(modelPageRedirects([], [], [{ page: aliasPage, destination: `/${NATIVE_PAGE}` }, retired])).toEqual([
+      { source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` },
+      { source: `/${retired}`, destination: "/development/comfy-router/models" },
+    ]);
+  });
+
+  test("a redirect already written for that URL still wins over the generated one", () => {
+    const existing = { source: `/${aliasPage}`, destination: "/somewhere-else", permanent: true };
+    expect(modelPageRedirects([existing], [], [{ page: aliasPage, destination: `/${NATIVE_PAGE}` }])).toEqual([existing]);
+  });
+
+  test("two entries for one URL resolve to one redirect, independent of order", () => {
+    const dupes = [
+      { page: aliasPage, destination: `/${NATIVE_PAGE}` },
+      { page: aliasPage, destination: "/development/comfy-router/models" },
+    ];
+    expect(modelPageRedirects([], [], dupes)).toEqual([{ source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` }]);
   });
 });
