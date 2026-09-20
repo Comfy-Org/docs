@@ -506,4 +506,9 @@ describe("modelPageRedirects: an alias page redirects to its native page", () =>
     ];
     expect(modelPageRedirects([], [], dupes)).toEqual([{ source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` }]);
   });
+
+  test("the alias destination wins even when the catalog fallback is scanned first", () => {
+    const dupes = [aliasPage, { page: aliasPage, destination: `/${NATIVE_PAGE}` }];
+    expect(modelPageRedirects([], [], dupes)).toEqual([{ source: `/${aliasPage}`, destination: `/${NATIVE_PAGE}` }]);
+  });
 });

@@ -734,11 +734,17 @@ export function outputContent(
  * Legs are sorted by provider slug so the generated section does not churn when
  * the exporter reorders the array.
  */
+/** A single path segment: non-empty, no whitespace or URI-reserved characters. */
+const isSlug = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+$/.test(v);
+
+/** A `<provider>/<model>` model ID: exactly two non-empty, slug-shaped segments. */
+const isModelId = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+\/[^\s/?#]+$/.test(v);
+
 export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
   const aliasOf = doc["x-comfy-router-alias-of"];
-  if (typeof aliasOf === "string" && aliasOf.includes("/") && aliasOf !== model) {
+  if (isModelId(aliasOf) && aliasOf !== model) {
     const provider = doc["x-comfy-router-alias-provider"];
-    return { altProviders: [], alias: { aliasOf, provider: typeof provider === "string" && provider ? provider : providerOf(model) } };
+    return { altProviders: [], alias: { aliasOf, provider: isSlug(provider) ? provider : providerOf(model) } };
   }
   const raw = doc["x-comfy-router-alt-providers"];
   if (!Array.isArray(raw)) return { altProviders: [] };
@@ -747,8 +753,8 @@ export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
     const { provider, model_id } = entry as Record<string, unknown>;
-    if (typeof provider !== "string" || !provider) continue;
-    if (typeof model_id !== "string" || !model_id.includes("/") || model_id === model) continue;
+    if (!isSlug(provider)) continue;
+    if (!isModelId(model_id) || model_id === model) continue;
     if (seen.has(provider)) continue;
     seen.add(provider);
     altProviders.push({ provider, model_id });
@@ -1476,13 +1482,17 @@ export function modelPageRedirects(existing: Redirect[], live: Iterable<string>,
   const liveUrls = new Set([...live].map(pageUrl));
   const kept = existing.filter((r) => !liveUrls.has(r.source));
   const have = new Set(kept.map((r) => r.source));
-  // First destination wins, so two pruned entries for one URL cannot make the
-  // output depend on scan order.
+  // An alias's own destination wins over the generic catalog fallback for the
+  // same URL, independent of scan order: the alias is the more specific
+  // answer, and a catalog-first entry must not shadow it.
   const bySource = new Map<string, string>();
   for (const entry of pruned) {
     const { page, destination } = typeof entry === "string" ? { page: entry, destination: MODELS_INDEX_URL } : entry;
     const source = pageUrl(page);
-    if (!bySource.has(source)) bySource.set(source, destination);
+    const current = bySource.get(source);
+    if (current === undefined || (current === MODELS_INDEX_URL && destination !== MODELS_INDEX_URL)) {
+      bySource.set(source, destination);
+    }
   }
   const added = [...bySource.keys()]
     .filter((source) => !have.has(source) && !liveUrls.has(source))
@@ -1692,14 +1702,23 @@ if (import.meta.main) {
   // for a leg even if the native document's `x-comfy-router-alt-providers` has not
   // caught up, and the native page's section still comes from the native document.
   const coverage: Coverage[] = [];
-  const seenCoverage = new Set<string>();
+  // Keyed on provider + native model, not aliasId: the native document's own
+  // `x-comfy-router-alt-providers` entry (added first, below) is canonical, so a
+  // later alias document naming a different alias ID for the same leg is a
+  // cross-document conflict to report, not a second row for the same leg.
+  const seenCoverage = new Map<string, string>();
   const addCoverage = (provider: string, model: string, aliasId: string) => {
-    const key = `${provider} ${model} ${aliasId}`;
     const target = pageByModel.get(model);
     // A leg pointing at a model with no page of its own has nothing to link, and a
     // row whose link would 404 is worse than a row that is not there.
-    if (!target || seenCoverage.has(key)) return;
-    seenCoverage.add(key);
+    if (!target) return;
+    const key = `${provider} ${model}`;
+    const known = seenCoverage.get(key);
+    if (known !== undefined) {
+      if (known !== aliasId) problems.push(`${model}: provider \`${provider}\` is aliased as both \`${known}\` and \`${aliasId}\`; the native model's alt-providers list is canonical`);
+      return;
+    }
+    seenCoverage.set(key, aliasId);
     coverage.push({ provider, model, aliasId, page: target.page, title: target.title });
   };
   for (const [model, legs] of legsByModel) for (const leg of legs) addCoverage(leg.provider, model, leg.model_id);
