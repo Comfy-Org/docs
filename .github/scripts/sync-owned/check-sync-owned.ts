@@ -26,8 +26,9 @@
  *     pages are generated, so `code.yaml` stays editable and is in fact where an
  *     edit to a generated model page belongs.
  *
- * The two GENERATED page kinds (`development/comfy-router/models.mdx` and the
- * per-model `code.mdx`) are guarded CONDITIONALLY, on FRESHNESS. Committing them
+ * The three GENERATED page kinds (`development/comfy-router/models.mdx`, the
+ * per-model `code.mdx`, and `development/comfy-router/providers.mdx`) are guarded
+ * CONDITIONALLY, on FRESHNESS. Committing them
  * is mandatory whenever a generator input changes, so guarding them
  * unconditionally would make a `code.yaml` edit unshippable and would fail an
  * honest "regenerate to restore freshness" pull request as well. A page that
@@ -108,6 +109,13 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === `${MODELS_DIR}.mdx`,
     guidance:
       "GENERATED provider index, and it does not match the generator's output, so this is a hand-edit. Change a model's code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
+    generated: true,
+  },
+  {
+    id: "providers-index",
+    test: (p) => p === "development/comfy-router/providers.mdx",
+    guidance:
+      "GENERATED serving-provider index, and it does not match the generator's output, so this is a hand-edit. Change the upstream alt-provider contract and re-run `bun run code-pages:gen`.",
     generated: true,
   },
   {
