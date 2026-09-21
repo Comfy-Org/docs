@@ -25,6 +25,9 @@ const ALWAYS_GUARDED = [
 /** Guarded only when the committed pages are stale, i.e. hand-edited. */
 const GENERATED_GUARDED = [
   "development/comfy-router/models.mdx",
+  // Written only while some model publishes an alt-provider leg, so unlike the
+  // others it is not asserted to exist below; the guard still has to cover it.
+  "development/comfy-router/providers.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.mdx",
 ];
 
