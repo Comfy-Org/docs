@@ -1,13 +1,16 @@
 document.addEventListener("click", (event) => {
   const openButton = event.target.closest("[data-sample-open]");
+  const preview = event.target.closest("[data-sample-preview]");
   const backButton = event.target.closest("[data-sample-back]");
+  const openTarget = openButton || preview;
 
-  if (openButton) {
-    const card = openButton.closest("[data-sample-card]");
-    const path = openButton.dataset.sampleOpen;
+  if (openTarget) {
+    const card = openTarget.closest("[data-sample-card]");
+    const path = openButton?.dataset.sampleOpen || preview?.dataset.samplePreview;
     const front = card.querySelector("[data-sample-front]");
     const selectedPath = card.querySelector(`[data-sample-path="${path}"]`);
     event.preventDefault();
+    if (preview) event.stopPropagation();
     card.dataset.activePath = path;
     card.dataset.flipped = "true";
     front.inert = true;
@@ -35,4 +38,4 @@ document.addEventListener("click", (event) => {
     front.setAttribute("aria-hidden", "false");
     openButton.focus();
   }
-});
+}, true);
