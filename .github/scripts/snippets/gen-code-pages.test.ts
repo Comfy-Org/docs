@@ -442,8 +442,11 @@ describe("the Providers page", () => {
     const page = renderProvidersPage(rows);
     expect(page).toContain("| Provider / model | [GPT Image 2]");
     expect(page).toContain("| **Comfy (default)** | ✓ | ✓ |");
-    expect(page).toContain("| **fal** | `fal/fal-gpt-image-2` | `fal/fal-nano-banana-pro` |");
-    expect(page).toContain("A `-` means that provider does not serve that model.");
+    expect(page).toContain("| **fal** | ✓ | ✓ |");
+    expect(page).toContain("## Provider model IDs");
+    expect(page).toContain("| **fal** | [Nano Banana Pro]");
+    expect(page).toContain("`fal/fal-nano-banana-pro`");
+    expect(page).toContain("A `-` means it does not.");
   });
 
   test("the alternate-provider sample uses every language tab", () => {

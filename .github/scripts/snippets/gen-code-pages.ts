@@ -1465,8 +1465,18 @@ function providerMatrixTable(rows: Coverage[]): string {
   for (const provider of providers) {
     lines.push(`| **${provider.label}** | ${columns.map((column) => {
       const row = find(provider.rows, column.model);
-      return row ? `\`${row.aliasId}\`` : "-";
+      return row ? "✓" : "-";
     }).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
+function providerAliasTable(rows: Coverage[]): string {
+  const lines = ["| Provider | Model | Provider model ID |", "| --- | --- | --- |"];
+  for (const provider of providerCoverage(rows)) {
+    for (const row of provider.rows) {
+      lines.push(`| **${provider.label}** | [${row.title}](/${row.page}) | \`${row.aliasId}\` |`);
+    }
   }
   return lines.join("\n");
 }
@@ -1520,7 +1530,13 @@ Leave out \`model_provider\` to use Comfy directly. Add \`?model_provider=<provi
 
 ${matrix}
 
-The model names link to their native Code pages. Alternate-provider cells show the provider's alias model ID. A \`-\` means that provider does not serve that model.
+The model names link to their native Code pages. A \`✓\` means the provider serves that model. A \`-\` means it does not.
+
+## Provider model IDs
+
+Use these provider-specific IDs when you need to refer to the alternate catalog entry directly. Requests that use \`model_provider\` keep the native model ID shown in the matrix.
+
+${providerAliasTable(rows)}
 
 ${sampleSection ? `${sampleSection}\n\n` : ""}## Request compatibility
 
