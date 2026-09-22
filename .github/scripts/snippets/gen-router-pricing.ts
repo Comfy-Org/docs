@@ -44,16 +44,6 @@ type PricingData = {
     source_key: string | null;
     rates: Array<{ fields: Array<{ label: string; value: string }> }>;
   }>;
-  sample: Array<{
-    id: string;
-    title: string;
-    category: string;
-    icon: string;
-    page: string;
-    price: string;
-    detail: string;
-    config: string;
-  }>;
 };
 
 const normalize = (value: string) =>
@@ -191,7 +181,7 @@ function findPricingMatch(model: string, rows: SourceRow[]): PricingMatch | unde
 }
 
 function rateSummary(record: PricingData["models"][number]): string {
-  if (record.status !== "published") return "Not published in current Partner Node pricing";
+  if (record.status !== "published") return "—";
   return record.rates
     .map((row) => row.fields.map((field) => `${field.label}: ${field.value}`).join("; "))
     .join("<br />")
@@ -203,35 +193,40 @@ function loadPricingData(): PricingData {
   if (!data.source || data.source.credits_per_usd <= 0 || !Array.isArray(data.models)) {
     throw new Error(`${DATA_FILE}: invalid pricing data`);
   }
-  if (data.models.length === 0 || !Array.isArray(data.sample) || data.sample.length === 0) throw new Error(`${DATA_FILE}: incomplete pricing data`);
+  if (data.models.length === 0) throw new Error(`${DATA_FILE}: no model records`);
   return data;
 }
 
 function render(): string {
   const data = loadPricingData();
-  const rows = data.sample
-    .map((sample) => `| [${sample.title}](/${sample.page}) | ${sample.category} | ${sample.price} | ${sample.detail} | ${sample.config} |`)
+  const rows = data.models
+    .map((model) => {
+      const reference = model.source_section
+        ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
+        : `[Partner Node pricing](${PRICING_URL})`;
+      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
+    })
     .join("\n");
 
   return `---
-title: "Comfy Router pricing"
+title: "Comfy Router pricing by model"
 sidebarTitle: "Pricing"
-description: "Compare sample Comfy Router prices for text, image, and video models using current credit rates."
+description: "Compare Comfy Router credit pricing by model, with billing units and official pricing source links."
 mode: "wide"
 ---
 
 {/* GENERATED FILE. Generated from router-pricing/prices.json by \`pnpm router-pricing:gen\`. */}
 
-Sample Comfy Router prices. All amounts are credits.
+All amounts are Comfy credits. This table contains **${data.models.length} Router model rows**.
 
 <Note>
-Prices vary by model settings. Open a model page for request details. [See all pricing details](${PRICING_URL}).
+Prices vary by model settings. A dash means the current official Partner Node snapshot has no matching rate row. [See all pricing details](${PRICING_URL}).
 </Note>
 
-## Sample pricing
+## Pricing by model
 
-| Model | Type | Price | Details | Configuration |
-| --- | --- | --- | --- | --- |
+| Model | Router model ID | Comfy credit rate | Pricing source |
+| --- | --- | --- | --- |
 ${rows}
 `;
 }

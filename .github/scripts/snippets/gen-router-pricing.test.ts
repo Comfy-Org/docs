@@ -7,17 +7,19 @@ describe("Router pricing catalog", () => {
 
   test("covers every generated Router model ID", () => {
     expect(catalog.length).toBe(212);
-    expect(page).toContain("GPT-5");
+    expect(page).toContain("GPT 5");
     expect(page).toContain("Nano Banana Pro");
     expect(page).toContain("Kling V3");
+    expect(page).toContain("freepik/ai-image-upscaler-precision-v2");
   });
 
-  test("renders a compact sample pricing UI", () => {
-    expect(page).toContain("## Sample pricing");
-    expect(page).toContain("263.75 credits / 1M input");
-    expect(page).toContain("7,600 credits / 1M");
+  test("renders the full pricing table", () => {
+    expect(page).toContain("## Pricing by model");
+    expect(page).toContain("Input credits / 1M: 263.75");
+    expect(page).toContain("output (image)");
+    expect(page).toContain("7600");
+    expect(page).toContain("212 Router model rows");
     expect(page).not.toContain("<Card");
-    expect(page).not.toContain("Router model coverage");
   });
 
   test("matches complete model names instead of prefixes", () => {
