@@ -44,16 +44,17 @@ type PricingData = {
     source_key: string | null;
     rates: Array<{ fields: Array<{ label: string; value: string }> }>;
   }>;
+  sample: Array<{
+    id: string;
+    title: string;
+    category: string;
+    icon: string;
+    page: string;
+    price: string;
+    detail: string;
+    config: string;
+  }>;
 };
-
-const SAMPLE_CARDS = [
-  { id: "openai/gpt-5", title: "GPT-5", category: "Text", icon: "message" },
-  { id: "openai/gpt-image-2", title: "GPT Image 2", category: "Image", icon: "image" },
-  { id: "vertexai/gemini-3-pro-image", title: "Nano Banana Pro", category: "Image", icon: "image" },
-  { id: "byteplus/dreamina-seedance-2-0-260128", title: "Seedance 2.0", category: "Video", icon: "video" },
-  { id: "kling/kling-v3", title: "Kling V3", category: "Video", icon: "video" },
-  { id: "recraft/recraftv4", title: "Recraft V4", category: "Image", icon: "image" },
-] as const;
 
 const normalize = (value: string) =>
   value
@@ -197,46 +198,20 @@ function rateSummary(record: PricingData["models"][number]): string {
     .replaceAll("|", "\\|");
 }
 
-function cardRate(record: PricingData["models"][number]): string {
-  return record.rates
-    .slice(0, 2)
-    .map((row) => {
-      const creditFields = row.fields.filter((field) => /credits/i.test(field.label));
-      if (!creditFields.length) return row.fields.map((field) => `${field.label}: ${field.value}`).join("; ");
-      const rates = creditFields.map((rate) => {
-        const unit = rate.label.match(/credits\s*\/\s*(.+)$/i)?.[1];
-        const prefix = rate.label.replace(/\s*credits\s*\/.*$/i, "").trim();
-        if (!unit && /^\s*\d[\d.]*\s*\//.test(rate.value)) return rate.value.replace(/^\s*(\d[\d.]*)\s*\//, "$1 credits /");
-        return unit ? `${rate.value} credits / ${unit}${prefix ? ` ${prefix.toLowerCase()}` : ""}` : `${rate.value} credits`;
-      });
-      const context = row.fields
-        .filter((field) => !creditFields.includes(field) && !/^model$/i.test(field.label) && field.value !== "—")
-        .map((field) => `${field.label}: ${field.value}`);
-      return `${rates.join("; ")}${context.length ? ` (${context.join(", ")})` : ""}`;
-    })
-    .join("<br />");
-}
-
 function loadPricingData(): PricingData {
   const data = JSON.parse(readFileSync(DATA_FILE, "utf8")) as PricingData;
   if (!data.source || data.source.credits_per_usd <= 0 || !Array.isArray(data.models)) {
     throw new Error(`${DATA_FILE}: invalid pricing data`);
   }
-  if (data.models.length === 0) throw new Error(`${DATA_FILE}: no model records`);
+  if (data.models.length === 0 || !Array.isArray(data.sample) || data.sample.length === 0) throw new Error(`${DATA_FILE}: incomplete pricing data`);
   return data;
 }
 
 function render(): string {
   const data = loadPricingData();
-  const cards = SAMPLE_CARDS.map((sample) => {
-    const record = data.models.find((model) => model.id === sample.id);
-    if (!record || record.status !== "published") throw new Error(`${DATA_FILE}: sample model ${sample.id} has no published rate`);
-    return `<Card title="${sample.title}" icon="${sample.icon}" href="/${record.page}">
-**${sample.category}**
-
-${cardRate(record)}
-</Card>`;
-  }).join("\n\n");
+  const rows = data.sample
+    .map((sample) => `| [${sample.title}](/${sample.page}) | ${sample.category} | ${sample.price} | ${sample.detail} | ${sample.config} |`)
+    .join("\n");
 
   return `---
 title: "Comfy Router pricing"
@@ -250,12 +225,14 @@ mode: "wide"
 Sample Comfy Router prices. All amounts are credits.
 
 <Note>
-Prices vary by model settings. Open a card for the model page. [See all pricing details](${PRICING_URL}).
+Prices vary by model settings. Open a model page for request details. [See all pricing details](${PRICING_URL}).
 </Note>
 
-<CardGroup cols={3}>
-${cards}
-</CardGroup>
+## Sample pricing
+
+| Model | Type | Price | Details | Configuration |
+| --- | --- | --- | --- | --- |
+${rows}
 `;
 }
 

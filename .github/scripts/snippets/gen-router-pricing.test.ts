@@ -13,10 +13,10 @@ describe("Router pricing catalog", () => {
   });
 
   test("renders a compact sample pricing UI", () => {
-    expect(page).toContain("<CardGroup cols={3}>");
+    expect(page).toContain("## Sample pricing");
     expect(page).toContain("263.75 credits / 1M input");
-    expect(page).toContain("7600 credits / 1M");
-    expect(page).not.toContain("Not published");
+    expect(page).toContain("7,600 credits / 1M");
+    expect(page).not.toContain("<Card");
     expect(page).not.toContain("Router model coverage");
   });
 
