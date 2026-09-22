@@ -634,7 +634,7 @@ ${curl}
  * exists (see `queueNotice` below).
  */
 function deliveryTabs(model: string, sync: string, queued: string): string {
-  return `<Tabs>
+  return `<Tabs defaultTabIndex={1}>
   <Tab title="Wait for the result">
 ${sync}
   </Tab>
@@ -1422,10 +1422,7 @@ function providerMatrixTable(rows: Coverage[]): string {
   for (const row of rows) models.set(row.model, { page: row.page, title: row.title });
   const modelsInOrder = [...models.entries()].sort(([, a], [, b]) => a.title.localeCompare(b.title));
   const providers = providerCoverage(rows);
-  const cell = (providerRows: Coverage[], model: string) => {
-    const row = providerRows.find((candidate) => candidate.model === model);
-    return row ? `\`${row.aliasId}\`` : "-";
-  };
+  const cell = (providerRows: Coverage[], model: string) => providerRows.some((row) => row.model === model) ? "✓" : "-";
   const header = ["Model / provider", "**Comfy (default)**", ...providers.map((provider) => `**${provider.label}**`)].join(" | ");
   const divider = ["---", "---", ...providers.map(() => "---")].join(" | ");
   const lines = [`| ${header} |`, `| ${divider} |`];

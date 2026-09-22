@@ -269,6 +269,7 @@ describe("the generated pages carry a Swift tab in both delivery modes", () => {
     expect(fences.length % 2).toBe(0);
     expect(mdx).toContain('try await client.models.run(');
     expect(mdx).toContain('try await client.models.submit(');
+    expect(mdx).toContain('<Tabs defaultTabIndex={1}>');
     // The file input the spec declares is read in the Swift snippet too.
     expect(mdx).toContain('URL(fileURLWithPath: "input.jpg")).base64EncodedString()');
   });
@@ -437,7 +438,9 @@ describe("the Providers page", () => {
   test("models are rows and providers are columns", () => {
     const page = renderProvidersPage(rows);
     expect(page).toContain("| Model / provider | **Comfy (default)** | **fal** | **WaveSpeed** |");
-    expect(page).toContain(`| [Nano Banana Pro](/${NATIVE_PAGE}) | ✓ | \`${FAL_LEG.model_id}\` | \`${WAVESPEED_LEG.model_id}\` |`);
+    expect(page).toContain(`| [Nano Banana Pro](/${NATIVE_PAGE}) | ✓ | ✓ | ✓ |`);
+    expect(page).not.toContain(FAL_LEG.model_id);
+    expect(page).not.toContain(WAVESPEED_LEG.model_id);
     expect(page).not.toContain("## fal");
   });
 
