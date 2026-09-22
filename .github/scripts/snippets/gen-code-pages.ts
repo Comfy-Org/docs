@@ -1448,22 +1448,12 @@ export function providerMatrix(rows: Coverage[]): {
   columns: { model: string; page: string; title: string }[];
   providers: { label: string; rows: Coverage[] }[];
 } {
-  const providersByModel = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const providers = providersByModel.get(row.model) ?? new Set<string>();
-    providers.add(row.provider);
-    providersByModel.set(row.model, providers);
-  }
-  const sharedModels = new Set([...providersByModel].filter(([, providers]) => providers.size > 1).map(([model]) => model));
   const byModel = new Map<string, { model: string; page: string; title: string }>();
   for (const row of rows) {
-    if (sharedModels.has(row.model) && !byModel.has(row.model)) byModel.set(row.model, { model: row.model, page: row.page, title: row.title });
+    if (!byModel.has(row.model)) byModel.set(row.model, { model: row.model, page: row.page, title: row.title });
   }
   const columns = [...byModel.values()].sort((a, b) => a.title.localeCompare(b.title) || a.model.localeCompare(b.model));
-  const providers = providerCoverage(rows)
-    .map((provider) => ({ ...provider, rows: provider.rows.filter((row) => sharedModels.has(row.model)) }))
-    .filter((provider) => provider.rows.length > 0);
-  return { columns, providers };
+  return { columns, providers: providerCoverage(rows) };
 }
 
 function providerMatrixTable(rows: Coverage[]): string {
@@ -1471,23 +1461,12 @@ function providerMatrixTable(rows: Coverage[]): string {
   const header = ["Provider / model", ...columns.map((c) => `[${c.title}](/${c.page})`)].join(" | ");
   const divider = ["---", ...columns.map(() => "---")].join(" | ");
   const find = (providerRows: Coverage[], model: string) => providerRows.find((r) => r.model === model);
-  if (columns.length === 0) return "No models currently have more than one alternate provider.";
   const lines = [`| ${header} |`, `| ${divider} |`, `| **Comfy (default)** | ${columns.map(() => "✓").join(" | ")} |`];
   for (const provider of providers) {
     lines.push(`| **${provider.label}** | ${columns.map((column) => {
       const row = find(provider.rows, column.model);
-      return row ? "✓" : "-";
+      return row ? `\`${row.aliasId}\`` : "-";
     }).join(" | ")} |`);
-  }
-  return lines.join("\n");
-}
-
-function providerAliasTable(rows: Coverage[]): string {
-  const lines = ["| Provider | Model | Provider model ID |", "| --- | --- | --- |"];
-  for (const provider of providerCoverage(rows)) {
-    for (const row of provider.rows) {
-      lines.push(`| **${provider.label}** | [${row.title}](/${row.page}) | \`${row.aliasId}\` |`);
-    }
   }
   return lines.join("\n");
 }
@@ -1505,11 +1484,11 @@ function providerSelectionSection(sample?: ProviderSample): string {
   const modelLink = `[${sample.title}](/${sample.page})`;
   return `## Try an alternate provider
 
-This example calls ${modelLink} through **${providerLabel(sample.provider)}**. Each SDK passes the provider selection in its run options. cURL sends the equivalent \`model_provider\` query parameter. The request keeps the model's native ID and body, so Router handles the provider translation.
+These examples send ${modelLink} through **${providerLabel(sample.provider)}**. They use the model's native ID and request body; only the provider selection changes.
 
 ${sync}
 
-The queued \`/requests\` endpoint does not accept \`model_provider\`. To queue a request, use the same native model ID and body described in the [queued delivery guide](/development/comfy-router/queue).`;
+Provider selection is available on the synchronous route. The queued \`/requests\` route does not accept \`model_provider\`; see the [queued delivery guide](/development/comfy-router/queue) for queued requests.`;
 }
 
 /**
@@ -1526,39 +1505,35 @@ export function renderProvidersPage(rows: Coverage[], sample?: ProviderSample): 
   return `---
 title: "Comfy Router provider coverage"
 sidebarTitle: "Provider coverage"
-description: "Compare Comfy Router providers and see which alternate providers serve each model, including provider-specific model IDs and selection options."
+description: "See which providers serve each Comfy Router model, how to select an alternate provider, and which provider-specific model IDs are available."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
-Comfy Router serves every model on \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. Some models can also be served by alternate providers without changing the native model ID, request body, or response shape. See ${ROUTING_PARAMS_LINK} in the API reference.
+<div className="router-provider-coverage-marker" />
+
+Comfy Router uses one endpoint for every model: \`POST /v2/models/{provider}/{model}\`. Comfy serves each model by default. Some models are also available through alternate providers. The model ID, request body, and response format stay the same when you choose one. See ${ROUTING_PARAMS_LINK} in the API reference.
 
 <Note>
-Leave out \`model_provider\` to use Comfy directly. Add \`?model_provider=<provider>\` to select an alternate provider. The matrix highlights models with more than one alternate provider; the complete provider model ID list below includes every alternate-provider model.
+To use Comfy, omit \`model_provider\`. To choose an alternate provider, add \`?model_provider=<provider>\`. The matrix compares every model with alternate-provider coverage.
 </Note>
 
-## Shared model coverage
+## Provider coverage
 
 ${matrix}
 
-This matrix focuses on models served by more than one alternate provider. The model names link to their native Code pages. A \`✓\` means the provider serves that model. A \`-\` means it does not. The complete provider list below also includes models with only one alternate provider.
-
-## Provider model IDs
-
-Use these provider-specific IDs when you need to refer to the alternate catalog entry directly. Requests that use \`model_provider\` keep the native model ID shown in the matrix.
-
-${providerAliasTable(rows)}
+Model names link to their native Code pages. Alternate-provider cells show the provider's alias model ID. A \`-\` means that provider does not serve that model.
 
 ${sampleSection ? `${sampleSection}\n\n` : ""}## Request compatibility
 
-\`strict_mode\` defaults to false, so Router translates the native request into the selected provider's schema and translates the response back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header. See ${ROUTING_PARAMS_LINK} for the full routing behavior.
+When \`strict_mode=false\` (the default), Router translates the native request for the selected provider and translates the response back. If a native field cannot be represented, Router drops it and names it in the \`X-Comfy-Router-Dropped-Params\` response header. See ${ROUTING_PARAMS_LINK} for the other routing options.
 
 <CardGroup cols={2}>
   <Card title="Model catalog" icon="list" href="${MODELS_INDEX_URL}">
-    Browse every model available through Comfy Router.
+    Browse every model in the Comfy Router catalog.
   </Card>
   <Card title="Router API reference" icon="code" href="/development/comfy-router/api">
-    Read the request, response, retry, and billing behavior in detail.
+    Read the routing, request, response, retry, and billing details.
   </Card>
 </CardGroup>
 `;

@@ -437,17 +437,14 @@ describe("the Providers page", () => {
 
   test("models become stable columns and providers become rows", () => {
     const matrix = providerMatrix(rows);
-    expect(matrix.columns.map((column) => column.title)).toEqual(["Nano Banana Pro"]);
+    expect(matrix.columns.map((column) => column.title)).toEqual(["GPT Image 2", "Nano Banana Pro"]);
     expect(matrix.providers.map((provider) => provider.label)).toEqual(["fal", "WaveSpeed"]);
     const page = renderProvidersPage(rows);
-    expect(page).toContain("| Provider / model | [Nano Banana Pro]");
-    expect(page).toContain("| **Comfy (default)** | ✓ |");
-    expect(page).toContain("| **fal** | ✓ |");
-    expect(page).toContain("## Provider model IDs");
-    expect(page).toContain("| **fal** | [Nano Banana Pro]");
-    expect(page).toContain("`fal/fal-nano-banana-pro`");
-    expect(page).toContain("`fal/fal-gpt-image-2`");
-    expect(page).toContain("A `-` means it does not.");
+    expect(page).toContain("| Provider / model | [GPT Image 2]");
+    expect(page).toContain("| **Comfy (default)** | ✓ | ✓ |");
+    expect(page).toContain("| **fal** | `fal/fal-gpt-image-2` | `fal/fal-nano-banana-pro` |");
+    expect(page).toContain("router-provider-coverage-marker");
+    expect(page).toContain("Alternate-provider cells show the provider's alias model ID");
   });
 
   test("the alternate-provider sample uses every language tab", () => {
@@ -469,7 +466,7 @@ describe("the Providers page", () => {
     expect(page).toContain("modelProvider: \"fal\"");
     expect(page).toContain("?model_provider=fal");
     expect(page.match(/```(?:python|typescript|swift|bash)/g)).toHaveLength(4);
-    expect(page).toContain("queued `/requests` endpoint does not accept");
+    expect(page).toContain("Provider selection is available on the synchronous route.");
   });
 
   test("every model header links to the native page, not an alias page", () => {
