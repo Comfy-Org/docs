@@ -1505,7 +1505,7 @@ function providerPlaygroundSection(samples: ProviderSample[]): string {
   ).join("\n");
   return `## Try an alternate provider
 
-Choose a model and provider to update the example in all four languages. These examples use the native model ID and request body. The \`model_provider\` option selects the alternate provider.
+Choose a model and provider to update the example in all four languages. These examples use the native model ID and request body.
 
 <div className="router-provider-playground" data-router-playground="true">
   <span className="router-provider-playground-label">Model</span>
