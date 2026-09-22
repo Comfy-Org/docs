@@ -6,10 +6,12 @@
  *   bun .github/scripts/snippets/gen-code-pages.ts            # write every code.mdx
  *   bun .github/scripts/snippets/gen-code-pages.ts --check    # exit 1 if any code.mdx is stale
  *   bun .github/scripts/snippets/gen-code-pages.ts --validate # also syntax-check the emitted snippets
+ *   bun .github/scripts/snippets/gen-code-pages.ts --prune    # also delete the page of a model that left the catalog, redirecting its URL
  *
- * The template below is the only place the page shape lives. Python, TypeScript
- * and cURL are all emitted from the same `example` object, so the three cannot
- * disagree about the request body.
+ * The template below is the only place the page shape lives. Python, TypeScript,
+ * Swift and cURL are all emitted from the same `example` object, so the four cannot
+ * disagree about the request body, and both delivery modes (wait for the
+ * result, or queue it and collect later) are emitted from that one object too.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
@@ -20,7 +22,20 @@ const SPEC_GLOB = "development/comfy-router/models/**/code.yaml";
 const SCHEMA_GLOB = "router-schemas/*/*.json";
 const MODELS_DIR = "development/comfy-router/models";
 const DOCS_JSON = "docs.json";
+/** Where a retired model's page URL redirects: the generated catalog landing page. */
+const MODELS_INDEX_URL = `/${MODELS_DIR}`;
+/** The generated serving-provider index, written only while some model has an alt-provider leg. */
+const PROVIDERS_PAGE = "development/comfy-router/providers";
+const PROVIDERS_URL = `/${PROVIDERS_PAGE}`;
+const REFERENCE_URL = "/development/comfy-router/reference";
+/**
+ * The three query parameters that select and control an alternate serving provider.
+ * They are documented on the reference page's `POST /v2/models/{provider}/{model}`
+ * section; that heading's Mintlify slug is what this anchor names.
+ */
+const ROUTING_PARAMS_LINK = `[\`model_provider\`, \`strict_mode\` and \`fallback_provider\`](${REFERENCE_URL}#post-v2modelsprovidermodel)`;
 const PREVIEW_NOTICE = "snippets/comfy-router/preview-notice.mdx";
+const QUEUE_NOTICE = "snippets/comfy-router/queue-preview-notice.mdx";
 const BASE_URL = "https://api.comfy.org";
 const ROUTE = "/v2/models";
 
@@ -239,6 +254,31 @@ function shellVar(s: string): string {
   return s.toUpperCase();
 }
 
+/**
+ * A JSON string value -> a valid Swift string literal.
+ *
+ * Not `JSON.stringify`: JSON spells a control character `\uXXXX`, and Swift's
+ * unicode escape is `\u{XXXX}` (and it has no `\b` / `\f` at all), so a
+ * JSON-escaped string can fail `swiftc -parse`. Escaping the raw value against
+ * Swift's own grammar keeps every emitted literal parseable. Backslash is
+ * escaped first, so a literal `\(` can never become string interpolation, and
+ * non-ASCII (accents, emoji) passes through as UTF-8, which Swift source is.
+ */
+function swiftString(s: string): string {
+  let out = '"';
+  for (const ch of s) {
+    const code = ch.codePointAt(0)!;
+    if (ch === "\\") out += "\\\\";
+    else if (ch === '"') out += '\\"';
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else if (code < 0x20 || code === 0x7f) out += `\\u{${code.toString(16)}}`;
+    else out += ch;
+  }
+  return out + '"';
+}
+
 /** Result path like `candidates[0].content.parts[0].inlineData.data` -> segments. */
 function pathSegments(path: string): (string | number)[] {
   const out: (string | number)[] = [];
@@ -257,6 +297,16 @@ function pyPath(path: string): string {
 
 function tsPath(path: string): string {
   return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
+}
+
+/**
+ * Result path -> a chain of subscripts on the SDK's `result.output` view, e.g.
+ * `["result"]["sample"]` or `["images"][0]["url"]`. The view subscripts by
+ * string key and by integer index and returns `null` on a miss, so the same
+ * path the Python and TypeScript emitters walk reads a field here too.
+ */
+function swiftPath(path: string): string {
+  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `[${swiftString(p)}]`)).join("");
 }
 
 function tsResultType(path: string): string {
@@ -300,6 +350,29 @@ function tsLiteral(v: unknown, indent: number, files: FileInput[], topKey?: stri
   return `{\n${entries.map(([k, x]) => `${pad}  ${key(k)}: ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}}`;
 }
 
+/**
+ * JSON value -> a Swift literal for the SDK's `input: [String: Any]` parameter,
+ * multi-line, at the given indent. A file input is substituted by its variable
+ * name (camelCased, as in TypeScript). JSON `null` is `NSNull()` and an empty
+ * object is `[:]`, the two places a Swift dictionary literal differs from JSON.
+ */
+export function swiftLiteral(v: unknown, indent: number, files: FileInput[], topKey?: string): string {
+  const pad = " ".repeat(indent);
+  const f = topKey !== undefined ? files.find((x) => x.key === topKey) : undefined;
+  if (f) return camel(f.varName);
+  if (v === null) return "NSNull()";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return JSON.stringify(v);
+  if (typeof v === "string") return swiftString(v);
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x !== "object" || x === null)) return `[${v.map((x) => swiftLiteral(x, indent, files)).join(", ")}]`;
+    return `[\n${v.map((x) => `${pad}    ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
+  }
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length === 0) return "[:]";
+  return `[\n${entries.map(([k, x]) => `${pad}    ${swiftString(k)}: ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
+}
+
 function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
@@ -309,8 +382,8 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
     .join("\n");
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
@@ -331,14 +404,45 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   return `${imports}
-${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = ${tsResultType(resultPath)};
-const { data } = await comfy.models.run<Result>("${model}", {
+const result = await comfy.models.run<Result>("${model}", {
 ${body}
 });
+if (result.kind !== "json") throw new Error("expected a JSON result");
 
-console.log("${label}:", data${tsPath(resultPath)});`;
+console.log("${label}:", result.data${tsPath(resultPath)});`;
+}
+
+/**
+ * Swift, synchronous. `client.models.run` holds the connection until the model
+ * answers, the same call and step order as the Python and TypeScript snippets.
+ * An empty `resultPath` (a derived page) prints the whole payload instead of a
+ * field read.
+ */
+export function swiftSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
+  return `import Foundation
+import ComfySwiftSDK
+${reads ? `\n${reads}\n` : ""}
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "${model}",
+    input: [
+${body}
+    ]
+)
+
+${show}`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -355,6 +459,191 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
   -H "Idempotency-Key: $(uuidgen)" \\
   -H "Content-Type: application/json" \\
   -d "${json}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Queued delivery
+//
+// Every runnable page carries its request twice: through `models.run`, which
+// holds the connection until the result is ready, and through `models.submit`,
+// which returns a request handle at once and collects the result later. The
+// queued builders take the same `example` and file inputs as the synchronous
+// ones above, so the two tabs cannot disagree about the body either.
+// ---------------------------------------------------------------------------
+
+/**
+ * Python, queued. An empty `resultPath` means the page has no authored result
+ * path (a derived page), so the snippet prints the whole payload.
+ */
+function pythonQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
+    .join("\n\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print("${label}:", result${pyPath(resultPath)})` : "print(result)";
+  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+${reads ? `\n${reads}\n` : ""}
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "${model}",
+        {
+${body}
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+${show}`;
+}
+
+/** TypeScript, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
+function typescriptQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const imports = `import { comfy } from "@comfyorg/sdk";\n${files.length ? `import { readFile } from "node:fs/promises";\n` : ""}`;
+  const reads = files
+    .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
+    .join("\n");
+  const typed = resultPath ? `type Result = ${tsResultType(resultPath)};\n` : "";
+  const generic = resultPath ? "<Result>" : "";
+  const show = resultPath
+    ? `const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("${label}:", result.data${tsPath(resultPath)});`
+    : `const result = await handle.get();
+
+console.log(result.data);`;
+  return `${imports}
+${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+${typed}const handle = await comfy.models.submit${generic}("${model}", {
+${body}
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+${show}`;
+}
+
+/** Swift, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
+export function swiftQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+  const reads = files
+    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
+    .join("\n");
+  const body = Object.entries(example)
+    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
+    .join("\n");
+  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
+  return `import Foundation
+import ComfySwiftSDK
+${reads ? `\n${reads}\n` : ""}
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "${model}",
+    input: [
+${body}
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+${show}`;
+}
+
+/** cURL, queued: submit, then poll and collect by request id. */
+function curlQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
+  const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
+  const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
+  const entries = Object.entries(example).map(([k, v]) => {
+    const f = files.find((x) => x.key === k);
+    const value = f ? `\\"$${shellVar(f.varName)}\\"` : esc(v);
+    return `${esc(k)}: ${value}`;
+  });
+  const json = `{${entries.join(", ")}}`;
+  const requests = `${BASE_URL}${ROUTE}/${model}/requests`;
+  return `${reads ? `${reads}\n\n` : ""}# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl ${requests} \\
+  -H "X-API-Key: $COMFY_API_KEY" \\
+  -H "Idempotency-Key: $(uuidgen)" \\
+  -H "Content-Type: application/json" \\
+  -d "${json}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i ${requests}/$REQUEST_ID/status \\
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl ${requests}/$REQUEST_ID \\
+  -H "X-API-Key: $COMFY_API_KEY"`;
+}
+
+/** The four languages of one delivery mode. Tab order (SDKs first, raw HTTP last) is the same on every page. */
+function codeGroup(python: string, typescript: string, swift: string, curl: string): string {
+  return `<CodeGroup>
+\`\`\`python Python
+${python}
+\`\`\`
+
+\`\`\`typescript TypeScript
+${typescript}
+\`\`\`
+
+\`\`\`swift Swift
+${swift}
+\`\`\`
+
+\`\`\`bash cURL
+${curl}
+\`\`\`
+</CodeGroup>`;
+}
+
+/**
+ * The two delivery modes of one request as a tab pair: `sync` waits for the
+ * result, `queued` submits the same body and collects it later. The queued tab
+ * opens with the rollout notice while `snippets/comfy-router/queue-preview-notice.mdx`
+ * exists (see `queueNotice` below).
+ */
+function deliveryTabs(model: string, sync: string, queued: string): string {
+  return `<Tabs>
+  <Tab title="Wait for the result">
+${sync}
+  </Tab>
+  <Tab title="Queue and collect later">
+${queueNotice.body}The same body, sent to \`POST ${BASE_URL}${ROUTE}/${model}/requests\`. Router answers \`201\` with a \`request_id\` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+${queued}
+  </Tab>
+</Tabs>`;
 }
 
 function possessive(name: string): string {
@@ -375,7 +664,27 @@ type SchemaDoc = {
   components?: { schemas?: Record<string, any> };
   "x-comfy-router-model-id"?: string;
   "x-comfy-input-schema-authored"?: boolean;
+  "x-comfy-router-alt-providers"?: unknown;
+  "x-comfy-router-alias-of"?: unknown;
+  "x-comfy-router-alias-provider"?: unknown;
 };
+
+/** One alternate serving provider for a native model, from `x-comfy-router-alt-providers`. */
+export type AltProvider = { provider: string; model_id: string };
+
+/** What an alias document says it is a leg of, from `x-comfy-router-alias-of` / `-alias-provider`. */
+export type AliasRelation = { aliasOf: string; provider: string };
+
+/**
+ * The alt-provider relationship a schema document publishes, if any.
+ *
+ * A NATIVE document lists its legs in `x-comfy-router-alt-providers`; an ALIAS
+ * document names its native target in `x-comfy-router-alias-of` and the provider
+ * that serves it in `x-comfy-router-alias-provider`. A document carries one or
+ * the other, never both, and a document from before those extensions existed
+ * carries neither, which is the same as an empty relationship.
+ */
+export type ModelRelations = { altProviders: AltProvider[]; alias?: AliasRelation };
 
 type ModelSchema = {
   authored: boolean;
@@ -383,10 +692,78 @@ type ModelSchema = {
   inputExample?: unknown;
   output?: any;
   outputExample?: unknown;
+  /** Media type the 200 response is keyed under; unset only when the 200 publishes no content. */
+  outputMediaType?: string;
   components: Record<string, any>;
-};
+  // Partial so a caller that only needs the output half (the schema-rendering
+  // tests) can still build one; `loadModelSchema` always fills both in.
+} & Partial<ModelRelations>;
 
-function loadModelSchema(model: string): ModelSchema | null {
+/**
+ * The 200 response's content entry, whatever media type Router keyed it under.
+ *
+ * Most models answer `application/json`, but a Router output component may declare
+ * `x-comfy-router-output-media-type` (cloud `services/comfy-api/routerschema/routerschema.go`,
+ * whose own example is `video/mp4`) and then the served 200 is keyed by that instead: the two
+ * ElevenLabs models that return raw audio bytes publish theirs under the wildcard type. Reading only
+ * `application/json` made a published schema look unpublished on exactly those pages.
+ */
+export function outputContent(
+  content: Record<string, { schema?: any; example?: unknown }> | undefined
+): { mediaType: string; schema?: any; example?: unknown } | undefined {
+  if (!content) return undefined;
+  // Prefer JSON when it is offered; otherwise take the one remaining entry. A document with
+  // several non-JSON media types is not something Router emits today, and picking the first
+  // keyed entry keeps the page deterministic rather than dropping the schema entirely.
+  const mediaType = "application/json" in content ? "application/json" : Object.keys(content)[0];
+  if (mediaType === undefined) return undefined;
+  return { ...content[mediaType], mediaType };
+}
+
+/**
+ * The alt-provider relationship published on one schema document.
+ *
+ * Read defensively: these two extensions arrive from the exporter through the
+ * spec sync, so a malformed or half-written value must leave the page exactly as
+ * it is today rather than emit a section built out of `undefined`. An entry that
+ * is not `{provider: string, model_id: string}` is dropped, a duplicate provider
+ * keeps its first row, and a document that names ITSELF as its own alias target
+ * or as one of its own legs is ignored: that would otherwise write a redirect
+ * from a page to itself, or a "served by" row pointing at the page it sits on.
+ *
+ * Legs are sorted by provider slug so the generated section does not churn when
+ * the exporter reorders the array.
+ */
+/** A single path segment: non-empty, no whitespace or URI-reserved characters. */
+const isSlug = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+$/.test(v);
+
+/** A `<provider>/<model>` model ID: exactly two non-empty, slug-shaped segments. */
+const isModelId = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+\/[^\s/?#]+$/.test(v);
+
+export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
+  const aliasOf = doc["x-comfy-router-alias-of"];
+  if (isModelId(aliasOf) && aliasOf !== model) {
+    const provider = doc["x-comfy-router-alias-provider"];
+    return { altProviders: [], alias: { aliasOf, provider: isSlug(provider) ? provider : providerOf(model) } };
+  }
+  const raw = doc["x-comfy-router-alt-providers"];
+  if (!Array.isArray(raw)) return { altProviders: [] };
+  const seen = new Set<string>();
+  const altProviders: AltProvider[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { provider, model_id } = entry as Record<string, unknown>;
+    if (!isSlug(provider)) continue;
+    if (!isModelId(model_id) || model_id === model) continue;
+    if (seen.has(provider)) continue;
+    seen.add(provider);
+    altProviders.push({ provider, model_id });
+  }
+  altProviders.sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
+  return { altProviders };
+}
+
+export function loadModelSchema(model: string): ModelSchema | null {
   const file = join(ROOT, "router-schemas", `${model}.json`);
   if (!existsSync(file)) return null;
   let doc: SchemaDoc;
@@ -398,14 +775,16 @@ function loadModelSchema(model: string): ModelSchema | null {
   const op = doc.paths?.[`${ROUTE}/${model}`]?.post;
   if (!op) throw new Error(`router-schemas/${model}.json: no POST ${ROUTE}/${model} operation`);
   const req = op.requestBody?.content?.["application/json"];
-  const res = op.responses?.["200"]?.content?.["application/json"];
+  const res = outputContent(op.responses?.["200"]?.content);
   return {
     authored: doc["x-comfy-input-schema-authored"] !== false,
     input: req?.schema,
     inputExample: req?.example ?? req?.schema?.example,
     output: res?.schema,
     outputExample: res?.example ?? res?.schema?.example,
+    outputMediaType: res?.mediaType,
     components: doc.components?.schemas ?? {},
+    ...readRelations(model, doc),
   };
 }
 
@@ -426,7 +805,9 @@ function deref(schema: any, components: Record<string, any>, depth = 0): any {
 
 function typeLabel(schema: any, components: Record<string, any>): string {
   const s = deref(schema, components);
-  if (s.oneOf || s.anyOf) return (s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)).join(" | ");
+  if (s.oneOf || s.anyOf) {
+    return [...new Set((s.oneOf ?? s.anyOf).map((x: any) => typeLabel(x, components)))].join(" | ");
+  }
   if (s.const !== undefined) return JSON.stringify(s.const);
   if (s.enum) return s.enum.map((v: unknown) => `\`${String(v)}\``).join(", ");
   if (s.type === "array") return `${typeLabel(s.items ?? {}, components)}[]`;
@@ -457,6 +838,13 @@ const mdxText = (v: unknown) =>
 
 /** Render a JSON Schema object as Mintlify ParamField (input) or ResponseField (output) blocks. */
 function schemaFields(schema: any, components: Record<string, any>, kind: "param" | "response", docBase?: string): string {
+  const root = deref(schema, components);
+  const variants = Object.entries<string>(root.discriminator?.mapping ?? {});
+  if (variants.length) {
+    return variants
+      .map(([name, ref]) => `#### \`${name}\` variant\n\n${schemaFields({ $ref: ref }, components, kind, docBase)}`)
+      .join("\n\n");
+  }
   const blocks: string[] = [];
   const walk = (s: any, prefix: string, depth: number) => {
     s = deref(s, components);
@@ -500,8 +888,100 @@ function schemaFields(schema: any, components: Record<string, any>, kind: "param
     }
   };
   walk(schema, "", 0);
-  if (!blocks.length) return "_The schema declares no fixed fields: any JSON object is accepted._";
+  if (!blocks.length) return "_This schema does not declare named properties._";
   return blocks.join("\n\n");
+}
+
+/**
+ * True when a response schema describes an OPAQUE body — a scalar payload such as
+ * `{type: "string", format: "binary"}` — rather than a JSON document with named properties.
+ *
+ * `schemaFields` walks `properties`, so it has nothing to list for one of these and would
+ * fall through to its "does not declare named properties" line. An object (open or not), an
+ * array and a discriminated union all stay on the normal path; only a scalar root is opaque.
+ */
+export function isOpaqueBody(schema: any, components: Record<string, any>): boolean {
+  const root = deref(schema, components);
+  if (!root || root.discriminator || root.properties || root.oneOf || root.anyOf) return false;
+  return typeof root.type === "string" && root.type !== "object" && root.type !== "array";
+}
+
+/**
+ * The `### Output` schema body for a 200 the model DOES publish.
+ *
+ * An opaque body renders as a single ResponseField named for the media type Router serves it
+ * under, carrying the schema's own prose — the alternative is a page that reads as if Router
+ * published nothing, which is the opposite of the served contract.
+ */
+export function outputSchemaFields(s: ModelSchema, docBase?: string): string {
+  if (!isOpaqueBody(s.output, s.components)) return schemaFields(s.output, s.components, "response", docBase);
+  const root = deref(s.output, s.components);
+  const description = root.description
+    ? mdxText(resolveProviderLinks(String(root.description).trim(), docBase))
+    : " ";
+  const name = attr(s.outputMediaType ?? "application/json");
+  return `<ResponseField name="${name}" type="${attr(typeLabel(s.output, s.components))}">\n  ${description}\n</ResponseField>`;
+}
+
+/**
+ * The `## Examples` → `### Output` body for an opaque response.
+ *
+ * The published `example` for one of these is a placeholder for the bytes (`"(binary audio
+ * bytes)"`), so rendering it inside a ```json fence would present a string literal as if it
+ * were the response document. Say what the body is instead.
+ */
+export function opaqueOutputExample(s: ModelSchema): string {
+  const root = deref(s.output, s.components);
+  const body =
+    root.format === "binary"
+      ? "Binary body: raw bytes rather than a JSON document"
+      : `Non-JSON body: \`${typeLabel(s.output, s.components)}\` content rather than a JSON document`;
+  return `${body}, returned as \`${s.outputMediaType ?? "application/json"}\`, so there is no JSON example to show. The response \`Content-Type\` and encoding follow the request, as the Output schema above describes.`;
+}
+
+// ---------------------------------------------------------------------------
+// Serving providers
+//
+// A model Router serves through more than one provider publishes its legs on its
+// own schema document (`x-comfy-router-alt-providers`), and each leg also has an
+// alias model id of its own. Those alias ids used to render as standalone pages
+// that documented nothing: the schema is the native model's, so the page said
+// only that no authored input schema existed. The relationship belongs on the
+// native model's page instead, which is where a reader is already standing when
+// the question "can I route this somewhere else?" comes up.
+// ---------------------------------------------------------------------------
+
+/** One model on a page, with whatever alternate serving providers its document lists. */
+type NativeLegs = { model: string; legs: AltProvider[] };
+
+const callExample = (model: string, provider?: string) =>
+  `\`POST ${BASE_URL}${ROUTE}/${model}${provider ? `?model_provider=${provider}` : ""}\``;
+
+/**
+ * The `## Serving providers` block for a page, or `""` when none of the models on
+ * it has a leg. Comfy comes first because it is the default: a call with no
+ * `model_provider` is served by Router directly, and every row below it is the
+ * same endpoint with that one query parameter added.
+ */
+export function servingProvidersSection(natives: NativeLegs[]): string {
+  const withLegs = natives.filter((n) => n.legs.length > 0);
+  if (!withLegs.length) return "";
+  const rows = (n: NativeLegs) =>
+    [
+      `- **Comfy** (default): ${callExample(n.model)}`,
+      ...n.legs.map((leg) => `- **${providerLabel(leg.provider)}**, as \`${leg.model_id}\`: ${callExample(n.model, leg.provider)}`),
+    ].join("\n");
+  // A page that documents one model needs no header per model; a curated spec
+  // covering several does, or the rows below it have no subject.
+  const body =
+    withLegs.length === 1 ? rows(withLegs[0]) : withLegs.map((n) => `**\`${n.model}\`**\n\n${rows(n)}`).join("\n\n");
+  return `## Serving providers
+
+This model is served by Comfy Router directly unless the request names another provider. The providers below serve it too, on the same endpoint and with the same model ID, selected with the \`model_provider\` query parameter.
+
+${body}
+
+\`strict_mode\` defaults to false, so Router translates the native request body documented on this page into the provider's own schema and translates the response back. See ${ROUTING_PARAMS_LINK} in the API reference, and [Serving providers](${PROVIDERS_URL}) for every model routed this way.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -518,8 +998,7 @@ function sectionBlocks(v: Variant, spec: Spec) {
   const notPublished = checked
     ? `_Fields follow ${possessive(spec.provider)} published API specification and are checked against it in CI. Router's own schema for this model is not published yet, so requests are forwarded to the provider unvalidated._`
     : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${v.model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. The fields below follow the provider's own API documentation and are not yet validated server side.\n</Note>`;
-  // `x-comfy-input-schema-authored: false` disqualifies the whole served document, not just its input
-  // half: the page then reads its fields AND its examples from the spec, as the README describes.
+  // Curated provider fields replace an unauthored Router input schema.
   const published = s?.authored ? s : null;
   let input: string;
   const docBase = PROVIDER_DOC_BASE[providerOf(v.model)];
@@ -530,16 +1009,16 @@ function sectionBlocks(v: Variant, spec: Spec) {
   } else {
     input = `${notPublished}\n\n${fields}`;
   }
-  const inputExample = JSON.stringify(published?.inputExample ?? example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
+  const inputExample = JSON.stringify(example, null, 2).replace(/"@file:([^"]+)"/g, '"<base64 of $1>"');
   let output: string;
   if (published?.output) {
-    output = schemaFields(published.output, published.components, "response", docBase);
+    output = outputSchemaFields(published, docBase);
   } else if (specOutput) {
     output = `Router returns ${possessive(spec.provider)} native response unchanged. The ${spec.result.label} is at \`${spec.result.path}\`.\n\n${schemaFields(specOutput, {}, "response", docBase)}`;
   } else {
     output = `Router returns ${possessive(spec.provider)} native output unchanged and does not publish an output schema for this model. The ${spec.result.label} is at \`${spec.result.path}\`; the example below is representative of the provider's response.`;
   }
-  const outputExample = JSON.stringify(published?.outputExample ?? spec.result.example, null, 2);
+  const outputExample = JSON.stringify(spec.result.example, null, 2);
   return { input, inputExample, output, outputExample };
 }
 
@@ -548,23 +1027,14 @@ function quickStart(v: Variant, spec: Spec): string {
   const example = v.example ?? spec.example;
   const files = fileInputs(example);
   const label = spec.result.label;
+  const path = spec.result.path;
+  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), swiftSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
+  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), swiftQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
   return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
 
-<CodeGroup>
-\`\`\`python Python
-${pythonSnippet(v.model, example, files, spec.result.path, label)}
-\`\`\`
-
-\`\`\`typescript TypeScript
-${typescriptSnippet(v.model, example, files, spec.result.path, label)}
-\`\`\`
-
-\`\`\`bash cURL
-${curlSnippet(v.model, example, files)}
-\`\`\`
-</CodeGroup>`;
+${deliveryTabs(v.model, sync, queued)}`;
 }
 
 /** Schema + Examples for one variant. `html` headings keep them out of the TOC when rendered inside tabs. */
@@ -618,21 +1088,39 @@ const previewNotice = (() => {
   };
 })();
 
+/**
+ * As `previewNotice`: the queued-delivery rollout note at the top of every
+ * "Queue and collect later" tab, rendered while its snippet exists and retired
+ * with one `rm` plus a regen once the queue is on for everyone.
+ */
+const queueNotice = (() => {
+  const present = existsSync(join(ROOT, QUEUE_NOTICE));
+  return {
+    imports: present ? `import QueuedDeliveryNotice from "/${QUEUE_NOTICE}";\n` : "",
+    body: present ? "<QueuedDeliveryNotice />\n\n" : "",
+  };
+})();
+
 function renderPage(spec: Spec, dir: string): string {
   const both = spec.variants.length > 1;
   // The one-time setup a snippet cannot run without. Everything else that is
   // shared across models (idempotency, deadline, request IDs) lives on the
   // headers page the footer links to.
-  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`;
+  // Every model this page documents, with the legs its own schema document
+  // publishes. A spec with no aliased model renders no section at all.
+  const serving = servingProvidersSection(spec.variants.map((v) => ({ model: v.model, legs: loadModelSchema(v.model)?.altProviders ?? [] })));
+  const after = serving ? `\n\n${serving}` : "";
   let body: string;
   if (!both) {
-    body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}\n\n${sections(spec.variants[0], spec, false)}`;
+    body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}${after}\n\n${sections(spec.variants[0], spec, false)}`;
   } else if (variantsShareSections(spec)) {
     // Only the snippets differ: one selector under Quick start, the shared schema and examples once below.
-    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. The models share one request and response shape, documented once below.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>\n\n${sections(spec.variants[0], spec, false)}`;
+    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. The models share one request and response shape, documented once below.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n  </Tab>`).join("\n")}\n</Tabs>${after}\n\n${sections(spec.variants[0], spec, false)}`;
   } else {
-    // The models take different inputs: one selector switches the whole page.
-    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>`;
+    // The models take different inputs: one selector switches the whole page, so
+    // the serving providers follow the tabs rather than splitting them.
+    body = `## Quick start\n\n${setup}\n\nPick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.\n\n<Tabs>\n${spec.variants.map((v) => `  <Tab title="${v.title}">\n${quickStart(v, spec)}\n\n${sections(v, spec, true)}\n  </Tab>`).join("\n")}\n</Tabs>${after}`;
   }
   return `---
 title: ${JSON.stringify(`Use ${spec.name} with Comfy Router`)}
@@ -642,7 +1130,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 
 {/* GENERATED FILE. Edit code.yaml in this directory and run \`pnpm code-pages:gen\`. */}
 
-${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
 ${previewNotice.body}
@@ -661,76 +1149,124 @@ ${body}
 // its page from that document alone, so the sidebar tracks the catalog instead of
 // tracking who found time to write a spec.
 //
-// What such a page can honestly say is bounded by what Router has authored. The
-// OUTPUT schema is authored for every model, so the response is documented in
-// full. The INPUT schema mostly is not (`x-comfy-input-schema-authored: false`
-// means Router forwards the body to the provider unvalidated and cannot state its
-// fields), so the page says exactly that and points at the provider rather than
-// inventing a request shape. No example is fabricated: a derived page shows an
-// example only when the served document carries one.
+// Document only the schemas and examples that are available. A missing request
+// example produces setup guidance, not an empty executable request. Provider
+// validation still applies when Router has no authored input schema.
 // ---------------------------------------------------------------------------
 
-/** The one-line body placeholder for a model whose request fields Router does not publish. */
-const BODY_HINT = "Request fields are the provider's own \u2014 see Input below.";
+/**
+ * The published input example, when it is a JSON object we can render as a body.
+ *
+ * An authored model carries one and it is a REAL call: openapi.yml takes it from
+ * that model's end-to-end smoke case, and routervalidate's
+ * TestAuthoredModelsAreValidatedAgainstTheirOwnSchema runs it through the same
+ * validator that guards live traffic, so it necessarily carries every required
+ * field. Inlining it is what makes the quick start copy-pasteable rather than a
+ * shape the reader has to assemble from the Input table below.
+ *
+ * Anything else -- absent, null, an empty object or a non-object -- cannot make
+ * a runnable snippet. The page keeps the value as reference data and renders
+ * request setup guidance instead of fabricating a body.
+ */
+function bodyExample(example: unknown): Record<string, unknown> | undefined {
+  if (example === null || typeof example !== "object" || Array.isArray(example)) return undefined;
+  const entries = Object.entries(example as Record<string, unknown>);
+  return entries.length > 0 ? (example as Record<string, unknown>) : undefined;
+}
 
-function derivedSnippets(model: string): string {
+function derivedSnippets(model: string, example?: unknown): string {
+  // Rendered through the same pyLiteral/tsLiteral/swiftLiteral/esc helpers the
+  // curated snippets use, so the four languages cannot drift from one another or
+  // from the JSON in the Examples section -- the invariant stated at the top of
+  // this file. Derived pages have no file inputs, so the FileInput list is empty.
+  const body = bodyExample(example);
+  if (!body) return "";
+  const pyBody = Object.entries(body).map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, [], k)},`).join("\n");
+  const tsBody = Object.entries(body).map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, [], k)},`).join("\n");
   const python = `from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "${model}",
         {
-            # ${BODY_HINT}
+${pyBody}
         },
     )
 
 print(result)`;
   const typescript = `import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("${model}", {
-  // ${BODY_HINT}
+${tsBody}
 });
 
 console.log(data);`;
-  const curl = `# ${BODY_HINT}
-curl ${BASE_URL}${ROUTE}/${model} \\
-  -H "X-API-Key: $COMFY_API_KEY" \\
-  -H "Idempotency-Key: $(uuidgen)" \\
-  -H "Content-Type: application/json" \\
-  -d '{}'`;
-  return `<CodeGroup>
-\`\`\`python Python
-${python}
-\`\`\`
+  const sync = codeGroup(python, typescript, swiftSnippet(model, body, [], "", ""), curlSnippet(model, body, []));
+  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), swiftQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
+  return deliveryTabs(model, sync, queued);
+}
 
-\`\`\`typescript TypeScript
-${typescript}
-\`\`\`
-
-\`\`\`bash cURL
-${curl}
-\`\`\`
-</CodeGroup>`;
+// Adapt shared response fixtures for display only; never rewrite synced schemas.
+// Provider ID/version rules: https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/reference/models/inference
+function responseExampleForModel(model: string, example: unknown): unknown {
+  if (!example || typeof example !== "object" || Array.isArray(example)) return example;
+  const provider = providerOf(model);
+  if (!["anthropic", "vertexai", "byteplus", "luma", "luma_2", "xai"].includes(provider)) return example;
+  const aliases: Record<string, string> = {
+    // https://docs.x.ai/developers/models/grok-imagine-video-1.5-preview
+    "xai/grok-imagine-video-1.5-preview": "grok-imagine-video-1.5",
+    // https://docs.byteplus.com/en/docs/Byteplus_LAS/video_gen_enhanced
+    "byteplus/dreamina-seedance-2-0-mini": "dreamina-seedance-2-0-mini-260615",
+  };
+  const id = aliases[model] ?? modelOf(model);
+  const sample = { ...example } as Record<string, any>;
+  const field = provider === "vertexai" ? "modelVersion" : "model";
+  if (typeof sample[field] === "string") sample[field] = id;
+  if (provider === "luma" && typeof sample.request?.model === "string") {
+    sample.request = { ...sample.request, model: id };
+  }
+  return sample;
 }
 
 function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
-  const setup = `Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
+  const requestExample = bodyExample(s.inputExample);
+  const clients = requestExample
+    ? `The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`
+    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. For Swift, add the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) package. cURL uses raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
     ? `${schemaFields(s.input, s.components, "param", docBase)}\n\nGenerated from the schema Router serves at \`GET ${ROUTE}/${model}/openapi.json\`, the same document it validates a call against before the request reaches the provider.`
-    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${provider}'s own API reference](${apiDocs})` : `${provider}'s own API documentation`} is authoritative for the request fields, and nothing is validated server side.\n</Note>`;
+    : `<Note>\nRouter has not published an authored input schema for this model yet: \`GET ${ROUTE}/${model}/openapi.json\` returns an open object with \`x-comfy-input-schema-authored: false\`. Router forwards the body to ${provider} unchanged, so ${apiDocs ? `[${possessive(provider)} own API reference](${apiDocs})` : `${possessive(provider)} own API documentation`} is authoritative for the request fields, and Router does not perform model-specific input validation. Provider validation still applies.\n</Note>`;
+  // The placeholder is for a 200 that carries no schema at all. A 200 whose schema Router
+  // keyed under a non-JSON media type IS published, and used to land here because the loader
+  // only ever looked under `application/json`.
   const output = s.output
-    ? schemaFields(s.output, s.components, "response", docBase)
+    ? outputSchemaFields(s, docBase)
     : `Router does not publish an output schema for this model.`;
+  const outputExample = responseExampleForModel(model, s.outputExample);
+  const outputExampleBlock = isOpaqueBody(s.output, s.components)
+    ? opaqueOutputExample(s)
+    : `\`\`\`json\n${JSON.stringify(outputExample, null, 2)}\n\`\`\``;
   const examples = s.inputExample !== undefined || s.outputExample !== undefined
-    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n\`\`\`json\n${JSON.stringify(s.outputExample, null, 2)}\n\`\`\`\n` : ""}`
+    ? `\n\n## Examples\n${s.inputExample !== undefined ? `\n### Input\n\n\`\`\`json\n${JSON.stringify(s.inputExample, null, 2)}\n\`\`\`\n` : ""}${s.outputExample !== undefined ? `\n### Output\n\n${outputExampleBlock}\n` : ""}`
     : "";
+  // Say WHY there is no snippet, not just that there isn't one. A model whose
+  // input schema is unauthored has no documented fields on this page either, so
+  // "build the body from the input documentation below" points the reader at a
+  // section that only forwards them to the provider; name that provider instead.
+  const noExample = s.authored
+    ? `This model has no runnable request example. Build the body from the input documentation below, then use it with the [Router quickstart](/development/comfy-router/quickstart).`
+    : `Router has not published an authored input schema for this model, so there is no request example to generate a snippet from. Router forwards the body to ${provider} unchanged: build it from ${apiDocs ? `[${possessive(provider)} own API reference](${apiDocs})` : `${possessive(provider)} own API documentation`}, then send it with the [Router quickstart](/development/comfy-router/quickstart).`;
+  const requestSetup = requestExample ? derivedSnippets(model, requestExample) : `<Note>\n${noExample}\n</Note>`;
+  const serving = servingProvidersSection([{ model, legs: s.altProviders ?? [] }]);
   const title = modelTitle(model);
   return `---
 title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
@@ -740,11 +1276,11 @@ sidebarTitle: ${JSON.stringify(title)}
 
 {/* GENERATED FILE. Generated from router-schemas/${model}.json by \`pnpm code-pages:gen\`. */}
 
-${previewNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
+${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
 ${previewNotice.body}
-## Quick start
+## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}
 
@@ -752,7 +1288,7 @@ ${setup}
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${model}\`
 
-${derivedSnippets(model)}
+${requestSetup}${serving ? `\n\n${serving}` : ""}
 
 ## Schema
 
@@ -769,17 +1305,177 @@ ${output}${examples}
 }
 
 // ---------------------------------------------------------------------------
+// Catalog landing page
+//
+// `/development/comfy-router/models` is where a reader lands expecting to browse
+// the catalog (the API guide lives at `/development/comfy-router/api`), so this
+// page lists every model page, grouped by provider like the sidebar.
+// ---------------------------------------------------------------------------
+
+function renderModelsIndex(pages: { model: string; page: string; title: string }[], hasProviders: boolean): string {
+  const byProvider = new Map<string, { model: string; page: string; title: string }[]>();
+  for (const p of pages) {
+    const label = providerLabel(providerOf(p.model));
+    const list = byProvider.get(label) ?? [];
+    list.push(p);
+    byProvider.set(label, list);
+  }
+  const sections = [...byProvider.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, list]) => {
+      const rows = [...list]
+        .sort((a, b) => a.page.localeCompare(b.page))
+        .map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``)
+        .join("\n");
+      return `## ${label}\n\n${rows}`;
+    })
+    .join("\n\n");
+  return `---
+title: "Comfy Router models"
+sidebarTitle: "All models"
+description: "Every model available through Comfy Router, grouped by provider."
+---
+
+{/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
+
+Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, Swift, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
+${hasProviders ? `\nSome of these models can also be served by an aggregator on the same route and the same model ID. [Serving providers](${PROVIDERS_URL}) lists which provider covers which model, and how to select one.\n` : ""}
+${sections}
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Serving-provider index
+//
+// The counterpart to the catalog index: the catalog answers "which models are
+// there", this answers "which provider can serve one". It exists only while some
+// model publishes a leg, so a catalog with no alternate routing gains no page
+// and no sidebar entry.
+// ---------------------------------------------------------------------------
+
+/** A native model covered by an alternate provider, resolved to the page that documents it. */
+type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string };
+
+/**
+ * Resolve the declared alt-provider relationship to Providers-index rows.
+ *
+ * Every relation is validated whether or not its native model has a page in this
+ * repository: a provider that two documents alias differently is a spec bug worth
+ * reporting even while the model it serves is still undocumented, so the duplicate
+ * check runs BEFORE the page lookup. Only the ROW is conditional, because a row
+ * whose link would 404 is worse than a row that is not there.
+ *
+ * Keyed on provider + native model, not on the alias id: a native document's own
+ * `x-comfy-router-alt-providers` entry is canonical, so a later alias document
+ * naming a different alias id for the same leg is a cross-document conflict to
+ * report, not a second row for the same leg.
+ */
+export function providerRelationRows(
+  legsByModel: Map<string, AltProvider[]>,
+  aliasDocs: { model: string; aliasOf: string; provider: string }[],
+  pageByModel: Map<string, { page: string; title: string }>
+): { rows: Coverage[]; problems: string[] } {
+  const rows: Coverage[] = [];
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  const add = (provider: string, model: string, aliasId: string) => {
+    const key = `${provider}\u0000${model}`;
+    const known = seen.get(key);
+    if (known !== undefined) {
+      if (known !== aliasId) problems.push(`${model}: provider \`${provider}\` is aliased as both \`${known}\` and \`${aliasId}\`; the native model's alt-providers list is canonical`);
+      return;
+    }
+    seen.set(key, aliasId);
+    const target = pageByModel.get(model);
+    // A leg pointing at a model with no page of its own has nothing to link.
+    if (!target) return;
+    rows.push({ provider, model, aliasId, page: target.page, title: target.title });
+  };
+  // The native documents first: their lists win when the two sides disagree.
+  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id);
+  // Then every alias document, including the ones that kept a page of their own
+  // because the model they alias is not documented here yet.
+  for (const a of aliasDocs) add(a.provider, a.aliasOf, a.model);
+  return { rows, problems };
+}
+
+/**
+ * Group the legs by serving provider, in the order the page renders them:
+ * providers by label, and each provider's models by the page they link to.
+ */
+export function providerCoverage(rows: Coverage[]): { label: string; rows: Coverage[] }[] {
+  const byProvider = new Map<string, Coverage[]>();
+  for (const row of rows) {
+    const label = providerLabel(row.provider);
+    const list = byProvider.get(label) ?? [];
+    list.push(row);
+    byProvider.set(label, list);
+  }
+  return [...byProvider.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, list]) => ({ label, rows: [...list].sort((a, b) => a.page.localeCompare(b.page) || a.aliasId.localeCompare(b.aliasId)) }));
+}
+
+/** Build a compact provider-by-model matrix for the Providers page. */
+function providerMatrixTable(rows: Coverage[]): string {
+  const models = new Map<string, { page: string; title: string }>();
+  for (const row of rows) models.set(row.model, { page: row.page, title: row.title });
+  const modelsInOrder = [...models.entries()].sort(([, a], [, b]) => a.title.localeCompare(b.title));
+  const providers = providerCoverage(rows);
+  const cell = (providerRows: Coverage[], model: string) => {
+    const row = providerRows.find((candidate) => candidate.model === model);
+    return row ? `\`${row.aliasId}\`` : "-";
+  };
+  const header = ["Model / provider", "**Comfy (default)**", ...providers.map((provider) => `**${provider.label}**`)].join(" | ");
+  const divider = ["---", "---", ...providers.map(() => "---")].join(" | ");
+  const lines = [`| ${header} |`, `| ${divider} |`];
+  for (const [model, page] of modelsInOrder) {
+    lines.push(`| [${page.title}](/${page.page}) | ✓ | ${providers.map((provider) => cell(provider.rows, model)).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The Providers page.
+ *
+ * Comfy comes first and is described rather than enumerated: it serves the whole
+ * catalog, and the catalog index one link away is already that list. Reprinting
+ * every model here would double a 200-row page and put two copies of it in the
+ * repo to drift apart.
+ */
+export function renderProvidersPage(rows: Coverage[]): string {
+  return `---
+title: "Comfy Router serving providers"
+sidebarTitle: "Serving providers"
+description: "See which providers can serve each Comfy Router model and how to select an alternate provider."
+---
+
+{/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
+
+<div className="router-provider-coverage-marker" />
+
+Every model uses \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. For models with alternate coverage, \`model_provider\` selects another provider without changing the model ID or request body. See ${ROUTING_PARAMS_LINK} in the API reference.
+
+## Provider coverage
+
+${providerMatrixTable(rows)}
+
+\`strict_mode=false\` (the default) translates the native request and response for the selected provider. Fields that cannot be translated are listed in the \`X-Comfy-Router-Dropped-Params\` response header.
+`;
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar
 //
 // `docs.json` carries the nav for four locales; only `en` lists these pages, and
 // the zh/ja/ko trees are maintained by the i18n sync. With one page per catalog
 // model a flat list is unreadable, so the Models group holds one sub-group per
-// provider.
+// provider, behind the generated catalog landing page.
 // ---------------------------------------------------------------------------
 
 type NavGroup = { group: string; pages: (string | NavGroup)[] };
 
-function modelsNav(pages: { model: string; page: string }[]): NavGroup {
+export function modelsNav(pages: { model: string; page: string }[], hasProviders = false): NavGroup {
   const byProvider = new Map<string, string[]>();
   for (const { model, page } of pages) {
     const label = providerLabel(providerOf(model));
@@ -789,16 +1485,84 @@ function modelsNav(pages: { model: string; page: string }[]): NavGroup {
   }
   return {
     group: "Models",
-    pages: [...byProvider.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+    pages: [
+      MODELS_DIR,
+      // Beside the catalog index, not inside a provider sub-group: it is the
+      // second way into the same catalog, not a model page.
+      ...(hasProviders ? [PROVIDERS_PAGE] : []),
+      ...[...byProvider.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+    ],
   };
 }
 
-/** Replace the `Models` group under `Comfy Router` in the `en` nav. Returns the new file text. */
-function renderDocsJson(nav: NavGroup): string {
+// ---------------------------------------------------------------------------
+// Redirects for retired pages
+//
+// A model that leaves the catalog loses its page (`--prune`), but the URL that
+// page answered on is already in the wild: search results, chat logs, the
+// Router changelog. Mintlify has no "gone" state, so without a `docs.json`
+// redirect the retired URL is a 404, and the repo's redirect check fails any PR
+// that deletes a page without one. The generator owns these pages, so it owns
+// their redirects too: every pruned page gets one, pointing at the catalog
+// landing page, and a page that comes BACK loses its redirect again, or Mintlify
+// would serve the redirect instead of the page. Redirects the generator did not
+// write (hand-maintained ones, or one someone wrote for a pruned page with a
+// better destination) pass through untouched.
+// ---------------------------------------------------------------------------
+
+type Redirect = { source: string; destination: string; [key: string]: unknown };
+
+/** `development/comfy-router/models/kling/kling-v1/code` -> `/development/comfy-router/models/kling/kling-v1/code`. */
+const pageUrl = (page: string) => `/${page.replace(/^\//, "")}`;
+
+/**
+ * A pruned page, and where its URL should answer instead.
+ *
+ * A bare string keeps the original destination, the catalog landing page: that is
+ * the best a retired model can offer, because the thing the page documented is
+ * gone. An alt-provider alias page is the other case. The model is still live and
+ * still callable, it is just documented on its native model's page now, so its URL
+ * redirects THERE rather than dropping the reader on the index to search again.
+ */
+type PrunedPage = string | { page: string; destination: string };
+
+/**
+ * Settle the redirects for the model pages: drop any that would shadow a live
+ * page, add one for every pruned page that lacks one, keep everything else.
+ */
+export function modelPageRedirects(existing: Redirect[], live: Iterable<string>, pruned: Iterable<PrunedPage>): Redirect[] {
+  const liveUrls = new Set([...live].map(pageUrl));
+  const kept = existing.filter((r) => !liveUrls.has(r.source));
+  const have = new Set(kept.map((r) => r.source));
+  // An alias's own destination wins over the generic catalog fallback for the
+  // same URL, independent of scan order: the alias is the more specific
+  // answer, and a catalog-first entry must not shadow it.
+  const bySource = new Map<string, string>();
+  for (const entry of pruned) {
+    const { page, destination } = typeof entry === "string" ? { page: entry, destination: MODELS_INDEX_URL } : entry;
+    const source = pageUrl(page);
+    const current = bySource.get(source);
+    if (current === undefined || (current === MODELS_INDEX_URL && destination !== MODELS_INDEX_URL)) {
+      bySource.set(source, destination);
+    }
+  }
+  const added = [...bySource.keys()]
+    .filter((source) => !have.has(source) && !liveUrls.has(source))
+    .sort()
+    .map((source) => ({ source, destination: bySource.get(source)! }));
+  return [...kept, ...added];
+}
+
+/**
+ * Replace the `Models` group under `Comfy Router` in the `en` nav and settle the
+ * model-page redirects (see `modelPageRedirects`). Returns the new file text.
+ */
+export function renderDocsJson(nav: NavGroup, pages: { live: Iterable<string>; pruned: Iterable<PrunedPage> }): string {
   const raw = readFileSync(join(ROOT, DOCS_JSON), "utf8");
   const doc = JSON.parse(raw);
+  doc.redirects = modelPageRedirects(Array.isArray(doc.redirects) ? doc.redirects : [], pages.live, pages.pruned);
   const en = doc.navigation?.languages?.find((l: any) => l.language === "en");
   if (!en) throw new Error(`${DOCS_JSON}: no \`en\` language in navigation.languages`);
   const groups: NavGroup[] = [];
@@ -828,17 +1592,20 @@ function validate(page: string, rel: string): string[] {
   const problems: string[] = [];
   const tmp = mkdtempSync(join(tmpdir(), "code-pages-"));
   try {
-    const fences = [...page.matchAll(/```(python|typescript|bash)[^\n]*\n([\s\S]*?)```/g)];
+    const fences = [...page.matchAll(/```(python|typescript|swift|bash)[^\n]*\n([\s\S]*?)```/g)];
     fences.forEach((m, i) => {
       const [, lang, code] = m;
-      const file = join(tmp, `s${i}.${lang === "python" ? "py" : lang === "typescript" ? "ts" : "sh"}`);
+      const ext = lang === "python" ? "py" : lang === "typescript" ? "ts" : lang === "swift" ? "swift" : "sh";
+      const file = join(tmp, `s${i}.${ext}`);
       writeFileSync(file, code);
       const cmd =
         lang === "python"
           ? ["python3", "-m", "py_compile", file]
           : lang === "typescript"
             ? ["bun", "build", "--target=node", "--no-bundle", file, "--outfile", `${file}.out.js`]
-            : ["bash", "-n", file];
+            : lang === "swift"
+              ? ["swiftc", "-parse", file]
+              : ["bash", "-n", file];
       const r = Bun.spawnSync(cmd, { stderr: "pipe", stdout: "pipe" });
       if (r.exitCode !== 0) problems.push(`${rel}: ${lang} snippet #${i + 1} failed syntax check:\n${r.stderr.toString()}`);
     });
@@ -850,132 +1617,257 @@ function validate(page: string, rel: string): string[] {
 
 // ---------------------------------------------------------------------------
 
-const check = process.argv.includes("--check");
-const doValidate = process.argv.includes("--validate");
-const prune = process.argv.includes("--prune");
+// The script half. Guarded so the helpers above can be imported by
+// `gen-code-pages.test.ts` without regenerating every page as a side effect.
+if (import.meta.main) {
+  const check = process.argv.includes("--check");
+  const doValidate = process.argv.includes("--validate");
+  const prune = process.argv.includes("--prune");
 
-type Page = { model: string; page: string; text: string; out: string };
+  type Page = { model: string; page: string; title: string; text: string; out: string };
 
-const pages: Page[] = [];
-const covered = new Set<string>();
-let problems: string[] = [];
+  const pages: Page[] = [];
+  const covered = new Set<string>();
+  let problems: string[] = [];
+  /**
+   * Every model id to the page that documents it, curated variants included. An
+   * alias redirect and a Providers row both need the page a NATIVE model is
+   * documented on, and for a curated spec that is the spec's directory, not
+   * `pageDir(model)` — `vertexai/gemini-3-pro-image` is documented at
+   * `models/google/nano-banana-pro/code`, a URL its model id does not spell.
+   */
+  const pageByModel = new Map<string, { page: string; title: string }>();
 
-// ---- curated pages: one hand-written code.yaml, one page, one or more models
-const specGlob = new Bun.Glob(SPEC_GLOB);
-let specCount = 0;
-for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
-  specCount++;
-  let spec: Spec;
-  try {
-    spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
-  } catch (e) {
-    problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
-    continue;
+  // ---- curated pages: one hand-written code.yaml, one page, one or more models
+  const specGlob = new Bun.Glob(SPEC_GLOB);
+  let specCount = 0;
+  for (const specPath of specGlob.scanSync({ cwd: ROOT })) {
+    specCount++;
+    let spec: Spec;
+    try {
+      spec = Bun.YAML.parse(readFileSync(join(ROOT, specPath), "utf8")) as Spec;
+    } catch (e) {
+      problems.push(`${specPath}: cannot parse YAML: ${(e as Error).message}`);
+      continue;
+    }
+    for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
+      if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+    }
+    if (problems.some((m) => m.startsWith(specPath))) continue;
+    const dir = dirname(specPath);
+    let text: string;
+    try {
+      // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
+      // remaining specs half written; report it against this spec and carry on, as YAML errors do.
+      text = renderPage(spec, dir);
+    } catch (e) {
+      problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
+      continue;
+    }
+    for (const v of spec.variants) {
+      covered.add(v.model);
+      pageByModel.set(v.model, { page: `${dir}/code`, title: v.title ?? spec.name });
+    }
+    pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
   }
-  for (const key of ["name", "provider", "description", "summary", "variants", "example", "result"] as const) {
-    if (spec[key] === undefined) problems.push(`${specPath}: missing required key \`${key}\``);
+  if (specCount === 0) {
+    console.error(`no specs matched ${SPEC_GLOB}`);
+    process.exit(1);
   }
-  if (problems.some((m) => m.startsWith(specPath))) continue;
-  const dir = dirname(specPath);
-  let text: string;
-  try {
-    // A malformed `result.path`, or a router-schemas document we cannot read, must not abandon the
-    // remaining specs half written; report it against this spec and carry on, as YAML errors do.
-    text = renderPage(spec, dir);
-  } catch (e) {
-    problems.push(`${specPath}: cannot render: ${(e as Error).message}`);
-    continue;
-  }
-  for (const v of spec.variants) covered.add(v.model);
-  pages.push({ model: spec.variants[0].model, page: `${dir}/code`, text, out: join(ROOT, dir, "code.mdx") });
-}
-if (specCount === 0) {
-  console.error(`no specs matched ${SPEC_GLOB}`);
-  process.exit(1);
-}
 
-// ---- derived pages: one per synced router schema with no curated spec
-const schemaGlob = new Bun.Glob(SCHEMA_GLOB);
-const claimed = new Map<string, string>(pages.map((p) => [p.page, "a code.yaml spec"]));
-for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
-  const model = rel.slice("router-schemas/".length).replace(/\.json$/, "");
-  if (covered.has(model)) continue;
-  let schema: ModelSchema | null;
-  try {
-    schema = loadModelSchema(model);
-  } catch (e) {
-    problems.push(`${rel}: ${(e as Error).message}`);
-    continue;
+  // ---- derived pages: one per synced router schema with no curated spec
+  const schemaGlob = new Bun.Glob(SCHEMA_GLOB);
+  const claimed = new Map<string, string>(pages.map((p) => [p.page, "a code.yaml spec"]));
+  /** Alias documents, decided once every native page is known (see below). */
+  const aliasDocs: { rel: string; model: string; schema: ModelSchema; aliasOf: string; provider: string }[] = [];
+  /** The alias documents that keep no page of their own: a redirect to the native page instead. */
+  const aliases: { model: string; aliasOf: string; provider: string }[] = [];
+  /** Native model id -> the alternate serving providers its document publishes. */
+  const legsByModel = new Map<string, AltProvider[]>();
+  for (const rel of [...schemaGlob.scanSync({ cwd: ROOT })].sort()) {
+    const model = rel.slice("router-schemas/".length).replace(/\.json$/, "");
+    // A model a code.yaml already covers is loaded here only for its relationships;
+    // its page is rendered by the curated loop, which reports its own load errors.
+    let schema: ModelSchema | null;
+    try {
+      schema = loadModelSchema(model);
+    } catch (e) {
+      if (!covered.has(model)) problems.push(`${rel}: ${(e as Error).message}`);
+      continue;
+    }
+    if (!schema) {
+      if (!covered.has(model)) problems.push(`${rel}: model id does not match its path (expected router-schemas/<provider>/<model>.json)`);
+      continue;
+    }
+    if (schema.alias) {
+      if (covered.has(model)) {
+        // Both cannot be true, and guessing which one wins would either delete a
+        // hand-written page or leave the alias page the ticket exists to retire.
+        problems.push(
+          `${rel}: published as an alt-provider alias of \`${schema.alias.aliasOf}\`, but a code.yaml spec still documents it as a model of its own; drop it from that spec's variants`
+        );
+        continue;
+      }
+      aliasDocs.push({ rel, model, schema, aliasOf: schema.alias.aliasOf, provider: schema.alias.provider });
+      continue;
+    }
+    if (schema.altProviders?.length) legsByModel.set(model, schema.altProviders);
+    if (covered.has(model)) continue;
+    const dir = pageDir(model);
+    const owner = claimed.get(`${dir}/code`);
+    if (owner) {
+      // Two model ids that differ only in punctuation would silently overwrite one another.
+      problems.push(`${rel}: page directory ${dir} is already claimed by ${owner}`);
+      continue;
+    }
+    claimed.set(`${dir}/code`, rel);
+    pageByModel.set(model, { page: `${dir}/code`, title: modelTitle(model) });
+    pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
   }
-  if (!schema) {
-    problems.push(`${rel}: model id does not match its path (expected router-schemas/<provider>/<model>.json)`);
-    continue;
-  }
-  const dir = pageDir(model);
-  const owner = claimed.get(`${dir}/code`);
-  if (owner) {
-    // Two model ids that differ only in punctuation would silently overwrite one another.
-    problems.push(`${rel}: page directory ${dir} is already claimed by ${owner}`);
-    continue;
-  }
-  claimed.set(`${dir}/code`, rel);
-  pages.push({ model, page: `${dir}/code`, text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
-}
 
-// ---- write or check
-const stale: string[] = [];
-const missing: string[] = [];
-for (const p of pages) {
-  if (doValidate) problems.push(...validate(p.text, relative(ROOT, p.out)));
+  // ---- alias documents, now that every native page is known
+  //
+  // An alias is retired only when the model it points at is documented HERE. If the
+  // native model has no page (its own schema has not synced yet, say), retiring the
+  // alias would delete the only page a live, callable model has, which is the very
+  // failure the alias documents were published to fix. Keep the page in that case
+  // and let a later sync, carrying the native document, retire it.
+  for (const a of aliasDocs) {
+    if (pageByModel.has(a.aliasOf)) {
+      aliases.push({ model: a.model, aliasOf: a.aliasOf, provider: a.provider });
+      continue;
+    }
+    const dir = pageDir(a.model);
+    const owner = claimed.get(`${dir}/code`);
+    if (owner) {
+      problems.push(`${a.rel}: page directory ${dir} is already claimed by ${owner}`);
+      continue;
+    }
+    console.warn(`${a.rel}: alias of \`${a.aliasOf}\`, which has no page here; keeping its own page until that model is documented`);
+    claimed.set(`${dir}/code`, a.rel);
+    pageByModel.set(a.model, { page: `${dir}/code`, title: modelTitle(a.model) });
+    pages.push({ model: a.model, page: `${dir}/code`, title: modelTitle(a.model), text: renderDerivedPage(a.model, a.schema), out: join(ROOT, dir, "code.mdx") });
+  }
+
+  // ---- the alt-provider relationship, resolved to pages
+  //
+  // Both directions are read from the alias documents rather than only from the
+  // native ones: an alias names its own native target, so a Providers row exists
+  // for a leg even if the native document's `x-comfy-router-alt-providers` has not
+  // caught up, and the native page's section still comes from the native document.
+  const { rows: coverage, problems: relationProblems } = providerRelationRows(legsByModel, aliasDocs, pageByModel);
+  problems.push(...relationProblems);
+
+  // ---- the serving-provider index, written only while some model has a leg
+  const providersOut = join(ROOT, `${PROVIDERS_PAGE}.mdx`);
+  const providersText = coverage.length ? renderProvidersPage(coverage) : null;
+
+  // ---- write or check
+  const stale: string[] = [];
+  const missing: string[] = [];
+  for (const p of pages) {
+    if (doValidate) problems.push(...validate(p.text, relative(ROOT, p.out)));
+    if (check) {
+      if (!existsSync(p.out)) missing.push(relative(ROOT, p.out));
+      else if (readFileSync(p.out, "utf8") !== p.text) stale.push(relative(ROOT, p.out));
+    } else {
+      mkdirSync(dirname(p.out), { recursive: true });
+      writeFileSync(p.out, p.text);
+    }
+  }
+
+  // ---- catalog landing page
+  const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
+  const indexText = renderModelsIndex(pages, providersText !== null);
   if (check) {
-    if (!existsSync(p.out)) missing.push(relative(ROOT, p.out));
-    else if (readFileSync(p.out, "utf8") !== p.text) stale.push(relative(ROOT, p.out));
+    if (!existsSync(indexOut)) missing.push(relative(ROOT, indexOut));
+    else if (readFileSync(indexOut, "utf8") !== indexText) stale.push(relative(ROOT, indexOut));
   } else {
-    mkdirSync(dirname(p.out), { recursive: true });
-    writeFileSync(p.out, p.text);
+    writeFileSync(indexOut, indexText);
   }
-}
 
-// A model that leaves the catalog leaves its schema and, without this, its page:
-// a dead page still in the sidebar, documenting a model that now answers 404.
-const wanted = new Set(pages.map((p) => p.out));
-const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
-  .filter((rel) => !wanted.has(join(ROOT, rel)))
-  .sort();
-for (const rel of orphans) {
-  if (prune && !check) {
-    rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
-    console.log(`pruned ${rel}`);
-  } else {
-    problems.push(`${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`);
+  // ---- serving-provider index
+  if (providersText !== null) {
+    if (check) {
+      if (!existsSync(providersOut)) missing.push(relative(ROOT, providersOut));
+      else if (readFileSync(providersOut, "utf8") !== providersText) stale.push(relative(ROOT, providersOut));
+    } else {
+      mkdirSync(dirname(providersOut), { recursive: true });
+      writeFileSync(providersOut, providersText);
+    }
   }
-}
 
-// ---- sidebar
-let docsJson: string;
-try {
-  docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page }))));
-} catch (e) {
-  problems.push((e as Error).message);
-  docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
-}
-if (check) {
-  if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) stale.push(DOCS_JSON);
-} else if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) {
-  writeFileSync(join(ROOT, DOCS_JSON), docsJson);
-  console.log(`wrote ${DOCS_JSON}`);
-}
+  // A model that leaves the catalog leaves its schema and, without this, its page:
+  // a dead page still in the sidebar, documenting a model that now answers 404.
+  // An alt-provider alias page leaves the same way, but its URL redirects to the
+  // native model's page: that model is still live, just documented elsewhere now.
+  const wanted = new Set(pages.map((p) => p.out));
+  const aliasDestination = new Map<string, string>();
+  for (const a of aliases) {
+    // `aliases` holds only the ones whose native model has a page; the loop above
+    // kept the rest, so this lookup cannot miss.
+    aliasDestination.set(`${pageDir(a.model)}/code`, pageUrl(pageByModel.get(a.aliasOf)!.page));
+  }
+  const pruned: PrunedPage[] = [];
+  const orphans = [...new Bun.Glob(`${MODELS_DIR}/*/*/code.mdx`).scanSync({ cwd: ROOT })]
+    .filter((rel) => !wanted.has(join(ROOT, rel)))
+    .sort();
+  for (const rel of orphans) {
+    const page = rel.replace(/\.mdx$/, "");
+    const destination = aliasDestination.get(page);
+    if (prune && !check) {
+      rmSync(join(ROOT, dirname(rel)), { recursive: true, force: true });
+      pruned.push(destination ? { page, destination } : page);
+      console.log(`pruned ${rel} (redirect for ${pageUrl(page)} to ${destination ?? MODELS_INDEX_URL} kept in ${DOCS_JSON})`);
+    } else {
+      problems.push(
+        destination
+          ? `${rel}: now an alt-provider alias of another model, documented on that model's page (rerun with --prune to delete it and redirect ${pageUrl(page)} to ${destination})`
+          : `${rel}: no code.yaml spec and no router-schemas document (rerun with --prune to delete it)`
+      );
+    }
+  }
+  // The Providers page follows the same rule: it exists only while some model has
+  // a leg, so a catalog that loses the last one loses the page and keeps the URL.
+  if (providersText === null && existsSync(providersOut)) {
+    if (prune && !check) {
+      rmSync(providersOut, { force: true });
+      pruned.push(PROVIDERS_PAGE);
+      console.log(`pruned ${relative(ROOT, providersOut)} (redirect for ${PROVIDERS_URL} kept in ${DOCS_JSON})`);
+    } else {
+      problems.push(`${relative(ROOT, providersOut)}: no model publishes an alternate serving provider (rerun with --prune to delete it)`);
+    }
+  }
 
-if (missing.length) {
-  console.error(
-    `missing generated pages (run \`pnpm code-pages:gen\`) \u2014 a model Router serves has no page:\n  ${missing.join("\n  ")}`
-  );
+  // ---- sidebar
+  let docsJson: string;
+  try {
+    docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page })), providersText !== null), {
+      live: [...pages.map((p) => p.page), ...(providersText !== null ? [PROVIDERS_PAGE] : [])],
+      pruned,
+    });
+  } catch (e) {
+    problems.push((e as Error).message);
+    docsJson = readFileSync(join(ROOT, DOCS_JSON), "utf8");
+  }
+  if (check) {
+    if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) stale.push(DOCS_JSON);
+  } else if (docsJson !== readFileSync(join(ROOT, DOCS_JSON), "utf8")) {
+    writeFileSync(join(ROOT, DOCS_JSON), docsJson);
+    console.log(`wrote ${DOCS_JSON}`);
+  }
+
+  if (missing.length) {
+    console.error(
+      `missing generated pages (run \`pnpm code-pages:gen\`) \u2014 a model Router serves has no page:\n  ${missing.join("\n  ")}`
+    );
+  }
+  if (stale.length) {
+    console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
+  }
+  if (problems.length) console.error(problems.join("\n"));
+  if (missing.length || stale.length || problems.length) process.exit(1);
+  const derivedCount = pages.length - specCount;
+  if (check) console.log(`${pages.length} code page(s) fresh (${specCount} curated, ${derivedCount} derived)`);
+  else console.log(`wrote ${pages.length} code page(s) (${specCount} curated, ${derivedCount} derived)`);
 }
-if (stale.length) {
-  console.error(`stale generated pages (run \`pnpm code-pages:gen\`):\n  ${stale.join("\n  ")}`);
-}
-if (problems.length) console.error(problems.join("\n"));
-if (missing.length || stale.length || problems.length) process.exit(1);
-const derivedCount = pages.length - specCount;
-if (check) console.log(`${pages.length} code page(s) fresh (${specCount} curated, ${derivedCount} derived)`);
-else console.log(`wrote ${pages.length} code page(s) (${specCount} curated, ${derivedCount} derived)`);

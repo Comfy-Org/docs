@@ -12,23 +12,29 @@ API Reference for `ltx/ltx-2-5-fast`, served by Comfy Router from LTX.
 
 ## Quick start
 
-Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python, TypeScript and Swift snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`, and the [`ComfySwiftSDK`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `ltx/ltx-2-5-fast`
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/ltx/ltx-2-5-fast`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "ltx/ltx-2-5-fast",
         {
-            # Request fields are the provider's own — see Input below.
+            "duration": 2,
+            "fps": 24,
+            "generate_audio": False,
+            "prompt": "A single red maple leaf resting on a plain white background.",
+            "resolution": "1280x720",
         },
     )
 
@@ -38,32 +44,194 @@ print(result)
 ```typescript TypeScript
 import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("ltx/ltx-2-5-fast", {
-  // Request fields are the provider's own — see Input below.
+  duration: 2,
+  fps: 24,
+  generate_audio: false,
+  prompt: "A single red maple leaf resting on a plain white background.",
+  resolution: "1280x720",
 });
 
 console.log(data);
 ```
 
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "ltx/ltx-2-5-fast",
+    input: [
+        "duration": 2,
+        "fps": 24,
+        "generate_audio": false,
+        "prompt": "A single red maple leaf resting on a plain white background.",
+        "resolution": "1280x720",
+    ]
+)
+
+print(result.output)
+```
+
 ```bash cURL
-# Request fields are the provider's own — see Input below.
 curl https://api.comfy.org/v2/models/ltx/ltx-2-5-fast \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d "{\"duration\": 2, \"fps\": 24, \"generate_audio\": false, \"prompt\": \"A single red maple leaf resting on a plain white background.\", \"resolution\": \"1280x720\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/ltx/ltx-2-5-fast/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "ltx/ltx-2-5-fast",
+        {
+            "duration": 2,
+            "fps": 24,
+            "generate_audio": False,
+            "prompt": "A single red maple leaf resting on a plain white background.",
+            "resolution": "1280x720",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("ltx/ltx-2-5-fast", {
+  duration: 2,
+  fps: 24,
+  generate_audio: false,
+  prompt: "A single red maple leaf resting on a plain white background.",
+  resolution: "1280x720",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "ltx/ltx-2-5-fast",
+    input: [
+        "duration": 2,
+        "fps": 24,
+        "generate_audio": false,
+        "prompt": "A single red maple leaf resting on a plain white background.",
+        "resolution": "1280x720",
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+print(result.output)
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/ltx/ltx-2-5-fast/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"duration\": 2, \"fps\": 24, \"generate_audio\": false, \"prompt\": \"A single red maple leaf resting on a plain white background.\", \"resolution\": \"1280x720\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/ltx/ltx-2-5-fast/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/ltx/ltx-2-5-fast/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
 ### Input
 
-<Note>
-Router has not published an authored input schema for this model yet: `GET /v2/models/ltx/ltx-2-5-fast/openapi.json` returns an open object with `x-comfy-input-schema-authored: false`. Router forwards the body to LTX unchanged, so LTX's own API documentation is authoritative for the request fields, and nothing is validated server side.
-</Note>
+<ParamField body="duration" type="integer" required>
+  Video duration in seconds (maximum depends on resolution and frame rate)
+
+  Possible values: `2`, `3`, `4`, `5`, `6`, `8`, `10`, `12`, `14`, `16`, `18`, `20`
+</ParamField>
+
+<ParamField body="fps" type="integer" default="25">
+  Frame rate in frames per second
+
+  Possible values: `24`, `25`, `48`, `50`
+</ParamField>
+
+<ParamField body="generate_audio" type="boolean" default="true">
+  Generate audio for the video
+</ParamField>
+
+<ParamField body="model" type="string">
+  Model to use for generation. On the Comfy Router route `POST /v2/models/ltx/{model}` this field is supplied from the path and may be omitted. The spellings LTX serves on this operation -- the set Comfy Router addresses as `ltx/<model>` -- are ltx-2-5-fast and ltx-2-5-pro; they are written out here rather than constrained to an enum for the reason the comment above gives. Which resolutions each one admits is the `x-comfy-model-resolutions` matrix on the `resolution` property below.
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  Text prompt describing the desired video content
+</ParamField>
+
+<ParamField body="resolution" type="string" required>
+  Output video resolution. The enum is the union over all models; the supported set is per model. Supported pairs: ltx-2-5-fast: 1280x720, 720x1280, 1920x1080, 1080x1920, 2560x1440, 1440x2560, 3840x2160, 2160x3840; ltx-2-5-pro: 1280x720, 720x1280, 1920x1080, 1080x1920. Other (model, resolution) pairs are not supported; the v2 routes reject them with 400. The same matrix is published machine-readably in this property's x-comfy-model-resolutions extension.
+
+  Possible values: `1280x720`, `720x1280`, `1920x1080`, `1080x1920`, `2560x1440`, `1440x2560`, `3840x2160`, `2160x3840`
+</ParamField>
+
+Generated from the schema Router serves at `GET /v2/models/ltx/ltx-2-5-fast/openapi.json`, the same document it validates a call against before the request reaches the provider.
 
 ### Output
 
@@ -104,6 +272,18 @@ Router has not published an authored input schema for this model yet: `GET /v2/m
 </ResponseField>
 
 ## Examples
+
+### Input
+
+```json
+{
+  "duration": 2,
+  "fps": 24,
+  "generate_audio": false,
+  "prompt": "A single red maple leaf resting on a plain white background.",
+  "resolution": "1280x720"
+}
+```
 
 ### Output
 

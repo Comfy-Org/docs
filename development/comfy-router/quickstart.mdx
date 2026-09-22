@@ -1,7 +1,7 @@
 ---
 title: "Comfy Router quickstart"
 sidebarTitle: "Quickstart"
-description: "From nothing to a generated image in about five minutes, in Python and TypeScript, against the Comfy Router."
+description: "From nothing to a generated image in about five minutes, in Python, TypeScript and Swift, against the Comfy Router."
 ---
 
 <div className="router-quickstart-marker" />
@@ -10,13 +10,15 @@ Comfy Router lets you call partner models through `https://api.comfy.org` with o
 
 <Steps>
   <Step title="Create an API key">
-    Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys). In a Bash-compatible terminal, set:
+    Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router). In a Bash-compatible terminal, set:
 
     ```bash
     export COMFY_API_KEY="comfyui-..."
     ```
 
     Keep API keys on your server or in your local environment. These examples are for a terminal or server, not browser JavaScript.
+
+    Your workspace must also be funded. Comfy Router draws credits per call, so a workspace with no credit balance is refused `402` with `error_type: insufficient_credits` on its first live call — and because that check runs before the request body is validated, an unfunded account gets `402` even for an otherwise-malformed request, so fund the workspace first rather than debugging a request body that was never the problem. Add credits at [workspace billing](https://platform.comfy.org) before running the example.
   </Step>
 
   <Step title="Save a key for this request">
@@ -45,7 +47,7 @@ Comfy Router lets you call partner models through `https://api.comfy.org` with o
 
     ```python Python
     # Python 3.10+
-    # Install: python -m pip install "comfy-sdk>=0.1.9"
+    # Install: python -m pip install "comfy-sdk>=0.3.0"
     # Save as quickstart.py, then run: python quickstart.py
 
     import os
@@ -66,7 +68,7 @@ Comfy Router lets you call partner models through `https://api.comfy.org` with o
 
     ```typescript TypeScript
     // Node.js 22+
-    // Install: npm install @comfyorg/sdk@^0.1.9 --save-dev tsx
+    // Install: npm install "@comfyorg/sdk@>=0.4.0" --save-dev tsx
     // Save as quickstart.mts, then run: npx tsx quickstart.mts
 
     import { comfy } from "@comfyorg/sdk";
@@ -76,18 +78,58 @@ Comfy Router lets you call partner models through `https://api.comfy.org` with o
     const idempotencyKey = process.env.COMFY_REQUEST_KEY;
     if (!idempotencyKey) throw new Error("Set COMFY_REQUEST_KEY first.");
 
-    const { data } = await comfy.models.run<FluxResult>(
+    const result = await comfy.models.run<FluxResult>(
       "bfl/flux-2-pro",
       { prompt: "a red teapot on a windowsill, morning light" },
       { idempotencyKey, timeoutMs: 660_000 },
     );
+    // Some models answer with the generated file itself rather than JSON.
+    if (result.kind !== "json") throw new Error("expected a JSON result");
 
-    console.log("image:", data.result.sample);
+    console.log("image:", result.data.result.sample);
+    ```
+
+    ```swift Swift
+    // Swift 5.9+ (macOS 14+, iOS 17+). This snippet is a command-line program.
+    // Do not ship the key inside an iOS app: it is extractable from the binary.
+    // In an app, call your own backend and keep the key there.
+    // Install: add .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
+    // Add ComfySwiftSDK to your target, put this in Sources/.../main.swift, then run: swift run
+
+    import ComfySwiftSDK
+    import Foundation
+
+    let env = ProcessInfo.processInfo.environment
+
+    guard let apiKey = env["COMFY_API_KEY"], !apiKey.isEmpty else {
+        fatalError("Set COMFY_API_KEY first.")
+    }
+    guard let requestKey = env["COMFY_REQUEST_KEY"], !requestKey.isEmpty else {
+        fatalError("Set COMFY_REQUEST_KEY first.")
+    }
+
+    let client = ComfyCloudClient(apiKey: apiKey)
+
+    let result = try await client.models.run(
+        "bfl/flux-2-pro",
+        input: ["prompt": "a red teapot on a windowsill, morning light"],
+        idempotencyKey: requestKey,
+        timeout: 660  // seconds
+    )
+
+    // Some models answer with the generated file itself rather than JSON.
+    guard let sample = result.output["result"]["sample"].stringValue else {
+        fatalError("expected a JSON result carrying result.sample")
+    }
+
+    print("image:", sample)
     ```
 
     </CodeGroup>
 
-    Both SDKs read `COMFY_API_KEY` from the environment.
+    All three examples take the key from `COMFY_API_KEY`: the Python and TypeScript
+    clients read it from the environment themselves, and the Swift example reads it and
+    passes it to `ComfyCloudClient(apiKey:)`.
   </Step>
 
   <Step title="Read and save the result">
@@ -109,6 +151,12 @@ Comfy Router lets you call partner models through `https://api.comfy.org` with o
     Download promptly. Router can rehost BFL assets on Comfy storage, but URLs expire and a replay does not renew them. A failed rehost can leave a shorter-lived provider URL. See [result assets](/development/comfy-router/reference#result-assets).
   </Step>
 </Steps>
+
+## Queue instead of waiting
+
+`run` holds the connection until the image is ready. To get a `request_id` back at once and collect the result later, from this process or another one, call `submit` instead (the SDK versions step 3 installs have it), or send the same body to `POST /v2/models/{provider}/{model}/requests` over HTTP. Send an `Idempotency-Key` with it as you did in step 2: a submit retried after a dropped connection then returns the original request instead of queueing and billing a second one. The SDKs mint one per `submit` call. Every model page has a **Queue and collect later** tab beside the synchronous snippet, and [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+Queued delivery is scoped to the workspace behind your key, which a key created in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) carries.
 
 ## Choose a model
 

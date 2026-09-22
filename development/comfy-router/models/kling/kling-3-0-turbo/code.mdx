@@ -12,23 +12,30 @@ API Reference for `kling/kling-3.0-turbo`, served by Comfy Router from Kling.
 
 ## Quick start
 
-Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python, TypeScript and Swift snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`, and the [`ComfySwiftSDK`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `kling/kling-3.0-turbo`
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/kling/kling-3.0-turbo`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "kling/kling-3.0-turbo",
         {
-            # Request fields are the provider's own — see Input below.
+            "prompt": "A neon-lit alley in the rain, slow dolly forward.",
+            "settings": {
+                "aspect_ratio": "16:9",
+                "duration": 5,
+                "resolution": "1080p",
+            },
         },
     )
 
@@ -38,32 +45,224 @@ print(result)
 ```typescript TypeScript
 import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("kling/kling-3.0-turbo", {
-  // Request fields are the provider's own — see Input below.
+  prompt: "A neon-lit alley in the rain, slow dolly forward.",
+  settings: {
+    aspect_ratio: "16:9",
+    duration: 5,
+    resolution: "1080p",
+  },
 });
 
 console.log(data);
 ```
 
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "kling/kling-3.0-turbo",
+    input: [
+        "prompt": "A neon-lit alley in the rain, slow dolly forward.",
+        "settings": [
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "resolution": "1080p",
+        ],
+    ]
+)
+
+print(result.output)
+```
+
 ```bash cURL
-# Request fields are the provider's own — see Input below.
 curl https://api.comfy.org/v2/models/kling/kling-3.0-turbo \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d "{\"prompt\": \"A neon-lit alley in the rain, slow dolly forward.\", \"settings\": {\"aspect_ratio\":\"16:9\",\"duration\":5,\"resolution\":\"1080p\"}}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/kling/kling-3.0-turbo/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "kling/kling-3.0-turbo",
+        {
+            "prompt": "A neon-lit alley in the rain, slow dolly forward.",
+            "settings": {
+                "aspect_ratio": "16:9",
+                "duration": 5,
+                "resolution": "1080p",
+            },
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("kling/kling-3.0-turbo", {
+  prompt: "A neon-lit alley in the rain, slow dolly forward.",
+  settings: {
+    aspect_ratio: "16:9",
+    duration: 5,
+    resolution: "1080p",
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "kling/kling-3.0-turbo",
+    input: [
+        "prompt": "A neon-lit alley in the rain, slow dolly forward.",
+        "settings": [
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "resolution": "1080p",
+        ],
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+print(result.output)
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/kling/kling-3.0-turbo/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"A neon-lit alley in the rain, slow dolly forward.\", \"settings\": {\"aspect_ratio\":\"16:9\",\"duration\":5,\"resolution\":\"1080p\"}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/kling/kling-3.0-turbo/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/kling/kling-3.0-turbo/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Serving providers
+
+This model is served by Comfy Router directly unless the request names another provider. The providers below serve it too, on the same endpoint and with the same model ID, selected with the `model_provider` query parameter.
+
+- **Comfy** (default): `POST https://api.comfy.org/v2/models/kling/kling-3.0-turbo`
+- **Higgsfield**, as `higgsfield/higgsfield-kling-3-turbo`: `POST https://api.comfy.org/v2/models/kling/kling-3.0-turbo?model_provider=higgsfield`
+
+`strict_mode` defaults to false, so Router translates the native request body documented on this page into the provider's own schema and translates the response back. See [`model_provider`, `strict_mode` and `fallback_provider`](/development/comfy-router/reference#post-v2modelsprovidermodel) in the API reference, and [Serving providers](/development/comfy-router/providers) for every model routed this way.
 
 ## Schema
 
 ### Input
 
-<Note>
-Router has not published an authored input schema for this model yet: `GET /v2/models/kling/kling-3.0-turbo/openapi.json` returns an open object with `x-comfy-input-schema-authored: false`. Router forwards the body to Kling unchanged, so [Kling's own API reference](https://app.klingai.com/global/dev/document-api) is authoritative for the request fields, and nothing is validated server side.
-</Note>
+<ParamField body="options" type="object">
+  General configuration such as callback address and watermark options.
+</ParamField>
+
+<ParamField body="options.callback_url" type="string">
+  Callback notification URL for task results. The server notifies when the task status changes.
+</ParamField>
+
+<ParamField body="options.external_task_id" type="string">
+  Customized Task ID. Does not overwrite the system-generated task ID but can be used for queries. Must be unique within a single user account.
+</ParamField>
+
+<ParamField body="options.watermark_info" type="object">
+  Whether to generate watermarked results simultaneously. Custom watermarks are not supported.
+</ParamField>
+
+<ParamField body="options.watermark_info.enabled" type="boolean">
+  true means generate watermarked result, false means do not generate. Default false.
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  Prompt that may include both positive and negative descriptions. Recommended length under 2500 characters. Multi-shot videos use the format "shot n, m, words; shot n, m, words;".
+</ParamField>
+
+<ParamField body="settings" type="object">
+  Output configuration such as resolution, aspect ratio and duration.
+</ParamField>
+
+<ParamField body="settings.aspect_ratio" type="string">
+  Aspect ratio (width:height) of the generated frames. One of "16:9", "9:16" or "1:1". Default "16:9".
+
+  Possible values: `16:9`, `9:16`, `1:1`
+</ParamField>
+
+<ParamField body="settings.duration" type="integer">
+  Video length in seconds. Supported values 3 through 15. Default 5.
+
+  Range: `3` to `15`
+</ParamField>
+
+<ParamField body="settings.resolution" type="string">
+  Clarity of the generated video. One of "720p" or "1080p". Default "720p".
+
+  Possible values: `720p`, `1080p`
+</ParamField>
+
+Generated from the schema Router serves at `GET /v2/models/kling/kling-3.0-turbo/openapi.json`, the same document it validates a call against before the request reaches the provider.
 
 ### Output
 
@@ -184,6 +383,19 @@ Router has not published an authored input schema for this model yet: `GET /v2/m
 </ResponseField>
 
 ## Examples
+
+### Input
+
+```json
+{
+  "prompt": "A neon-lit alley in the rain, slow dolly forward.",
+  "settings": {
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "resolution": "1080p"
+  }
+}
+```
 
 ### Output
 

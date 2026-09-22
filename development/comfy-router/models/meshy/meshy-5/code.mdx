@@ -12,23 +12,27 @@ API Reference for `meshy/meshy-5`, served by Comfy Router from Meshy.
 
 ## Quick start
 
-Create a key at [platform.comfy.org/profile/api-keys](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python, TypeScript and Swift snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`, and the [`ComfySwiftSDK`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `meshy/meshy-5`
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/meshy/meshy-5`
 
+<Tabs>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
 
-# Reads COMFY_API_KEY from the environment. Each call sends a fresh
-# Idempotency-Key and waits up to 10 minutes for the finished result.
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
 with Comfy() as client:
     result = client.models.run(
         "meshy/meshy-5",
         {
-            # Request fields are the provider's own — see Input below.
+            "art_style": "realistic",
+            "mode": "preview",
+            "prompt": "a red cube",
         },
     )
 
@@ -38,30 +42,258 @@ print(result)
 ```typescript TypeScript
 import { comfy } from "@comfyorg/sdk";
 
-// Reads COMFY_API_KEY from the environment. Each call sends a fresh
-// Idempotency-Key and waits up to 10 minutes for the finished result.
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
 const { data } = await comfy.models.run("meshy/meshy-5", {
-  // Request fields are the provider's own — see Input below.
+  art_style: "realistic",
+  mode: "preview",
+  prompt: "a red cube",
 });
 
 console.log(data);
 ```
 
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK mints an idempotency key per call and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "meshy/meshy-5",
+    input: [
+        "art_style": "realistic",
+        "mode": "preview",
+        "prompt": "a red cube",
+    ]
+)
+
+print(result.output)
+```
+
 ```bash cURL
-# Request fields are the provider's own — see Input below.
 curl https://api.comfy.org/v2/models/meshy/meshy-5 \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d "{\"art_style\": \"realistic\", \"mode\": \"preview\", \"prompt\": \"a red cube\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/meshy/meshy-5/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "meshy/meshy-5",
+        {
+            "art_style": "realistic",
+            "mode": "preview",
+            "prompt": "a red cube",
+        },
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("meshy/meshy-5", {
+  art_style: "realistic",
+  mode: "preview",
+  prompt: "a red cube",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "meshy/meshy-5",
+    input: [
+        "art_style": "realistic",
+        "mode": "preview",
+        "prompt": "a red cube",
+    ]
+)
+print("requestId:", handle.requestId)  // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// The provider's own payload, the same value models.run() returns.
+// A request that failed or was cancelled throws the typed Router error here.
+let result = try await handle.result()
+
+print(result.output)
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/meshy/meshy-5/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"art_style\": \"realistic\", \"mode\": \"preview\", \"prompt\": \"a red cube\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/meshy/meshy-5/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/meshy/meshy-5/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
 ### Input
 
-_The schema declares no fixed fields: any JSON object is accepted._
+#### `preview` variant
+
+<ParamField body="ai_model" type="string">
+  The Meshy model to run. On the Comfy Router route this is supplied by the path (`/v2/models/meshy/{model}`) and may be omitted or sent as null; Router writes the path's model here after validation. On the v1 /proxy route see MeshyTextTo3DPreviewRequest, which constrains it to MeshyAiModel.
+</ParamField>
+
+<ParamField body="art_style" type="string" default="&quot;realistic&quot;">
+  Describe your desired art style of the object.
+
+  Possible values: `realistic`, `sculpture`
+</ParamField>
+
+<ParamField body="geometry_resolution" type="string" default="&quot;standard&quot;">
+  Geometry resolution of the generated mesh. 2k and 4k run the Ultra pass for finer surface detail. 2k requires ai_model meshy-7, meshy-7.1 or latest; 4k requires meshy-7.1 or latest.
+
+  Possible values: `standard`, `2k`, `4k`
+</ParamField>
+
+<ParamField body="is_a_t_pose" type="boolean" default="false">
+  Deprecated. Use pose_mode instead. Whether to generate the model in an A/T pose.
+</ParamField>
+
+<ParamField body="mode" type="string" required>
+  This field should be set to "preview" when creating a preview task.
+
+  Possible values: `preview`
+</ParamField>
+
+<ParamField body="moderation" type="boolean" default="false">
+  When true, input content will be screened for potentially harmful content.
+</ParamField>
+
+<ParamField body="pose_mode" type="string">
+  Specify the pose mode for the generated model.
+
+  Possible values: `a-pose`, `t-pose`, ``
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  Describe what kind of object the 3D model is. Maximum 600 characters.
+</ParamField>
+
+<ParamField body="should_remesh" type="boolean" default="true">
+  Controls whether to enable the remesh phase. When false, returns highest-precision triangular mesh.
+</ParamField>
+
+<ParamField body="symmetry_mode" type="string" default="&quot;auto&quot;">
+  Controls symmetry behavior during model generation.
+
+  Possible values: `off`, `auto`, `on`
+</ParamField>
+
+<ParamField body="target_polycount" type="integer" default="30000">
+  Specify the target number of polygons in the generated model. Valid range is 100 to 300,000.
+
+  Range: `100` to `300000`
+</ParamField>
+
+<ParamField body="topology" type="string" default="&quot;triangle&quot;">
+  Specify the topology of the generated model.
+
+  Possible values: `quad`, `triangle`
+</ParamField>
+
+<ParamField body="ultra_mode" type="boolean" default="false">
+  Deprecated. Use geometry_resolution instead; true is equivalent to geometry_resolution 2k. Only supported when ai_model is meshy-7, meshy-7.1 or latest.
+</ParamField>
+
+#### `refine` variant
+
+<ParamField body="ai_model" type="string">
+  The Meshy model to run. On the Comfy Router route this is supplied by the path (`/v2/models/meshy/{model}`) and may be omitted or sent as null; Router writes the path's model here after validation. On the v1 /proxy route see MeshyTextTo3DRefineRequest, which constrains it to MeshyAiModel.
+</ParamField>
+
+<ParamField body="enable_pbr" type="boolean" default="false">
+  Generate PBR Maps (metallic, roughness, normal) in addition to the base color. Note that enable_pbr should be set to false when using Sculpture style.
+</ParamField>
+
+<ParamField body="mode" type="string" required>
+  This field should be set to "refine" when creating a refine task.
+
+  Possible values: `refine`
+</ParamField>
+
+<ParamField body="moderation" type="boolean" default="false">
+  When true, input content will be screened for potentially harmful content.
+</ParamField>
+
+<ParamField body="preview_task_id" type="string" required>
+  The corresponding preview task id. The status of the given preview task must be SUCCEEDED.
+</ParamField>
+
+<ParamField body="texture_image_url" type="string">
+  Provide a 2d image to guide the texturing process. Supports .jpg, .jpeg, .png formats or base64-encoded data URI.
+</ParamField>
+
+<ParamField body="texture_prompt" type="string">
+  Provide an additional text prompt to guide the texturing process. Maximum 600 characters.
+</ParamField>
+
+<ParamField body="texture_resolution" type="string" default="&quot;2k&quot;">
+  Texture resolution of the generated textures. One of 2k, 4k or 8k. 4k and 8k require ai_model meshy-6, meshy-7, meshy-7.1 or latest.
+
+  Possible values: `2k`, `4k`, `8k`
+</ParamField>
 
 Generated from the schema Router serves at `GET /v2/models/meshy/meshy-5/openapi.json`, the same document it validates a call against before the request reaches the provider.
 
