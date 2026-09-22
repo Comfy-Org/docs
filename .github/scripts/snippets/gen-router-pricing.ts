@@ -56,6 +56,43 @@ const normalize = (value: string) =>
 
 const anchor = (heading: string) => normalize(heading);
 
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic",
+  beeble: "Beeble",
+  bfl: "Black Forest Labs",
+  bria: "Bria",
+  byteplus: "BytePlus",
+  elevenlabs: "ElevenLabs",
+  fal: "fal",
+  freepik: "Freepik",
+  "gemini-interactions": "Gemini Interactions",
+  heygen: "HeyGen",
+  higgsfield: "Higgsfield",
+  ideogram: "Ideogram",
+  kling: "Kling",
+  krea: "Krea",
+  ltx: "LTX",
+  luma: "Luma",
+  luma_2: "Luma 2",
+  meshy: "Meshy",
+  minimax: "MiniMax",
+  moonvalley: "Moonvalley",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  pruna: "Pruna",
+  qwen: "Qwen",
+  recraft: "Recraft",
+  runway: "Runway",
+  tencent: "Tencent",
+  veo: "Veo",
+  vertexai: "Google",
+  wan: "Wan",
+  wavespeed: "WaveSpeed",
+  xai: "xAI",
+};
+
+const providerLabel = (modelId: string) => PROVIDER_LABEL[modelId.split("/")[0]] ?? modelId.split("/")[0];
+
 function modelTitle(pageText: string, model: string): string {
   const title = pageText.match(/^title: "([^"]+)"$/m)?.[1];
   if (title) return title.replace(/^Use /, "").replace(/ with Comfy Router$/, "");
@@ -199,14 +236,28 @@ function loadPricingData(): PricingData {
 
 function render(): string {
   const data = loadPricingData();
-  const rows = data.models
-    .map((model) => {
-      const reference = model.source_section
-        ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
-        : `[Partner Node pricing](${PRICING_URL})`;
-      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
+  const grouped = new Map<string, PricingData["models"]>();
+  for (const model of data.models) {
+    const label = providerLabel(model.id);
+    const models = grouped.get(label) ?? [];
+    models.push(model);
+    grouped.set(label, models);
+  }
+  const sections = [...grouped.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, models]) => {
+      const rows = [...models]
+        .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
+        .map((model) => {
+          const reference = model.source_section
+            ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
+            : `[Partner Node pricing](${PRICING_URL})`;
+          return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
+        })
+        .join("\n");
+      return `## ${provider}\n\n| Model | Router model ID | Comfy credit rate | Pricing source |\n| --- | --- | --- | --- |\n${rows}`;
     })
-    .join("\n");
+    .join("\n\n");
 
   return `---
 title: "Comfy Router pricing by model"
@@ -221,11 +272,7 @@ mode: "wide"
 Prices are in Comfy credits. A dash means the official source has no matching rate row. [Pricing details](${PRICING_URL}).
 </Note>
 
-## Pricing by model
-
-| Model | Router model ID | Comfy credit rate | Pricing source |
-| --- | --- | --- | --- |
-${rows}
+${sections}
 `;
 }
 

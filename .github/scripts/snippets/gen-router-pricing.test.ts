@@ -11,10 +11,12 @@ describe("Router pricing catalog", () => {
     expect(page).toContain("Nano Banana Pro");
     expect(page).toContain("Kling V3");
     expect(page).toContain("freepik/ai-image-upscaler-precision-v2");
+    expect(page).toContain("## OpenAI");
+    expect(page).toContain("## Google");
   });
 
   test("renders the full pricing table", () => {
-    expect(page).toContain("## Pricing by model");
+    expect(page).toContain("## OpenAI");
     expect(page).toContain("Input credits / 1M: 263.75");
     expect(page).toContain("output (image)");
     expect(page).toContain("7600");
