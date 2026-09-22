@@ -1106,7 +1106,7 @@ function renderPage(spec: Spec, dir: string): string {
   // The one-time setup a snippet cannot run without. Everything else that is
   // shared across models (idempotency, deadline, request IDs) lives on the
   // headers page the footer links to.
-  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`;
   // Every model this page documents, with the legs its own schema document
   // publishes. A spec with no aliased model renders no section at all.
   const serving = servingProvidersSection(spec.variants.map((v) => ({ model: v.model, legs: loadModelSchema(v.model)?.altProviders ?? [] })));
@@ -1239,7 +1239,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const clients = requestExample
     ? `The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`
     : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. For Swift, add the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) package. cURL uses raw HTTP.`;
-  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
