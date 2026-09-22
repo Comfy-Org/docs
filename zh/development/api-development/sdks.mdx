@@ -3,23 +3,31 @@ title: "Comfy SDKs"
 description: "用于在您自己的应用程序中运行 ComfyUI 工作流的官方 Python 和 TypeScript SDK"
 sidebarTitle: "SDK 概述"
 icon: "code"
-translationSourceHash: 963b3131
+translationSourceHash: 238272b3
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
-  "_intro": 0df68ad9
-  "Install": 6bcd1ccf
+  "_intro": f5c8a7cf
+  "Install": da9a0a57
   "Quickstart": 02297586
   "Choosing a base URL": 9503df8d
-  "Watching a job run": a1c73d9b
+  "Retrying a submit: the idempotency key": 853fdb35
+  "Watching a job run": 4253d21f
   "Tracing an output back to its workflow": b01886a3
-  "What the SDKs cover today": 3f918c7b
-  "Reference": 5fc97b4a
-  "Feedback": f8553211
+  "What the SDKs cover today": 69ebfcc7
+  "Reference": 71489703
+  "Feedback": 3edae8ef
 ---
 
+import SdkSurfaces from "/snippets/zh/sdk/surfaces.mdx";
+import SdkVersions from "/snippets/zh/sdk/versions.mdx";
+
 <Warning>
-  **测试版。** 这些 SDK 及其调用的 Comfy API v2 目前均为 `0.1.x` 版本。在我们将其锁定之前，API 的结构仍可能发生变化。现在告诉我们哪里有问题，成本最低。参见[反馈](#反馈)。
+  **测试版。** 这些 SDK 及其调用的 Comfy API v2 目前仍处于 1.0 之前的阶段。API 的结构在稳定之前仍可能发生变化。请通过[反馈](#反馈)报告问题。
 </Warning>
+
+<SdkSurfaces />
+
+本页介绍第二行：Comfy Cloud 和 Comfy API v2 客户端。如果您要使用模型路由器，请从 [Comfy Router 快速入门](/zh/development/comfy-router/quickstart)开始。
 
 Comfy SDK 让您的应用程序能够运行 ComfyUI 工作流并取回结果。您提交工作流，ComfyUI 执行它，然后您下载输出。同一份代码既可用于 Comfy Cloud，也可用于您自行托管的 ComfyUI 实例，只需更改基础 URL。
 
@@ -49,6 +57,8 @@ npm i @comfyorg/sdk
 </CodeGroup>
 
 Python 3.10 或更高版本。Node 22 或更高版本。
+
+<SdkVersions />
 
 ## 快速入门
 
@@ -158,9 +168,74 @@ export COMFY_BASE_URL="http://127.0.0.1:8189"
 
 该代理只是一个权宜之计。一旦 v2 API 稳定下来，它就会移入 ComfyUI 核心，届时就不再需要代理了。
 
+## 重试提交：幂等键
+
+`submit()` 和 `run()` 在每次提交时都会发送一个 `Idempotency-Key`，而 Comfy API v2 对该键的契约是**重复即拒绝，而非记录并重放**。在把提交包进重试循环之前，请先阅读本节。
+
+- **每次调用都会生成一个新的键。** 用同一个工作流调用 `submit()` 两次，就是两次提交、两个任务和两笔计费。在 `submit()` 外面套一个天真的 `for attempt in range(3)`，得到的是双重扣费，而不是重试。
+- **被复用的键会被拒绝，而不是被重放。** 传入你自己的 `idempotency_key`（TypeScript 中为 `idempotencyKey`）可以让重试具备幂等性，而使用该键的第二次请求会以 `422 idempotency_key_reuse` 失败，而不是返回第一个任务。各 SDK 会抛出 `IdempotencyKeyReuse`。这与“幂等重试”通常的含义正好相反，因此需要显式处理。
+- **恢复方式是去找回任务，而不是重新提交。** 遇到 `IdempotencyKeyReuse` 时，第一次尝试很可能已经创建了任务。用 `client.jobs.get(job_id)` 取回它。该查找需要你已存储的 id，因此它只能恢复“提交已返回、且你在故障发生前持久化了 id”这一情形。如果连接在记录 id 之前就断开了，那就没有可查找的对象，也没有自动恢复的办法：下面的示例选择重新抛出异常交由人工处理，而不是在已占用的键下重新提交。
+- **当提交确定失败时，该键会被释放。** 验证错误、积分不足被拒绝或队列已满被拒绝都不会创建任务，并会释放该键，因此在该键下重新提交是没问题的。在*结果不明*的失败之后（读取超时、请求中途连接断开），该键仍保持占用：此时应查找任务，而不是重新提交。
+- **键会在 24 小时后过期**，且必须非空、由可打印 ASCII 字符组成并符合长度限制。无效的键会在发出任何请求之前抛出 `ValueError`，因此显式的 `""` 绝不会静默回退到一个自动生成的键。
+
+因此，一个可以安全运行多次的重试必须在各次尝试之间携带两样东西：键，让服务器能够区分重试与新的提交；以及任务ID，让你能够找到已被占用的键所创建的任务。
+
+<CodeGroup>
+```python Python
+import uuid
+from comfy_sdk import IdempotencyKeyReuse
+
+# 这两个值都应该放在你自己的存储里，以该请求对你而言
+# 的含义作为键。`key` 只在第一次尝试时生成一次；`job_id`
+# 在提交返回后立即填入。
+state = load_submission_state()  # {"key": ..., "job_id": ...} or {}
+key = state.get("key") or str(uuid.uuid4())
+save_submission_state(key=key)
+
+try:
+    job = client.submit(wf, idempotency_key=key)
+    save_submission_state(key=key, job_id=job.id)
+except IdempotencyKeyReuse:
+    # 此前在该键下的一次尝试已经到达提交环节，因此可能已存在一个任务。
+    # 不要重新提交：去找回它。
+    job_id = state.get("job_id")
+    if job_id is None:
+        raise  # 没有记录可供查找；这需要人工处理
+    job = client.jobs.get(job_id)
+```
+
+```typescript TypeScript
+import { IdempotencyKeyReuse } from "@comfyorg/sdk";
+
+// 这两个值都应该放在你自己的存储里，以该请求对你而言
+// 的含义作为键。`key` 只在第一次尝试时生成一次；`jobId`
+// 在提交返回后立即填入。
+const state = await loadSubmissionState(); // { key?, jobId? }
+const key = state.key ?? crypto.randomUUID();
+await saveSubmissionState({ key });
+
+let job;
+try {
+  job = await client.submit(wf, { idempotencyKey: key });
+  await saveSubmissionState({ key, jobId: job.id });
+} catch (err) {
+  // 此前在该键下的一次尝试已经到达提交环节，因此可能已存在一个任务。
+  // 不要重新提交：去找回它。
+  if (!(err instanceof IdempotencyKeyReuse) || !state.jobId) throw err;
+  job = await client.jobs.get(state.jobId);
+}
+```
+</CodeGroup>
+
+`client.jobs.get(job_id)` 是 SDK 的重建路径，它需要一个 id，这正是为什么在提交返回的那一刻记录 id 才让这一切具备可恢复性。关于 `POST /api/v2/jobs` 上完整的键契约，请参阅 [Comfy API v2](/zh/api-reference/v2/overview)。
+
+<Note>
+  Comfy Router 的 `Idempotency-Key` 行为**不同**。在 Router 上，该键是一个重放句柄，而不是一次性令牌：用同一个键重新发送一个已排队的提交，会返回原始请求，而不是再排队一个。请参阅[队列投递](/zh/development/comfy-router/queue#幂等性与计费)和 [Router 重试结果](/zh/development/comfy-router/api#retry-outcomes)。这两个接口只是共用一个请求头名称，契约并不相同。
+</Note>
+
 ## 查看任务运行
 
-`job.events()` 提供任务状态的实时流：节点和步骤进度、预览帧，以及每个输出在提交时的即时信息。如果连接中断，它会自动重新连接。
+`job.events()` 会提供任务状态的实时流：节点和步骤进度、预览帧，以及每个输出一经提交的即时通知。如果连接中断，它会自动重新连接。
 
 <CodeGroup>
 ```python Python
@@ -185,8 +260,8 @@ result = job.result()
 ```typescript TypeScript
 const job = await client.submit(wf);
 
-// The label is required: a bare `break` inside a switch leaves the switch,
-// not the loop.
+// 标签是必需的：switch 内的裸 `break` 跳出的是 switch，
+// 而不是循环。
 eventLoop: for await (const event of job.events()) {
   switch (event.kind) {
     case "progress":
@@ -206,7 +281,19 @@ eventLoop: for await (const event of job.events()) {
 
 `result()` 返回已完成的任务，如果执行失败，则抛出带有节点级详细信息的 `JobFailed` 异常。有关完整的事件目录，请参阅适用于您的语言的 [SDK README](#参考)。
 
-该流是实时馈送，而非可重放的日志。它的存在是为了让您能够呈现进度，而不是依赖它来获取结果。轮询任务才是权威的，`run()`、`wait()` 和 `result()` 会自动回退到轮询。原因请参阅 [设计说明](/zh/development/api-development/sdks-design#先轮询再流式获取进度)。
+### `events()` 不是 `subscribe()`
+
+在这两个接口中存在三个名称相似的东西，而本页只涉及其中一个：
+
+| 调用 | 接口 | 产出内容 |
+|---|---|---|
+| `job.events()` | Comfy Cloud（本页） | 单个工作流任务的实时 SSE 流：`Progress`、`Preview`、`OutputReady`、`StatusChange`。会自动重连，并回退到轮询。 |
+| `handle.events()`（TypeScript）/ `handle.iter_events()`（Python） | [Comfy Router 队列](/zh/development/comfy-router/queue) | 针对一个 Router 请求的队列观测：状态和队列位置。它会轮询状态路由；没有流，也没有进度或预览事件。 |
+| `comfy.models.subscribe(...)` | [Comfy Router 队列](/zh/development/comfy-router/queue) | 不是迭代器。一次调用即可提交、轮询并收集，带有 `on_queue_update` / `onQueueUpdate` 回调，最终解析为结果。 |
+
+Comfy Cloud 客户端上没有 `subscribe()`，任何地方也都没有 `job.subscribe()`。在 Cloud 上，`subscribe` 的等价物是 `run()`：提交并等待终止状态。
+
+该流是实时信息流，而不是可重放的日志。它的存在是为了让你能够呈现进度，而不是让你依赖它来获取结果。轮询任务才是权威来源，`run()`、`wait()` 和 `result()` 会自动回退到轮询。原因请参阅 [设计说明](/zh/development/api-development/sdks-design#先轮询再流式获取进度)。
 
 ## 将输出回溯到其工作流
 
@@ -263,9 +350,9 @@ if (wf.format === "save") {
 第一个版本只做好一件事：运行工作流并取回结果。
 
 - **资产。** 从文件、字节、流或 URL 创建输入句柄。句柄是惰性的，并按内容寻址，因此使用相同输入重新运行时不会再次上传。
-- **提交。** 提交 API 格式的节点图。提交是幂等的，完整的队列会在有限的预算内自动重试。
-- **执行。** 使用 `wait()` 轮询，或通过 `events()` 获取实时进度。
-- **输出。** 写入磁盘、缓冲到内存、获取字节范围，或获取短期有效的下载 URL。
+- **提交。** 提交 API 格式的节点图。提交是幂等的，队列已满时会在有限的预算内自动重试。
+- **执行。** 使用 `wait()` 轮询，或通过 `events()` 跟踪实时进度。
+- **输出。** 写入磁盘、缓冲到内存、获取字节范围，或获取短期有效的下载 URL。`getDownloadUrl()` 返回一个签名 URL，任何人都可以在没有 API 密钥的情况下读取，有效期约为 6 小时。在存储它之前请先阅读[输出 URL 及其有效时长](/zh/api-reference/v2/overview#输出-url-及其有效期)：若要在之后继续展示某个输出，请重新托管字节内容，或按需重新生成该 URL。
 - **可追溯性。** 每个输出都带有生成它的任务的 ID，并且任务可以返回其背后的工作流。
 - **删除资产。** 通过句柄或 ID 移除你上传的资产。
 - **错误。** 提供类型化异常，如 `JobFailed`、`Unauthorized`、`InsufficientCredits` 和 `QueueFull`，而不是原始状态码。
@@ -292,12 +379,15 @@ SDK 的 README 是每种语言的完整参考，涵盖认证、资产、错误�
   <Card title="设计说明" icon="compass" href="/zh/development/api-development/sdks-design">
     这个 API 存在的原因、它与现有 ComfyUI API 的关系，以及未来的发展方向。
   </Card>
+  <Card title="Comfy Router" icon="shuffle" href="/zh/development/comfy-router/quickstart">
+    同一个包中的另一个接口：针对 Flux、Veo 和 Gemini 等合作伙伴模型的 <code>comfy.models.run</code>。
+  </Card>
 </CardGroup>
 
 ## 反馈
 
-这是特意采用 `0.1.x` 版本的。方法名称、客户端形状、事件目录、错误分类法，以及资产管理在实际使用中的体验，这些目前都还很容易更改。我们计划在未来几周内将接口锁定下来。之后，“长期支持”就意味着我们无法再为你修复这些问题了。
+这些 SDK 目前仍处于 1.0 之前的阶段。方法名称、客户端形状、事件目录、错误分类法以及资产处理方式都仍有可能变化，预计接口表面会在未来几周内趋于稳定。一旦稳定下来，长期支持的承诺就会限制哪些内容还可以修改。
 
-所以，请告诉我们哪些地方让你觉得别扭、你期望找到却没有找到的功能，以及你最终是如何绕行解决的。[我们的 Discord](https://discord.com/invite/comfyorg) 中的 `#developer-platform` 通道就是讨论这些的地方。
+请告诉我们哪些地方用起来别扭、你期望找到却没有找到的功能，以及你不得不绕行处理的地方。[我们的 Discord](https://discord.com/invite/comfyorg) 中的 `#developer-platform` 通道就是反馈这些内容的地方。
 
-如果你想要其他语言的第一方 SDK，也可以在那里告诉我们。两个 SDK 都建立在相同的文档化 HTTP 契约上，所以任何语言现在都可以与 API 通信，但我们更希望知道需求在哪里。
+如果你希望有其他语言的第一方 SDK，也可以在那里提出。两个 SDK 都建立在同一套有文档记录的 HTTP 契约之上，所以如今任何语言都可以与 API 通信，但我们更希望了解需求在哪里。
