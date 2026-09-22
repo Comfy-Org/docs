@@ -1416,6 +1416,25 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
     .map(([label, list]) => ({ label, rows: [...list].sort((a, b) => a.page.localeCompare(b.page) || a.aliasId.localeCompare(b.aliasId)) }));
 }
 
+/** Build a compact provider-by-model matrix for the Providers page. */
+function providerMatrixTable(rows: Coverage[]): string {
+  const models = new Map<string, { page: string; title: string }>();
+  for (const row of rows) models.set(row.model, { page: row.page, title: row.title });
+  const modelsInOrder = [...models.entries()].sort(([, a], [, b]) => a.title.localeCompare(b.title));
+  const providers = providerCoverage(rows);
+  const cell = (providerRows: Coverage[], model: string) => {
+    const row = providerRows.find((candidate) => candidate.model === model);
+    return row ? `\`${row.aliasId}\`` : "-";
+  };
+  const header = ["Model / provider", "**Comfy (default)**", ...providers.map((provider) => `**${provider.label}**`)].join(" | ");
+  const divider = ["---", "---", ...providers.map(() => "---")].join(" | ");
+  const lines = [`| ${header} |`, `| ${divider} |`];
+  for (const [model, page] of modelsInOrder) {
+    lines.push(`| [${page.title}](/${page.page}) | ✓ | ${providers.map((provider) => cell(provider.rows, model)).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
 /**
  * The Providers page.
  *
@@ -1425,14 +1444,6 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
  * repo to drift apart.
  */
 export function renderProvidersPage(rows: Coverage[]): string {
-  const sections = providerCoverage(rows)
-    .map(({ label, rows: list }) => {
-      const lines = list
-        .map((r) => `- [${r.title}](/${r.page}): \`${r.model}\`, served as \`${r.aliasId}\` with \`?model_provider=${r.provider}\``)
-        .join("\n");
-      return `## ${label}\n\n${lines}`;
-    })
-    .join("\n\n");
   return `---
 title: "Comfy Router serving providers"
 sidebarTitle: "Serving providers"
@@ -1441,13 +1452,13 @@ description: "Which provider serves each Comfy Router model: Comfy by default, p
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
+<div className="router-provider-coverage-marker" />
+
 Comfy Router serves every model on one route, \`POST /v2/models/{provider}/{model}\`. A few of those models can be served by more than one provider, and the \`model_provider\` query parameter picks which one runs the call. The model ID, the request body and the response shape do not change. See ${ROUTING_PARAMS_LINK} in the API reference.
 
-## Comfy (direct)
+## Provider coverage
 
-Every model in the [model catalog](${MODELS_INDEX_URL}) is served by Comfy Router directly. This is what a call with no \`model_provider\` gets, and it is the only route for every model not listed below.
-
-${sections}
+${providerMatrixTable(rows)}
 
 \`strict_mode\` defaults to false, so a request written against the native model's schema is translated into the alternate provider's own schema, and the response is translated back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header.
 `;
