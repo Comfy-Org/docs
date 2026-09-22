@@ -457,18 +457,22 @@ describe("the Providers page", () => {
   });
 });
 
-describe("modelsNav: the Providers page sits beside the catalog index", () => {
+describe("modelsNav: pricing and provider indexes sit beside the catalog", () => {
   const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
 
-  test("with legs, it is the second entry of the Models group, ahead of every provider sub-group", () => {
-    expect(modelsNav(live, true).pages.slice(0, 2)).toEqual([
+  test("with legs, indexes come before every provider sub-group", () => {
+    expect(modelsNav(live, true).pages.slice(0, 3)).toEqual([
       "development/comfy-router/models",
+      "development/comfy-router/pricing",
       "development/comfy-router/providers",
     ]);
   });
 
-  test("with no legs the nav is exactly what it is today", () => {
-    expect(modelsNav(live, false)).toEqual(modelsNav(live));
+  test("without legs, pricing remains available and providers are omitted", () => {
+    expect(modelsNav(live, false).pages.slice(0, 2)).toEqual([
+      "development/comfy-router/models",
+      "development/comfy-router/pricing",
+    ]);
     expect(JSON.stringify(modelsNav(live))).not.toContain("providers");
   });
 });
