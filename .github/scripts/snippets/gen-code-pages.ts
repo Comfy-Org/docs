@@ -1447,20 +1447,20 @@ export function renderProvidersPage(rows: Coverage[]): string {
   return `---
 title: "Comfy Router serving providers"
 sidebarTitle: "Serving providers"
-description: "Which provider serves each Comfy Router model: Comfy by default, plus the aggregators a request can select with the model_provider parameter."
+description: "See which providers can serve each Comfy Router model and how to select an alternate provider."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
 <div className="router-provider-coverage-marker" />
 
-Comfy Router serves every model on one route, \`POST /v2/models/{provider}/{model}\`. A few of those models can be served by more than one provider, and the \`model_provider\` query parameter picks which one runs the call. The model ID, the request body and the response shape do not change. See ${ROUTING_PARAMS_LINK} in the API reference.
+Every model uses \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. For models with alternate coverage, \`model_provider\` selects another provider without changing the model ID or request body. See ${ROUTING_PARAMS_LINK} in the API reference.
 
 ## Provider coverage
 
 ${providerMatrixTable(rows)}
 
-\`strict_mode\` defaults to false, so a request written against the native model's schema is translated into the alternate provider's own schema, and the response is translated back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header.
+\`strict_mode=false\` (the default) translates the native request and response for the selected provider. Fields that cannot be translated are listed in the \`X-Comfy-Router-Dropped-Params\` response header.
 `;
 }
 
