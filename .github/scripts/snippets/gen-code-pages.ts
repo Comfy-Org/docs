@@ -1498,9 +1498,11 @@ function providerPlaygroundSection(samples: ProviderSample[]): string {
       },
     };
   });
-  const payload = Buffer.from(JSON.stringify(options), "utf8").toString("base64");
+  const payload = Buffer.from(JSON.stringify(options.map(({ id, label }) => ({ id, label }))), "utf8").toString("base64");
   const choices = options.map((option) => `<button type="button" role="option" data-router-option="${option.id}" aria-selected="false">${option.label}</button>`).join("\n");
-  const initial = options[0].code;
+  const codeExamples = options.map((option, index) =>
+    `    <div className="router-provider-model-example" data-router-model-example="${option.id}"${index === 0 ? "" : " hidden"}>\n${codeGroup(option.code.python, option.code.typescript, option.code.swift, option.code.curl, true)}\n    </div>`
+  ).join("\n");
   return `## Try an alternate provider
 
 Choose a model and provider to update the example in all four languages. These examples use the native model ID and request body. The \`model_provider\` option selects the alternate provider.
@@ -1514,7 +1516,7 @@ ${choices}
     </div>
   </div>
   <div className="router-provider-codegroup" data-router-codegroup="true">
-${codeGroup(initial.python, initial.typescript, initial.swift, initial.curl, true)}
+${codeExamples}
   </div>
   <script type="application/json" data-router-provider-data="true">${payload}</script>
 </div>

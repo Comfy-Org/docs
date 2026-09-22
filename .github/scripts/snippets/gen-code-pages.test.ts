@@ -462,6 +462,7 @@ describe("the Providers page", () => {
     expect(page).toContain('data-router-model-button="true"');
     expect(page).toContain('data-router-codegroup="true"');
     expect(page).toContain("<CodeGroup dropdown>");
+    expect(page.match(/<CodeGroup dropdown>/g)).toHaveLength(1);
     expect(page).toContain("```python Python");
     expect(page).toContain("```typescript TypeScript");
     expect(page).toContain("```swift Swift");
