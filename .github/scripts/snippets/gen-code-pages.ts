@@ -1501,7 +1501,7 @@ function providerPlaygroundSection(samples: ProviderSample[]): string {
   const payload = Buffer.from(JSON.stringify(options.map(({ id, label }) => ({ id, label }))), "utf8").toString("base64");
   const choices = options.map((option) => `<button type="button" role="option" data-router-option="${option.id}" aria-selected="false">${option.label}</button>`).join("\n");
   const codeExamples = options.map((option, index) =>
-    `    <div className="router-provider-model-example" data-router-model-example="${option.id}"${index === 0 ? "" : " hidden"}>\n${codeGroup(option.code.python, option.code.typescript, option.code.swift, option.code.curl, true)}\n    </div>`
+    `    <div className="router-provider-model-example" data-router-model-example="${option.id}"${index === 0 ? "" : " hidden"}>\n${codeGroup(option.code.python, option.code.typescript, option.code.swift, option.code.curl)}\n    </div>`
   ).join("\n");
   return `## Try an alternate provider
 
