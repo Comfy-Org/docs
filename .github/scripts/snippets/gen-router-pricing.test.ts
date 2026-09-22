@@ -18,7 +18,8 @@ describe("Router pricing catalog", () => {
     expect(page).toContain("Input credits / 1M: 263.75");
     expect(page).toContain("output (image)");
     expect(page).toContain("7600");
-    expect(page).toContain("212 Router model rows");
+    expect(page).toContain("| Model | Router model ID | Comfy credit rate | Pricing source |");
+    expect(page).not.toContain("Router model rows");
     expect(page).not.toContain("<Card");
   });
 

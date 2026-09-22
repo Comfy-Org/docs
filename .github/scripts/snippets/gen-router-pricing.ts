@@ -217,10 +217,8 @@ mode: "wide"
 
 {/* GENERATED FILE. Generated from router-pricing/prices.json by \`pnpm router-pricing:gen\`. */}
 
-All amounts are Comfy credits. This table contains **${data.models.length} Router model rows**.
-
 <Note>
-Prices vary by model settings. A dash means the current official Partner Node snapshot has no matching rate row. [See all pricing details](${PRICING_URL}).
+Prices are in Comfy credits. A dash means the official source has no matching rate row. [Pricing details](${PRICING_URL}).
 </Note>
 
 ## Pricing by model
