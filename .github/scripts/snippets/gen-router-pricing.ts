@@ -19,9 +19,11 @@ type SourceRow = {
   section: string;
   anchor: string;
   line: string;
+  cells: string[];
+  headers: string[];
 };
 
-type PricingMatch = SourceRow & { key: string };
+type PricingMatch = { section: string; anchor: string; key: string; rows: SourceRow[] };
 
 const normalize = (value: string) =>
   value
@@ -51,7 +53,6 @@ function modelKeys(model: string): string[] {
     segment,
     segment.replace(/\./g, "-"),
     segment.replace(/-\d{6}$/, ""),
-    segment.replace(/\.\d+$/, ""),
   ]);
 
   if (segment.startsWith("dreamina-")) {
@@ -59,6 +60,18 @@ function modelKeys(model: string): string[] {
     keys.add(segment.slice("dreamina-".length).replace(/-\d{6}$/, ""));
   }
   if (segment.startsWith("claude-")) keys.add(segment.slice("claude-".length));
+  if (provider === "bfl") {
+    const bflAliases: Record<string, string[]> = {
+      "flux-kontext-pro": ["flux-1-kontext-pro-image"],
+      "flux-kontext-max": ["flux-1-kontext-max-image"],
+      "flux-pro-1.1": ["flux-1-1-pro-ultra-image"],
+      "flux-pro-1.1-ultra": ["flux-1-1-pro-ultra-image"],
+      "video-edit-v1": ["flux-video-edit"],
+      "video-upscale-v1": ["flux-video-upscale"],
+    };
+    for (const alias of bflAliases[segment] ?? []) keys.add(alias);
+  }
+  if (provider === "wavespeed" && segment === "ultimate-image-upscaler") keys.add("ultimate");
 
   return [...keys].map(normalize).filter((key) => key.length > 2).sort((a, b) => b.length - a.length);
 }
@@ -108,16 +121,26 @@ function loadCatalog(): CatalogModel[] {
 function loadSourceRows(sourceBody: string): SourceRow[] {
   let section = "Partner Node pricing";
   let currentAnchor = anchor(section);
+  let headers: string[] = [];
   const rows: SourceRow[] = [];
   for (const line of sourceBody.split("\n")) {
     const heading = line.match(/^## ([^#].*)$/)?.[1];
     if (heading) {
       section = heading.trim();
       currentAnchor = anchor(section);
+      headers = [];
     }
-    if (line.trim().startsWith("|") && !/^\s*\|?\s*:?-{2,}/.test(line.trim())) {
-      rows.push({ section, anchor: currentAnchor, line: line.trim() });
+    if (!line.trim().startsWith("|")) {
+      headers = [];
+      continue;
     }
+    const cells = line.trim().split("|").slice(1, -1).map((cell) => cell.trim());
+    if (/^\s*\|?\s*:?-{2,}/.test(line.trim())) continue;
+    if (headers.length === 0) {
+      headers = cells;
+      continue;
+    }
+    rows.push({ section, anchor: currentAnchor, line: line.trim(), cells, headers });
   }
   return rows;
 }
@@ -126,27 +149,32 @@ function findPricingMatch(model: string, rows: SourceRow[]): PricingMatch | unde
   const section = providerSection(model);
   const scopedRows = section ? rows.filter((row) => row.section === section) : [];
   for (const key of modelKeys(model)) {
-    const needle = `-${key}-`;
-    const row = scopedRows.find((candidate) => `-${normalize(candidate.line)}-`.includes(needle));
-    if (row) return { ...row, key };
+    const matches = scopedRows.filter((candidate) =>
+      candidate.cells
+        .flatMap((cell) => cell.split(/[(),;]/).map(normalize))
+        .includes(key),
+    );
+    if (matches.length) return { section: matches[0].section, anchor: matches[0].anchor, key, rows: matches };
   }
   return undefined;
 }
 
-function indentSourceHeadings(sourceBody: string): string {
-  return sourceBody
-    .split("\n")
-    .map((line) => {
-      if (line.startsWith("### ")) return `#### ${line.slice(4)}`;
-      if (line.startsWith("## ")) return `### ${line.slice(3)}`;
-      return line;
-    })
-    .join("\n");
+function rateSummary(match: PricingMatch | undefined): string {
+  if (!match) return "Not published in current Partner Node pricing";
+  return match.rows
+    .map((row) =>
+      row.cells
+        .map((cell, index) => `${row.headers[index] ?? `Field ${index + 1}`}: ${cell}`)
+        .filter((field) => !field.endsWith(":"))
+        .join("; "),
+    )
+    .join("<br />")
+    .replaceAll("|", "\\|");
 }
 
 function render(): string {
   const source = readFileSync(SOURCE_FILE, "utf8");
-  const sourceBody = source.replace(/^---[\s\S]*?---\s*/, "").replaceAll("—", ",");
+  const sourceBody = source.replace(/^---[\s\S]*?---\s*/, "");
   const rows = loadSourceRows(sourceBody);
   const catalog = loadCatalog();
   const matches = new Map(catalog.map((model) => [model.id, findPricingMatch(model.id, rows)]));
@@ -156,15 +184,14 @@ function render(): string {
     .map((model) => {
       const match = matches.get(model.id);
       const reference = match ? `[${match.section}](${PRICING_URL}#${match.anchor})` : `[Partner Node pricing](${PRICING_URL})`;
-      const status = match ? "Published" : "Not listed";
-      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${status} | ${reference} |`;
+      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(match)} | ${reference} |`;
     })
     .join("\n");
 
   return `---
 title: "Comfy Router pricing"
 sidebarTitle: "Pricing"
-description: "See Comfy credit pricing for every Comfy Router model, linked to its Router page and official pricing source."
+description: "See the current Comfy credit rate and billing unit for every Router model with an official pricing row."
 mode: "wide"
 ---
 
@@ -176,21 +203,17 @@ This page covers **${catalog.length} model IDs** documented by Comfy Router. Pri
 Comfy credits are the canonical unit shown here. Comfy's current conversion is **$1 = 211 credits**. Some models are billed by tokens, duration, resolution, output size, or request parameters. The linked table describes the calculation for each model.
 </Note>
 
-The Router catalog can include models that do not have a corresponding Partner Node price row. Those models are marked **Not listed**. Do not substitute a provider's direct API price for a Comfy Router price.
+Models without a matching official row are marked **Not published**. Review the linked source when a model has several configurations or variable billing.
 
 ## Router model coverage
 
-The current Partner Node tables contain matching pricing rows for **${matched} of ${catalog.length}** Router model IDs. A model can have several configurations, so use the linked provider section for the complete rate table.
+The current Partner Node tables contain matching pricing rows for **${matched} of ${catalog.length}** Router model IDs. The rate column shows the matched source row, including its billing unit.
 
-| Model | Router model ID | Status | Pricing reference |
+| Model | Router model ID | Comfy credit rate | Pricing reference |
 | --- | --- | --- | --- |
 ${coverageRows}
 
-## Official Comfy credit tables
-
-The following tables are copied from the English Partner Node pricing source so this page remains useful as a Router-specific index while preserving the complete rate details.
-
-${indentSourceHeadings(sourceBody)}
+For complete provider tables, formulas, and configuration details, see the [official Partner Node pricing page](${PRICING_URL}).
 `;
 }
 
