@@ -1484,11 +1484,11 @@ function providerSelectionSection(sample?: ProviderSample): string {
   const modelLink = `[${sample.title}](/${sample.page})`;
   return `## Try an alternate provider
 
-These examples send ${modelLink} through **${providerLabel(sample.provider)}**. They use the model's native ID and request body; only the provider selection changes.
+These examples run ${modelLink} through **${providerLabel(sample.provider)}**. They use the native model ID and request body. The \`model_provider\` option selects **${providerLabel(sample.provider)}**.
 
 ${sync}
 
-Provider selection is available on the synchronous route. The queued \`/requests\` route does not accept \`model_provider\`; see the [queued delivery guide](/development/comfy-router/queue) for queued requests.`;
+Provider selection works on synchronous calls. The queued \`/requests\` route does not accept \`model_provider\`; see the [queued delivery guide](/development/comfy-router/queue) for queued requests.`;
 }
 
 /**
@@ -1505,14 +1505,14 @@ export function renderProvidersPage(rows: Coverage[], sample?: ProviderSample): 
   return `---
 title: "Comfy Router provider coverage"
 sidebarTitle: "Provider coverage"
-description: "See which providers serve each Comfy Router model, how to select an alternate provider, and which provider-specific model IDs are available."
+description: "See which providers can serve each Comfy Router model, how to choose one, and which provider-specific model IDs are available."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
 <div className="router-provider-coverage-marker" />
 
-Comfy Router uses one endpoint for every model: \`POST /v2/models/{provider}/{model}\`. Comfy serves each model by default. Some models are also available through alternate providers. The model ID, request body, and response format stay the same when you choose one. See ${ROUTING_PARAMS_LINK} in the API reference.
+Comfy Router uses one endpoint for every model: \`POST /v2/models/{provider}/{model}\`. Comfy serves each model by default. Alternate providers use the same model ID, request body, and response format. See ${ROUTING_PARAMS_LINK} in the API reference.
 
 <Note>
 To use Comfy, omit \`model_provider\`. To choose an alternate provider, add \`?model_provider=<provider>\`. The matrix compares every model with alternate-provider coverage.
@@ -1522,7 +1522,7 @@ To use Comfy, omit \`model_provider\`. To choose an alternate provider, add \`?m
 
 ${matrix}
 
-Model names link to their native Code pages. Alternate-provider cells show the provider's alias model ID. A \`-\` means that provider does not serve that model.
+Each model name links to its Code page. The cells show the provider's model ID. A \`-\` means the provider does not serve that model.
 
 ${sampleSection ? `${sampleSection}\n\n` : ""}## Request compatibility
 

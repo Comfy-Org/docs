@@ -444,7 +444,7 @@ describe("the Providers page", () => {
     expect(page).toContain("| **Comfy (default)** | ✓ | ✓ |");
     expect(page).toContain("| **fal** | `fal/fal-gpt-image-2` | `fal/fal-nano-banana-pro` |");
     expect(page).toContain("router-provider-coverage-marker");
-    expect(page).toContain("Alternate-provider cells show the provider's alias model ID");
+    expect(page).toContain("The cells show the provider's model ID");
   });
 
   test("the alternate-provider sample uses every language tab", () => {
@@ -466,7 +466,7 @@ describe("the Providers page", () => {
     expect(page).toContain("modelProvider: \"fal\"");
     expect(page).toContain("?model_provider=fal");
     expect(page.match(/```(?:python|typescript|swift|bash)/g)).toHaveLength(4);
-    expect(page).toContain("Provider selection is available on the synchronous route.");
+    expect(page).toContain("Provider selection works on synchronous calls.");
   });
 
   test("every model header links to the native page, not an alias page", () => {
