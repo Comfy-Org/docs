@@ -239,6 +239,7 @@ type Spec = {
 // ---------------------------------------------------------------------------
 
 type FileInput = { key: string; path: string; varName: string };
+type RouterSnippetOptions = { modelProvider?: string };
 
 function fileInputs(example: Record<string, unknown>): FileInput[] {
   return Object.entries(example)
@@ -373,13 +374,21 @@ export function swiftLiteral(v: unknown, indent: number, files: FileInput[], top
   return `[\n${entries.map(([k, x]) => `${pad}    ${swiftString(k)}: ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
 }
 
-function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+function pythonSnippet(
+  model: string,
+  example: Record<string, unknown>,
+  files: FileInput[],
+  resultPath: string,
+  label: string,
+  options: RouterSnippetOptions = {},
+): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
     .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
+  const provider = options.modelProvider ? `\n        model_provider=${JSON.stringify(options.modelProvider)},` : "";
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
@@ -389,13 +398,20 @@ with Comfy() as client:
         "${model}",
         {
 ${body}
-        },
+        },${provider}
     )
 
 print("${label}:", result${pyPath(resultPath)})`;
 }
 
-function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+function typescriptSnippet(
+  model: string,
+  example: Record<string, unknown>,
+  files: FileInput[],
+  resultPath: string,
+  label: string,
+  options: RouterSnippetOptions = {},
+): string {
   const imports = `import { comfy } from "@comfyorg/sdk";\n${files.length ? `import { readFile } from "node:fs/promises";\n` : ""}`;
   const reads = files
     .map((f) => `const ${camel(f.varName)} = (await readFile(${JSON.stringify(f.path)})).toString("base64");`)
@@ -403,13 +419,14 @@ function typescriptSnippet(model: string, example: Record<string, unknown>, file
   const body = Object.entries(example)
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
+  const provider = options.modelProvider ? `, {\n  modelProvider: ${JSON.stringify(options.modelProvider)},\n}` : "";
   return `${imports}
 ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = ${tsResultType(resultPath)};
 const result = await comfy.models.run<Result>("${model}", {
 ${body}
-});
+}${provider});
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
 console.log("${label}:", result.data${tsPath(resultPath)});`;
@@ -421,13 +438,21 @@ console.log("${label}:", result.data${tsPath(resultPath)});`;
  * An empty `resultPath` (a derived page) prints the whole payload instead of a
  * field read.
  */
-export function swiftSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
+export function swiftSnippet(
+  model: string,
+  example: Record<string, unknown>,
+  files: FileInput[],
+  resultPath: string,
+  label: string,
+  options: RouterSnippetOptions = {},
+): string {
   const reads = files
     .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
     .join("\n");
   const body = Object.entries(example)
     .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
     .join("\n");
+  const provider = options.modelProvider ? `,\n    modelProvider: ${swiftString(options.modelProvider)}` : "";
   const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
   return `import Foundation
 import ComfySwiftSDK
@@ -439,13 +464,13 @@ let result = try await client.models.run(
     "${model}",
     input: [
 ${body}
-    ]
+    ]${provider}
 )
 
 ${show}`;
 }
 
-function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
+function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[], options: RouterSnippetOptions = {}): string {
   const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
   const esc = (v: unknown) => JSON.stringify(v).replace(/[\\$`"]/g, (c) => `\\${c}`);
   const entries = Object.entries(example).map(([k, v]) => {
@@ -454,7 +479,8 @@ function curlSnippet(model: string, example: Record<string, unknown>, files: Fil
     return `${esc(k)}: ${value}`;
   });
   const json = `{${entries.join(", ")}}`;
-  return `${reads ? `${reads}\n\n` : ""}curl ${BASE_URL}${ROUTE}/${model} \\
+  const query = options.modelProvider ? `?model_provider=${encodeURIComponent(options.modelProvider)}` : "";
+  return `${reads ? `${reads}\n\n` : ""}curl ${BASE_URL}${ROUTE}/${model}${query} \\
   -H "X-API-Key: $COMFY_API_KEY" \\
   -H "Idempotency-Key: $(uuidgen)" \\
   -H "Content-Type: application/json" \\
@@ -1355,6 +1381,7 @@ ${sections}
 
 /** A native model covered by an alternate provider, resolved to the page that documents it. */
 type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string };
+type ProviderSample = { model: string; provider: string; page: string; title: string; spec: Spec };
 
 /**
  * Resolve the declared alt-provider relationship to Providers-index rows.
@@ -1416,6 +1443,54 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
     .map(([label, list]) => ({ label, rows: [...list].sort((a, b) => a.page.localeCompare(b.page) || a.aliasId.localeCompare(b.aliasId)) }));
 }
 
+/** Build the provider-by-native-model matrix used by the Providers page. */
+export function providerMatrix(rows: Coverage[]): {
+  columns: { model: string; page: string; title: string }[];
+  providers: { label: string; rows: Coverage[] }[];
+} {
+  const byModel = new Map<string, { model: string; page: string; title: string }>();
+  for (const row of rows) {
+    if (!byModel.has(row.model)) byModel.set(row.model, { model: row.model, page: row.page, title: row.title });
+  }
+  const columns = [...byModel.values()].sort((a, b) => a.title.localeCompare(b.title) || a.model.localeCompare(b.model));
+  return { columns, providers: providerCoverage(rows) };
+}
+
+function providerMatrixTable(rows: Coverage[]): string {
+  const { columns, providers } = providerMatrix(rows);
+  const header = ["Provider / model", ...columns.map((c) => `[${c.title}](/${c.page})`)].join(" | ");
+  const divider = ["---", ...columns.map(() => "---")].join(" | ");
+  const find = (providerRows: Coverage[], model: string) => providerRows.find((r) => r.model === model);
+  const lines = [`| ${header} |`, `| ${divider} |`, `| **Comfy (default)** | ${columns.map(() => "✓").join(" | ")} |`];
+  for (const provider of providers) {
+    lines.push(`| **${provider.label}** | ${columns.map((column) => {
+      const row = find(provider.rows, column.model);
+      return row ? `\`${row.aliasId}\`` : "-";
+    }).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
+function providerSelectionSection(sample?: ProviderSample): string {
+  if (!sample) return "";
+  const options: RouterSnippetOptions = { modelProvider: sample.provider };
+  const files = fileInputs(sample.spec.example);
+  const sync = codeGroup(
+    pythonSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
+    typescriptSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
+    swiftSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
+    curlSnippet(sample.model, sample.spec.example, files, options),
+  );
+  const modelLink = `[${sample.title}](/${sample.page})`;
+  return `## Try an alternate provider
+
+This example calls ${modelLink} through **${providerLabel(sample.provider)}**. Each SDK passes the provider selection in its run options. cURL sends the equivalent \`model_provider\` query parameter. The request keeps the model's native ID and body, so Router handles the provider translation.
+
+${sync}
+
+The queued \`/requests\` endpoint does not accept \`model_provider\`. To queue a request, use the same native model ID and body described in the [queued delivery guide](/development/comfy-router/queue).`;
+}
+
 /**
  * The Providers page.
  *
@@ -1424,32 +1499,41 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
  * every model here would double a 200-row page and put two copies of it in the
  * repo to drift apart.
  */
-export function renderProvidersPage(rows: Coverage[]): string {
-  const sections = providerCoverage(rows)
-    .map(({ label, rows: list }) => {
-      const lines = list
-        .map((r) => `- [${r.title}](/${r.page}): \`${r.model}\`, served as \`${r.aliasId}\` with \`?model_provider=${r.provider}\``)
-        .join("\n");
-      return `## ${label}\n\n${lines}`;
-    })
-    .join("\n\n");
+export function renderProvidersPage(rows: Coverage[], sample?: ProviderSample): string {
+  const matrix = providerMatrixTable(rows);
+  const sampleSection = providerSelectionSection(sample);
   return `---
-title: "Comfy Router serving providers"
-sidebarTitle: "Serving providers"
-description: "Which provider serves each Comfy Router model: Comfy by default, plus the aggregators a request can select with the model_provider parameter."
+title: "Comfy Router provider coverage"
+sidebarTitle: "Provider coverage"
+description: "Compare Comfy Router providers and see which alternate providers serve each model, including provider-specific model IDs and selection options."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
-Comfy Router serves every model on one route, \`POST /v2/models/{provider}/{model}\`. A few of those models can be served by more than one provider, and the \`model_provider\` query parameter picks which one runs the call. The model ID, the request body and the response shape do not change. See ${ROUTING_PARAMS_LINK} in the API reference.
+Comfy Router serves every model on \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. Some models can also be served by alternate providers without changing the native model ID, request body, or response shape. See ${ROUTING_PARAMS_LINK} in the API reference.
 
-## Comfy (direct)
+<Note>
+Leave out \`model_provider\` to use Comfy directly. Add \`?model_provider=<provider>\` to select an alternate provider. The matrix lists only models with alternate-provider coverage; every other model in the [model catalog](${MODELS_INDEX_URL}) is served directly by Comfy.
+</Note>
 
-Every model in the [model catalog](${MODELS_INDEX_URL}) is served by Comfy Router directly. This is what a call with no \`model_provider\` gets, and it is the only route for every model not listed below.
+## Provider coverage
 
-${sections}
+${matrix}
 
-\`strict_mode\` defaults to false, so a request written against the native model's schema is translated into the alternate provider's own schema, and the response is translated back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header.
+The model names link to their native Code pages. Alternate-provider cells show the provider's alias model ID. A \`-\` means that provider does not serve that model.
+
+${sampleSection ? `${sampleSection}\n\n` : ""}## Request compatibility
+
+\`strict_mode\` defaults to false, so Router translates the native request into the selected provider's schema and translates the response back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header. See ${ROUTING_PARAMS_LINK} for the full routing behavior.
+
+<CardGroup cols={2}>
+  <Card title="Model catalog" icon="list" href="${MODELS_INDEX_URL}">
+    Browse every model available through Comfy Router.
+  </Card>
+  <Card title="Router API reference" icon="code" href="/development/comfy-router/api">
+    Read the request, response, retry, and billing behavior in detail.
+  </Card>
+</CardGroup>
 `;
 }
 
@@ -1617,6 +1701,7 @@ if (import.meta.main) {
 
   const pages: Page[] = [];
   const covered = new Set<string>();
+  const specsByModel = new Map<string, Spec>();
   let problems: string[] = [];
   /**
    * Every model id to the page that documents it, curated variants included. An
@@ -1655,6 +1740,7 @@ if (import.meta.main) {
     }
     for (const v of spec.variants) {
       covered.add(v.model);
+      specsByModel.set(v.model, spec);
       pageByModel.set(v.model, { page: `${dir}/code`, title: v.title ?? spec.name });
     }
     pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
@@ -1749,7 +1835,11 @@ if (import.meta.main) {
 
   // ---- the serving-provider index, written only while some model has a leg
   const providersOut = join(ROOT, `${PROVIDERS_PAGE}.mdx`);
-  const providersText = coverage.length ? renderProvidersPage(coverage) : null;
+  const sampleRow = coverage.find((row) => row.model === "vertexai/gemini-3-pro-image" && row.provider === "runware")
+    ?? coverage.find((row) => specsByModel.has(row.model));
+  const sampleSpec = sampleRow ? specsByModel.get(sampleRow.model) : undefined;
+  const sample = sampleRow && sampleSpec ? { ...sampleRow, spec: sampleSpec } : undefined;
+  const providersText = coverage.length ? renderProvidersPage(coverage, sample) : null;
 
   // ---- write or check
   const stale: string[] = [];
@@ -1777,6 +1867,7 @@ if (import.meta.main) {
 
   // ---- serving-provider index
   if (providersText !== null) {
+    if (doValidate) problems.push(...validate(providersText, relative(ROOT, providersOut)));
     if (check) {
       if (!existsSync(providersOut)) missing.push(relative(ROOT, providersOut));
       else if (readFileSync(providersOut, "utf8") !== providersText) stale.push(relative(ROOT, providersOut));

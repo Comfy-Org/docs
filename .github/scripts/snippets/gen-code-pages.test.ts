@@ -10,6 +10,7 @@ import {
   outputContent,
   outputSchemaFields,
   providerCoverage,
+  providerMatrix,
   providerRelationRows,
   readRelations,
   renderDocsJson,
@@ -434,29 +435,57 @@ describe("the Providers page", () => {
     expect(grouped[0].rows.map((r) => r.aliasId)).toEqual(["fal/fal-nano-banana-pro", "fal/fal-gpt-image-2"]);
   });
 
-  test("every row links the NATIVE model's page and names the alias id and the query parameter", () => {
+  test("models become stable columns and providers become rows", () => {
+    const matrix = providerMatrix(rows);
+    expect(matrix.columns.map((column) => column.title)).toEqual(["GPT Image 2", "Nano Banana Pro"]);
+    expect(matrix.providers.map((provider) => provider.label)).toEqual(["fal", "WaveSpeed"]);
     const page = renderProvidersPage(rows);
-    expect(page).toContain(
-      `- [Nano Banana Pro](/${NATIVE_PAGE}): \`${NATIVE}\`, served as \`${FAL_LEG.model_id}\` with \`?model_provider=fal\``
-    );
-    expect(page).toContain("## fal");
-    expect(page).toContain("## WaveSpeed");
-    // No alias page exists to link, so no row may point at one.
+    expect(page).toContain("| Provider / model | [GPT Image 2]");
+    expect(page).toContain("| **Comfy (default)** | ✓ | ✓ |");
+    expect(page).toContain("| **fal** | `fal/fal-gpt-image-2` | `fal/fal-nano-banana-pro` |");
+    expect(page).toContain("A `-` means that provider does not serve that model.");
+  });
+
+  test("the alternate-provider sample uses every language tab", () => {
+    const page = renderProvidersPage(rows, {
+      ...rows[1],
+      spec: {
+        name: "Nano Banana Pro",
+        provider: "Google",
+        description: "A sample provider request.",
+        summary: "Generate an image.",
+        variants: [{ title: "Nano Banana Pro", model: NATIVE }],
+        example: { prompt: "a red leaf" },
+        result: { path: "result.image", label: "image", example: {} },
+      },
+    });
+    expect(page).toContain("## Try an alternate provider");
+    expect(page).toContain('model_provider="fal"');
+    expect(page).toContain('modelProvider: "fal"');
+    expect(page).toContain("modelProvider: \"fal\"");
+    expect(page).toContain("?model_provider=fal");
+    expect(page.match(/```(?:python|typescript|swift|bash)/g)).toHaveLength(4);
+    expect(page).toContain("queued `/requests` endpoint does not accept");
+  });
+
+  test("every model header links to the native page, not an alias page", () => {
+    const page = renderProvidersPage(rows);
+    expect(page).toContain(`[Nano Banana Pro](/${NATIVE_PAGE})`);
+    expect(page).toContain(`[GPT Image 2](/development/comfy-router/models/openai/gpt-image-2/code)`);
     expect(page).not.toContain("(/development/comfy-router/models/fal/fal-nano-banana-pro/code)");
   });
 
-  test("Comfy is listed first, as the default that covers the whole catalog", () => {
+  test("Comfy is listed first, as the default that covers the matrix", () => {
     const page = renderProvidersPage(rows);
-    expect(page).toContain("## Comfy (direct)");
-    expect(page).toContain("Every model in the [model catalog](/development/comfy-router/models) is served by Comfy Router directly");
-    expect(page.indexOf("## Comfy (direct)")).toBeLessThan(page.indexOf("## fal"));
+    expect(page).toContain("**Comfy (default)**");
+    expect(page.indexOf("**Comfy (default)**")).toBeLessThan(page.indexOf("**fal**"));
   });
 
   test("its frontmatter follows the repo's title/description rules", () => {
     const page = renderProvidersPage(rows);
     const description = page.match(/^description: "(.+)"$/m)![1];
-    expect(page).toContain('title: "Comfy Router serving providers"');
-    expect(page).toContain('sidebarTitle: "Serving providers"');
+    expect(page).toContain('title: "Comfy Router provider coverage"');
+    expect(page).toContain('sidebarTitle: "Provider coverage"');
     expect(description.length).toBeGreaterThanOrEqual(40);
     expect(description.length).toBeLessThanOrEqual(160);
     expect(page).not.toContain("—");
