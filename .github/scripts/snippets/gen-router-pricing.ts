@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../../..");
 const SOURCE_FILE = join(ROOT, "tutorials/partner-nodes/pricing.mdx");
+const DATA_FILE = join(ROOT, "router-pricing/prices.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const PRICING_URL = "/tutorials/partner-nodes/pricing";
@@ -24,6 +25,25 @@ type SourceRow = {
 };
 
 type PricingMatch = { section: string; anchor: string; key: string; rows: SourceRow[] };
+
+type PricingData = {
+  source: {
+    path: string;
+    url: string;
+    git_blob: string;
+    credits_per_usd: number;
+    synced_at: string;
+  };
+  models: Array<{
+    id: string;
+    title: string;
+    page: string;
+    status: "published" | "not_published";
+    source_section: string | null;
+    source_key: string | null;
+    rates: Array<{ fields: Array<{ label: string; value: string }> }>;
+  }>;
+};
 
 const normalize = (value: string) =>
   value
@@ -159,32 +179,34 @@ function findPricingMatch(model: string, rows: SourceRow[]): PricingMatch | unde
   return undefined;
 }
 
-function rateSummary(match: PricingMatch | undefined): string {
-  if (!match) return "Not published in current Partner Node pricing";
-  return match.rows
-    .map((row) =>
-      row.cells
-        .map((cell, index) => `${row.headers[index] ?? `Field ${index + 1}`}: ${cell}`)
-        .filter((field) => !field.endsWith(":"))
-        .join("; "),
-    )
+function rateSummary(record: PricingData["models"][number]): string {
+  if (record.status !== "published") return "Not published in current Partner Node pricing";
+  return record.rates
+    .map((row) => row.fields.map((field) => `${field.label}: ${field.value}`).join("; "))
     .join("<br />")
     .replaceAll("|", "\\|");
 }
 
+function loadPricingData(): PricingData {
+  const data = JSON.parse(readFileSync(DATA_FILE, "utf8")) as PricingData;
+  if (!data.source || data.source.credits_per_usd <= 0 || !Array.isArray(data.models)) {
+    throw new Error(`${DATA_FILE}: invalid pricing data`);
+  }
+  if (data.models.length === 0) throw new Error(`${DATA_FILE}: no model records`);
+  return data;
+}
+
 function render(): string {
-  const source = readFileSync(SOURCE_FILE, "utf8");
-  const sourceBody = source.replace(/^---[\s\S]*?---\s*/, "");
-  const rows = loadSourceRows(sourceBody);
-  const catalog = loadCatalog();
-  const matches = new Map(catalog.map((model) => [model.id, findPricingMatch(model.id, rows)]));
-  const matched = [...matches.values()].filter(Boolean).length;
+  const data = loadPricingData();
+  const catalog = data.models;
+  const matched = catalog.filter((model) => model.status === "published").length;
 
   const coverageRows = catalog
     .map((model) => {
-      const match = matches.get(model.id);
-      const reference = match ? `[${match.section}](${PRICING_URL}#${match.anchor})` : `[Partner Node pricing](${PRICING_URL})`;
-      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(match)} | ${reference} |`;
+      const reference = model.source_section
+        ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
+        : `[Partner Node pricing](${PRICING_URL})`;
+      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
     })
     .join("\n");
 
@@ -200,20 +222,20 @@ mode: "wide"
 This page covers **${catalog.length} model IDs** documented by Comfy Router. Prices use Comfy credits and follow the official [Partner Node pricing tables](${PRICING_URL}).
 
 <Note>
-Comfy credits are the canonical unit shown here. Comfy's current conversion is **$1 = 211 credits**. Some models are billed by tokens, duration, resolution, output size, or request parameters. The linked table describes the calculation for each model.
+Comfy credits are the canonical unit shown here. Comfy's current conversion is **$1 = ${data.source.credits_per_usd} credits**. Some models are billed by tokens, duration, resolution, output size, or request parameters.
 </Note>
 
 Models without a matching official row are marked **Not published**. Review the linked source when a model has several configurations or variable billing.
 
 ## Router model coverage
 
-The current Partner Node tables contain matching pricing rows for **${matched} of ${catalog.length}** Router model IDs. The rate column shows the matched source row, including its billing unit.
+The synced pricing snapshot contains official rows for **${matched} of ${catalog.length}** Router model IDs. The rate column shows the matched source row, including its billing unit.
 
 | Model | Router model ID | Comfy credit rate | Pricing reference |
 | --- | --- | --- | --- |
 ${coverageRows}
 
-For complete provider tables, formulas, and configuration details, see the [official Partner Node pricing page](${PRICING_URL}).
+For complete provider tables, formulas, and configuration details, see the [official Partner Node pricing page](${PRICING_URL}). This page was synced from that source on **${data.source.synced_at}**.
 `;
 }
 
