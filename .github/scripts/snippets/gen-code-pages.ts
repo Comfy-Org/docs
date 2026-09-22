@@ -389,6 +389,7 @@ function pythonSnippet(
     .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
     .join("\n");
   const provider = options.modelProvider ? `\n        model_provider=${JSON.stringify(options.modelProvider)},` : "";
+  const show = resultPath ? `print(${JSON.stringify(`${label}:`)}, result${pyPath(resultPath)})` : "print(result)";
   return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
@@ -401,7 +402,7 @@ ${body}
         },${provider}
     )
 
-print("${label}:", result${pyPath(resultPath)})`;
+${show}`;
 }
 
 function typescriptSnippet(
@@ -420,16 +421,18 @@ function typescriptSnippet(
     .map(([k, v]) => `  ${/^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}: ${tsLiteral(v, 2, files, k)},`)
     .join("\n");
   const provider = options.modelProvider ? `, {\n  modelProvider: ${JSON.stringify(options.modelProvider)},\n}` : "";
+  const resultType = resultPath ? `type Result = ${tsResultType(resultPath)};\n` : "";
+  const generic = resultPath ? "<Result>" : "";
+  const show = resultPath
+    ? `if (result.kind !== "json") throw new Error("expected a JSON result");\n\nconsole.log(${JSON.stringify(`${label}:`)}, result.data${tsPath(resultPath)});`
+    : `console.log(result.data);`;
   return `${imports}
 ${reads ? `${reads}\n\n` : ""}// Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
-type Result = ${tsResultType(resultPath)};
-const result = await comfy.models.run<Result>("${model}", {
+${resultType}const result = await comfy.models.run${generic}("${model}", {
 ${body}
 }${provider});
-if (result.kind !== "json") throw new Error("expected a JSON result");
-
-console.log("${label}:", result.data${tsPath(resultPath)});`;
+${show}`;
 }
 
 /**
@@ -633,8 +636,8 @@ curl ${requests}/$REQUEST_ID \\
 }
 
 /** The four languages of one delivery mode. Tab order (SDKs first, raw HTTP last) is the same on every page. */
-function codeGroup(python: string, typescript: string, swift: string, curl: string): string {
-  return `<CodeGroup>
+function codeGroup(python: string, typescript: string, swift: string, curl: string, dropdown = false): string {
+  return `<CodeGroup${dropdown ? " dropdown" : ""}>
 \`\`\`python Python
 ${python}
 \`\`\`
@@ -1381,7 +1384,15 @@ ${sections}
 
 /** A native model covered by an alternate provider, resolved to the page that documents it. */
 type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string };
-type ProviderSample = { model: string; provider: string; page: string; title: string; spec: Spec };
+type ProviderSample = {
+  model: string;
+  provider: string;
+  page: string;
+  title: string;
+  example: Record<string, unknown>;
+  resultPath: string;
+  resultLabel: string;
+};
 
 /**
  * Resolve the declared alt-provider relationship to Providers-index rows.
@@ -1471,24 +1482,62 @@ function providerMatrixTable(rows: Coverage[]): string {
   return lines.join("\n");
 }
 
-function providerSelectionSection(sample?: ProviderSample): string {
-  if (!sample) return "";
-  const options: RouterSnippetOptions = { modelProvider: sample.provider };
-  const files = fileInputs(sample.spec.example);
-  const sync = codeGroup(
-    pythonSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
-    typescriptSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
-    swiftSnippet(sample.model, sample.spec.example, files, sample.spec.result.path, sample.spec.result.label, options),
-    curlSnippet(sample.model, sample.spec.example, files, options),
-  );
-  const modelLink = `[${sample.title}](/${sample.page})`;
+function providerPlaygroundSection(samples: ProviderSample[]): string {
+  if (samples.length === 0) return "";
+  const options = samples.map((sample, index) => {
+    const routerOptions: RouterSnippetOptions = { modelProvider: sample.provider };
+    const files = fileInputs(sample.example);
+    return {
+      id: `model-${index}`,
+      label: `${sample.title} via ${providerLabel(sample.provider)}`,
+      code: {
+        python: pythonSnippet(sample.model, sample.example, files, sample.resultPath, sample.resultLabel, routerOptions),
+        typescript: typescriptSnippet(sample.model, sample.example, files, sample.resultPath, sample.resultLabel, routerOptions),
+        swift: swiftSnippet(sample.model, sample.example, files, sample.resultPath, sample.resultLabel, routerOptions),
+        curl: curlSnippet(sample.model, sample.example, files, routerOptions),
+      },
+    };
+  });
+  const payload = Buffer.from(JSON.stringify(options), "utf8").toString("base64");
+  const choices = options.map((option) => `<button type="button" role="option" data-router-option="${option.id}" aria-selected="false">${option.label}</button>`).join("\n");
+  const initial = options[0].code;
   return `## Try an alternate provider
 
-These examples run ${modelLink} through **${providerLabel(sample.provider)}**. They use the native model ID and request body. The \`model_provider\` option selects **${providerLabel(sample.provider)}**.
+Choose a model and provider to update the example in all four languages. These examples use the native model ID and request body. The \`model_provider\` option selects the alternate provider.
 
-${sync}
-
+<div className="router-provider-playground" data-router-playground="true">
+  <span className="router-provider-playground-label">Model</span>
+  <div className="router-provider-picker">
+    <button type="button" className="router-provider-model-button" data-router-model-button="true" aria-haspopup="listbox" aria-expanded="false"></button>
+    <div className="router-provider-model-menu" data-router-model-menu="true" role="listbox" hidden>
+${choices}
+    </div>
+  </div>
+  <div className="router-provider-codegroup" data-router-codegroup="true">
+${codeGroup(initial.python, initial.typescript, initial.swift, initial.curl, true)}
+  </div>
+  <script type="application/json" data-router-provider-data="true">${payload}</script>
+</div>
 Provider selection works on synchronous calls. The queued \`/requests\` route does not accept \`model_provider\`; see the [queued delivery guide](/development/comfy-router/queue) for queued requests.`;
+}
+
+function providerSamples(rows: Coverage[], specsByModel: Map<string, Spec>): ProviderSample[] {
+  const firstByModel = new Map<string, Coverage>();
+  for (const row of [...rows].sort((a, b) => a.title.localeCompare(b.title) || a.model.localeCompare(b.model) || a.provider.localeCompare(b.provider))) {
+    if (!firstByModel.has(row.model)) firstByModel.set(row.model, row);
+  }
+  const samples: ProviderSample[] = [];
+  for (const row of firstByModel.values()) {
+    const spec = specsByModel.get(row.model);
+    if (spec) {
+      samples.push({ model: row.model, provider: row.provider, page: row.page, title: row.title, example: spec.example, resultPath: spec.result.path, resultLabel: spec.result.label });
+      continue;
+    }
+    const schema = loadModelSchema(row.model);
+    const example = bodyExample(schema?.inputExample);
+    if (example) samples.push({ model: row.model, provider: row.provider, page: row.page, title: row.title, example, resultPath: "", resultLabel: "result" });
+  }
+  return samples;
 }
 
 /**
@@ -1499,9 +1548,9 @@ Provider selection works on synchronous calls. The queued \`/requests\` route do
  * every model here would double a 200-row page and put two copies of it in the
  * repo to drift apart.
  */
-export function renderProvidersPage(rows: Coverage[], sample?: ProviderSample): string {
+export function renderProvidersPage(rows: Coverage[], samples: ProviderSample[] = []): string {
   const matrix = providerMatrixTable(rows);
-  const sampleSection = providerSelectionSection(sample);
+  const sampleSection = providerPlaygroundSection(samples);
   return `---
 title: "Comfy Router provider coverage"
 sidebarTitle: "Provider coverage"
@@ -1837,11 +1886,8 @@ if (import.meta.main) {
 
   // ---- the serving-provider index, written only while some model has a leg
   const providersOut = join(ROOT, `${PROVIDERS_PAGE}.mdx`);
-  const sampleRow = coverage.find((row) => row.model === "vertexai/gemini-3-pro-image" && row.provider === "runware")
-    ?? coverage.find((row) => specsByModel.has(row.model));
-  const sampleSpec = sampleRow ? specsByModel.get(sampleRow.model) : undefined;
-  const sample = sampleRow && sampleSpec ? { ...sampleRow, spec: sampleSpec } : undefined;
-  const providersText = coverage.length ? renderProvidersPage(coverage, sample) : null;
+  const samples = providerSamples(coverage, specsByModel);
+  const providersText = coverage.length ? renderProvidersPage(coverage, samples) : null;
 
   // ---- write or check
   const stale: string[] = [];

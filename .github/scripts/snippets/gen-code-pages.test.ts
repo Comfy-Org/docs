@@ -447,25 +447,25 @@ describe("the Providers page", () => {
     expect(page).toContain("The cells show the provider's model ID");
   });
 
-  test("the alternate-provider sample uses every language tab", () => {
-    const page = renderProvidersPage(rows, {
+  test("the alternate-provider sample uses the native language codebox", () => {
+    const page = renderProvidersPage(rows, [{
       ...rows[1],
-      spec: {
-        name: "Nano Banana Pro",
-        provider: "Google",
-        description: "A sample provider request.",
-        summary: "Generate an image.",
-        variants: [{ title: "Nano Banana Pro", model: NATIVE }],
-        example: { prompt: "a red leaf" },
-        result: { path: "result.image", label: "image", example: {} },
-      },
-    });
+      example: { prompt: "a red leaf" },
+      resultPath: "result.image",
+      resultLabel: "image",
+    }]);
     expect(page).toContain("## Try an alternate provider");
-    expect(page).toContain('model_provider="fal"');
-    expect(page).toContain('modelProvider: "fal"');
-    expect(page).toContain("modelProvider: \"fal\"");
+    expect(page).toContain("model_provider");
+    expect(page).toContain("modelProvider");
     expect(page).toContain("?model_provider=fal");
-    expect(page.match(/```(?:python|typescript|swift|bash)/g)).toHaveLength(4);
+    expect(page).toContain('data-router-playground="true"');
+    expect(page).toContain('data-router-model-button="true"');
+    expect(page).toContain('data-router-codegroup="true"');
+    expect(page).toContain("<CodeGroup dropdown>");
+    expect(page).toContain("```python Python");
+    expect(page).toContain("```typescript TypeScript");
+    expect(page).toContain("```swift Swift");
+    expect(page).toContain("```bash cURL");
     expect(page).toContain("Provider selection works on synchronous calls.");
   });
 
