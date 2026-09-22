@@ -1448,12 +1448,22 @@ export function providerMatrix(rows: Coverage[]): {
   columns: { model: string; page: string; title: string }[];
   providers: { label: string; rows: Coverage[] }[];
 } {
+  const providersByModel = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const providers = providersByModel.get(row.model) ?? new Set<string>();
+    providers.add(row.provider);
+    providersByModel.set(row.model, providers);
+  }
+  const sharedModels = new Set([...providersByModel].filter(([, providers]) => providers.size > 1).map(([model]) => model));
   const byModel = new Map<string, { model: string; page: string; title: string }>();
   for (const row of rows) {
-    if (!byModel.has(row.model)) byModel.set(row.model, { model: row.model, page: row.page, title: row.title });
+    if (sharedModels.has(row.model) && !byModel.has(row.model)) byModel.set(row.model, { model: row.model, page: row.page, title: row.title });
   }
   const columns = [...byModel.values()].sort((a, b) => a.title.localeCompare(b.title) || a.model.localeCompare(b.model));
-  return { columns, providers: providerCoverage(rows) };
+  const providers = providerCoverage(rows)
+    .map((provider) => ({ ...provider, rows: provider.rows.filter((row) => sharedModels.has(row.model)) }))
+    .filter((provider) => provider.rows.length > 0);
+  return { columns, providers };
 }
 
 function providerMatrixTable(rows: Coverage[]): string {
@@ -1461,6 +1471,7 @@ function providerMatrixTable(rows: Coverage[]): string {
   const header = ["Provider / model", ...columns.map((c) => `[${c.title}](/${c.page})`)].join(" | ");
   const divider = ["---", ...columns.map(() => "---")].join(" | ");
   const find = (providerRows: Coverage[], model: string) => providerRows.find((r) => r.model === model);
+  if (columns.length === 0) return "No models currently have more than one alternate provider.";
   const lines = [`| ${header} |`, `| ${divider} |`, `| **Comfy (default)** | ${columns.map(() => "✓").join(" | ")} |`];
   for (const provider of providers) {
     lines.push(`| **${provider.label}** | ${columns.map((column) => {
@@ -1523,14 +1534,14 @@ description: "Compare Comfy Router providers and see which alternate providers s
 Comfy Router serves every model on \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. Some models can also be served by alternate providers without changing the native model ID, request body, or response shape. See ${ROUTING_PARAMS_LINK} in the API reference.
 
 <Note>
-Leave out \`model_provider\` to use Comfy directly. Add \`?model_provider=<provider>\` to select an alternate provider. The matrix lists only models with alternate-provider coverage; every other model in the [model catalog](${MODELS_INDEX_URL}) is served directly by Comfy.
+Leave out \`model_provider\` to use Comfy directly. Add \`?model_provider=<provider>\` to select an alternate provider. The matrix highlights models with more than one alternate provider; the complete provider model ID list below includes every alternate-provider model.
 </Note>
 
-## Provider coverage
+## Shared model coverage
 
 ${matrix}
 
-The model names link to their native Code pages. A \`✓\` means the provider serves that model. A \`-\` means it does not.
+This matrix focuses on models served by more than one alternate provider. The model names link to their native Code pages. A \`✓\` means the provider serves that model. A \`-\` means it does not. The complete provider list below also includes models with only one alternate provider.
 
 ## Provider model IDs
 

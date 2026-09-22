@@ -437,15 +437,16 @@ describe("the Providers page", () => {
 
   test("models become stable columns and providers become rows", () => {
     const matrix = providerMatrix(rows);
-    expect(matrix.columns.map((column) => column.title)).toEqual(["GPT Image 2", "Nano Banana Pro"]);
+    expect(matrix.columns.map((column) => column.title)).toEqual(["Nano Banana Pro"]);
     expect(matrix.providers.map((provider) => provider.label)).toEqual(["fal", "WaveSpeed"]);
     const page = renderProvidersPage(rows);
-    expect(page).toContain("| Provider / model | [GPT Image 2]");
-    expect(page).toContain("| **Comfy (default)** | ✓ | ✓ |");
-    expect(page).toContain("| **fal** | ✓ | ✓ |");
+    expect(page).toContain("| Provider / model | [Nano Banana Pro]");
+    expect(page).toContain("| **Comfy (default)** | ✓ |");
+    expect(page).toContain("| **fal** | ✓ |");
     expect(page).toContain("## Provider model IDs");
     expect(page).toContain("| **fal** | [Nano Banana Pro]");
     expect(page).toContain("`fal/fal-nano-banana-pro`");
+    expect(page).toContain("`fal/fal-gpt-image-2`");
     expect(page).toContain("A `-` means it does not.");
   });
 
