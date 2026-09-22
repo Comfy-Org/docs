@@ -7,18 +7,17 @@ describe("Router pricing catalog", () => {
 
   test("covers every generated Router model ID", () => {
     expect(catalog.length).toBe(212);
-    expect(page).toContain("openai/gpt-5.6-terra");
-    expect(page).toContain("vertexai/gemini-3-pro-image");
-    expect(page).toContain("kling/kling-3.0-turbo");
-    expect(page).not.toContain("| `anthropic/claude-opus-4-7` | Published | [OpenRouter]");
+    expect(page).toContain("GPT-5");
+    expect(page).toContain("Nano Banana Pro");
+    expect(page).toContain("Kling V3");
   });
 
-  test("includes the official credit tables", () => {
-    expect(page).toContain("Comfy credit rate");
-    expect(page).toContain("Nano Banana Pro");
-    expect(page).toContain("gpt-image-2");
-    expect(page).not.toContain("<Accordion");
-    expect(page).toContain("Input credits / 1M: 263.75");
+  test("renders a compact sample pricing UI", () => {
+    expect(page).toContain("<CardGroup cols={3}>");
+    expect(page).toContain("263.75 credits / 1M input");
+    expect(page).toContain("7600 credits / 1M");
+    expect(page).not.toContain("Not published");
+    expect(page).not.toContain("Router model coverage");
   });
 
   test("matches complete model names instead of prefixes", () => {

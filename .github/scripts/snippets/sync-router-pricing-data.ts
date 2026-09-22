@@ -36,6 +36,7 @@ const data = {
   source: {
     path: "tutorials/partner-nodes/pricing.mdx",
     url: SOURCE_URL,
+    credits_url: "https://support.comfy.org/articles/5846341390-how-credits-work-in-comfy",
     git_blob: sourceHash,
     credits_per_usd: 211,
     synced_at: previous?.source?.git_blob === sourceHash ? previous.source.synced_at ?? new Date().toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),

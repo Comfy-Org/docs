@@ -30,6 +30,7 @@ type PricingData = {
   source: {
     path: string;
     url: string;
+    credits_url: string;
     git_blob: string;
     credits_per_usd: number;
     synced_at: string;
@@ -44,6 +45,15 @@ type PricingData = {
     rates: Array<{ fields: Array<{ label: string; value: string }> }>;
   }>;
 };
+
+const SAMPLE_CARDS = [
+  { id: "openai/gpt-5", title: "GPT-5", category: "Text", icon: "message" },
+  { id: "openai/gpt-image-2", title: "GPT Image 2", category: "Image", icon: "image" },
+  { id: "vertexai/gemini-3-pro-image", title: "Nano Banana Pro", category: "Image", icon: "image" },
+  { id: "byteplus/dreamina-seedance-2-0-260128", title: "Seedance 2.0", category: "Video", icon: "video" },
+  { id: "kling/kling-v3", title: "Kling V3", category: "Video", icon: "video" },
+  { id: "recraft/recraftv4", title: "Recraft V4", category: "Image", icon: "image" },
+] as const;
 
 const normalize = (value: string) =>
   value
@@ -187,6 +197,26 @@ function rateSummary(record: PricingData["models"][number]): string {
     .replaceAll("|", "\\|");
 }
 
+function cardRate(record: PricingData["models"][number]): string {
+  return record.rates
+    .slice(0, 2)
+    .map((row) => {
+      const creditFields = row.fields.filter((field) => /credits/i.test(field.label));
+      if (!creditFields.length) return row.fields.map((field) => `${field.label}: ${field.value}`).join("; ");
+      const rates = creditFields.map((rate) => {
+        const unit = rate.label.match(/credits\s*\/\s*(.+)$/i)?.[1];
+        const prefix = rate.label.replace(/\s*credits\s*\/.*$/i, "").trim();
+        if (!unit && /^\s*\d[\d.]*\s*\//.test(rate.value)) return rate.value.replace(/^\s*(\d[\d.]*)\s*\//, "$1 credits /");
+        return unit ? `${rate.value} credits / ${unit}${prefix ? ` ${prefix.toLowerCase()}` : ""}` : `${rate.value} credits`;
+      });
+      const context = row.fields
+        .filter((field) => !creditFields.includes(field) && !/^model$/i.test(field.label) && field.value !== "—")
+        .map((field) => `${field.label}: ${field.value}`);
+      return `${rates.join("; ")}${context.length ? ` (${context.join(", ")})` : ""}`;
+    })
+    .join("<br />");
+}
+
 function loadPricingData(): PricingData {
   const data = JSON.parse(readFileSync(DATA_FILE, "utf8")) as PricingData;
   if (!data.source || data.source.credits_per_usd <= 0 || !Array.isArray(data.models)) {
@@ -198,44 +228,34 @@ function loadPricingData(): PricingData {
 
 function render(): string {
   const data = loadPricingData();
-  const catalog = data.models;
-  const matched = catalog.filter((model) => model.status === "published").length;
+  const cards = SAMPLE_CARDS.map((sample) => {
+    const record = data.models.find((model) => model.id === sample.id);
+    if (!record || record.status !== "published") throw new Error(`${DATA_FILE}: sample model ${sample.id} has no published rate`);
+    return `<Card title="${sample.title}" icon="${sample.icon}" href="/${record.page}">
+**${sample.category}**
 
-  const coverageRows = catalog
-    .map((model) => {
-      const reference = model.source_section
-        ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
-        : `[Partner Node pricing](${PRICING_URL})`;
-      return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
-    })
-    .join("\n");
+${cardRate(record)}
+</Card>`;
+  }).join("\n\n");
 
   return `---
 title: "Comfy Router pricing"
 sidebarTitle: "Pricing"
-description: "See the current Comfy credit rate and billing unit for every Router model with an official pricing row."
+description: "Compare sample Comfy Router prices for text, image, and video models using current credit rates."
 mode: "wide"
 ---
 
-{/* GENERATED FILE. Generated from the Router catalog and tutorials/partner-nodes/pricing.mdx by \`pnpm router-pricing:gen\`. */}
+{/* GENERATED FILE. Generated from router-pricing/prices.json by \`pnpm router-pricing:gen\`. */}
 
-This page covers **${catalog.length} model IDs** documented by Comfy Router. Prices use Comfy credits and follow the official [Partner Node pricing tables](${PRICING_URL}).
+Sample Comfy Router prices. All amounts are credits.
 
 <Note>
-Comfy credits are the canonical unit shown here. Comfy's current conversion is **$1 = ${data.source.credits_per_usd} credits**. Some models are billed by tokens, duration, resolution, output size, or request parameters.
+Prices vary by model settings. Open a card for the model page. [See all pricing details](${PRICING_URL}).
 </Note>
 
-Models without a matching official row are marked **Not published**. Review the linked source when a model has several configurations or variable billing.
-
-## Router model coverage
-
-The synced pricing snapshot contains official rows for **${matched} of ${catalog.length}** Router model IDs. The rate column shows the matched source row, including its billing unit.
-
-| Model | Router model ID | Comfy credit rate | Pricing reference |
-| --- | --- | --- | --- |
-${coverageRows}
-
-For complete provider tables, formulas, and configuration details, see the [official Partner Node pricing page](${PRICING_URL}). This page was synced from that source on **${data.source.synced_at}**.
+<CardGroup cols={3}>
+${cards}
+</CardGroup>
 `;
 }
 
