@@ -1467,7 +1467,8 @@ ${providerMatrixTable(rows)}
 // `docs.json` carries the nav for four locales; only `en` lists these pages, and
 // the zh/ja/ko trees are maintained by the i18n sync. With one page per catalog
 // model a flat list is unreadable, so the Models group holds one sub-group per
-// provider, behind the generated catalog landing page.
+// provider, behind the generated catalog landing page and a collapsed
+// "All Models" group.
 // ---------------------------------------------------------------------------
 
 type NavGroup = { group: string; pages: (string | NavGroup)[] };
@@ -1487,9 +1488,12 @@ export function modelsNav(pages: { model: string; page: string }[], hasProviders
       // Beside the catalog index, not inside a provider sub-group: it is the
       // second way into the same catalog, not a model page.
       ...(hasProviders ? [PROVIDERS_PAGE] : []),
-      ...[...byProvider.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+      {
+        group: "All Models",
+        pages: [...byProvider.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+      },
     ],
   };
 }

@@ -464,10 +464,18 @@ describe("modelsNav: the Providers page sits beside the catalog index", () => {
   const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
 
   test("with legs, it is the second entry of the Models group, ahead of every provider sub-group", () => {
-    expect(modelsNav(live, true).pages.slice(0, 2)).toEqual([
+    const pages = modelsNav(live, true).pages;
+    expect(pages.slice(0, 2)).toEqual([
       "development/comfy-router/models",
       "development/comfy-router/providers",
     ]);
+    expect(pages[2]).toEqual({
+      group: "All Models",
+      pages: [{
+        group: "Kling",
+        pages: ["development/comfy-router/models/kling/kling-v3/code"],
+      }],
+    });
   });
 
   test("with no legs the nav is exactly what it is today", () => {
