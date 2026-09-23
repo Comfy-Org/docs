@@ -155,7 +155,7 @@ Run a model and receive its finished result in the same response.
 </ParamField>
 
 <ParamField query="model_provider" type="string">
-  Selects an alternate provider for this model, instead of its current default.
+  Selects an alternate provider to serve this model, instead of its current default.
 </ParamField>
 
 <ParamField query="strict_mode" type="boolean">
@@ -172,7 +172,7 @@ Run a model and receive its finished result in the same response.
 
 `application/json` -- [`RouterModelInput`](#routermodelinput) (required)
 
-The partner model's native JSON input. Without `model_provider`, or with `strict_mode=true`, forwarded to the provider unchanged - under `strict_mode=true` the body must already be the alternate provider's own real schema, not this model's native one (see `strict_mode`). With `model_provider` selecting an alternate provider and `strict_mode=false` (the default), the body is translated into that provider's real schema before it is sent - any native field that cannot be expressed exactly is dropped and disclosed via the response's `X-Comfy-Router-Dropped-Params` header, never silently.
+The partner model's native JSON input. Without `model_provider` the request runs native dispatch on the model's default provider and this body is the model's own native schema, forwarded unchanged (`strict_mode` is meaningless there and changes nothing). With `model_provider` selecting an alternate provider and `strict_mode=false` (the default), the body is translated into that provider's real schema before it is sent - any native field that cannot be expressed exactly is dropped and disclosed via the response's `X-Comfy-Router-Dropped-Params` header, never silently. With `model_provider` selecting an alternate provider and `strict_mode=true` no translation runs: the body must already be that alternate provider's own real schema, not this model's native one (see `strict_mode`), and is forwarded unchanged. The body's own fields also select which operation Router runs on a model that supports more than one: for an editable image model, including an input image switches it from text-to-image to the image-to-image (edit) operation; for a Seedance video model, a first-frame image selects image-to-video and a reference image or clip selects reference-to-video. Each conditioned operation is metered on its own rate, not the base text-to-image or text-to-video rate.
 
 **Responses**
 
@@ -185,7 +185,7 @@ The partner model's native JSON input. Without `model_provider`, or with `strict
 <ResponseField name="400" type="RouterErrorResponse">
   Invalid request. Check the error type and request body.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -342,6 +342,16 @@ Comfy Router's queued delivery mode. The request body is the same partner-native
   Type: [`RouterModelSegment`](#routermodelsegment) -- Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters
 </ParamField>
 
+<ParamField query="model_provider" type="string">
+  Selects an alternate provider to serve this model, instead of its current default.
+</ParamField>
+
+<ParamField query="strict_mode" type="boolean">
+  Only meaningful together with `model_provider`.
+
+  Default: False
+</ParamField>
+
 <ParamField header="Idempotency-Key" type="string">
   Caller-generated key that makes retrying one logical call safe.
 
@@ -352,7 +362,7 @@ Comfy Router's queued delivery mode. The request body is the same partner-native
 
 `application/json` -- [`RouterModelInput`](#routermodelinput) (required)
 
-The partner model's native JSON input, identical to the body the synchronous route accepts for this model. Validated against the model's own input schema before the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later.
+The partner model's native JSON input, identical to the body the synchronous route accepts for this model, and it selects the operation and is metered the same way: the body's own fields choose which operation Router runs on a model that supports more than one (an input image switches an editable image model to image-to-image; a Seedance first-frame image selects image-to-video and a reference image or clip selects reference-to-video), and each conditioned operation is metered on its own rate, not the base text-to-image or text-to-video rate. The same provider-selection contract applies at dispatch: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default), the body is the model's native document and is validated against the model's own input schema before the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later - a non-strict alternate-provider body is additionally translated into that provider's real schema at dispatch. With `strict_mode=true` the body must already be the alternate provider's own schema and is forwarded unchanged: native-schema validation is skipped, exactly as on the synchronous route (see `model_provider` and `strict_mode`).
 
 **Responses**
 
@@ -734,6 +744,10 @@ Raised by Router itself, before or around the call to the model.
   Present, naming the provider, only when `fallback_provider` actually retried this call against a second provider and that retry succeeded - the provider that ultimately served the call, never one that was attempted and also failed.
 </ResponseField>
 
+<ResponseField name="X-Comfy-Upstream-Detail" type="string">
+  A bounded, sanitized reason the model provider gave for rejecting the request.
+</ResponseField>
+
 <ResponseField name="X-Comfy-Upstream-Status" type="integer">
   The model provider's own HTTP status for this call.
 </ResponseField>
@@ -803,6 +817,10 @@ Error body for authentication, access, model lookup, quota, and provider transpo
   Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at eighteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout` and `request_not_found`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
 
   Type: [`RouterErrorType`](#routererrortype)
+</ResponseField>
+
+<ResponseField name="upstream_detail" type="string">
+  A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` - i.e. the provider refused the request as malformed and said why. Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
 </ResponseField>
 
 ### RouterErrorType
