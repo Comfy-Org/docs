@@ -434,22 +434,16 @@ describe("the Providers page", () => {
     expect(grouped[0].rows.map((r) => r.aliasId)).toEqual(["fal/fal-nano-banana-pro", "fal/fal-gpt-image-2"]);
   });
 
-  test("every row links the NATIVE model's page and names the alias id and the query parameter", () => {
+  test("models are rows and providers are columns", () => {
     const page = renderProvidersPage(rows);
-    expect(page).toContain(
-      `- [Nano Banana Pro](/${NATIVE_PAGE}): \`${NATIVE}\`, served as \`${FAL_LEG.model_id}\` with \`?model_provider=fal\``
-    );
-    expect(page).toContain("## fal");
-    expect(page).toContain("## WaveSpeed");
-    // No alias page exists to link, so no row may point at one.
-    expect(page).not.toContain("(/development/comfy-router/models/fal/fal-nano-banana-pro/code)");
+    expect(page).toContain("| Model / provider | **Comfy (default)** | **fal** | **WaveSpeed** |");
+    expect(page).toContain(`| [Nano Banana Pro](/${NATIVE_PAGE}) | ✓ | \`${FAL_LEG.model_id}\` | \`${WAVESPEED_LEG.model_id}\` |`);
+    expect(page).not.toContain("## fal");
   });
 
   test("Comfy is listed first, as the default that covers the whole catalog", () => {
     const page = renderProvidersPage(rows);
-    expect(page).toContain("## Comfy (direct)");
-    expect(page).toContain("Every model in the [model catalog](/development/comfy-router/models) is served by Comfy Router directly");
-    expect(page.indexOf("## Comfy (direct)")).toBeLessThan(page.indexOf("## fal"));
+    expect(page).toContain("**Comfy (default)**");
   });
 
   test("its frontmatter follows the repo's title/description rules", () => {
