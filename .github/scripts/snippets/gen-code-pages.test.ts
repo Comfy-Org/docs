@@ -194,6 +194,17 @@ describe("generated model pages omit Swift examples", () => {
     expect(page).not.toContain("ComfySwiftSDK");
     expect(page).not.toContain("```swift");
   });
+
+  test("Python examples use the async SDK for both delivery modes", () => {
+    expect(page).toContain("from comfy_sdk import AsyncComfy");
+    expect(page).toContain("async with AsyncComfy() as client:");
+    expect(page).toContain("await client.models.run(");
+    expect(page).toContain("await client.models.submit(");
+    expect(page).toContain("async for update in handle.iter_events():");
+    expect(page).toContain("result = await handle.get()");
+    expect(page).toContain("asyncio.run(main())");
+    expect(page).not.toContain("from comfy_sdk import Comfy");
+  });
 });
 
 describe("renderDocsJson: the redirect lands in the real docs.json", () => {

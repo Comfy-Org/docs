@@ -320,21 +320,25 @@ function pythonSnippet(model: string, example: Record<string, unknown>, files: F
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .map(([k, v]) => `                ${JSON.stringify(k)}: ${pyLiteral(v, 16, files, k)},`)
     .join("\n");
-  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+  return `import asyncio
+${files.length ? "import base64\n" : ""}from comfy_sdk import AsyncComfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
 # The SDK automatically creates an idempotency key and reuses it for automatic retries.
-with Comfy() as client:
-    result = client.models.run(
-        "${model}",
-        {
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "${model}",
+            {
 ${body}
-        },
-    )
+            },
+        )
 
-print("${label}:", result${pyPath(resultPath)})`;
+    print("${label}:", result${pyPath(resultPath)})
+
+asyncio.run(main())`;
 }
 
 function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
@@ -392,31 +396,35 @@ function pythonQueueSnippet(model: string, example: Record<string, unknown>, fil
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .map(([k, v]) => `                ${JSON.stringify(k)}: ${pyLiteral(v, 16, files, k)},`)
     .join("\n");
   const show = resultPath ? `print("${label}:", result${pyPath(resultPath)})` : "print(result)";
-  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+  return `import asyncio
+${files.length ? "import base64\n" : ""}from comfy_sdk import AsyncComfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
 # Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
-with Comfy() as client:
-    handle = client.models.submit(
-        "${model}",
-        {
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "${model}",
+            {
 ${body}
-        },
-    )
-    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
 
-    # Poll until the request completes, waiting the Retry-After the server names.
-    for update in handle.iter_events():
-        print(update.status, update.queue_position)
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
 
-    # The provider's own payload, the same value models.run() returns.
-    # A request that failed or was cancelled raises the typed Router error here.
-    result = handle.get()
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
 
-${show}`;
+    ${show}
+
+asyncio.run(main())`;
 }
 
 /** TypeScript, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
