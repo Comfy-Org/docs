@@ -1,14 +1,16 @@
 ---
-title: "Comfy Router 的局限性"
-description: "Comfy Router 目前无法做到的事、存在替代方案时该改用何种方案，以及其中哪些限制预计将会改变。"
-translationSourceHash: 1a4e4a4c
+title: "Comfy Router 的能力与限制"
+sidebarTitle: "Capabilities and limits"
+description: "选择 Comfy Router 还是合作伙伴代理，为长时间运行的调用做好规划，并了解恢复、速率限制与资产存储。"
+translationSourceHash: b7e8e3f3
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
-  "What Router supports": f7da4bd0
+  "What Router supports": b168a936
   "Queued submission": bfb591cc
   "Calls are cut off at a server deadline": 2466a237
   "Recovery depends on the provider": 610f0ec8
+  "Request bodies are capped": 675b77c8
   "Requests are rate limited per caller": 421194d9
   "No progress while a call runs": 75d42d8d
   "Comfy charges and usage": 90cd7670
@@ -24,11 +26,12 @@ Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个�
 | 需求 | Router 支持情况 | 备选方案或后续步骤 |
 | --- | --- | --- |
 | 通过单个请求生成 | `POST /v2/models/{provider}/{model}` 返回已完成的结果。 | 从[快速入门](/zh/development/comfy-router/quickstart)开始。 |
-| 提交任务并稍后收集结果 | 已执行投递：`POST /v2/models/{provider}/{model}/requests` 返回一个 `request_id`，可用于轮询并收集结果。不提供完成 webhook。 | 使用[已执行投递](/zh/development/comfy-router/queue)。具备提交并轮询操作的合作伙伴代理会公开提供商自身的控制项。 |
+| 提交任务并稍后收集结果 | 队列投递：`POST /v2/models/{provider}/{model}/requests` 返回一个 `request_id`，可用于轮询并收集结果。没有完成 webhook。 | 使用[队列投递](/zh/development/comfy-router/queue)。具备提交和轮询操作的合作伙伴代理会公开提供商自身的控制项。 |
 | 显示进度或流式输出 | 调用期间没有实时进度、流式传输或预览帧。 | 显示不确定状态，或使用受支持的代理操作。 |
 | 连接丢失后恢复 | 当 Router 保留了已接受生成的句柄时，可使用同键收集。 | 保留该键并遵循[重试引导](/zh/development/comfy-router/api#retry-outcomes)。 |
 | 对账 Comfy 费用 | 响应中没有通用的 Comfy 成本或信用余额字段。 | 使用[工作区计费](https://platform.comfy.org)。 |
 | 永久存储结果 | 资产 URL 可能会过期，包括重新托管和重放的 URL。 | 下载资产；参见[结果资产](/zh/development/comfy-router/reference#结果资产)。 |
+| 内联发送大型媒体 | 请求体有大小上限，base64 编码的媒体也计入该上限。 | 将请求体保持在上限之内；参见[请求体大小](#请求正文设有上限)。 |
 
 <span id="no-queued-submission" />
 
@@ -55,6 +58,18 @@ Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。�
 对于一次已被接受的「提交并轮询」式生成，Router 可以保留提供商句柄。复用同一个 `Idempotency-Key` 即可稍后收集结果；已完成且可重放的响应也可以从该 key 记录中获取。
 
 并非每个已断开连接的调用都可恢复。在发送之前先保存请求和 key，然后使用[重试结果表](/zh/development/comfy-router/api#retry-outcomes)。使用新的 key 会创建新的调用，并可能产生额外费用。
+
+## 请求正文设有上限
+
+Router 会拒绝正文大于 **100 MiB（104,857,600 字节）** 的请求。该上限针对你发送的原始字节，在 Router 解析任何内容之前测量，因此适用于所有路由，也适用于同步投递与队列投递。
+
+调用方通常会在内联媒体上遇到这一限制。Base64 编码会将二进制数据膨胀约 4/3，因此，携带编码媒体的正文在实际图像、音频或视频字节约为 **75 MB** 时仍能通过上限。要按编码后的字符串计算大小，而不是按磁盘上的文件，并统计一次调用中的所有输入：一个携带两张参考图像的请求会同时在两者上消耗额度，提示词、参数和 JSON 结构也计入其中。
+
+**拒绝的形态。** 返回 `413`，并在 `X-Comfy-Error-Type` 上带有 `invalid_input`，`X-Comfy-Request-Id` 也像其他任何响应一样设置。正文是一个 [`RouterErrorResponse`](/zh/development/comfy-router/reference#routererrorresponse)，其 `detail` 描述被超出的是哪项上限。应根据 `error_type` 进行分支处理，而不是解析 `detail`；如果 API 返回值与本文在数值上出现分歧，以 API 返回值为准。Router 在分发任何内容之前就抛出拒绝，因此没有运行生成，也没有产生费用。
+
+该上限适用于每个请求，无论其是否携带 `Idempotency-Key`。它不是幂等性限制，重新发送相同的键不会改变结果：过大的正文在每次尝试时都过大。
+
+**提供商可能会施加自己的更低限制，而在这一上限处通常正是如此。** 提供商发布各自对内联媒体的上限，具有约束力的限制取两者中较小者。例如，Google 的模型最多接受 20 MB（十进制，20,000,000 字节）的内联负载，Google 模型页面上的 `Size limit: 20MB` 一行，就是引自 Google 自身规范的 Google 逐字段限制，而不是 Router 对整个请求正文的限制。Router 的上限被有意设在其所对接的每一项合作伙伴限制之上，因此对于单个内联资产，通常你先碰到的是提供商自己的限制；而 Router 的上限在单次正文包含多个资产时才会起作用。能通过 Router 的上限但超出提供商自身限制的正文，会被提供商而非 Router 拒绝，并会作为提供商错误返回，而不是 `413`。
 
 ## 请求按调用方进行速率限制
 
