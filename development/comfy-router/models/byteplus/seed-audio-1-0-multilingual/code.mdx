@@ -12,12 +12,14 @@ API Reference for `byteplus/seed-audio-1.0-multilingual`, served by Comfy Router
 
 ## Quick start
 
-Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk` and `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `byteplus/seed-audio-1.0-multilingual`
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual`
 
+<Tabs defaultTabIndex={1}>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
@@ -63,6 +65,89 @@ curl https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual \
   -d "{\"audio_config\": {\"format\":\"wav\",\"sample_rate\":24000}, \"text_prompt\": \"Hello from Comfy Router.\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "byteplus/seed-audio-1.0-multilingual",
+            {
+                "audio_config": {
+                    "format": "wav",
+                    "sample_rate": 24000,
+                },
+                "text_prompt": "Hello from Comfy Router.",
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+const handle = await comfy.models.submit("byteplus/seed-audio-1.0-multilingual", {
+  audio_config: {
+    format: "wav",
+    sample_rate: 24000,
+  },
+  text_prompt: "Hello from Comfy Router.",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"audio_config\": {\"format\":\"wav\",\"sample_rate\":24000}, \"text_prompt\": \"Hello from Comfy Router.\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 ## Schema
 
@@ -111,7 +196,7 @@ curl https://api.comfy.org/v2/models/byteplus/seed-audio-1.0-multilingual \
 </ParamField>
 
 <ParamField body="references" type="object[]">
-  Reference resources. Omit for text-only generation. Up to 3 audio references (each up to 30 seconds and 10 MB decoded; wav, mp3, pcm or ogg_opus) or exactly 1 image reference (up to 10 MB decoded; jpeg, png or webp). Image references cannot be mixed with audio references. Those ceilings are BytePlus's and are stated in DECODED bytes: base64 inflates an asset by about 4/3, and a Comfy Router call is capped at 10 MiB for the whole JSON document, so an inline `audio_data`/`image_data` reference sent to /v2/models/byteplus/\{model} has to stay under roughly 7.5 MB decoded. Use `audio_url`/`image_url` for anything larger — a reference at BytePlus's own 10 MB maximum is refused 413 before validation runs if it is inlined.
+  Reference resources. Omit for text-only generation. Up to 3 audio references (each up to 30 seconds and 10 MB decoded; wav, mp3, pcm or ogg_opus) or exactly 1 image reference (up to 10 MB decoded; jpeg, png or webp). Image references cannot be mixed with audio references. Those ceilings are BytePlus's and are stated in DECODED bytes: base64 inflates an asset by about 4/3, and a Comfy Router call is capped at 100 MiB for the whole JSON document, so an inline `audio_data`/`image_data` reference sent to /v2/models/byteplus/\{model} may carry roughly 75 MB decoded before the transport limit refuses it. BytePlus's own 10 MB per-reference ceiling is therefore what binds first for any single inlined reference, and three audio references at that ceiling now fit in one body; use `audio_url`/`image_url` to keep large assets out of the request entirely.
 </ParamField>
 
 <ParamField body="references[].audio_data" type="string">

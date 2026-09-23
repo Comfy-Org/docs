@@ -1,6 +1,6 @@
 ---
 title: "Use FLUX.1 Kontext with Comfy Router"
-description: "Python, TypeScript and cURL snippets for calling FLUX.1 Kontext Pro and Kontext Max over HTTP through Comfy Router, plus the request fields and the result shape"
+description: "Python, TypeScript and cURL snippets for calling FLUX.1 Kontext Pro and Kontext Max through Comfy Router, plus request fields and result shape"
 sidebarTitle: "FLUX.1 Kontext"
 ---
 
@@ -12,7 +12,7 @@ API Reference for FLUX.1 Kontext. FLUX.1 Kontext is Black Forest Labs' instructi
 
 ## Quick start
 
-Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk` and `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
 
 Pick the model you want to call. Everything below, from the snippets to the schema and examples, follows your choice.
 
@@ -22,28 +22,33 @@ Pick the model you want to call. Everything below, from the snippets to the sche
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro`
 
+<Tabs defaultTabIndex={1}>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
+import asyncio
 import base64
-
-from comfy_sdk import Comfy
+from comfy_sdk import AsyncComfy
 
 with open("input.jpg", "rb") as f:
     input_image = base64.b64encode(f.read()).decode()
 
 # Reads COMFY_API_KEY from the environment.
 # The SDK automatically creates an idempotency key and reuses it for automatic retries.
-with Comfy() as client:
-    result = client.models.run(
-        "bfl/flux-kontext-pro",
-        {
-            "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
-            "input_image": input_image,
-            "aspect_ratio": "1:1",
-        },
-    )
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/flux-kontext-pro",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
 
-print("image:", result["result"]["sample"])
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
 ```
 
 ```typescript TypeScript
@@ -55,13 +60,14 @@ const inputImage = (await readFile("input.jpg")).toString("base64");
 // Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = { result: { sample: string } };
-const { data } = await comfy.models.run<Result>("bfl/flux-kontext-pro", {
+const result = await comfy.models.run<Result>("bfl/flux-kontext-pro", {
   prompt: "replace the background with a sunlit beach, keep the subject unchanged",
   input_image: inputImage,
   aspect_ratio: "1:1",
 });
+if (result.kind !== "json") throw new Error("expected a JSON result");
 
-console.log("image:", data.result.sample);
+console.log("image:", result.data.result.sample);
 ```
 
 ```bash cURL
@@ -74,6 +80,96 @@ curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro \
   -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/flux-kontext-pro",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-pro", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 <h2>Schema</h2>
 
@@ -236,28 +332,33 @@ The URL is temporary. Download the image promptly if you need to keep it.
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max`
 
+<Tabs defaultTabIndex={1}>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
+import asyncio
 import base64
-
-from comfy_sdk import Comfy
+from comfy_sdk import AsyncComfy
 
 with open("input.jpg", "rb") as f:
     input_image = base64.b64encode(f.read()).decode()
 
 # Reads COMFY_API_KEY from the environment.
 # The SDK automatically creates an idempotency key and reuses it for automatic retries.
-with Comfy() as client:
-    result = client.models.run(
-        "bfl/flux-kontext-max",
-        {
-            "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
-            "input_image": input_image,
-            "aspect_ratio": "1:1",
-        },
-    )
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/flux-kontext-max",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
 
-print("image:", result["result"]["sample"])
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
 ```
 
 ```typescript TypeScript
@@ -269,13 +370,14 @@ const inputImage = (await readFile("input.jpg")).toString("base64");
 // Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = { result: { sample: string } };
-const { data } = await comfy.models.run<Result>("bfl/flux-kontext-max", {
+const result = await comfy.models.run<Result>("bfl/flux-kontext-max", {
   prompt: "replace the background with a sunlit beach, keep the subject unchanged",
   input_image: inputImage,
   aspect_ratio: "1:1",
 });
+if (result.kind !== "json") throw new Error("expected a JSON result");
 
-console.log("image:", data.result.sample);
+console.log("image:", result.data.result.sample);
 ```
 
 ```bash cURL
@@ -288,6 +390,96 @@ curl https://api.comfy.org/v2/models/bfl/flux-kontext-max \
   -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/flux-kontext-max",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-max", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
 
 <h2>Schema</h2>
 

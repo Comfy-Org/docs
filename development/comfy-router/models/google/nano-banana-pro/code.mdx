@@ -1,6 +1,6 @@
 ---
 title: "Use Nano Banana Pro with Comfy Router"
-description: "Python, TypeScript and cURL snippets for generating images with Nano Banana Pro (Gemini 3 Pro Image) over HTTP through Comfy Router, plus the request fields and the result shape"
+description: "Python, TypeScript and cURL snippets for Nano Banana Pro (Gemini 3 Pro Image) image generation through Comfy Router, plus request fields"
 sidebarTitle: "Nano Banana Pro"
 ---
 
@@ -12,42 +12,48 @@ API Reference for Nano Banana Pro. Nano Banana Pro (Gemini 3 Pro Image) is the P
 
 ## Quick start
 
-Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk`, `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
+Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as `COMFY_API_KEY`. The Python and TypeScript snippets use the Comfy SDKs (`pip install comfy-sdk` and `npm install @comfyorg/sdk`); the cURL snippet is the same call over raw HTTP.
 
 **Model ID:** `vertexai/gemini-3-pro-image`
 
 **Endpoint:** `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image`
 
+<Tabs defaultTabIndex={1}>
+  <Tab title="Wait for the result">
 <CodeGroup>
 ```python Python
-from comfy_sdk import Comfy
+import asyncio
+from comfy_sdk import AsyncComfy
 
 # Reads COMFY_API_KEY from the environment.
 # The SDK automatically creates an idempotency key and reuses it for automatic retries.
-with Comfy() as client:
-    result = client.models.run(
-        "vertexai/gemini-3-pro-image",
-        {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": "a single red maple leaf on a plain white background, studio lighting",
-                        },
-                    ],
-                },
-            ],
-            "generationConfig": {
-                "responseModalities": ["IMAGE"],
-                "imageConfig": {
-                    "aspectRatio": "1:1",
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-3-pro-image",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "a single red maple leaf on a plain white background, studio lighting",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {
+                        "aspectRatio": "1:1",
+                    },
                 },
             },
-        },
-    )
+        )
 
-print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+    print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+
+asyncio.run(main())
 ```
 
 ```typescript TypeScript
@@ -56,7 +62,7 @@ import { comfy } from "@comfyorg/sdk";
 // Reads COMFY_API_KEY from the environment.
 // The SDK automatically creates an idempotency key and reuses it for automatic retries.
 type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
-const { data } = await comfy.models.run<Result>("vertexai/gemini-3-pro-image", {
+const result = await comfy.models.run<Result>("vertexai/gemini-3-pro-image", {
   contents: [
     {
       role: "user",
@@ -74,8 +80,9 @@ const { data } = await comfy.models.run<Result>("vertexai/gemini-3-pro-image", {
     },
   },
 });
+if (result.kind !== "json") throw new Error("expected a JSON result");
 
-console.log("image (base64):", data.candidates[0].content.parts[0].inlineData.data);
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
 ```
 
 ```bash cURL
@@ -86,6 +93,124 @@ curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image \
   -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
 ```
 </CodeGroup>
+  </Tab>
+  <Tab title="Queue and collect later">
+The same body, sent to `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests`. Router answers `201` with a `request_id` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-3-pro-image",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "a single red maple leaf on a plain white background, studio lighting",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {
+                        "aspectRatio": "1:1",
+                    },
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-3-pro-image", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "a single red maple leaf on a plain white background, studio lighting",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    responseModalities: ["IMAGE"],
+    imageConfig: {
+      aspectRatio: "1:1",
+    },
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Serving providers
+
+This model is served by Comfy Router directly unless the request names another provider. The providers below serve it too, on the same endpoint and with the same model ID, selected with the `model_provider` query parameter.
+
+- **Comfy** (default): `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image`
+- **fal**, as `fal/fal-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=fal`
+- **Runware**, as `runware/runware-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=runware`
+- **WaveSpeed**, as `wavespeed/wavespeed-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=wavespeed`
+
+`strict_mode` defaults to false, so Router translates the native request body documented on this page into the provider's own schema and translates the response back. See [`model_provider`, `strict_mode` and `fallback_provider`](/development/comfy-router/reference#post-v2modelsprovidermodel) in the API reference, and [Serving providers](/development/comfy-router/providers) for every model routed this way.
 
 ## Schema
 
@@ -605,6 +730,47 @@ Generated from the schema Router serves at `GET /v2/models/vertexai/gemini-3-pro
 }
 ```
 
-By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created. An upload failure leaves that image inline, so inspect each part for `inlineData` or `fileData`; text parts can also appear, and the image is not guaranteed to be the first part.
+### Reading the parts
+
+By default, generated image parts contain base64 bytes in `inlineData.data` and a media type in `inlineData.mimeType`. Decode the bytes and save them to a file. With `uploadImagesToStorage: true`, uploaded images instead use `fileData.fileUri` for a signed URL and `fileData.mimeType` for the media type. Download these images before the URLs expire, 24 hours after they are created.
+
+**`fileData` can appear on a response that did not ask for it.** The two shapes are per part, not per response: when `uploadImagesToStorage: true` is set, an image whose upload fails is left as `inlineData`, so one response can mix both. Branch on which key is present rather than on what you requested. The one case that cannot happen is the reverse: with the field unset or false, every generated image comes back as `inlineData` and no `fileData` image part is produced. Text parts can also appear, and the image is not guaranteed to be the first part, so select a part by the field you need rather than by index. The `candidates[0].content.parts[0].inlineData.data` path in the quickstart samples above reads the single inline part of the sample response on this page; against a real response, scan `parts` for the key you want instead of indexing position 0.
+
+**`thoughtSignature` is a part field too, and it is large.** A part can carry `thoughtSignature`, an opaque base64 signature of the model's reasoning that exists so the thought can be replayed in a later request. It is absent from the generated schema above, which follows the request/response document Router publishes. Measured on real responses it runs roughly 1 to 2 MB per part, comparable to the image itself, so it is worth budgeting for or discarding explicitly if you are logging responses, forwarding them through a serverless function, or storing them.
+
+### `imageSize` is a class, not a width
+
+`generationConfig.imageConfig.imageSize` takes `1K`, `2K` or `4K`, and each step up doubles both edges rather than setting a width. A 16:9 request measured 1376x768 at about 1.35 MB under `1K` and 2752x1536 at about 5.6 MB under `2K`: the same aspect ratio, four times the pixels and roughly four times the bytes. `2K` therefore does not mean a 2048-pixel-wide image, and sizing an upload path, a response body limit or a storage bucket against `2K` as if it were a width will under-provision it by about four times.
+
+### Reference chaining
+
+Feeding a previously generated image straight back in gets a new camera angle on the same subject, so a sequence of shots of one scene is a chain of calls rather than one prompt that has to describe everything at once. Architecture, materials and lighting often carry across a chain, but the model does not guarantee it; treat continuity as a likely result to check, not a property you can rely on.
+
+Send the image back in whichever shape the previous response used. For an `inlineData` part, take the base64 bytes from `inlineData.data` and send them unchanged as `inlineData`, as below. For a part that came back as `fileData` under `uploadImagesToStorage: true`, send its `fileData.fileUri` and `fileData.mimeType` as a `fileData` part instead, while the signed URL is still valid; re-uploading the bytes as `inlineData` also works and does not expire. Then ask for the change you want:
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "inlineData": {
+            "mimeType": "image/png",
+            "data": "<the base64 from candidates[0].content.parts[].inlineData.data of the previous response>"
+          }
+        },
+        { "text": "the same room, viewed from the opposite corner at eye level" }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "16:9" }
+  }
+}
+```
+
+Each call is independent, so pass the image you want to build on rather than relying on conversation history. Watch the request body size when you chain: the inline image counts against Router's [request body cap](/development/comfy-router/limitations#request-bodies-are-capped), and a `2K` image is about four times the bytes of a `1K` one.
 
 <RouterCodeFooter />

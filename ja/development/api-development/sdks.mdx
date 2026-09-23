@@ -3,23 +3,31 @@ title: "Comfy SDK"
 description: "独自のアプリケーションからComfyUIワークフローを実行するための公式PythonおよびTypeScript SDK"
 sidebarTitle: "SDK 概要"
 icon: "code"
-translationSourceHash: b7f9b923
+translationSourceHash: 238272b3
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
-  "_intro": 0df68ad9
-  "Install": 6bcd1ccf
+  "_intro": f5c8a7cf
+  "Install": da9a0a57
   "Quickstart": 02297586
-  "Choosing a base URL": fa38be4d
-  "Watching a job run": a1c73d9b
+  "Choosing a base URL": 9503df8d
+  "Retrying a submit: the idempotency key": 853fdb35
+  "Watching a job run": 4253d21f
   "Tracing an output back to its workflow": b01886a3
-  "What the SDKs cover today": 3f918c7b
-  "Reference": 5fc97b4a
-  "Feedback": f8553211
+  "What the SDKs cover today": 69ebfcc7
+  "Reference": 71489703
+  "Feedback": 3edae8ef
 ---
 
+import SdkSurfaces from "/snippets/ja/sdk/surfaces.mdx";
+import SdkVersions from "/snippets/ja/sdk/versions.mdx";
+
 <Warning>
-  **ベータ。** SDKと、それらが呼び出すComfy API v2は`0.1.x`です。APIの形状は、確定する前にまだ変更される可能性があります。今が、間違っていることを私たちに伝えるのに最もコストのかからない時期です。[フィードバック](#フィードバック)を参照してください。
+  **ベータ。** SDKと、それらが呼び出すComfy API v2はまだ1.0未満です。APIの形状は、安定する前に変更される可能性があります。問題は[フィードバック](#フィードバック)から報告してください。
 </Warning>
+
+<SdkSurfaces />
+
+このページでは2行目、つまりComfy CloudとComfy API v2クライアントについて説明します。モデルルーターについては、[Comfy Routerクイックスタート](/ja/development/comfy-router/quickstart)から始めてください。
 
 Comfy SDKを使用すると、アプリケーションでComfyUIワークフローを実行し、結果を受け取ることができます。ワークフローを送信すると、ComfyUIがそれを実行し、出力をダウンロードできます。同じコードが、Comfy Cloudまたは自分でホストするComfyUIインスタンスに対して実行されます。変更されるのはベースURLのみです。
 
@@ -49,6 +57,8 @@ npm i @comfyorg/sdk
 </CodeGroup>
 
 Python 3.10 以降。Node 22 以降。
+
+<SdkVersions />
 
 ## クイックスタート
 
@@ -100,14 +110,14 @@ await job.getOutputs("9")[0].toFile("out.png");
 | 接続先 | Base URL | APIキー |
 |---|---|---|
 | **Comfy Cloud** | `https://cloud.comfy.org` (デフォルト) | 必須 |
-| **サーバーレスデプロイ** | `https://<deployment>.run.comfy.app` | 必須 |
+| **Comfy API デプロイ** | `https://<deployment>.run.comfy.app` | 必須 |
 | **ご自身のComfyUI** | `http://127.0.0.1:8189` (ローカルプロキシ) | デフォルトでは不要。オプションの静的ベアラートークン |
 
 ベースURLはコンストラクタ引数ではなく、`COMFY_BASE_URL`環境変数から取得されます:
 
 ```bash
-export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # サーバーレスデプロイ
-export COMFY_BASE_URL="http://127.0.0.1:8189"               # self-hosted proxy
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # Comfy API デプロイ
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # セルフホストプロキシ
 ```
 
 この変数はクライアントが構築されるたびに読み取られ、`http(s)` URLである必要があります。未設定または空白の場合はComfy Cloudを意味します。したがって、クライアント自体はどこでも同じです:
@@ -131,29 +141,93 @@ const client = new Comfy({ apiKey: "comfyui-..." });
 そのまま動作します。[APIキー](/ja/development/api-development/getting-an-api-key)を作成し、クライアントに渡します。
 
 <Note>
-  APIアクセスには有料のComfy Cloudサブスクリプションが必要です。無料プランには含まれません。同時に実行できるジョブ数はプランによって異なります。[Cloud API概要](/ja/development/cloud/overview#並列実行（同時ジョブ）)をご覧ください。
+  APIアクセスには有料のComfy Cloudサブスクリプションが必要です。無料プランには含まれません。同時に実行できるジョブ数はプランによって異なります。[並列実行](/ja/development/deploy/cloud#並列実行（同時ジョブ）)をご覧ください。
 </Note>
 
-### サーバーレスデプロイ
+<a id="serverless-deployment"></a>
+
+### Comfy API デプロイ
 
 [開発者プラットフォーム](https://platform.comfy.org)を通じてデプロイしたワークフローには、専用のエンドポイントが割り当てられます。`COMFY_BASE_URL`をそのエンドポイントに指定し、Comfy Cloudとまったく同じようにAPIキーを使用します。このガイドのすべてが同じように機能します。
 
-サーバーレスデプロイはピン留めされた1つのワークフローを実行するため、`get_workflow()`は実行されたグラフ（`format: "api"`）を返します。
+Comfy APIデプロイは、そのBuildに含まれるモデルとカスタムノードを使用して複数のワークフローを実行できます。各ジョブについて、`get_workflow()`は`format: "api"`を持ち、実行されたグラフを`.graph`プロパティに含むワークフローレスポンスを返します。
 
 ### ご自身のComfyUI
 
-ベータ期間中、v2 APIは[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy)によって提供されます。これは、ComfyUIと一緒に動作する小規模なオープンソースサービスです。
+ベータ期間中、v2 APIは[comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy)によって提供されます。これは、ComfyUIと一緒に動作する小規模なオープンソースサービスです。インストールして実行し、`COMFY_BASE_URL="http://127.0.0.1:8189"`を設定します:
 
 ```bash
 pip install comfy-api-proxy
 comfy-api-proxy
+export COMFY_BASE_URL="http://127.0.0.1:8189"
 ```
 
-デフォルトでは、`127.0.0.1:8188`のComfyUIをプロキシし、`127.0.0.1:8189`でv2 APIを提供します。いずれかを変更するには、`--comfyui`と`--port`を使用します。
+設定、認証、そしてこのプロキシが必要な理由については、[セルフホスト ComfyUI 用 API プロキシ](/ja/development/comfyui-server/api-proxy) を参照してください。これは暫定的な仕組みで、v2 API が安定すれば ComfyUI 本体に取り込まれ、プロキシは不要になります。
 
-次に、`COMFY_BASE_URL="http://127.0.0.1:8189"`を設定します。認証はデフォルトでは不要です。プロキシに静的ベアラートークンを設定している場合は、そのトークンをSDKのAPIキーとして渡します: `Comfy(api_key="...")`。プロキシはデフォルトではループバックにのみバインドします。インストール環境にモデルファイルもアップロードしたい場合は、`--comfyui-base-dir /path/to/ComfyUI`を指定して実行してください。
+## 送信のリトライ: 冪等キー
 
-プロキシは暫定対策です。v2 APIが安定すれば、ComfyUIコアに組み込まれ、プロキシは不要になります。
+`submit()` と `run()` は送信のたびに `Idempotency-Key` を送り、そのキーに対する Comfy API v2 の契約は **複製時に拒否であり、記録して再生するものではない**。送信をリトライループで包む前にこれを読んでほしい。
+
+- **呼び出しごとに新しいキーが発行される。** 同じワークフローで `submit()` を2回呼ぶと、2回の送信、2つのジョブ、2回の課金になる。`submit()` を素朴に `for attempt in range(3)` で囲むのはリトライではなく二重請求だ。
+- **再利用されたキーは拒否され、再生されない。** リトライを冪等にするには独自の `idempotency_key`（TypeScript では `idempotencyKey`）を渡すが、同じキーでの2回目のリクエストは最初のジョブを返す代わりに `422 idempotency_key_reuse` で失敗する。SDK は `IdempotencyKeyReuse` を送出する。これは通常の「冪等リトライ」の意味とは正反対なので、明示的に処理すること。
+- **復旧とはジョブを探しに行くことであり、再送信ではない。** `IdempotencyKeyReuse` では、最初の試行がジョブを作成している可能性が高い。`client.jobs.get(job_id)` で取得する。この検索にはすでに保存した id が必要なので、送信が戻り、失敗前に id を永続化していた場合にのみ復旧できる。id が記録される前に接続が切れた場合、検索するものがなく、自動復旧もない。以下の例は、確保されたキーで再送信するのではなく、手動処理のために再送出する。
+- **送信が明確に失敗したとき、キーは解放される。** 検証エラー、クレジット不足による拒否、キュー満杯による拒否はジョブを作成せずキーを解放するので、そのキーで再送信しても問題ない。*曖昧な* 失敗（読み取りタイムアウト、リクエスト途中での接続断）の後は、キーは確保されたままになる。再送信するのではなく、ジョブを探すこと。
+- **キーは24時間後に期限切れになる** また、空でなく、印刷可能な ASCII であり、長さの制限内でなければならない。無効なキーはリクエストが行われる前に `ValueError` を送出するので、明示的な `""` が暗黙的に発行されたキーにフォールバックすることはない。
+
+したがって、複数回実行しても安全なリトライは、試行をまたいで2つのものを持ち運ぶ必要がある。キーは、サーバーがリトライと新しい送信を区別できるようにするため。ジョブID は、確保されたキーがすでに作成したジョブを見つけられるようにするためだ。
+
+<CodeGroup>
+```python Python
+import uuid
+from comfy_sdk import IdempotencyKeyReuse
+
+# どちらの値も、そのリクエストがあなたにとって何を意味するかでキー付けした
+# 自分のストアに属する。`key` は最初の試行で一度だけ発行され、`job_id` は送信が
+# 戻り次第記入される。
+state = load_submission_state()  # {"key": ..., "job_id": ...} or {}
+key = state.get("key") or str(uuid.uuid4())
+save_submission_state(key=key)
+
+try:
+    job = client.submit(wf, idempotency_key=key)
+    save_submission_state(key=key, job_id=job.id)
+except IdempotencyKeyReuse:
+    # このキーでの以前の試行がすでに送信に到達しているため、ジョブが
+    # 存在する可能性がある。再送信しないこと。探しに行く。
+    job_id = state.get("job_id")
+    if job_id is None:
+        raise  # 検索するために記録されたものがない。これは人間の対応が必要
+    job = client.jobs.get(job_id)
+```
+
+```typescript TypeScript
+import { IdempotencyKeyReuse } from "@comfyorg/sdk";
+
+// どちらの値も、そのリクエストがあなたにとって何を意味するかでキー付けした
+// 自分のストアに属する。`key` は最初の試行で一度だけ発行され、`jobId` は送信が
+// 戻り次第記入される。
+const state = await loadSubmissionState(); // { key?, jobId? }
+const key = state.key ?? crypto.randomUUID();
+await saveSubmissionState({ key });
+
+let job;
+try {
+  job = await client.submit(wf, { idempotencyKey: key });
+  await saveSubmissionState({ key, jobId: job.id });
+} catch (err) {
+  // このキーでの以前の試行がすでに送信に到達しているため、ジョブが
+  // 存在する可能性がある。再送信しないこと。探しに行く。
+  if (!(err instanceof IdempotencyKeyReuse) || !state.jobId) throw err;
+  job = await client.jobs.get(state.jobId);
+}
+```
+</CodeGroup>
+
+`client.jobs.get(job_id)` は SDK の復元パスであり、id を必要とする。だからこそ、送信が戻った瞬間に id を記録することが、これを復旧可能にしている。`POST /api/v2/jobs` におけるキー契約の全体については [Comfy API v2](/ja/api-reference/v2/overview) を参照。
+
+<Note>
+  Comfy Router の `Idempotency-Key` は **異なる** 動作をする。Router ではキーは使い捨てトークンではなく再生ハンドルである。同じキーでキュー中の送信を再送すると、2つ目をキューに入れる代わりにオリジナルのリクエストを返す。[キュー配信](/ja/development/comfy-router/queue#idempotency-and-billing) と [Router のリトライ結果](/ja/development/comfy-router/api#retry-outcomes) を参照。2つのサーフェスはヘッダー名を共有しているだけで、契約は共有していない。
+</Note>
 
 ## ジョブの実行を監視する
 
@@ -182,7 +256,9 @@ result = job.result()
 ```typescript TypeScript
 const job = await client.submit(wf);
 
-for await (const event of job.events()) {
+// ラベルは必須です。switch 内の単独の `break` は、ループではなく
+// switch を抜けてしまいます。
+eventLoop: for await (const event of job.events()) {
   switch (event.kind) {
     case "progress":
       console.log(event.value);
@@ -191,7 +267,7 @@ for await (const event of job.events()) {
       await event.output.toFile(`${event.output.name}`);
       break;
     case "statusChange":
-      if (event.status === "succeeded") break;
+      if (event.status === "succeeded") break eventLoop;
   }
 }
 ```
@@ -200,6 +276,18 @@ for await (const event of job.events()) {
 `Preview.to_pil()` にはオプションの Pillow extra が必要です: `pip install "comfy-sdk[pil]"`。
 
 `result()` は、完了したジョブを返します。実行に失敗した場合は、ノードレベルの詳細情報を含む `JobFailed` を送出します。完全なイベントカタログについては、お使いの言語の [SDK README](#リファレンス) を参照してください。
+
+### `events()` は `subscribe()` ではない
+
+似た名前のものが 2 つのサーフェスにまたがって 3 つ存在し、このページで扱うのはそのうちの 1 つだけです。
+
+| 呼び出し | サーフェス | 得られるもの |
+|---|---|---|
+| `job.events()` | Comfy Cloud（このページ） | 1 つのワークフロージョブのライブ SSE ストリーム: `Progress`、`Preview`、`OutputReady`、`StatusChange`。自動再接続し、ポーリングにフォールバックします。 |
+| `handle.events()`（TypeScript）/ `handle.iter_events()`（Python） | [キュー配信](/ja/development/comfy-router/queue) | 1 つの Router リクエストに対するキューの監視: ステータスとキュー位置。ステータスルートをポーリングします。ストリームは存在せず、進捗イベントやプレビューイベントもありません。 |
+| `comfy.models.subscribe(...)` | [キュー配信](/ja/development/comfy-router/queue) | イテレータではありません。送信、ポーリング、収集を 1 回の呼び出しで行い、`on_queue_update` / `onQueueUpdate` コールバックを備え、結果を返します。 |
+
+Comfy Cloud クライアントに `subscribe()` はなく、どこにも `job.subscribe()` はありません。`subscribe` に相当する Cloud の機能は `run()` です。送信し、終了状態を待ちます。
 
 ストリームはライブフィードであり、再生可能なログではありません。進捗を表示するためのものであり、結果の取得に依存するためのものではありません。ジョブのポーリングこそが信頼できる情報源であり、`run()`、`wait()`、`result()` は自動的にポーリングにフォールバックします。理由については、[設計ノート](/ja/development/api-development/sdks-design#まずポーリング、進捗はストリームで) を参照してください。
 
@@ -260,7 +348,7 @@ SDKを通じて送信したジョブは常に`api`を返します。v2送信に�
 - **アセット:** ファイル、バイト、ストリーム、または URL から入力ハンドルを作成します。ハンドルは遅延評価され、コンテンツアドレス方式のため、同じ入力で再実行しても再アップロードされません。
 - **送信:** API 形式のグラフを送信します。送信は冪等であり、キューが満杯の場合も、限られた予算内で自動的に再試行されます。
 - **実行:** `wait()` でポーリングするか、`events()` でリアルタイムの進捗を追跡します。
-- **出力:** ディスクに書き込む、メモリにバッファリングする、バイト範囲を取得する、または短期間有効なダウンロード URL を取得します。
+- **出力:** ディスクに書き込む、メモリにバッファリングする、バイト範囲を取得する、または短期間有効なダウンロード URL を取得します。`getDownloadUrl()` は、APIキーなしで誰でも読み取れる署名付き URL を返し、有効期間はおよそ 6 時間です。保存する前に [出力 URL とその有効期間](/ja/api-reference/v2/overview#出力urlとその有効期間) を読んでください。後で出力を表示し続けるには、バイトを再ホストするか、必要に応じて URL を再発行します。
 - **トレーサビリティ:** すべての出力には、それを生成したジョブの ID が含まれ、ジョブからその背後にあるワークフローを取得することもできます。
 - **アセットの削除:** アップロードしたアセットを、ハンドルまたは ID で削除します。
 - **エラー:** 生のステータスコードではなく、`JobFailed`、`Unauthorized`、`InsufficientCredits`、`QueueFull` などの型付き例外。
@@ -287,12 +375,15 @@ SDK の README は、各言語の完全なリファレンスです。認証、�
   <Card title="設計ノート" icon="compass" href="/ja/development/api-development/sdks-design">
     このAPIが存在する理由、既存のComfyUI APIとの関係、今後の予定。
   </Card>
+  <Card title="Comfy Router" icon="shuffle" href="/ja/development/comfy-router/quickstart">
+    同じパッケージのもう一つのサーフェス: Flux、Veo、Gemini などのパートナーモデルに対して <code>comfy.models.run</code> を実行します。
+  </Card>
 </CardGroup>
 
 ## フィードバック
 
-これは意図的に`0.1.x`です。メソッド名、クライアントの形状、イベントカタログ、エラーの分類体系、実際のアセット操作の使用感は、すべてまだ変更コストが低く、今後数週間でサーフェスを固定する予定です。その後、「長期的にサポートします」という言葉は、もはや修正できないことを意味するようになります。
+SDK はまだ pre-1.0 です。メソッド名、クライアントの形状、イベントカタログ、エラーの分類体系、アセットの扱いは、いずれもまだ変更される可能性があり、今後数週間でサーフェスが安定する見込みです。安定した後は、長期サポートの契約期間が、変更できる内容を制約します。
 
-使いにくい点、期待していたのに見つからなかったもの、回避策で対応せざるを得なかったことをお知らせください。[私たちのDiscord](https://discord.com/invite/comfyorg)の`#developer-platform`チャンネルがその場所です。
+扱いにくい点、期待していたのに見つからなかったもの、回避策で対応せざるを得なかったことを報告してください。[私たちのDiscord](https://discord.com/invite/comfyorg)の`#developer-platform`チャンネルがその報告の場所です。
 
-別の言語のファーストパーティSDKが必要な場合は、そこでその旨をお伝えください。両方のSDKは同じ文書化されたHTTP契約に基づいているため、今日の時点であらゆる言語がAPIと通信できますが、どこに需要があるのかを把握したいと考えています。
+別の言語のファーストパーティ SDK が必要な場合は、そこでその旨をお伝えください。両方の SDK は同じ文書化された HTTP 契約に基づいているため、今日の時点であらゆる言語が API と通信できますが、どこに需要があるのかを把握したいと考えています。

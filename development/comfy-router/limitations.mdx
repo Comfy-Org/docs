@@ -4,24 +4,31 @@ sidebarTitle: "Capabilities and limits"
 description: "Choose Router or a partner proxy, plan for long-running calls, and understand recovery, rate limits, and asset storage."
 ---
 
-Router runs a partner model through one synchronous HTTP call. Use it when your application can wait for a finished result and handle the model's own input and output fields.
+Router runs a partner model through one synchronous HTTP call or through a queued request that you submit and collect later. Use it when your application can wait for a finished result or collect one later, and can handle the model's own input and output fields.
 
 ## What Router supports
 
 | Requirement | Router support | Alternative or next step |
 | --- | --- | --- |
 | Generate with one request | `POST /v2/models/{provider}/{model}` returns the finished result. | Start with the [Quickstart](/development/comfy-router/quickstart). |
-| Submit a job and collect it later | No general job/status API or completion webhook. | Run Router from a worker, or use a partner proxy with submit-and-poll operations. |
+| Submit a job and collect it later | Queued delivery: `POST /v2/models/{provider}/{model}/requests` returns a `request_id` to poll and collect. No completion webhook. | Use [queued delivery](/development/comfy-router/queue). A partner proxy with submit-and-poll operations exposes the provider's own controls. |
 | Show progress or stream output | No live progress, streaming, or preview frames during the call. | Show an indeterminate state, or use a supported proxy operation. |
 | Recover after a lost connection | Same-key collection is available when Router retained a handle to an accepted generation. | Preserve the key and follow [retry guidance](/development/comfy-router/api#retry-outcomes). |
 | Reconcile Comfy charges | No universal Comfy cost or credit-balance field on the response. | Use [workspace billing](https://platform.comfy.org). |
 | Store results permanently | Asset URLs can expire, including rehosted and replayed URLs. | Download the assets; see [result assets](/development/comfy-router/reference#result-assets). |
+| Send large media inline | The request body is capped, and base64-encoded media counts against that cap. | Keep bodies under the cap; see [request body size](#request-bodies-are-capped). |
 
-## No queued submission
+<span id="no-queued-submission" />
 
-Router holds the connection while the model runs. For asynchronous providers, it submits the job and polls internally. It does not expose a Router job ID, status endpoint, callback, or webhook.
+## Queued submission
 
-If your request cannot stay open long enough, call Router from a worker and track the job in your application. Use a [partner proxy](#router-does-not-cover-every-partner-operation) when you need the provider's submit-and-poll controls.
+The synchronous route holds the connection while the model runs; for asynchronous providers, Router submits the job and polls internally. Queued delivery (submit, get a `request_id`, poll, collect) is the alternative: see [Queued delivery](/development/comfy-router/queue). It is scoped to the workspace behind the credential, so it needs a key created in your Comfy workspace. A legacy key with no workspace, a bring-your-own-key request, or a model the queue cannot run answers `403` with `not_enabled` on the submit route. Neither mode offers a callback or webhook.
+
+If your request cannot stay open long enough, queue it. Use a [partner proxy](#router-does-not-cover-every-partner-operation) when you need the provider's own submit-and-poll controls.
+
+Two models are synchronous-only for now and are refused with `403` / `not_enabled` if you submit them to the queue: `elevenlabs/eleven_sfx_v2` and `elevenlabs/eleven_v3`. They answer raw audio bytes rather than a JSON result document, which queued delivery has nowhere to store. Run them on the synchronous route, which returns those bytes normally.
+
+The LTX v1 text-to-video and image-to-video operations answer raw video bytes for the same reason, and queued delivery cannot store them either — but they are reachable only through the [partner proxy](#router-does-not-cover-every-partner-operation) at `/proxy/ltx/v1/…`, not through a Router model id: every `ltx/*` catalog model resolves to the queueable v2 submit-and-poll operation.
 
 ## Calls are cut off at a server deadline
 
@@ -36,6 +43,18 @@ Router's default deadline is **10 minutes**, configurable by the deployment. Set
 Router can retain a provider handle for an accepted submit-and-poll generation. Reuse the same `Idempotency-Key` to collect it later; completed replayable responses can also come from the key record.
 
 Not every disconnected call is recoverable. Preserve the request and key before sending, then use the [retry outcome table](/development/comfy-router/api#retry-outcomes). A new key creates a new call and may incur another charge.
+
+## Request bodies are capped
+
+Router refuses a request whose body is larger than **100 MiB (104,857,600 bytes)**. The bound is on the raw bytes you send, measured before Router parses anything, so it applies to every route and to both synchronous and queued delivery.
+
+Inline media is where callers meet it. Base64 encoding inflates binary data by about 4/3, so a body carrying encoded media clears the cap at roughly **75 MB of actual image, audio, or video bytes**. Size the encoded string, not the file on disk, and count every input in one call: a request carrying two reference images spends the allowance on both, and the prompt, parameters, and JSON structure count too.
+
+**What the refusal looks like.** `413`, with `invalid_input` on `X-Comfy-Error-Type` and `X-Comfy-Request-Id` set as on any other response. The body is a [`RouterErrorResponse`](/development/comfy-router/reference#routererrorresponse) whose `detail` describes the bound that was exceeded. Branch on `error_type` rather than parsing `detail`, and treat what the API returns as authoritative if it and this page ever disagree about the figure. Router raises the refusal before dispatching anything, so no generation ran and nothing was charged.
+
+The cap applies to every request, whether or not it carries an `Idempotency-Key`. It is not an idempotency limit, and re-sending the same key does not change the outcome: a body that is too large is too large on every attempt.
+
+**A provider can impose a lower limit of its own, and at this cap it usually does.** Providers publish their own bounds on inline media, and the binding constraint is whichever is smaller. Google's models, for example, accept up to 20 MB (decimal, 20,000,000 bytes) of inline payload, and the `Size limit: 20MB` line on the Google model pages is that per-field Google bound quoted from Google's own specification, not Router's bound on the whole request body. Router's cap sits above every partner bound it fronts deliberately, so for a single inline asset the provider's own limit is normally what you meet first; Router's cap binds across several assets in one body. A body that clears Router's cap but exceeds a provider's own limit is refused by the provider rather than by Router, and it comes back as a provider error rather than a `413`.
 
 ## Requests are rate limited per caller
 

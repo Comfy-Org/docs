@@ -68,6 +68,9 @@ tags:
   - name: user
     description: |
       User account information and personal data storage.
+  - name: billing
+    description: |
+      Workspace credit balance and billed usage reporting.
   - name: system
     description: |
       Server status, health checks, and system information.
@@ -88,6 +91,7 @@ x-tagGroups:
   - name: Account
     tags:
       - user
+      - billing
       - system
 
 paths:
@@ -2333,6 +2337,100 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/billing/usage/timeseries:
+    get:
+      tags:
+        - billing
+      summary: Get workspace usage over time
+      description: |
+        Returns billed usage for the workspace the API key belongs to, split into
+        time buckets and grouped by model, endpoint, or product. Use it to
+        reconcile spend, attribute cost across models, or feed an internal cost
+        report.
+
+        **Units.** `cost_micros` and `spend_micros` are millionths of a US dollar,
+        so divide by 1,000,000 to get dollars. The fields under `summary.balance`
+        are the exception: despite their `_micros` suffix they are **cents**, so
+        divide those by 100.
+
+        **Freshness.** Figures are drawn from your invoices rather than from live
+        request traffic, so very recent usage may not appear yet. Treat this as a
+        reporting surface, not a real-time meter.
+
+        **Empty results.** A workspace that has not been billed yet returns empty
+        `groups`, `buckets`, and `breakdown` arrays with a 200, not an error.
+      operationId: getBillingUsageTimeSeries
+      parameters:
+        - name: group_by
+          in: query
+          required: false
+          description: How to group spend within each time bucket.
+          schema:
+            type: string
+            enum: [model, endpoint, product]
+            default: model
+          example: model
+        - name: granularity
+          in: query
+          required: false
+          description: Width of each time bucket.
+          schema:
+            type: string
+            enum: [hour, day, month]
+            default: month
+          example: day
+        - name: starting_on
+          in: query
+          required: false
+          description: Start of the range, inclusive (RFC 3339). Overrides months when set.
+          schema:
+            type: string
+            format: date-time
+          example: '2026-08-01T00:00:00Z'
+        - name: ending_before
+          in: query
+          required: false
+          description: End of the range, exclusive (RFC 3339). Defaults to the current hour.
+          schema:
+            type: string
+            format: date-time
+          example: '2026-09-01T00:00:00Z'
+        - name: months
+          in: query
+          required: false
+          description: How many months back to report, counted from ending_before. Ignored when starting_on is set.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 24
+            default: 6
+          example: 3
+      responses:
+        '200':
+          description: Success - Usage returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageTimeSeries'
+        '400':
+          description: Invalid time range - starting_on must be before ending_before
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -3730,3 +3828,149 @@ components:
     #     - prompt_id: string (uuid)
     #     - parent_node_id: string | null
     #   - image_data: raw JPEG or PNG bytes
+
+    UsageTimeSeries:
+      type: object
+      description: Billed usage for one workspace over a time range.
+      required:
+        - group_by
+        - granularity
+        - starting_on
+        - ending_before
+        - groups
+        - buckets
+        - breakdown
+        - summary
+      properties:
+        group_by:
+          type: string
+          enum: [model, endpoint, product]
+          description: How spend was grouped, echoing the request.
+        granularity:
+          type: string
+          enum: [hour, day, month]
+          description: Width of each bucket, echoing the request.
+        starting_on:
+          type: string
+          format: date-time
+          description: Start of the reported range, inclusive.
+        ending_before:
+          type: string
+          format: date-time
+          description: End of the reported range, exclusive.
+        groups:
+          type: array
+          description: |
+            Every group key present in the range, ordered by total spend, highest
+            first. Use it to keep series in a stable order across buckets.
+          items:
+            type: string
+        buckets:
+          type: array
+          description: |
+            One entry per group per time bucket, oldest bucket first. A group with
+            no spend in a bucket is omitted rather than reported as zero.
+          items:
+            $ref: '#/components/schemas/UsageBucket'
+        breakdown:
+          type: array
+          description: Total spend per group across the whole range.
+          items:
+            $ref: '#/components/schemas/UsageBreakdownRow'
+        summary:
+          $ref: '#/components/schemas/UsageSummary'
+
+    UsageBucket:
+      type: object
+      description: Spend for one group within one time bucket.
+      required:
+        - period_start
+        - period_end
+        - group_key
+        - cost_micros
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          description: Start of the bucket, inclusive.
+        period_end:
+          type: string
+          format: date-time
+          description: End of the bucket, exclusive.
+        group_key:
+          type: string
+          description: |
+            The model, endpoint, or product this row covers, depending on
+            group_by. Spend that carries no such label falls back to the product
+            name, or to "Other".
+          example: google/nano-banana-2
+        cost_micros:
+          type: number
+          format: double
+          description: Spend in millionths of a US dollar. Divide by 1,000,000 for dollars.
+          example: 1250000
+
+    UsageBreakdownRow:
+      type: object
+      description: Total spend for one group across the whole reported range.
+      required:
+        - group_key
+        - cost_micros
+        - share
+      properties:
+        group_key:
+          type: string
+          description: The model, endpoint, or product this row covers, depending on group_by.
+          example: google/nano-banana-2
+        cost_micros:
+          type: number
+          format: double
+          description: Spend in millionths of a US dollar. Divide by 1,000,000 for dollars.
+          example: 1250000
+        share:
+          type: number
+          format: double
+          description: This group's fraction of total spend, between 0 and 1.
+          example: 0.42
+
+    UsageSummary:
+      type: object
+      required:
+        - spend_micros
+      properties:
+        spend_micros:
+          type: number
+          format: double
+          description: |
+            Total spend across the reported range, in millionths of a US dollar.
+            Divide by 1,000,000 for dollars.
+          example: 2975000
+        balance:
+          $ref: '#/components/schemas/UsageBalance'
+
+    UsageBalance:
+      type: object
+      description: |
+        Credit available to the workspace right now. Omitted when no balance could
+        be read. Every amount here is in **cents**, despite the `_micros` suffix -
+        divide by 100 for dollars.
+      properties:
+        amount_micros:
+          type: number
+          format: double
+          description: Total credit available, in cents.
+          example: 4250
+        prepaid_balance_micros:
+          type: number
+          format: double
+          description: Credit bought through top-ups, in cents.
+          example: 2250
+        cloud_credit_balance_micros:
+          type: number
+          format: double
+          description: Credit granted by an active subscription, in cents.
+          example: 2000
+        currency:
+          type: string
+          description: ISO 4217 currency code, uppercased.
+          example: USD
