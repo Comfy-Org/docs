@@ -520,7 +520,7 @@ function deliveryTabs(model: string, sync: string, queued: string): string {
 ${sync}
   </Tab>
   <Tab title="Queue and collect later">
-${queueNotice.body}The same body, sent to \`POST ${BASE_URL}${ROUTE}/${model}/requests\`. Router answers \`201\` with a \`request_id\` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/api#queued-delivery) walks through status, cancellation and collection.
+${queueNotice.body}The same body, sent to \`POST ${BASE_URL}${ROUTE}/${model}/requests\`. Router answers \`201\` with a \`request_id\` as soon as the run is admitted, and the result is collected once it is ready, from this process or another one. [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
 
 ${queued}
   </Tab>
