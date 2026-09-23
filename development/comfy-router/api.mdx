@@ -1,21 +1,10 @@
 ---
 title: "Using the Comfy Router API"
 sidebarTitle: "Using the Router API"
-description: "Choose models, inspect schemas, call Router safely, and handle results, errors, retries, and billing."
+description: "Discover models, inspect schemas, run synchronously or queue requests, and handle results, errors, retries, and billing."
 ---
 
-import SdkSurfaces from "/snippets/sdk/surfaces.mdx";
-import SdkVersions from "/snippets/sdk/versions.mdx";
-
 Choose a model, inspect its schema, and call `POST /v2/models/{provider}/{model}`. The route and authentication stay the same across models.
-
-## Which client you are holding
-
-<SdkSurfaces />
-
-Everything on this page is the first row: Comfy Router. If what you want is to run a whole ComfyUI graph rather than call one partner model, that is the second row, it is in the same package, and it starts at [Comfy SDKs](/development/api-development/sdks).
-
-<SdkVersions />
 
 ## Discover the catalog
 
@@ -105,6 +94,280 @@ Router returns each model's terminal result shape. There is no common image, vid
 
 Some asset URLs are rehosted by Comfy; others remain provider URLs or inline bytes. Check [result assets](/development/comfy-router/reference#result-assets) and download expiring assets promptly. Replays do not renew URLs.
 
+## Queued delivery
+
+`POST /v2/models/{provider}/{model}` holds the connection until the model finishes. Queued delivery takes the same model ID and the same native request body, but returns as soon as Router has admitted the run. You get a `request_id` back at once and collect the result when it is ready, from the same process or another one.
+
+**The synchronous route is bounded at 10 minutes.** Router's default deadline is configurable per deployment. A synchronous call that reaches it is cut off with `504` / `deadline_exceeded`, whether or not the provider is still working. Queue a run if it may exceed the deadline or your caller cannot hold a connection open that long. See [Calls are cut off at a server deadline](/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline) for what the deadline does and does not tell you about billing.
+
+Use the queue when a generation can outlast the connection you can hold, when a web request has to return now, when you submit in one process and collect in another, or when you want many generations in flight at once. Ordering, admission, retries, timeouts, billing and expiry are all decided on the server. The SDKs add polling and ergonomics on top, nothing else.
+
+### Choose a delivery mode
+
+| | Synchronous | Queued |
+| --- | --- | --- |
+| Route | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
+| Answer | `200` with the model's native output | `201` with a `request_id` and three URLs |
+| Result | In the response | Collected later, byte for byte the same output |
+| Time bound | Router's [10-minute deadline](/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline), then `504` / `deadline_exceeded` | None on the run. The finished result is [kept 24 hours](#idempotency-and-billing) |
+
+The SDKs (`comfy-sdk` and `@comfyorg/sdk`, 0.3.0 or later) expose the queue as three methods next to `run`:
+
+- **`submit(model, body)`** sends the request and returns a handle at once. The handle carries `status()`, `get()`, `cancel()` and an event iterator (`iter_events()` in Python, `events()` in TypeScript).
+- **`subscribe(model, body, ...)`** is submit, poll and collect in one call, with a progress callback.
+- **`handle(model, request_id)`** rebuilds a handle in another process from the two IDs, with no call made.
+
+Both ids are needed everywhere because both address the request: the route is `/v2/models/{provider}/{model}/requests/{request_id}`.
+
+<Note>
+  `events()` here is **not** the Comfy Cloud client's `job.events()`. This one polls the status route and yields queue observations (status and queue position) for a Router request. The Cloud one is a live SSE stream of a ComfyUI workflow job carrying progress, previews and outputs. `subscribe()` is a third thing again: not an iterator at all, but submit, poll and collect folded into one call. See [`events()` is not `subscribe()`](/development/api-development/sdks#events-is-not-subscribe).
+</Note>
+
+### Queue routes
+
+| Route | Answer |
+| --- | --- |
+| `POST /v2/models/{provider}/{model}/requests` | `201` with `request_id`, `status`, `queue_position`, `status_url`, `response_url`, `cancel_url` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200` with the current `status` and `queue_position`, plus a `Retry-After` hint |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | `200` with the model's native output once finished, `202` with the status body while it is not |
+| `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED`, or `409` `ALREADY_COMPLETED` |
+
+`status` is one of `IN_QUEUE`, `IN_PROGRESS` or `COMPLETED`. There is no separate failed or cancelled status: a request that did not succeed is `COMPLETED` carrying an `error_type`, so branch on the presence of that field, not on a fourth status value. The SDKs do this for you: `get()` raises or rejects with the typed Router error instead of handing the failure back as a result.
+
+There are no progress events, webhooks or priority levels: the status route is how you follow a request. The [API reference](/development/comfy-router/reference#endpoints) carries the full contract for each route.
+
+### Submit and collect a request
+
+This queues the same request the [quickstart](/development/comfy-router/quickstart) sends and collects the image. Export your key as `COMFY_API_KEY` first.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+    # Poll until the request completes, waiting the Retry-After the server names.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # The provider's own payload, the same value models.run() returns.
+    # A request that failed or was cancelled raises the typed Router error here.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type FluxResult = { result: { sample: string } };
+const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
+  prompt: "a red teapot on a windowsill, morning light",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+BASE="https://api.comfy.org/v2/models/bfl/flux-2-pro"
+
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+
+# 4. Cancel a request that has not finished. A request, not a guarantee.
+curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+
+Every [model page](/development/comfy-router/models) carries this shape for its own model under **Queue and collect later**, beside the synchronous snippet.
+
+#### Follow progress and collect in one call
+
+When you do want to wait but also want to show progress, `subscribe` folds submit, poll and collect into one call:
+
+<CodeGroup>
+```python Python
+def on_update(update):
+    print(update.status, update.queue_position)
+
+result = client.models.subscribe(
+    "bfl/flux-2-pro",
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    on_queue_update=on_update,
+    timeout=300,
+)
+```
+
+```typescript TypeScript
+const result = await comfy.models.subscribe<FluxResult>(
+  "bfl/flux-2-pro",
+  { prompt: "a red teapot on a windowsill, morning light" },
+  {
+    onQueueUpdate: (update) => console.log(update.status, update.queuePosition),
+    timeoutMs: 300_000,
+  },
+);
+```
+</CodeGroup>
+
+The timeout is a client-side bound with no server-side meaning. When it runs out, `subscribe` makes one best-effort cancel before raising. A cancel only takes effect on a request that has not started running: a generation already in flight at the partner completes and is charged whether or not anyone collects it. Use `submit` when the request should outlive the caller.
+
+#### Collect from another process
+
+Store the `request_id` next to the model ID. Both are needed to rebuild a handle, and no call is made until you use it.
+
+<CodeGroup>
+```python Python
+handle = client.models.handle("bfl/flux-2-pro", request_id)
+result = handle.get()
+```
+
+```typescript TypeScript
+const handle = comfy.models.handle<FluxResult>("bfl/flux-2-pro", requestId);
+const result = await handle.get();
+```
+</CodeGroup>
+
+#### Check status or cancel
+
+`status()` is one poll and returns the current state. `cancel()` asks the server to stop a request that has not finished. It is a request, not a guarantee: a run already on the wire at the partner may complete anyway, and the next `status()` is what is true.
+
+<CodeGroup>
+```python Python
+update = handle.status()
+print(update.status, update.queue_position, update.error_type)
+
+handle.cancel()
+```
+
+```typescript TypeScript
+const update = await handle.status();
+console.log(update.status, update.queuePosition, update.errorType);
+
+await handle.cancel();
+```
+</CodeGroup>
+
+#### Async Python
+
+`AsyncComfy` mirrors every name, argument and argument order. There is no `submit_async`, for the same reason there is no `run_async`.
+
+```python
+from comfy_sdk import AsyncComfy
+
+async with AsyncComfy() as client:
+    handle = await client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    async for update in handle.iter_events():
+        print(update.status, update.queue_position)
+    result = await handle.get()
+```
+
+#### Errors the SDKs raise
+
+A request that finished without succeeding is reported as `COMPLETED` with an `error_type`. `get()` and `subscribe()` turn that into the typed Router error for the bucket: the classes in `comfy_sdk.router_exceptions` in Python, and `routerErrors.*` in TypeScript. The event iterator does not raise for that case, because it is a view of the queue's progress: a completion carrying an `error_type` is yielded as the last observation, and `get()` is what collects. A `403` `not_enabled` on submit arrives as `NotEnabled` and is terminal, so the SDKs do not retry it.
+
+### Queue response shapes
+
+**Submit, `201`.** `status` is always `IN_QUEUE` at this point. The three URLs are absolute and are authenticated with the same key as the submit.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_QUEUE",
+  "queue_position": 3,
+  "status_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status",
+  "response_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "cancel_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel"
+}
+```
+
+`request_id` is also the value of the submit's `X-Comfy-Request-Id` header. Keep the model ID next to it: the request is addressed by both.
+
+**Status, `200`.** The same shape, with the current state. `queue_position` counts the requests ahead of yours and reaches `0` when the run is at the front. `Retry-After` on this response is Router's estimate of when polling again is worth the round trip. It is a hint, not a bound, and a request at the back of the queue is told to wait longer than one already running. Polling faster learns nothing earlier and spends your own rate-limit allowance.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_PROGRESS",
+  "queue_position": 0,
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+A request that finished without succeeding is `COMPLETED` with an `error_type`, carrying the same coarse bucket the result read puts on `X-Comfy-Error-Type`. The field is absent on success rather than `null`.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "COMPLETED",
+  "error_type": "content_policy_violation",
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+**Result.** `200` carries the model's own native output, byte for byte what the synchronous route returns for the same model and input, under the provider's own `Content-Type`. While the request is not finished the read answers `202` with the status body above, so a client that only polls the result URL parses one type. A request that failed comes back as an error response with `X-Comfy-Error-Type` set, the same buckets as the synchronous route.
+
+**Cancel.** `202` with `CANCELLATION_REQUESTED` means the ask was accepted, not that the run has stopped. A run already on the wire at the partner may complete anyway, and a partner generation that completes is charged whether or not anyone collects it. Read the status afterwards: a cancellation that took effect shows as `COMPLETED` with `error_type: cancelled`. A request that aged out before it could run shows `queue_timeout` the same way. A request that had already finished answers `409` with `ALREADY_COMPLETED`.
+
+### Idempotency and billing
+
+- **Same charge as the synchronous route.** You are billed when the provider bills Comfy. Time spent waiting in the queue is not charged.
+- **One `Idempotency-Key` per submit.** The SDK mints a fresh key per `submit` call, so two deliberate submits of the same input are two requests. A retry of the same call under the same key does not queue a second run: it returns the original handle with `Idempotent-Replayed: true`. Pass your own key when a lost response could have cost you the `request_id`. See [Headers](/development/comfy-router/headers).
+- **Results expire.** A finished request is kept for 24 hours after it completes. After that, the status and result reads answer `410` and the result is gone. Collect promptly and download any asset URLs the output carries.
+- **Polls are requests too.** Status and result reads count towards the [per-caller request rate](/development/comfy-router/limitations#requests-are-rate-limited-per-caller). Honour `Retry-After` rather than polling on a fixed short interval.
+
+### Queue error responses
+
+| Status | `X-Comfy-Error-Type` | Meaning |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | The workspace cannot fund the run. Nothing is queued or charged, and the same `Idempotency-Key` can be re-sent once it is funded. |
+| `403` | `not_enabled` | This caller cannot use the queue: a key with no workspace behind it (legacy keys that predate workspaces), a bring-your-own-key request, or a model the queue cannot run. Terminal for that request, do not retry. |
+| `404` | `model_not_found` | The `{provider}/{model}` ID resolves to no Router model. |
+| `404` | `request_not_found` | No request with that ID exists for this caller and model. |
+| `409` | `concurrency_limit_exceeded` | The same `Idempotency-Key` is still being admitted. Wait the `Retry-After` and re-send the same key to get the original handle. |
+| `409` | `invalid_input` | The `Idempotency-Key` is held for a different request. Send this one under a new key. |
+| `409` | `ALREADY_COMPLETED` in the body | On the cancel route only: the request had already finished, so there was nothing to cancel. |
+| `410` | | The request existed and is past its retention window, 24 hours after it completed. Permanent for that ID. |
+| `422` | `invalid_input` | The model rejected the input. The body carries the per-field detail, exactly as on the synchronous route. |
+
+Every error response carries `X-Comfy-Request-Id`. Quote it when you contact support.
 ## Handle errors, retries, and billing
 
 ### Read errors defensively
@@ -237,7 +500,7 @@ Do not mint a brand-new key just because a call timed out or the connection drop
 
 #### Timeouts and collection
 
-One Router call may hold the connection for 10 minutes by default. Set your client timeout above that bound so you keep the typed `504` and the request ID rather than an opaque local abort. If your application cannot hold a connection that long, [queued delivery](/development/comfy-router/queue) returns a `request_id` at once and lets you collect the result later.
+One Router call may hold the connection for 10 minutes by default. Set your client timeout above that bound so you keep the typed `504` and the request ID rather than an opaque local abort. If your application cannot hold a connection that long, [queued delivery](#queued-delivery) returns a `request_id` at once and lets you collect the result later.
 
 `deadline_exceeded` is Router's waiting limit; `provider_timeout` is the provider's deadline. A provider generation that completes can be billed even if the caller received a timeout or disconnected. Client cancellation stops the wait and SDK retries, but does not necessarily cancel accepted provider work.
 
@@ -307,5 +570,6 @@ Provider payloads may include their own cost or usage numbers; those are not the
 ## Next
 
 - [Quickstart](/development/comfy-router/quickstart): installation, invocation, and saving the image.
-- [Queued delivery](/development/comfy-router/queue): submit a request, follow its status, collect the result or cancel it without holding the connection.
+- [Models](/development/comfy-router/models): browse the catalog and inspect model-specific request examples.
+- [Headers](/development/comfy-router/headers): authentication, idempotency, request IDs, and retry pacing.
 - [API reference](/development/comfy-router/reference): endpoint parameters, schemas, and response codes.
