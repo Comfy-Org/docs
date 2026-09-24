@@ -145,19 +145,28 @@ interface TranslationConfig {
 const config = loadI18nConfig() as TranslationConfig;
 const pathFilterOpts = { languages: config.languages, skip_paths: config.skip_paths };
 
+const firstConfigured = (...values: Array<string | undefined>) =>
+  values.find((value) => value?.trim())?.trim();
+
 const BASE_URL =
-  process.env.TRANSLATE_API_BASE_URL ??
-  process.env.TRANSLATE_CJK_BASE_URL ??
+  firstConfigured(
+    process.env.TRANSLATE_API_BASE_URL,
+    process.env.TRANSLATE_CJK_BASE_URL
+  ) ??
   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 const API_KEY =
-  process.env.TRANSLATE_API_KEY ??
-  process.env.DEEPSEEK_API_KEY ??
-  process.env.TRANSLATE_CJK_API_KEY ??
-  process.env.DASHSCOPE_API_KEY ??
+  firstConfigured(
+    process.env.TRANSLATE_API_KEY,
+    process.env.DEEPSEEK_API_KEY,
+    process.env.TRANSLATE_CJK_API_KEY,
+    process.env.DASHSCOPE_API_KEY
+  ) ??
   "";
 const MODEL =
-  process.env.TRANSLATE_API_MODEL ??
-  process.env.TRANSLATE_CJK_MODEL ??
+  firstConfigured(
+    process.env.TRANSLATE_API_MODEL,
+    process.env.TRANSLATE_CJK_MODEL
+  ) ??
   "qwen-mt-plus";
 const CONCURRENCY = Number(
   process.env.TRANSLATE_CONCURRENCY ??
