@@ -18,15 +18,17 @@ Push **draft** release notes to Strapi (`release-notes` content type). Docs chan
 
 ## Hard gate: Cloud push / publish (ask every time)
 
-Whenever the user asks to **push**, **sync**, or **publish** to CMS (including phrasing like “发 CMS”“同步到 CMS”“发布吧”), agents **must**:
+Whenever the user asks to **push**, **sync**, or **publish** to CMS (in any language), agents **must**:
 
 1. Default to **`--project comfyui` only**. Do **not** run `cms:sync` / `cms:publish` / `cms:preview` for cloud in the same turn as the request.
-2. **Stop and ask a second confirmation about Cloud**, even if the user already mentioned Cloud links, templates, or “两边都发”. Ask in plain language, for example:
-   > Cloud 这次要一起推到 CMS 吗？请你手动确认 Cloud staging（链接和文案）没问题后再回复确认；未确认前我只处理 comfyui。
-3. Run **`--project cloud`** for sync/publish/preview **only after** the user replies with an explicit yes for Cloud in **this** conversation turn chain (e.g. “Cloud 确认推”“cloud 也同步”). Linking shortlinks earlier, preparing staging, or saying “发 CMS” alone is **not** Cloud approval.
+2. **Stop and ask a second confirmation about Cloud**, even if the user already mentioned Cloud links, templates, or “push both”. Ask in plain language, for example:
+   > Should Cloud go to CMS this time as well? Please check Cloud staging (links and copy) yourself, then confirm. Until you confirm, I will only handle comfyui.
+3. Run **`--project cloud`** for preview/sync/publish **only after** the user replies with an explicit yes for Cloud in **this** conversation turn chain (e.g. “yes, push Cloud”, “cloud too”). Linking shortlinks earlier, preparing staging, or saying “push to CMS” alone is **not** Cloud approval.
 4. If unsure, ask again. Never infer Cloud approval from prior releases, PR text, or that Cloud staging already exists.
 
-`cms:prepare:en` / `cms:prepare:locales` may still prepare both projects’ staging files. The gate applies to **Strapi push and publish** (`cms:preview`, `cms:sync`, `cms:publish`), not to local staging generation.
+`cms:prepare:en` / `cms:prepare:locales` may still prepare both projects’ staging files. The gate applies to **Strapi preview, push, and publish** (`cms:preview`, `cms:sync`, `cms:publish`), not to local staging generation.
+
+Write this skill and related CMS agent docs in **English**. Match the user’s language only when asking the confirmation question in chat.
 
 ## Architecture
 
@@ -41,7 +43,7 @@ staging/en/changelog/index.mdx         ← simplified popup EN → **review & ap
         ▼  Step 2: pnpm cms:prepare:locales
 staging/{zh,ja,ko,fr,ru,es}/…          ← translated from staging EN → **review & approve**
         │
-        ▼  Step 3: pnpm cms:preview → cms:sync  (only after user confirms)
+        ▼  Step 3: pnpm cms:preview / cms:sync -- --project comfyui  (only after user confirms)
 Strapi CMS (draft) → manual Publish → published-versions.json
 ```
 
@@ -268,17 +270,24 @@ Requires **Bun**. Loads `.env.local` automatically.
    pnpm cms:publish -- --project comfyui v0.25.1
    ```
 
-6. **Cloud is separate (hard gate)**: before any cloud `cms:preview` / `cms:sync` / `cms:publish`, **ask the user to manually confirm Cloud** (see **Hard gate: Cloud push / publish**). Do not treat “发 CMS” or pasted Cloud URLs as that confirmation. Only then: `pnpm cms:sync -- --project cloud v0.25.1` (and publish the same way if they ask).
+6. **Cloud is separate (hard gate)**: before any cloud `cms:preview` / `cms:sync` / `cms:publish`, **ask the user to manually confirm Cloud** (see **Hard gate: Cloud push / publish**). Do not treat “push to CMS” or pasted Cloud URLs as that confirmation. Only then:
+
+   ```bash
+   pnpm cms:preview -- --project cloud v0.25.1
+   pnpm cms:sync -- --project cloud v0.25.1
+   pnpm cms:publish -- --project cloud v0.25.1   # only if they asked to publish
+   ```
 
 7. Commit `.github/scripts/cms/staging/` and `.github/scripts/cms/published-versions.json` after publish.
 
 ### Catch up all unpublished versions locally
 
 ```bash
-pnpm cms:prepare:en -- --force              # Step 1: all unpublished EN
-pnpm cms:prepare:locales -- --force         # Step 2: all locales
-pnpm cms:preview
-pnpm cms:sync                               # Step 3: after review
+pnpm cms:prepare:en -- --force                         # Step 1: all unpublished EN
+pnpm cms:prepare:locales -- --force                    # Step 2: all locales
+pnpm cms:preview -- --project comfyui
+pnpm cms:sync -- --project comfyui                     # Step 3: after review (comfyui only)
+# Cloud preview/sync/publish: only after Hard gate confirmation, with --project cloud
 ```
 
 ### After prompt or config changes
