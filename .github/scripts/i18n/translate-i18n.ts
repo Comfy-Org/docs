@@ -447,6 +447,7 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "The English source is authoritative — always follow it for meaning.",
     "If a current translation is provided, use it as context: preserve wording where the English is unchanged; only update sections that differ from the English.",
     "Preserve ALL MDX/JSX syntax exactly: component tags, import statements, code blocks, URLs, frontmatter YAML structure.",
+    "Preserve every inline code span and numeric value exactly as written. They may contain model IDs, prices, API fields, or version numbers.",
     "For Markdown headings, preserve custom anchor syntax like {#workflow-id} exactly. Never convert it to visible inline code such as (`workflow_id`). The {#...} anchor must remain outside the translated heading text.",
     "DO translate: title, description, sidebarTitle in frontmatter; all prose; Card title/children text; table content; list items.",
     "Do NOT translate or rewrite code inside ``` fenced blocks: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag and the closing fence must stay byte-for-byte identical to the English source.",
