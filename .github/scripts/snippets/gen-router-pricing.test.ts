@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { findPricingMatch, loadCatalog, loadSourceRows, render } from "./gen-router-pricing.ts";
 
 describe("Router pricing catalog", () => {
@@ -6,7 +7,10 @@ describe("Router pricing catalog", () => {
   const page = render();
 
   test("covers every generated Router model ID", () => {
-    expect(catalog.length).toBe(212);
+    const pricingModelIds = JSON.parse(readFileSync("router-pricing/prices.json", "utf8"))
+      .models.map((model: { id: string }) => model.id)
+      .sort();
+    expect(pricingModelIds).toEqual(catalog.map((model) => model.id).sort());
     expect(page).toContain("GPT 5");
     expect(page).toContain("Nano Banana Pro");
     expect(page).toContain("Kling V3");
