@@ -201,8 +201,10 @@ configure it in `.env.local`) before running the command. Model IDs and numeric
 pricing values are preserved by the translation instructions.
 
 The localized files are regular translation outputs under `ja/`, `zh/`, and
-`ko/`; commit them with the generated English page so the PR sync check sees
-them together.
+`ko/`. For same-repository pull requests, the Router pricing workflow runs this
+generation automatically and commits the locale files to the PR branch. For
+fork pull requests, run the command locally with a configured API key and
+commit the locale files with the English page.
 
 ### Sync hashes after manual edits
 

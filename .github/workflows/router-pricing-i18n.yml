@@ -1,0 +1,62 @@
+name: Generate Router pricing translations
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/scripts/i18n/translate-i18n.ts'
+      - '.github/scripts/i18n/translation-config.json'
+      - '.github/scripts/snippets/gen-router-pricing.ts'
+      - '.github/workflows/router-pricing-i18n.yml'
+      - 'development/comfy-router/pricing.mdx'
+      - 'package.json'
+      - 'router-pricing/prices.json'
+      - 'tutorials/partner-nodes/pricing.mdx'
+
+concurrency:
+  group: router-pricing-i18n-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  translate:
+    # Fork PRs cannot access the translation key or push to the source branch.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the PR branch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Regenerate pricing data, English page, and locale pages
+        env:
+          TRANSLATE_API_KEY: ${{ secrets.TRANSLATE_API_KEY }}
+          TRANSLATE_API_BASE_URL: ${{ vars.TRANSLATE_API_BASE_URL }}
+          TRANSLATE_API_MODEL: ${{ secrets.TRANSLATE_API_MODEL }}
+        run: |
+          bun run router-pricing:sync
+          bun run router-pricing:gen
+
+      - name: Commit locale pages to the PR branch
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add router-pricing/prices.json development/comfy-router/pricing.mdx ja/development/comfy-router/pricing.mdx zh/development/comfy-router/pricing.mdx ko/development/comfy-router/pricing.mdx
+          if git diff --cached --quiet; then
+            echo "Router pricing data and translations are already up to date."
+            exit 0
+          fi
+          git commit -m "Sync Router pricing translations"
+          git push origin "HEAD:refs/heads/${PR_BRANCH}"
