@@ -1,0 +1,122 @@
+name: Generate Router Docs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'openapi-v2.yaml'
+      - 'router-openapi.yaml'
+      - 'router-schemas/**'
+      - 'development/comfy-router/models/**'
+      - 'development/comfy-router/reference.mdx'
+      - 'docs.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: router-docs-generate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'chore/sync-comfy-api-v2-spec'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: python -m pip install PyYAML==6.0.2
+      - name: Generate and validate pages without write credentials
+        run: |
+          python .github/scripts/router/gen_router_reference.py router-openapi.yaml development/comfy-router/reference.mdx
+          bun run code-pages:gen --prune --validate
+          python .github/scripts/router/gen_router_reference.py router-openapi.yaml development/comfy-router/reference.mdx --check
+          bun run code-pages:check
+      - name: Package only generated changes
+        id: patch
+        run: |
+          git add -A -- development/comfy-router/reference.mdx docs.json ':(glob)development/comfy-router/models/**/code.mdx'
+          git diff --cached --binary --no-ext-diff > "$RUNNER_TEMP/generated.patch"
+          if [ -s "$RUNNER_TEMP/generated.patch" ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.patch.outputs.changed == 'true'
+        with:
+          name: router-docs-patch
+          path: ${{ runner.temp }}/generated.patch
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: generate
+    if: needs.generate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A PAT is required: pushes with GITHUB_TOKEN do not trigger the PR checks.
+      # This job never runs repository scripts or generated snippets.
+      - name: Require the docs sync credential
+        env:
+          SYNC_TOKEN: ${{ secrets.PR_GH_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo '::error::Configure PR_GH_TOKEN in Comfy-Org/docs before enabling Cloud schema-only sync.'
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: router-docs-patch
+          path: ${{ runner.temp }}/router-docs
+      - name: Apply only generated page changes
+        run: |
+          git apply --index \
+            --include='development/comfy-router/reference.mdx' \
+            --include='development/comfy-router/models/*/*/code.mdx' \
+            --include='docs.json' \
+            "$RUNNER_TEMP/router-docs/generated.patch"
+          if git ls-files --stage -- development/comfy-router/reference.mdx development/comfy-router/models docs.json | awk '$1 != "100644" { bad = 1 } END { exit !bad }'; then
+            echo '::error::Generated documentation must contain only regular files.'
+            exit 1
+          fi
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            -c core.hooksPath=/dev/null commit \
+            -m 'Keep Router pages aligned with the synced API schemas' \
+            -m 'Tested: Reference freshness and code-page snippet validation'
+      - name: Push to the same sync PR and trigger its checks
+        env:
+          SYNC_TOKEN: ${{ secrets.PR_GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.state, .head.sha] | join(" ")')
+          if [ "$current" != "open $EXPECTED_HEAD" ]; then
+            echo '::notice::The sync PR closed or changed during generation; leaving it untouched.'
+            exit 0
+          fi
+          auth=$(printf 'x-access-token:%s' "$SYNC_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c core.hooksPath=/dev/null \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force-with-lease="refs/heads/chore/sync-comfy-api-v2-spec:$EXPECTED_HEAD" \
+            origin HEAD:refs/heads/chore/sync-comfy-api-v2-spec
