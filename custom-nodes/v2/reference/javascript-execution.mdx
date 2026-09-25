@@ -1,0 +1,404 @@
+---
+title: "JavaScript execution API"
+description: "Queue control, frontend-only resolution, suppliers, and execution results."
+---
+
+<Note>
+  This page is generated from the authoritative declaration file. Do not edit it by hand. Contract SHA-256: <code>152c7fab547f</code>.
+</Note>
+
+This reference contains 22 exported declarations: `RunOptions`, `RunSubmittedEvent`, `RunSubmission`, `RunRejectionError`, `RunRejectedNode`, `RunRejectedEvent`, `AutoQueueMode`, `QueueHandle`, `InputRef`, `OutputResolution`, `ResolvedNodeView`, `ResolveView`, `Resolver`, `ResolvedSource`, `OwnInput`, `OwnOutput`, `GroupMembership`, `UnconnectedInput`, `SuppliedEdge`, `SupplyView`, `Supplier`, `ResolvedSupply`.
+
+Download the complete contract from the docs source: [TypeScript declaration](https://github.com/Comfy-Org/docs/blob/main/public/custom-nodes-sdk/v2/comfy-api.d.ts).
+
+## Contract
+
+````typescript
+// ─── queueHandle.ts ──────────────────────────────────────────────
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunOptions {
+  /**
+   * Run only these nodes and whatever feeds them, instead of the whole
+   * workflow. Empty is rejected rather than treated as "everything": a filter
+   * that matched nothing must not silently run the entire graph.
+   */
+  nodes?: readonly NodeHandle[]
+  /** How many times to run. Defaults to 1. */
+  batch?: number
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunSubmittedEvent {
+  /** Ids the backend accepted, in submission order. */
+  readonly promptIds: readonly string[]
+  /** The accepted prompts and how many backend nodes each will execute. */
+  readonly submissions?: readonly RunSubmission[]
+  /** How many submissions the backend refused. */
+  readonly rejected: number
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunSubmission {
+  readonly promptId: string
+  readonly nodeCount: number
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunRejectionError {
+  readonly type: string
+  readonly message: string
+  readonly details: string
+  readonly inputName?: string
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunRejectedNode {
+  readonly nodeId: string
+  readonly nodeType: string
+  readonly errors: readonly RunRejectionError[]
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface RunRejectedEvent {
+  readonly status?: number
+  readonly error: RunRejectionError
+  readonly nodeErrors: readonly RunRejectedNode[]
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type AutoQueueMode = 'disabled' | 'change' | 'instant'
+
+export interface QueueHandle {
+  /**
+   * Queues the current workflow, exactly as pressing Run does.
+   *
+   * Resolves once the prompt has been submitted — not when it finishes
+   * executing. `false` means another queue call was already in flight and this
+   * one was folded into it.
+   */
+  run(options?: RunOptions): Promise<boolean>
+  /**
+   * A run is about to be submitted.
+   *
+   * This is `beforeQueuing`. For a last write before the prompt is built —
+   * syncing a value the pack keeps outside the widget. Keep it synchronous:
+   * the prompt build does not wait, so work started here can lose the race.
+   */
+  /**
+   * Return a function to have it run when the attempt is over — whether the
+   * run started, was refused, or threw.
+   *
+   * For a pack that changes the graph to build the prompt and must put it back:
+   * unmute a branch, let the prompt be built, re-mute it. Pairing it with the
+   * setup rather than publishing a second top-level event is deliberate — you
+   * cannot receive the cleanup without having run the setup, and there is no
+   * second "after" member to confuse with {@link onAfterRun}, which means
+   * something different and narrower.
+   */
+  onBeforeRun(listener: () => (() => void) | void): Unsubscribe
+  /**
+   * A run was submitted. This is `afterQueued` — for advancing state that
+   * should differ on the next run.
+   *
+   * The event names what the backend accepted, so a pack can tie its own
+   * progress tracking to the run it started rather than guessing that the next
+   * execution message belongs to it. Each submission includes the exact count
+   * of executable backend nodes without exposing the built prompt. `rejected`
+   * is how many submissions the backend refused: `onBeforeRun` fires either
+   * way, so without this a pack cannot tell a run that started from one that
+   * never did.
+   */
+  onAfterRun(listener: (event: RunSubmittedEvent) => void): Unsubscribe
+  /**
+   * The backend refused a submitted prompt before execution began.
+   *
+   * This exposes prompt and per-node validation details without coupling a
+   * pack to host notifications. It does not fire for transport failures or an
+   * error raised after execution starts.
+   */
+  onRejected(listener: (event: RunRejectedEvent) => void): Unsubscribe
+  /**
+   * How many runs are waiting, including the one executing.
+   *
+   * Packs tracked this from the backend's own `status` message to re-implement
+   * `app.ui.lastQueueSize` — deciding whether a button says Run or Cancel,
+   * whether an auto-runner should submit again.
+   */
+  pending(): number
+  /** Fires whenever {@link pending} changes, with the new count. */
+  onPendingChanged(listener: (pending: number) => void): Unsubscribe
+  /**
+   * Cancels the run in progress. The rest of the queue is untouched.
+   *
+   * Packs wrapped `api.interrupt` both to call it and to notice one — a node
+   * waiting on the user needs to stop waiting when the run is cancelled.
+   * {@link onInterrupted} is that second half.
+   */
+  interrupt(): Promise<void>
+  /** Execution was interrupted, by this pack, another, or the user. */
+  onInterrupted(listener: () => void): Unsubscribe
+  /** The user-facing automatic queue mode. Both internal instant states read as `instant`. */
+  autoQueueMode(): AutoQueueMode
+  /** Changes automatic queuing. `instant` arms continuous execution. */
+  setAutoQueueMode(mode: AutoQueueMode): void
+  /** The batch count the host's own Run action will use. */
+  batchCount(): number
+  /** Changes the host Run action's batch count. */
+  setBatchCount(count: number): void
+  /**
+   * Turns off automatic queuing without cancelling the current run.
+   *
+   * A conditional workflow can use this before interrupting itself so the
+   * stopped iteration does not immediately start again.
+   */
+  disableAutoQueue(): void
+  /**
+   * Holds a run until a check finishes, and can cancel it.
+   *
+   * {@link onBeforeRun} only observes: it is a notification, and the prompt
+   * build does not wait. Packs that needed to *stop* a run — confirm an
+   * incoming prompt, validate a field, warn about a cost — wrapped
+   * `app.queuePrompt` to do it, which is the surface being retired.
+   *
+   * Return `false` to cancel. Every guard runs, and any one `false` cancels;
+   * the user is not asked twice.
+   *
+   * A guard that never settles would make the application unrunnable, so one
+   * that takes longer than a few seconds is abandoned and the run proceeds. Do
+   * not put a dialog with no timeout behind this.
+   */
+  guard(check: () => boolean | Promise<boolean>): Unsubscribe
+}
+
+// ─── resolution.ts ───────────────────────────────────────────────
+
+/**
+ * "Whatever feeds this input." The only way one resolution names another.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface InputRef {
+  readonly nodeId: string
+  readonly input: number
+}
+
+export type OutputResolution =
+  | { readonly omit: true }
+  | { readonly forwardTo: InputRef }
+  | { readonly literal: WidgetValue }
+
+/**
+ * What a resolver may see. Reads only — there is nothing here that writes.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface ResolvedNodeView {
+  readonly id: string
+  readonly type: string
+  /**
+   * The node's own properties, frozen.
+   *
+   * A broadcaster keeps its per-node opt-in here — cg-use-everywhere reads
+   * `properties.ue_properties` to decide what it may feed. Candidate inputs
+   * already carry `nodeProperties`, so without this a supplier could read
+   * every node's configuration except its own.
+   */
+  readonly properties: Readonly<Record<string, unknown>>
+  /** The groups this node sits inside — the other half of "my group". */
+  readonly groups: readonly GroupMembership[]
+  /** Muted, bypassed or normal, as `LGraphEventMode`. */
+  readonly mode: number
+  readonly color: string | undefined
+  /**
+   * This node's own inputs.
+   *
+   * `unconnectedInputs()` already describes every *other* node's slots, and a
+   * supplier needs the same of its own: "send whatever is plugged into me to
+   * every unconnected input of the same type" cannot be written without
+   * knowing what type is plugged in. Without it a supplier is type-blind and
+   * would feed a CLIP into a MODEL slot in silence.
+   *
+   * `type` is the slot's declared type; `connectedType` is what actually
+   * arrives, resolved through reroutes, and is undefined when nothing is
+   * connected.
+   */
+  readonly inputs: readonly OwnInput[]
+  /** This node's own outputs, in slot order. */
+  readonly outputs: readonly OwnOutput[]
+  widgetValue(name: string): WidgetValue | undefined
+  input(ref: string | number): InputRef | undefined
+}
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface ResolveView {
+  readonly self: ResolvedNodeView
+  nodesOfType(type: string): readonly ResolvedNodeView[]
+}
+
+/**
+ * May answer asynchronously: a pack's resolver may run in a worker, so
+ * its answer can only arrive as a promise. The prompt path awaits it; the
+ * synchronous entry points (`input.resolvedSource()`, `resolvedSupplies()`)
+ * treat a promise as unresolved and say so — see `resolution.async.test.ts`.
+ */
+export type Resolver = (
+  view: ResolveView
+) =>
+  | Record<string, OutputResolution>
+  | Promise<Record<string, OutputResolution>>
+
+/** Where an output ends up after every frontend node in the chain resolves. */
+export type ResolvedSource =
+  | {
+      readonly kind: 'output'
+      readonly nodeId: string
+      readonly output: number
+    }
+  | { readonly kind: 'literal'; readonly value: WidgetValue }
+  | { readonly kind: 'omitted'; readonly reason: string }
+
+/** An input in the graph that no link feeds. */
+/** One of a node's own inputs, as its supplier sees it. */
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface OwnInput {
+  readonly index: number
+  readonly name: string
+  /** What the user sees — `label`, else `localized_name`, else `name`. */
+  readonly label: string
+  readonly type: string
+  readonly connected: boolean
+  /** The type actually arriving, or undefined when nothing is connected. */
+  readonly connectedType: string | undefined
+  /** The node feeding this input, if any. */
+  readonly sourceNodeId: string | undefined
+}
+
+/** One of a node's own outputs, as its supplier sees it. */
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface OwnOutput {
+  readonly index: number
+  readonly name: string
+  /** What the user sees — `label`, else `localized_name`, else `name`. */
+  readonly label: string
+  readonly type: string
+}
+
+/** A group a node sits inside. */
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface GroupMembership {
+  readonly id: string
+  readonly title: string
+}
+
+export interface UnconnectedInput {
+  readonly nodeId: string
+  readonly nodeType: string
+  readonly input: number
+  readonly name: string
+  readonly type: string
+  /**
+   * What the user actually sees on the slot — `label`, else `localized_name`,
+   * else `name`. Broadcast packs match against this, not `name`, and the two
+   * differ in every non-English locale.
+   */
+  readonly label: string
+  /** The socket form of a widget rather than a plain input. */
+  readonly isWidgetInput: boolean
+  /** The owning node, for matching by title, mode, colour, or opt-in flags. */
+  readonly nodeTitle: string
+  readonly nodeMode: number
+  readonly nodeColor: string | undefined
+  /**
+   * The groups the owning node sits inside, innermost first.
+   *
+   * Broadcast packs restrict by group — "only nodes in my group", "only nodes
+   * outside it", "only groups whose title matches this regex". Membership is
+   * geometric and recomputed here, so it matches what the user sees rather
+   * than anything stored.
+   */
+  readonly nodeGroups: readonly GroupMembership[]
+  /**
+   * The owning node's properties, frozen.
+   *
+   * Broadcast packs keep their per-node opt-in here — which inputs a user has
+   * allowed to be fed. Without it a supplier can only match by type and would
+   * feed every unconnected input of that type, which is the silent
+   * wrong-broadcast failure this view exists to prevent.
+   */
+  readonly nodeProperties: Readonly<Record<string, unknown>>
+}
+
+/**
+ * An edge a node supplies into somebody else's unconnected input.
+ *
+ * `from` is the supplier's own output index, or a literal. It is deliberately
+ * not an arbitrary node reference: a node may only offer what it itself has,
+ * so one pack cannot rewire two other nodes to each other.
+ */
+export interface SuppliedEdge {
+  readonly to: InputRef
+  /**
+   * Which claim wins when several suppliers name the same input. Higher wins;
+   * defaults to 0.
+   *
+   * **Equal claims feed nothing.** Two suppliers that both say "highest
+   * priority" for one input have no correct answer, and picking either makes
+   * the prompt depend on node order — so the input is left unfed and the
+   * conflict logged. That is what the broadcast pack this exists for does, and
+   * it is the only choice that cannot silently produce a different image.
+   */
+  readonly priority?: number
+  readonly from:
+    | { readonly output: number }
+    | { readonly literal: WidgetValue }
+    /**
+     * Whatever feeds this node's own input `k` — for a node that rebroadcasts
+     * its upstream rather than producing a value.
+     *
+     * The broadcast nodes this exists for have inputs and **no outputs**, so
+     * `{ output: n }` cannot describe them: it would name a slot the backend
+     * never declared and force it to execute a node that produces nothing.
+     * Resolved exactly as `Resolver`'s `forwardTo`, so it chains through
+     * reroutes for free.
+     */
+    | { readonly forwardInput: number }
+}
+
+export interface SupplyView {
+  readonly self: ResolvedNodeView
+  nodesOfType(type: string): readonly ResolvedNodeView[]
+  /**
+   * Every unfed input in the graph — what a broadcaster matches against by
+   * type, by name, or by its own regex.
+   */
+  unconnectedInputs(): readonly UnconnectedInput[]
+}
+
+/**
+ * Answers "what do I feed", the mirror of `Resolver`'s "what feeds me".
+ *
+ * `Resolver` is demand-side: it is asked about the resolver's own outputs, and
+ * is never called for a node with none. cg-use-everywhere broadcasts a value
+ * into every matching unconnected input in the graph, which that shape cannot
+ * express at all — the nodes being fed are not the resolver, and the edges are
+ * discovered rather than declared. Hence a second, supply-side pass.
+ *
+ */
+/** May answer asynchronously, under the same rules as {@link Resolver}. */
+export type Supplier = (
+  view: SupplyView
+) => readonly SuppliedEdge[] | Promise<readonly SuppliedEdge[]>
+
+/**
+ * One winning supply after priority arbitration and source resolution.
+ */
+export interface ResolvedSupply {
+  /** The node whose supplier offered this edge. */
+  readonly supplierNodeId: string
+  /** The unconnected input the supplier won. */
+  readonly to: InputRef
+  /** The final source the prompt builder will use. */
+  readonly from: ResolvedSource
+}
+````

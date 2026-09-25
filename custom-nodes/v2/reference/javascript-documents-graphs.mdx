@@ -1,0 +1,672 @@
+---
+title: "JavaScript documents and graphs API"
+description: "Documents, graphs, groups, node handles, changes, geometry, and interactions."
+---
+
+<Note>
+  This page is generated from the authoritative declaration file. Do not edit it by hand. Contract SHA-256: <code>152c7fab547f</code>.
+</Note>
+
+This reference contains 27 exported declarations: `DocumentHandle`, `DocumentSource`, `DocumentReader`, `DocumentPhase`, `NodeInit`, `NodeQueryScope`, `NodeQuery`, `GraphHandle`, `GraphScopeHandle`, `GroupHandle`, `NodeMoveEvent`, `NodeMoveSource`, `NodeDragEndSource`, `TrackedProperty`, `NodeChangeScope`, `NodeChangeOptions`, `NodeChangeEvent`, `NodeMode`, `NodeShape`, `BadgeDef`, `Point`, `Size`, `Bounds`, `NodeSnapshot`, `SizeConstraints`, `NodeHandle`, `NodeCollections`.
+
+Download the complete contract from the docs source: [TypeScript declaration](https://github.com/Comfy-Org/docs/blob/main/public/custom-nodes-sdk/v2/comfy-api.d.ts).
+
+## Contract
+
+````typescript
+// ─── documentHandle.ts ───────────────────────────────────────────
+
+export interface DocumentHandle extends HandleCommon {
+  /**
+   * Identity of this editing session. Stable for as long as the document is
+   * open — including across undo, redo and tab switches — and never reused.
+   *
+   * Not the id inside the workflow JSON, which travels with the file, so two
+   * opens of it and any copy made outside the app all share one value. Not the
+   * path either, which is a storage address and changes on rename. Do not
+   * persist this: it means nothing in the next page load.
+   */
+  readonly id: string
+  /** Display name, without the directory or extension. */
+  readonly name: string | undefined
+  /**
+   * Storage path, for addressing the file. Undefined for a document with no
+   * file behind it yet. Changes when the user renames, so key pack state on
+   * {@link id} instead.
+   */
+  readonly path: string | undefined
+  /** Whether there are edits the user has not saved. */
+  readonly isModified: boolean
+  /**
+   * True once this editing session has ended.
+   *
+   * A handle is a snapshot of a session, and a pack may hold one across a tab
+   * close or a background unload. Check before acting on stored state rather
+   * than trusting a captured handle, exactly as for a node or a widget.
+   */
+  readonly isDeleted: boolean
+}
+
+/** What the host must supply to describe one open document. */
+export interface DocumentSource {
+  readonly sessionId: string | null
+  readonly filename?: string
+  readonly path?: string
+  readonly isModified?: boolean
+  /** Whether this is the document the editor is showing. */
+  readonly isActive?: boolean
+}
+
+/**
+ * Every document currently open, including background tabs.
+ *
+ * One reader rather than one per question: a handle has to answer for a
+ * document that is open but not on screen, and a lookup that only knew the
+ * active one would report every background tab as closed.
+ */
+export type DocumentReader = () => readonly DocumentSource[]
+
+// ─── documentLifecycle.ts ────────────────────────────────────────
+
+/**
+ * The transitions a document makes.
+ *
+ * `opened` and `closed` bracket the session's existence; `activated` and
+ * `deactivated` bracket its time on screen. A document opened in the
+ * background is `opened` without being `activated`, which is why they are
+ * separate: a pack that allocates on `opened` and releases on `closed` stays
+ * balanced no matter how the user moves between tabs.
+
+ */
+export type DocumentPhase = 'opened' | 'activated' | 'deactivated' | 'closed'
+
+// ─── graphHandle.ts ──────────────────────────────────────────────
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface NodeInit {
+  title?: string
+  position?: { x: number; y: number }
+}
+
+/**
+ * How far {@link GraphHandle.queryNodes} looks.
+ *
+ * `'visible'` is the graph on screen and the default, matching `nodes()`.
+ * `'root-and-subgraphs'` is the root graph and every subgraph *definition* —
+ * the same set `onNodeChanged`'s `'document'` scope reports over. A subgraph
+ * placed three times contributes its nodes once, which is what a pack acting
+ * on "each of my nodes" means.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export type NodeQueryScope = 'visible' | 'root-and-subgraphs'
+
+/**
+ * Which nodes {@link GraphHandle.queryNodes} should return.
+ *
+ * Every field narrows; omitting all of them returns the whole scope. They
+ * compose as AND, because the cases packs actually hand-rolled — "my nodes,
+ * anywhere in the document", "everything in this group" — are intersections.
+ *
+ * @knipIgnoreUnusedButUsedByCustomNodes
+ */
+export interface NodeQuery {
+  readonly scope?: NodeQueryScope
+  /**
+   * Node type. A string matches exactly, an array matches any of them, and a
+   * regular expression matches by pattern — which is how a pack asks for its
+   * own nodes without listing every type it ships.
+   */
+  readonly type?: string | RegExp | readonly string[]
+  /**
+   * Restrict to nodes in the graph the user is looking at.
+   *
+   * Only meaningful under `'root-and-subgraphs'`: it is the difference between
+   * "every node in the document" and "the ones the user can currently see".
+   * This is *not* a viewport test — a node scrolled off the edge of a graph
+   * the user is in is still rendered by this definition. Culling belongs to
+   * the renderer and differs between the two of them.
+   */
+  readonly rendered?: boolean
+  /** Restrict to nodes the group currently contains. */
+  readonly group?: GroupHandle
+}
+
+export interface GraphHandle {
+  readonly id: string
+  node(id: string): NodeHandle | undefined
+  nodes(): readonly NodeHandle[]
+  nodesOfType(type: string): readonly NodeHandle[]
+  /**
+   * One flat query over graph-scoped nodes.
+   *
+   * `nodes()` and `nodesOfType()` address the graph on screen, so a pack that
+   * wanted "every node of mine in this document" had to walk `root()` and each
+   * `subgraphs()` entry itself and concatenate the results — and the ones that
+   * did not simply stopped working the moment a user nested anything.
+   *
+   * Handles come from the scope that owns each node, so a node reached here
+   * under `'root-and-subgraphs'` is not `===` the one `graph.node()` returns
+   * for it. That is the same scope rule `sameEntity()` exists for; compare
+   * with `comfy.sameEntity()` rather than `===`.
+   */
+  queryNodes(query?: NodeQuery): readonly NodeHandle[]
+  add(type: string, init?: NodeInit): NodeHandle
+  remove(id: string): boolean
+  links(): readonly LinkInfo[]
+  /**
+   * The supply edges prompt execution would use in this graph right now.
+   *
+   * Re-runs the registered pure suppliers and the host's priority arbitration,
+   * returning graph-local ids suitable for {@link OutputSlotHandle.connectTo}.
+   * Exact priority ties are absent, just as they are from the prompt. The
+   * frozen snapshot never mutates the graph.
+   */
+  resolvedSupplies(): readonly ResolvedSupply[]
+  /**
+   * The nodes the user currently has selected.
+   *
+   * 15 packs read `canvas.selected_nodes` or `selectedItems` for this — a
+   * canvas internal, and the canvas is exactly what Nodes 2.0 replaces.
+   * Selection is a property of the document, so it is asked of the graph.
+   */
+  selection(): readonly NodeHandle[]
+  /**
+   * Replaces the selection with these nodes. An empty list clears it.
+   *
+   * A node a pack just created is the usual case — `LGraphCanvas.add`'s
+   * `options.select` put it straight under the user's cursor, and without this
+   * the node appears but the user has to find and click it.
+   *
+   * `add: true` extends the selection instead of replacing it.
+   */
+  select(nodes: readonly NodeHandle[], options?: { add?: boolean }): void
+  /**
+   * Pans the view so a node sits in the middle of it.
+   *
+   * Packs wrote `canvas.ds.offset` themselves to do this, which bakes in the
+   * renderer's transform and the device pixel ratio. Does not change zoom.
+   */
+  centerOn(node: NodeHandle): void
+  /**
+   * The groups on the canvas, in draw order.
+   *
+   * Packs read `graph._groups` to build a group muter, a group runner, or a
+   * navigator. A group is a rectangle plus a title: which nodes it holds is
+   * derived from what it overlaps, which is why `nodes()` is a method and not
+   * a stored list.
+   */
+  groups(): readonly GroupHandle[]
+  /**
+   * Scales the view. 1 is unzoomed.
+   *
+   * Packs saved a zoom level alongside a node to restore a view; without this
+   * a bookmark could pan but the number it stored was inert. Clamped to what
+   * the canvas allows, so a stored extreme cannot strand the user.
+   */
+  setZoom(scale: number): void
+  /**
+   * Where the pointer is, in graph space — the coordinates {@link nodeAt} and
+   * {@link NodeHandle.setPosition} use.
+   *
+   * A pack adding a node from a menu put it under the cursor. Without this the
+   * node lands at the graph origin, which on any panned view is off screen.
+   *
+   * `undefined` when there is no canvas to measure against.
+   */
+  pointerPosition(): Point | undefined
+  /**
+   * The document's root graph, even while the user is viewing a subgraph.
+   * Undefined before a document exists.
+   */
+  root(): GraphScopeHandle | undefined
+  /**
+   * The subgraph definitions in the document, each scoped to its own nodes.
+   *
+   * `nodes()` and `node()` address the graph on screen only, so a pack that
+   * must reach every node — refreshing its own nodes after a run, walking a
+   * chain — misses anything nested.
+   *
+   * Access is *through* the subgraph rather than a flattened list. Ids are
+   * allocated from the root graph's counter, so they do not collide among
+   * nodes created in one session — but a subgraph loaded from a file brings
+   * its authored ids, and `configure` raises that counter without renumbering
+   * anything. Two independently authored subgraphs can therefore carry the
+   * same id. Resolving inside the owning graph is correct either way, and does
+   * not rest on an invariant litegraph does not promise.
+   *
+   * These are definitions, not instances. A subgraph placed three times has
+   * one entry, and its nodes appear once — which is what a pack acting on
+   * "each of my nodes" wants.
+   */
+  subgraphs(): readonly GraphScopeHandle[]
+  /**
+   * Runs several mutations as one undo step.
+   *
+   * Without it, a pack that adds three nodes and wires them leaves the user
+   * pressing undo four times to get back. `graph.beforeChange()` /
+   * `afterChange()` did this by counting nesting depth.
+   *
+   * A scope rather than a pair of calls: the counter only captures when it
+   * returns to zero, so one throw between a manual `before` and `after` stops
+   * undo capturing anything at all, for the rest of the session, with nothing
+   * to show why. The scope closes on the way out either way.
+   *
+   * Synchronous on purpose. Holding the group open across an `await` would
+   * fold whatever the user did while waiting into the pack's undo step.
+   */
+  batch<T>(mutations: () => T): T
+  /**
+   * The topmost node at a point in graph space, if any.
+   *
+   * Packs building a gesture were walking every node and re-deriving its
+   * rectangle from renderer constants. The graph already knows, and its answer
+   * respects z-order, collapsed nodes and the active renderer's layout.
+   *
+   * Answers against the *rendered* layout, which is the only sensible reading
+   * of "what is under this point" — and is why it is not refreshed per call: a
+   * gesture asks this on every pointer move, and remeasuring every node each
+   * time would be the expensive mistake. Before the first frame it finds
+   * nothing.
+   */
+  nodeAt(point: { x: number; y: number }): NodeHandle | undefined
+  /**
+   * A copy of a node, carrying its widget values and properties, added to the
+   * graph without links.
+   *
+   * `add(type)` only makes a fresh node of a type, so a pack duplicating a
+   * configured node — a prompt box the user has filled in — had no way to keep
+   * what it contained. Links are deliberately not copied: a duplicate wired
+   * into the same places is a different operation, and the caller can connect
+   * it themselves.
+   *
+   * `undefined` if the node is gone, or if its type is not registered — the
+   * copy is built through the registry, so there is nothing to build from.
+   * Widget values carry over only for a type that serializes them, which every
+   * backend-registered type does.
+   */
+  duplicate(
+    id: string,
+    position?: { x: number; y: number }
+  ): NodeHandle | undefined
+  /**
+   * Rebuilds a node, optionally as another type, keeping what the user set and
+   * every link that still fits. Replacing with the same type repairs a node
+   * whose registered definition changed without discarding its state.
+   * `undefined` if the node is gone; throws if the type is not registered.
+   *
+   * This is a real feature four packs ship — "Convert to Context Big", "Swap to
+   * KSampler (Efficient)" — and all four hand-rolled it out of `graph.links`,
+   * `getNodeById` and `LiteGraph.createNode`, which is most of what this
+   * migration exists to delete. All four also got it wrong: one drops every
+   * widget value and hardcodes "slot 0 only", the other recurses through
+   * requestAnimationFrame forever on an inverted comparison and leaves a
+   * separate undo step for the add, each connection, and the remove.
+   *
+   * Position, custom title, colour, mode, declared properties and widget values
+   * carry over by name. Size is the larger of what the user set and what the new
+   * type needs, so a node that grew more slots is not clipped. Links are re-made
+   * by slot name, falling back to the same index; type checking is the ordinary
+   * connection rule, so a link that no longer fits is dropped and warned about
+   * rather than forced. The whole swap is one undo step.
+   */
+  replace(id: string, type: string): NodeHandle | undefined
+  /**
+   * Changes when the graph does: nodes added, removed or reconfigured, links
+   * connected or disconnected, slots and subgraph inputs/outputs altered, and
+   * the node flags a reader can see — collapsed, pinned, advanced.
+   *
+   * Hold one and compare it later to learn whether anything moved since. That
+   * is the whole contract: an opaque token, not a count. Do not subtract two
+   * of them, do not expect it to start anywhere in particular, and do not
+   * expect consecutive changes to differ by one. Coalesced edits are free to
+   * advance it once, and `batch()` exists precisely so they can.
+   *
+   * A widget value committed by the user or through
+   * `WidgetHandle.setValue()` advances it through the same host protocol. Data
+   * a pack keeps outside graph and widget state does not; a canvas widget
+   * holding such data has `redraw()`.
+   */
+  readonly version: number
+  /** Diagnostics: live handle-cache slots across all kinds. */
+  readonly cacheSize: number
+}
+
+/**
+ * A subgraph definition, scoped to its own contents.
+ *
+ * Deliberately narrower than {@link GraphHandle}: adding, selecting, centring
+ * and zooming all address what the user is looking at, and a subgraph
+ * definition is not that. This is for reading and reaching nodes.
+ */
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export interface GraphScopeHandle {
+  /** Stable across every instance of this subgraph. */
+  readonly id: string
+  readonly name: string | undefined
+  nodes(): readonly NodeHandle[]
+  node(nodeId: string): NodeHandle | undefined
+  /**
+   * The groups drawn inside this subgraph.
+   *
+   * A group muter or runner that skipped these reported nothing for a
+   * subgraph's contents while appearing to work.
+   */
+  groups(): readonly GroupHandle[]
+  /** The supply edges prompt execution would use inside this graph. */
+  resolvedSupplies(): readonly ResolvedSupply[]
+}
+
+// ─── groupHandle.ts ──────────────────────────────────────────────
+
+export interface GroupHandle {
+  readonly id: string
+  getTitle(): string
+  setTitle(title: string): void
+  /** Colour as the renderer holds it, or undefined for the default. */
+  getColor(): string | undefined
+  setColor(color: string): void
+  /**
+   * The nodes the group currently contains, recomputed on each call.
+   *
+   * Packs muted or queued "the group", which always meant its nodes. Do not
+   * cache the result: a drag changes it with no event.
+   */
+  nodes(): readonly NodeHandle[]
+  /** The group's rectangle in graph space, title bar included. */
+  getBounds(): Bounds
+  /** Pans the view so this group is in the middle of it. Zoom is unchanged. */
+  centerOn(): void
+}
+
+// ─── interaction.ts ──────────────────────────────────────────────
+
+export interface NodeMoveEvent {
+  readonly node: NodeHandle
+  readonly position: { readonly x: number; readonly y: number }
+}
+
+/**
+ * Where movement comes from, supplied by the renderer.
+ *
+ * `platform/` cannot import `renderer/`, and the layout store lives there. This
+ * is the same seam `registerBadgeRowsProvider` uses so litegraph never reaches
+ * into the store: the upper layer pushes the source down at boot.
+ */
+export type NodeMoveSource = (
+  onMove: (nodeId: string, position: { x: number; y: number }) => void
+) => Unsubscribe
+
+/** Reports a completed drag with the ids of every node it moved. */
+export type NodeDragEndSource = (
+  onDragEnd: (nodeIds: readonly string[]) => void
+) => Unsubscribe
+
+// ─── nodeChanges.ts ──────────────────────────────────────────────
+
+/** A field the host tracks and reports. Not every property is one. */
+export type TrackedProperty =
+  | 'title'
+  | 'mode'
+  | 'color'
+  | 'bgcolor'
+  | 'shape'
+  | 'showAdvanced'
+
+/**
+ * Which graphs a listener hears from.
+ *
+ * `'visible'` is the default and the graph on screen, following the user into
+ * and out of subgraphs — what a pack decorating what the user is looking at
+ * wants.
+ *
+ * `'document'` is the root graph and every subgraph definition. A pack that
+ * *computes* from other nodes needs it: rgthree's relay derives a group's mute
+ * state from its inputs, and inside a subgraph the user had navigated away from
+ * it stopped recomputing while still asserting its last answer — so a group
+ * stayed muted against its inputs, intermittently, and healed on navigation.
+ */
+export type NodeChangeScope = 'visible' | 'document'
+
+export interface NodeChangeOptions {
+  scope?: NodeChangeScope
+}
+
+export interface NodeChangeEvent {
+  /** The node that changed. It may belong to another pack, or to none. */
+  readonly node: NodeHandle
+  /**
+   * The graph the change happened in — the root graph's id, or a subgraph
+   * definition's. Node ids are unique only within a graph, so a pack keeping
+   * its own records under `'document'` must key on both.
+   */
+  readonly graphId: string
+  /**
+   * The editing session the change happened in, or `undefined` when the host
+   * cannot name one.
+   *
+   * `graphId` is restored from the saved workflow and round-trips through
+   * `serialize()`, so it identifies the graph on disk, not the document open
+   * in front of the user — two opens of one file report the same value. A pack
+   * holding records across a document swap needs this to know they are stale.
+   */
+  readonly documentId: string | undefined
+  readonly property: TrackedProperty
+  readonly from: unknown
+  readonly to: unknown
+}
+
+// ─── nodeHandle.ts ───────────────────────────────────────────────
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type NodeMode = 'always' | 'never' | 'bypass' | 'on-event' | 'on-trigger'
+
+/** @knipIgnoreUnusedButUsedByCustomNodes */
+export type NodeShape = 'default' | 'box' | 'round' | 'circle' | 'card'
+
+export interface BadgeDef {
+  readonly text: string
+  /** Text colour. Defaults to core's badge foreground. */
+  readonly color?: string
+  /** Background colour. Defaults to core's badge background. */
+  readonly bgColor?: string
+  /**
+   * Makes the badge clickable.
+   *
+   * Two conversions declined to turn a button into a badge because a badge
+   * that looks pressable and does nothing is worse than the thing it replaced.
+   */
+  onClick?(): void
+}
+
+export interface Point {
+  readonly x: number
+  readonly y: number
+}
+
+export interface Size {
+  readonly width: number
+  readonly height: number
+}
+
+/** A rectangle in graph space. */
+export interface Bounds {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+export interface NodeSnapshot {
+  readonly id: string
+  readonly type: string
+  readonly title: string
+  readonly mode: NodeMode
+  readonly collapsed: boolean
+  readonly pinned: boolean
+  readonly color: string | undefined
+  readonly bgColor: string | undefined
+  readonly shape: NodeShape
+  readonly position: Point
+  readonly size: Size
+}
+
+/**
+ * Shapes follow `src/types/extensionV2.ts`, the agreed extension contract:
+ * accessor methods rather than properties, so a read can be a store query and
+ * a write can dispatch a command.
+ */
+export interface SizeConstraints {
+  minWidth?: number
+  minHeight?: number
+  maxWidth?: number
+  maxHeight?: number
+  /** Grow to fit content rather than holding a fixed height. */
+  autoHeight?: boolean
+}
+
+export interface NodeHandle extends HandleCommon {
+  readonly id: string
+  readonly type: string
+  readonly comfyClass: string
+
+  getTitle(): string
+  setTitle(title: string): void
+  getMode(): NodeMode
+  setMode(mode: NodeMode): void
+  isCollapsed(): boolean
+  setCollapsed(collapsed: boolean): void
+  isPinned(): boolean
+  setPinned(pinned: boolean): void
+  getColor(): string | undefined
+  setColor(color: string | undefined): void
+  getBgColor(): string | undefined
+  setBgColor(color: string | undefined): void
+  getShape(): NodeShape
+  setShape(shape: NodeShape): void
+  getProperty<T = unknown>(key: string): T | undefined
+  getProperties(): Readonly<Record<string, unknown>>
+  setProperty(key: string, value: WidgetValue): void
+  /**
+   * Whether this node emits `widgets_values` when the workflow is serialized.
+   *
+   * Writable because packs vary it per node type, and the value is part of the
+   * wire format — a conversion that could not set it would change what the
+   * saved workflow contains.
+   */
+  isSerializingWidgets(): boolean
+  setSerializeWidgets(serialize: boolean): void
+
+  getPosition(): Point
+  setPosition(pos: Point): void
+  getSize(): Size
+  /** Changes size through the host's resize protocol, including `onResized`. */
+  setSize(size: Size): void
+  /**
+   * The node's rectangle in graph space, title bar included.
+   *
+   * `getPosition()` is the body's top-left, so packs building a gesture were
+   * reconstructing this by subtracting a title height read off the renderer —
+   * which is only right for the default layout, and wrong for a collapsed node
+   * or under a different renderer. Ask the renderer instead of re-deriving it.
+   */
+  getBounds(): Bounds
+  /**
+   * Where a slot sits, in graph space.
+   *
+   * The renderer's own answer, so it stays correct for collapsed nodes,
+   * widget-backed inputs and layouts that are not the default vertical stack —
+   * all cases the `(index + 0.7) * slotHeight` reconstruction gets wrong.
+   *
+   * `undefined` if there is no slot at that index.
+   */
+  getSlotPosition(side: 'input' | 'output', index: number): Point | undefined
+  /**
+   * Where the node currently sits on screen, in client coordinates.
+   *
+   * For anchoring a floating panel to a node. Packs did this by reading the
+   * viewport's pan and zoom and doing the arithmetic themselves, which is both
+   * the renderer's business and wrong the moment the transform changes shape.
+   *
+   * The answer already accounts for zoom, so a pack needing to convert a pixel
+   * drag into graph units can divide by `width / getBounds().width` rather than
+   * asking for the scale factor.
+   *
+   * `undefined` when nothing is on screen to measure against.
+   */
+  getScreenRect(): Bounds | undefined
+  /**
+   * URLs of the images this node produced when it last executed.
+   *
+   * Packs read `node.imgs` — the loaded `HTMLImageElement`s core hangs on the
+   * node — to walk upstream for the nearest ancestor holding a composite, or
+   * to scan the selection for something to feed an editor. `onExecuted` does
+   * not answer that: it is per node type, so it never sees another pack's
+   * outputs, and it only fires at the moment of execution.
+   *
+   * URLs rather than elements, deliberately. The loaded element is the
+   * renderer's, and its lifetime is the renderer's; a pack that wants pixels
+   * can load the URL itself and own the result. This also covers previews,
+   * which are what the node is showing when a run is still in flight.
+   *
+   * Empty when the node has not produced images.
+   */
+  getOutputImages(): readonly string[]
+  /**
+   * Which of {@link getOutputImages} the user is looking at, or `undefined`
+   * when they have neither selected nor hovered one.
+   *
+   * A pack copying "the image" or saving one as a model's preview meant the
+   * one under the cursor, not the first of the batch. `undefined` is why this
+   * is not simply `0`: an entry that acts on a guess writes the wrong file to
+   * the server, silently.
+   */
+  getDisplayedImageIndex(): number | undefined
+  /**
+   * The id of the graph holding this node — the root graph's id, or a
+   * subgraph's.
+   *
+   * A pack keeping its own records against nodes needs it: node ids are unique
+   * per graph, so a key built from the id alone collides once subgraphs are
+   * involved. Pair it with `comfy.graph.subgraphs()` to get back to the node.
+   */
+  readonly graphId: string | undefined
+  /**
+   * Puts a small label on the node's title bar. Returns a handle that removes
+   * it again.
+   *
+   * Packs draw a status, a count, a cost, a model name. They did it by
+   * overriding `onDrawForeground` and painting into the canvas context, which
+   * only works under the legacy renderer and puts the pack in the business of
+   * laying out text. `badges` is core's own extension point and both renderers
+   * draw it.
+   *
+   * Pass a function for a label that changes: it is called each time the node
+   * is drawn, so return quickly and do not build strings you could cache.
+   */
+  addBadge(badge: BadgeDef | (() => BadgeDef)): Unsubscribe
+  /**
+   * Declares how the node may be sized, instead of re-asserting it per frame.
+   *
+   * 39 packs recompute size inside a draw or resize callback, which is both a
+   * per-frame cost and a fight with the layout. `autoHeight` is usually the
+   * real intent: the pack mounted something of unknown height and wants the
+   * node to fit it.
+   */
+  setSizeConstraints(constraints: SizeConstraints): void
+  getSizeConstraints(): Readonly<SizeConstraints>
+
+  readonly inputs: SlotCollection<InputSlotHandle>
+  readonly outputs: SlotCollection<OutputSlotHandle>
+  readonly widgets: WidgetCollection
+  snapshot(): Readonly<NodeSnapshot> | undefined
+  remove(): void
+}
+
+/** Per-node collections, supplied by the graph layer that owns their caches. */
+export interface NodeCollections {
+  inputs(nodeId: string): SlotCollection<InputSlotHandle>
+  outputs(nodeId: string): SlotCollection<OutputSlotHandle>
+  widgets(nodeId: string): WidgetCollection
+}
+````
