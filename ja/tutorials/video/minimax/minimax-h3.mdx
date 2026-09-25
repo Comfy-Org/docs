@@ -2,26 +2,32 @@
 title: "ComfyUI MiniMax H3 動画生成ガイド"
 description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
 sidebarTitle: "概要"
-translationSourceHash: 409b82a5
+translationSourceHash: 305e2c45
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": bcfdbb95
+  "_intro": ca407622
   "Key features": 7bfa7de1
-  "Getting started": fddf949c
-  "Workflow index": 208e71ea
-  "Setting the output resolution": b3a75643
-  "Speeding up generation with Sage Attention": 1b231e7c
+  "Getting started": ed2dace3
+  "Workflow index": 4eb0081d
+  "Setting the output resolution": 9aac37c9
+  "Step count": 2b4dc8bd
+  "Sampler and scheduler": 76d46fe9
+  "Speeding up generation with Sage Attention": 7ff7d016
+  "Speeding up generation with sparse attention": 4cd41a94
 ---
 
-[MiniMax H3](https://www.minimax.io/blog/minimax-h3) は、MiniMaxの汎用オムニモーダル生成モデルで、現在はオープンウェイトとして公開されています。テキスト、画像、ビデオ、オーディオを単一のコンテキストで統合的に理解し、**ネイティブステレオオーディオ**付きのビデオを生成します。つまり、音声、サウンドエフェクト、音楽は、後から重ね合わせるのではなく、単一のフォワードパスでまとめてモデル化されます。出力は最大2K解像度、24fps、約15秒です。
+import UpdateReminder from "/snippets/ja/tutorials/update-reminder.mdx";
 
-ComfyUIは MiniMax H3をネイティブにサポートしています。ドキュメントは5つのページに分かれています：
+[MiniMax H3](https://www.minimax.io/blog/minimax-h3) は、MiniMaxの汎用オムニモーダル生成モデルで、現在はオープンウェイトとして公開されています。テキスト、画像、ビデオ、オーディオを単一のコンテキストで統合的に理解し、**ネイティブステレオオーディオ**付きのビデオを生成します。つまり、音声、サウンドエフェクト、音楽は、後から重ね合わせるのではなく、単一のフォワードパスでまとめてモデル化されます。オープンウェイトは短辺768ピクセル（約100万ピクセル）で24fps、約15秒の動画を生成します。2K出力はMiniMaxのホスト型サービスによるもので、ComfyUIでは別途アップスケールパスが必要です。
 
-- **概要**（このページ）: モデルの機能、ワークフローの一覧、出力解像度、高速化
+ComfyUIは MiniMax H3をネイティブにサポートしています。ドキュメントは6つのページに分かれています：
+
+- **概要**（このページ）: モデルの機能、ワークフローの一覧、出力解像度、ステップ数、サンプラーとスケジューラ、高速化
 - **[ネイティブワークフロー](/ja/tutorials/video/minimax/minimax-h3-native)**: テキストから動画へ、画像から動画へ、参照から動画、および高度なネイティブノードテクニック
 - **[マルチフレーム参照](/ja/tutorials/video/minimax/minimax-h3-multiframe)**: 出力タイムライン上の特定のポイントに参照フレームを固定
 - **[Fun ControlNet Union](/ja/tutorials/video/minimax/minimax-h3-fun-controlnet)**: コントロールビデオで H3 を駆動する、またはマスクによるビデオインペイント
 - **[プロンプトガイド](/ja/tutorials/video/minimax/minimax-h3-prompt-guide)**: MiniMax の公式プロンプト作成ガイド、一般的なヒント、プロンプト埋め込み
+- **[FastH3](/ja/tutorials/video/minimax/minimax-h3-fastvideo)**: FastVideo の FastH3 チェックポイントとそのスパースアテンションワークフロー
 
 <UpdateReminder/>
 <Note>
@@ -41,15 +47,19 @@ H3 のオープンウェイトを使用すると、モデルをローカルで�
 
 MiniMax H3はオープンウェイトで、ComfyUIでサポートされています。はじめるには：
 
-1. ComfyUI を 0.30.0 以降に更新します
+1. ComfyUI を更新します。基本のテキストから動画へ、画像から動画へ、参照から動画へのテンプレートには 0.30.0 以降が必要です。マルチフレーム参照には 0.34.0 が必要です。Fun ControlNet Union、スパースアテンションノード、Model Attention Backend ノードには 0.35.0、FastH3 には 0.36.0 が必要です
 2. **テンプレートライブラリ** > **ビデオ** の順に移動し、任意のMiniMax H3ワークフローを選択します
-3. ポップアップに従ってモデルをダウンロードし、ワークフローを実行します
+3. ポップアップに従ってモデルをダウンロードし、ワークフローを実行します。テンプレートによっては数十 GB のダウンロードになるため、ディスク容量と時間を確保してください。
 
 モデルファイルは Hugging Face の [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) リポジトリでホストされています。
 
+<Note>
+LoRA は蒸留元のチェックポイントビルドに合わせて選び、リポジトリが両方を公開している場合は `pruned` 版を使ってください。pruned チェックポイントは時間エンベッダーと全幅の adaln 重みを、短い共有カーブ基底(`adaln_t_table`、1025 個のカーブサンプル × 8 個の基底列)に置き換えており、ComfyUI はその基底をチェックポイント自体から読み取ります。テンプレートが読み込むのは pruned ビルド(`minimax_h3_fl2va_pruned_int8_convrot.safetensors` と `minimax_h3_ref2va_pruned_int8_convrot.safetensors`、ほかに bf16 版と fp8 版)です。フルビルド(`minimax_h3_fl2va_int8_convrot.safetensors` または `minimax_h3_ref2va_int8_convrot.safetensors`)で蒸留された LoRA が持つ adaln 重みには、pruned ビルドに対応するテンソルがありません。ComfyUI はそれらの形状不一致を報告し、マージしないため、その部分の LoRA はスキップされます。ワークフローがダウンロードする turbo LoRA は adaln テンソルを含まないため、どちらのビルドでも読み込めます。
+</Note>
+
 ## ワークフローインデックス
 
-テンプレートライブラリには現在、5つのサンプルワークフローが同梱されています。これらはサンプルテンプレートであり、網羅的なリストではありません。モデルはネイティブのMiniMax H3ノードを通じて、さらに多くの生成モードをサポートしているため、追加のワークフローを構築できます。
+テンプレートライブラリには現在、6つのサンプルワークフローが同梱されています。これらはサンプルテンプレートであり、網羅的なリストではありません。モデルはネイティブのMiniMax H3ノードを通じて、さらに多くの生成モードをサポートしているため、追加のワークフローを構築できます。ライブラリには、画像から動画へのテンプレートの継続バリアント（`video_minimax_h3_i2v_continuation`）も含まれています。
 
 <CardGroup cols={2}>
   <Card title="テキストから動画へ（T2V）" icon="type" href="/ja/tutorials/video/minimax/minimax-h3-native#minimax-h3-テキストからビデオ-t2v">
@@ -69,7 +79,7 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
   </Card>
 </CardGroup>
 
-基盤となるノードモードは、`MiniMaxH3ImageToVideo`ノードによる先頭・末尾フレームを使用した画像から動画への生成（fl2va）と、`MiniMaxH3ReferenceToVideo`ノードによる画像・ビデオ・オーディオを使用した参照駆動生成（ref2va）です。
+基盤となるノードモード: **MiniMax H3 Image to Video** ノードがテキストから動画への生成と先頭・末尾フレームの画像から動画への生成（t2va と fl2va）を、**MiniMax H3 Reference to Video** ノードが画像・ビデオ・オーディオを使用した参照駆動生成（ref2va）を担当します。
 
 プロンプト作成リソース(公式ガイド、一般的なヒント、プロンプト埋め込み)については、[プロンプトガイド](/ja/tutorials/video/minimax/minimax-h3-prompt-guide)を参照してください。
 
@@ -82,6 +92,27 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
 - **倍数**：計算された解像度はこの数値の最も近い倍数に丸められます。H3 の解像度グリッドに合わせて `32` のままにします
 
 テンプレートは高速なプレビューサイズになっています。フル品質で出力するには、16:9 で Resolution Selector のメガピクセルを `0.98` に設定します。これは H3 のネイティブキャンバス（短辺 768px、16:9 では 1344x768）です。あるいは、MiniMax H3 ノードの `width` と `height` に直接 `1344 x 768` を入力します（デフォルト値）。`1.0` メガピクセルは 1376x768 になり、モデルの 768x1344 ピクセルの面積上限を超えるため、使用しないでください。
+
+ネイティブキャンバスを大きく超えるフレームはディテールを保てません。H3 の学習解像度は約 100 万ピクセルで、生成時に失われた情報は後からアップスケールしても戻りません。2K 出力が必要な場合は、ネイティブキャンバスで生成してから別パスでアップスケールしてください。
+
+## ステップ数
+
+これらの数値はベースウェイトを対象とし、テンプレートの **Enable Lightning LoRA** スイッチがオフの場合の値です。これが既定で、20 ステップで実行されます。このスイッチをオンにすると turbo LoRA が読み込まれ、ステップ数は約 6 に下がります。
+
+ショットに必要なステップ数は、内容によって変わります：
+
+- 内容が単純なショットは 12 から 16 ステップで成立します
+- 高周波のディテールを含むショット（鎖帷子、フィリグリーや花柄、小さな物体の山）は 50 ステップ程度まで改善し続けます。それ未満では、そうした領域に不安定な三角形のグリッド状アーティファクトが現れ、動きの中で揺れます。蒸留によるステップ削減 LoRA や turbo チェックポイントでは、これが最初に目立ちます
+- ステップ数を増やすとプロンプト追従性とモーションも改善し、その大半は 16 ステップまでに得られます。50 を超えると違いはほとんど分かりません
+- ステップ数はネイティブキャンバスが解像できないシャープさを補うものではないため、画面が甘い場合はまず解像度を確認してください
+
+## サンプラーとスケジューラ
+
+ローカルの MiniMax H3 ワークフローはすべて `res_multistep` サンプラーと `simple` スケジューラでサンプリングします。テキストから動画へ、画像から動画へ、FastH3 のテンプレートではこれら2つのノードがワークフローのサブグラフ内にあるため、変更するにはサブグラフを開きます。参照から動画へ、マルチフレーム参照、Fun ControlNet Union のテンプレートでは、`KSamplerSelect` と `BasicScheduler` はトップレベルのキャンバス上にあります。
+
+`res_multistep` は2次のマルチステップサンプラーで、各ステップで直前のステップのデノイズ推定値を再利用します。最初のステップには再利用できる推定値がないため、通常の1次（Euler）ステップとして実行され、2次のステップは2ステップ目から始まります。`er_sde` も同じように次数を積み上げ、既定の `max_stage` が 3 の場合、1ステップ目は1段階、2ステップ目は2段階、3ステップ目以降で3段階すべてを使います。
+
+マルチステップの履歴は潜在データではなく1回のサンプリング実行の内部に存在するため、スケジュールを2つのサンプラーに分割したワークフローでは引き継がれません。ベース段階の後に潜在空間アップスケールを挟んで2つ目のサンプラーに渡すような構成では、2つ目のサンプラーは空の履歴から始まります。最初のステップは1次で実行され、2次の更新は2ステップ目から再開します。これが効いてくるのは短い後段で、数少ないステップのうち1つを低い次数で使うことになります。スケジュール全体を1回のサンプリング実行にまとめるか、2つ目のサンプラーに履歴を再構築できるだけのステップ数を与えてください。
 
 ## Sage Attention で生成を高速化
 
@@ -96,3 +127,25 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
 
 - Sage Attention は float16 または bfloat16 テンソルを必要とします。MiniMax H3 の一部のレイヤーは他の dtype で実行されるため、コンソールに "Input tensors must be in dtype of torch.float16 or torch.bfloat16, using pytorch attention instead" というメッセージが表示されることがあります。これは正常です。影響を受けるレイヤーは標準アテンションにフォールバックし、生成は正常に動作します。
 - 別の方法として、ノードを追加せずに `--use-sage-attention` フラグ付きで ComfyUI を起動して、Sage Attention をグローバルに有効にすることもできます。
+
+### INT8 アテンションによる品質劣化
+
+Sage Attention 使用時にクリップの終盤でモーフィングや画面内テキストの文字化けが発生する場合、原因は INT8 アテンションの量子化である可能性が高いです。H3 の終盤ブロックはアテンションキーの信号の大部分を少数のチャンネルに集中させており、単一の共有スケールで行全体を丸める INT8 カーネルはその信号の一部を失います。
+
+どの修正が当てはまるかは、ワークフローが読み込むチェックポイントによって異なります。
+
+- **テンプレートに同梱されるのは int8-convrot チェックポイントです**: T2V、I2V、Image to Video 継続バリアントには `minimax_h3_fl2va_pruned_int8_convrot.safetensors`、R2V、マルチフレーム参照、Fun ControlNet Union には `minimax_h3_ref2va_pruned_int8_convrot.safetensors` です。**Comfy Kitchen attention はこれらのチェックポイントをサポートしておらず**、サンプリングはアライメントエラーでクラッシュします（[ComfyUI issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)）。これらでは既定のアテンションを維持するか、`UNETLoader` で bf16 版（`minimax_h3_fl2va_pruned_bf16.safetensors` または `minimax_h3_ref2va_pruned_bf16.safetensors`、より多くの VRAM が必要）を読み込んでから、下記のバックエンドを変更してください。
+- **bf16 チェックポイントでは、デンスアテンションバックエンドを Comfy Kitchen attention に切り替えるとアーティファクトが解消されます。** この INT8 カーネルは量子化の前にチャンネル回転を適用し、Sage Attention と同程度の速度でその信号を保持します。
+
+バックエンドを切り替えるには、組み込みの **Model Attention Backend** ノード（カテゴリ `model/patch`）を追加し、バックエンドを `comfy kitchen attention` に設定します。モデルが `BasicGuider` に到達する位置、つまり `LoraLoaderModelOnly` ノードとその Enable Lightning LoRA スイッチの後に接続してください。または、`--use-ck-attention` フラグ付きで ComfyUI を起動します（ComfyUI 0.32.0 以降）。このバックエンドは ComfyUI に同梱される `comfy-kitchen` パッケージによって提供され、INT8 カーネルがハードウェアで利用可能な場合にのみノードのバックエンド一覧に表示されます。
+
+## スパースアテンションによる生成の高速化
+
+アテンションのコストはクリップが長くなるほど急増します。ComfyUI 内蔵の **Model Sparse Attention** ノード（カテゴリ `model/patch`、実験的、ComfyUI 0.35.0 以降）は、対象となるレイヤーでブロックスパースアテンションを実行してこのコストを削減し、シーケンスが長いほど効果が大きくなります。`method` はベースの H3 ウェイトが使用する `sol-attn` に設定してください（`sla` と `vsa` はそれぞれのパターンで学習されたウェイトを想定しています）。スパース経路には CUDA と `comfy-kitchen` の `sol_attn` カーネルが必要です。これらがない場合、すべてのレイヤーが暗黙にデンスアテンションへフォールバックし、高速化は得られません。
+
+- **サンプリングの最初と最後のステップではスパースアテンションを使わないでください。** 既定値は `start_percent` が `0.2`、`end_percent` が `1.0` で、スケジュールの 20% から最終ステップまで疎化が有効になります。開始を `0.4` 程度まで遅らせ、終了を `0.9` 程度まで早めると、冒頭の動きと終盤フレームをデンスに保てますが、その代わり速度がやや低下します。
+- **H3 では `sink_conditioning` を既定値（`exact_kv_and_rows`）のままにしてください。** パックされたテキスト、オーディオ、参照の行を正確に計算し、生成オーディオのクエリ行をデンスに保つため、スパース経路でも音声トラックが劣化しません。
+- **`tau` は `sol-attn` の疎さを決めます**: `1.0` でキーブロックの約 16% を正確に保持、`1.5` で約 7%、`2.0` で約 2.7%。既定は `1.3` で、値が大きいほど高速ですがリスクも大きくなります。
+- **短いクリップでは効果がほとんどありません。** `min_tokens`（既定 `12288`）未満のシーケンスと、`dense_blocks` に記載したブロックはデンスのまま実行されます。
+
+FastH3 チェックポイントは同じノードの `vsa` モードを使用し、`keep_percent` `10` のスパースパターンで学習されています。詳しくは [FastH3 ワークフローのページ](/ja/tutorials/video/minimax/minimax-h3-fastvideo)を参照してください。

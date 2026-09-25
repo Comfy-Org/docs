@@ -2,26 +2,32 @@
 title: "ComfyUI MiniMax H3 视频生成指南"
 description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
 sidebarTitle: "概述"
-translationSourceHash: 409b82a5
+translationSourceHash: 305e2c45
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": bcfdbb95
+  "_intro": ca407622
   "Key features": 7bfa7de1
-  "Getting started": fddf949c
-  "Workflow index": 208e71ea
-  "Setting the output resolution": b3a75643
-  "Speeding up generation with Sage Attention": 1b231e7c
+  "Getting started": ed2dace3
+  "Workflow index": 4eb0081d
+  "Setting the output resolution": 9aac37c9
+  "Step count": 2b4dc8bd
+  "Sampler and scheduler": 76d46fe9
+  "Speeding up generation with Sage Attention": 7ff7d016
+  "Speeding up generation with sparse attention": 4cd41a94
 ---
 
-[MiniMax H3](https://www.minimax.io/blog/minimax-h3) 是 MiniMax 推出的通用全模态生成模型，现已以开放权重形式提供。它能在单一上下文中联合理解文本、图像、视频和音频，并生成带**原生立体声音频**的视频：语音、音效和音乐在单次前向传播中一并建模，而非事后叠加。输出最高支持 2K 分辨率、24fps，时长约 15 秒。
+import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx";
 
-ComfyUI 原生支持 MiniMax H3。文档分为五个页面：
+[MiniMax H3](https://www.minimax.io/blog/minimax-h3) 是 MiniMax 推出的通用全模态生成模型，现已以开放权重形式提供。它能在单一上下文中联合理解文本、图像、视频和音频，并生成带**原生立体声音频**的视频：语音、音效和音乐在单次前向传播中一并建模，而非事后叠加。开放权重在短边 768 像素（约 100 万像素）下以 24fps 生成约 15 秒的视频。2K 输出来自 MiniMax 的托管服务，在 ComfyUI 中需要单独跑一次放大。
 
-- **概述**（本页）：模型能力、工作流索引、输出分辨率与加速技巧
+ComfyUI 原生支持 MiniMax H3。文档分为六个页面：
+
+- **概述**（本页）：模型能力、工作流索引、输出分辨率、步数、采样器与调度器，以及加速技巧
 - **[原生工作流](/zh/tutorials/video/minimax/minimax-h3-native)**：文生视频、图生视频、参考生视频，以及高级原生节点技巧
 - **[多帧参考](/zh/tutorials/video/minimax/minimax-h3-multiframe)**：将参考帧锚定在输出时间线上的特定位置
 - **[Fun ControlNet Union](/zh/tutorials/video/minimax/minimax-h3-fun-controlnet)**：使用控制视频驱动 H3，或使用遮罩进行视频修补
 - **[提示词指南](/zh/tutorials/video/minimax/minimax-h3-prompt-guide)**：MiniMax 官方提示词编写指南、通用技巧与提示词嵌入
+- **[FastH3](/zh/tutorials/video/minimax/minimax-h3-fastvideo)**：FastVideo 的 FastH3 检查点及其稀疏注意力工作流
 
 <UpdateReminder/>
 <Note>
@@ -41,15 +47,19 @@ H3 的开放权重让你可以在本地运行该模型。对本地生成的输�
 
 ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 
-1. 将 ComfyUI 更新到 0.30.0 或更高版本
+1. 更新 ComfyUI。基础的文生视频、图生视频和参考生视频模板需要 0.30.0 或更高版本。多帧参考需要 0.34.0。Fun ControlNet Union、稀疏注意力节点和 Model Attention Backend 节点需要 0.35.0，FastH3 需要 0.36.0
 2. 前往**模板库** > **视频**，选择任意一个 MiniMax H3 工作流
-3. 按照弹出窗口的提示下载模型并运行工作流
+3. 按照弹出窗口的提示下载模型并运行工作流。下载量视模板而定，可能达到几十 GB，请预留磁盘空间和时间。
 
 模型文件托管在 Hugging Face 的 [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) 仓库中。
 
+<Note>
+LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两种构建时请选 `pruned` 版本。pruned checkpoint 用一张较短的共享曲线基表（`adaln_t_table`，1025 个曲线采样 × 8 个基列）取代时间嵌入器和全宽 adaln 权重，ComfyUI 会从 checkpoint 本身读取该基表，模板加载的正是 pruned 构建（`minimax_h3_fl2va_pruned_int8_convrot.safetensors` 与 `minimax_h3_ref2va_pruned_int8_convrot.safetensors`，另有 bf16 与 fp8 版本）。在完整构建（`minimax_h3_fl2va_int8_convrot.safetensors` 或 `minimax_h3_ref2va_int8_convrot.safetensors`）上蒸馏的 LoRA 带有 adaln 权重，而 pruned 构建中没有与之对应的张量：ComfyUI 会报出形状不匹配并且不合并这些权重，这部分 LoRA 因此被跳过。工作流下载的 turbo LoRA 不含任何 adaln 张量，在两种构建上都能加载。
+</Note>
+
 ## 工作流索引
 
-模板库目前附带五个示例工作流。它们只是示例模板，并非完整列表：通过原生 MiniMax H3 节点，该模型支持更多生成模式，您可以使用这些节点构建更多工作流。
+模板库目前附带六个示例工作流。它们只是示例模板，并非完整列表：通过原生 MiniMax H3 节点，该模型支持更多生成模式，您可以使用这些节点构建更多工作流。模板库中还包含图生视频模板的一个续接变体（`video_minimax_h3_i2v_continuation`）。
 
 <CardGroup cols={2}>
   <Card title="文生视频（T2V）" icon="type" href="/zh/tutorials/video/minimax/minimax-h3-native#minimax-h3-文生视频（t2v）">
@@ -69,7 +79,7 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
   </Card>
 </CardGroup>
 
-底层节点模式：首帧/尾帧图生视频（fl2va）通过 `MiniMaxH3ImageToVideo` 节点实现；参考驱动的生成（ref2va）通过 `MiniMaxH3ReferenceToVideo` 节点实现，可使用图像、视频和音频作为参考。
+底层节点模式：**MiniMax H3 Image to Video** 节点覆盖文生视频和首帧/尾帧图生视频（t2va 与 fl2va），**MiniMax H3 Reference to Video** 节点覆盖以图像、视频和音频为参考的参考驱动生成（ref2va）。
 
 提示词编写资源(官方指南、通用技巧与提示词嵌入)请参见[提示词指南](/zh/tutorials/video/minimax/minimax-h3-prompt-guide)。
 
@@ -82,6 +92,27 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 - **取整倍数**：计算结果会取整到该数值的最近倍数。保持为 `32`，与 H3 的分辨率网格一致
 
 模板默认使用一个较快的预览尺寸。要获得全质量输出，请在 16:9 下将分辨率选择器的百万像素设为 `0.98`，即 H3 的原生画布（短边 768px，16:9 下为 1344x768）；或在 MiniMax H3 节点的 `width` 和 `height` 中直接输入 `1344 x 768`（默认值）。请跳过 `1.0` 百万像素档：它得到 1376x768，超出模型 768x1344 像素的面积上限。
+
+远超原生画布的帧无法保持细节：H3 的训练分辨率约为 100 万像素，生成阶段丢掉的细节，后续再放大也补不回来。需要 2K 输出时，先在原生画布下生成，再单独跑一次放大。
+
+## 步数
+
+这些数值适用于基础权重，且模板中的 **Enable Lightning LoRA** 开关处于关闭状态，这是默认设置，采样 20 步。开启该开关会加载 turbo LoRA，步数降至约 6 步。
+
+一个镜头需要多少步，取决于画面内容：
+
+- 内容简单的镜头在 12 到 16 步就能成立
+- 包含高频细节的镜头（锁子甲、花丝或花卉纹样、成堆的小物件）会一直改善到约 50 步。低于这个范围时，这些区域会出现不稳定的三角形网格伪影，并在运动中游移，而蒸馏出的降步 LoRA 和 turbo 检查点会最先放大这一类问题
+- 步数更高也会同时改善提示词遵循度和运动，大部分收益在 16 步左右就能拿到。超过约 50 步后，差异很难察觉
+- 步数无法补上原生画布本身解析不出的锐度，因此画面发软首先要看分辨率
+
+## 采样器与调度器
+
+所有本地 MiniMax H3 工作流都使用 `res_multistep` 采样器和 `simple` 调度器。文生视频、图生视频和 FastH3 模板把这两个节点放在工作流的子图内部，需要进入子图才能修改。在参考生视频、多帧参考和 Fun ControlNet Union 模板中，`KSamplerSelect` 和 `BasicScheduler` 位于顶层画布上。
+
+`res_multistep` 是二阶多步采样器：每一步都会复用上一步的去噪估计。第一步没有可复用的估计，因此按普通的一阶（Euler）步骤执行，二阶步骤从第二步开始。`er_sde` 以同样的方式逐级升阶：在默认的 `max_stage` 为 3 时，第一步只跑一个阶段，第二步跑两个阶段，从第三步起才跑满三个阶段。
+
+多步采样的历史记录存在于单次采样过程内部，而不是 Latent 中，因此把调度拆分给两个采样器的工作流不会把它延续下去。在双采样器配置中，例如先跑基础阶段、做一次 Latent 放大后再交给第二个采样器时，第二个采样器从空历史开始：它的第一步以一阶运行，二阶更新要到第二步才恢复。这一步的影响在短尾段上最明显，因为尾段本就没有几步，其中一步只以低阶执行。要么把整条调度放在一次采样过程中，要么给第二个采样器足够多的步数去重建历史。
 
 ## 使用 Sage Attention 加速生成
 
@@ -96,3 +127,25 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 
 - Sage Attention 要求 float16 或 bfloat16 张量。MiniMax H3 的部分层使用其他数据类型，因此你可能会在控制台看到 "Input tensors must be in dtype of torch.float16 or torch.bfloat16, using pytorch attention instead" 消息。这是正常现象；受影响的层会回退到标准注意力，生成仍然可以正常工作。
 - 另一种方式是使用 `--use-sage-attention` 启动参数启动 ComfyUI 来全局启用 Sage Attention，无需添加节点。
+
+### INT8 注意力导致的质量劣化
+
+使用 Sage Attention 时，如果视频片段末尾附近出现画面形变或屏幕文字乱码，最可能的原因是 INT8 注意力量化。H3 的最后几个 Transformer 块将大部分注意力键信号集中到少数通道中，而使用单一共享缩放对整行进行取整的 INT8 内核会丢失部分信号。
+
+具体适用哪种修复方式，取决于工作流加载的检查点：
+
+- **模板附带的是 int8-convrot 检查点**：文生视频、图生视频和图生视频续接变体使用 `minimax_h3_fl2va_pruned_int8_convrot.safetensors`，参考生视频、多帧参考和 Fun ControlNet Union 使用 `minimax_h3_ref2va_pruned_int8_convrot.safetensors`。**Comfy Kitchen attention 不支持这些检查点**，采样会因对齐错误而崩溃（[ComfyUI issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)）。使用这些检查点时请保持默认注意力，或在 `UNETLoader` 中加载对应的 bf16 版本（`minimax_h3_fl2va_pruned_bf16.safetensors` 或 `minimax_h3_ref2va_pruned_bf16.safetensors`，需要更多显存），然后再按下文切换后端。
+- **使用 bf16 检查点时，把稠密注意力后端切换为 Comfy Kitchen attention 即可消除伪影。** 它的 INT8 内核在量化前先进行通道旋转，从而在与 Sage Attention 相近的速度下保留该信号。
+
+要切换后端，请添加内置的 **Model Attention Backend** 节点（分类 `model/patch`），并将其后端设置为 `comfy kitchen attention`。把它连接在模型通往 `BasicGuider` 的位置，也就是 `LoraLoaderModelOnly` 节点及其 Enable Lightning LoRA 开关之后。另一种方式是使用 `--use-ck-attention` 启动参数启动 ComfyUI（ComfyUI 0.32.0 及以上版本可用）。该后端由随 ComfyUI 自带的 `comfy-kitchen` 包提供，只有当你的硬件支持 INT8 内核时，它才会出现在该节点的后端列表中。
+
+## 使用稀疏注意力加速生成
+
+注意力开销会随视频时长快速上升。ComfyUI 内置的 **Model Sparse Attention** 节点（分类 `model/patch`，实验性功能，ComfyUI 0.35.0 及以上版本）会在符合条件的层上执行块稀疏注意力来降低这部分开销，序列越长收益越明显。把它的 `method` 设为 `sol-attn`，也就是基础 H3 权重使用的模式（`sla` 和 `vsa` 需要针对相应模式训练的权重）。稀疏路径需要 CUDA 以及来自 `comfy-kitchen` 的 `sol_attn` 内核；否则每一层都会静默回退到稠密注意力，你不会看到任何加速。
+
+- **不要在采样的最开始和最后几步启用稀疏注意力。** 默认值为 `start_percent` `0.2`、`end_percent` `1.0`，也就是从调度的 20% 一直稀疏到最后一步。把开始时间推迟到 `0.4` 左右、结束时间提前到 `0.9` 左右，可以让开头画面的运动和结尾几帧保持稠密，代价是速度略有下降。
+- **H3 上保持 `sink_conditioning` 的默认值**（`exact_kv_and_rows`）。它会让打包的文本、音频和参考行保持精确计算，并让生成音频的查询行保持稠密，因此稀疏路径不会降低音轨质量。
+- **`tau` 决定 `sol-attn` 的稀疏程度**：`1.0` 大约保留 16% 的关键块做精确计算，`1.5` 约 7%，`2.0` 约 2.7%。默认值为 `1.3`，数值越高越快，风险也越大。
+- **短视频片段收益有限。** 长度低于 `min_tokens`（默认 `12288`）的序列，以及 `dense_blocks` 中列出的块都会保持稠密。
+
+FastH3 检查点使用同一个节点的 `vsa` 模式，该模式按 `keep_percent` `10` 的稀疏模式训练。详见 [FastH3 工作流页面](/zh/tutorials/video/minimax/minimax-h3-fastvideo)。

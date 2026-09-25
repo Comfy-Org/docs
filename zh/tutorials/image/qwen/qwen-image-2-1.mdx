@@ -2,13 +2,13 @@
 title: "Qwen-Image-2.1 ComfyUI 原生工作流示例"
 description: "在 ComfyUI 中运行 Qwen-Image-2.1：一个模型即可完成图像生成与编辑，原生 2K 输出，专业级文字排版，并支持透明度通道。"
 sidebarTitle: "Qwen-Image-2.1"
-translationSourceHash: 49d0a9e9
+translationSourceHash: cbbc08dc
 translationFrom: tutorials/image/qwen/qwen-image-2-1.mdx
 translationBlockHashes:
-  "_intro": efd2d43d
+  "_intro": 1aac4055
   "Qwen-Image-2.1 workflow": ea826256
   "Model links": 19733f4b
-  "Workflow settings": b1e7b926
+  "Workflow settings": 23582b69
 ---
 import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx"
 
@@ -19,7 +19,7 @@ import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx"
 - **原生 2K 输出**：直接生成最高 2048x2048 的图像，而无需对较小结果进行图像放大
 - **专业排版**：密集的小号文字和复杂版式依然清晰，适用于信息图、幻灯片、UI 原型图、海报和包装设计
 - **Alpha 通道支持**：VAE 携带四个通道，因此可以直接生成和编辑透明背景图像，而无需事后再进行抠图
-- **多图像编辑**：参考图像按槽位顺序拼接到文本编码器中。节点提供 `image_1` 到 `image_16` 槽位，提示词通过索引引用它们，例如 `image_1` 写作 `<image1>`
+- **多图像编辑**：参考图像按槽位顺序拼接到文本编码器中。Text Encode Qwen Image 2.1 节点最多接受 16 个槽位（`image_1` 到 `image_16`）；本页两个编辑模板接入了前 10 个（`image_1` 到 `image_10`）。`image_1` 是被编辑的图像，其余提供内容，因此提示词通过索引引用它们，例如 `image_1` 写作 `<image1>`
 - **局部编辑**：描述要更改的对象或区域，图像的其余部分保持不变
 
 **相关链接**：
@@ -147,11 +147,22 @@ import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx"
 
 三个工作流均使用 `steps` 25、`cfg` 1、`euler` sampler 和 `simple` scheduler 进行采样。
 
+当 `cfg` 为 1 时，ComfyUI 会跳过负向条件的计算，因此在这些工作流中负向提示词不起作用。模板保持 `cfg` 1，这是 Qwen-Image-2.1 发布时所对应的路径；只有当你希望负向提示词生效时才调高它。`cfg` 2 能更紧密地遵循复杂提示词（包括小字号文本和数字），代价是边缘过度锐化。再往上调会让画面偏亮或偏暗，`cfg` 5 会严重降低质量，`cfg` 0.5 会破坏图像。请一次只改一个取值，并在固定种子下进行比较。
+
+`steps` 是第二个可调项。Qwen-Image-2.1 发布的推理流程使用 `euler` sampler 和约 40 到 50 步，而模板从更低的 25 开始。简单的局部编辑在 4 到 8 步就能成立，因此像把某件衣服换成另一种颜色这类请求比默认设置快好几倍；而重写整幅画面的编辑会失去一致性，需要完整的 25 步。手部、手指这类难处理的细节大约在 30 步时收敛，而从 25 步提到 40 步可以减少细节区域的杂乱噪点。只有在某个具体细节始终无法收敛时才调整 `steps`。
+
 ### 分辨率
 
 **文本到图像**：**分辨率选择器**节点设置宽高比和百万像素目标，其中 1.0 MP 约为 1024x1024。Qwen-Image-2.1 原生生成 2K 图像，因此对于 2048x2048 的方形输出，将目标设置为约 4.0 MP。
 
-**图像编辑**：输出会遵循第一张参考图像的宽高比，缩放为约 `resolution` x `resolution` 像素（默认 1024）。将 `resolution` 设为 0 可让每张参考图像保持自身尺寸。开启 `custom_size` 则改用**分辨率选择器**画布，并尽量接近调整后的参考图尺寸，否则编辑可能偏移。
+**图像编辑**：画布由 Image Edit 子图节点上的 `resolution` 控件决定（范围 `0` 到 `4096`，步长 `32`）。节点自身默认为 `1024`，模板给的是 `0`。当 `custom_size` 关闭时（模板默认设置），编辑在首张参考图 `image_1` 的尺寸下生成：
+
+- `resolution` 为 `0` 时每张参考图保持自身像素尺寸，并四舍五入到 32 的倍数，因此 3000x4000 的照片会得到 3008x4000 的画布
+- `resolution` 大于 `0` 时，将 `image_1` 的宽高比缩放至 `resolution` x `resolution` 的像素预算，这是总像素数而非宽或高，并四舍五入到 32 的倍数，因此同一张照片在 `resolution` 为 `1024` 时约为 896x1184
+
+开启 `custom_size` 则改用**分辨率选择器**提供的画布，并尽量接近调整后的 `image_1` 尺寸，否则编辑可能偏移。
+
+决定开销的是画布尺寸：3000x4000 的参考图在 `resolution` 为 0 时按 3008x4000（约 12 MP）采样，同一次编辑在 `resolution` 1024 时按约 896x1184（约 1 MP）采样。在 RTX 5090 上分别是约 6 s/it 和约 0.3 s/it。降低 `resolution` 是通过生成更小的结果提速，并不会增加细节。如果编辑感觉很慢，先检查 `resolution` 和参考图像的像素尺寸，再考虑改动其它参数。多张较大的参考图像会进一步拖慢编辑，下方的 KV 缓存设置会影响这部分开销。另外，远超模型 2K 训练尺寸的目标（例如 4K）会降低提示词遵循度。
 
 ### 图像编辑提示
 
@@ -164,3 +175,10 @@ Keep the character and pose in <image1> unchanged, put this light blue denim shi
 ### KV 缓存
 
 编辑工作流包含 **Qwen Image 2.1 Cache** 节点，用于在采样步骤之间保留缓存的文本与参考前缀。模板默认设置适用于大多数情况。
+
+该节点为实验性功能，提供两个控件：
+
+| 控件 | 取值 | 作用 |
+| --- | --- | --- |
+| `device` | `auto`（默认）、`gpu`、`cpu`、`off` | `auto` 先使用空闲的 VRAM，再使用 RAM。`cpu` 会在计算背后预取，速度损失很小。`off` 每步重新计算前缀，速度更慢，但在排查问题时可排除缓存因素 |
+| `dtype` | `default`（默认）、`int8`、`int4` | 存储精度。`default` 无损。`int8` 把缓存减半，精度约等于 bf16；`int4` 将缓存降到四分之一，但每步误差大约翻倍 |
