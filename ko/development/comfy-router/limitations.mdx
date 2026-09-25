@@ -1,0 +1,118 @@
+---
+title: "Comfy Router 기능과 한계"
+sidebarTitle: "Capabilities and limits"
+description: "Comfy Router 또는 파트너 프록시 선택, 장시간 실행되는 호출 대비, 복구, 속도 제한 및 자산 저장에 대해 설명합니다."
+translationSourceHash: b7e8e3f3
+translationFrom: development/comfy-router/limitations.mdx
+translationBlockHashes:
+  "_intro": 6b871cf3
+  "What Router supports": b168a936
+  "Queued submission": bfb591cc
+  "Calls are cut off at a server deadline": 2466a237
+  "Recovery depends on the provider": 610f0ec8
+  "Request bodies are capped": 675b77c8
+  "Requests are rate limited per caller": 421194d9
+  "No progress while a call runs": 75d42d8d
+  "Comfy charges and usage": 90cd7670
+  "Router does not cover every partner operation": 4de37c36
+  "Model outputs and stored assets": 06c737c1
+  "Next": be85b789
+---
+
+Router는 파트너 모델을 하나의 동기식 HTTP 호출로 실행하거나, 제출한 뒤 나중에 수집하는 대기 중 요청을 통해 실행합니다. 애플리케이션이 완료된 결과를 기다리거나 나중에 결과를 수집할 수 있고, 모델 자체의 입력 및 출력 필드를 처리할 수 있는 경우에 사용하십시오.
+
+## Router가 지원하는 기능
+
+| 요구 사항 | Router 지원 | 대안 또는 다음 단계 |
+| --- | --- | --- |
+| 하나의 요청으로 생성 | `POST /v2/models/{provider}/{model}`가 완료된 결과를 반환합니다. | [빠른 시작](/ko/development/comfy-router/quickstart)부터 시작하세요. |
+| 작업을 제출하고 나중에 수집 | 대기 중 전달: `POST /v2/models/{provider}/{model}/requests`가 폴링하고 수집할 수 있는 `request_id`를 반환합니다. 완료 webhook은 없습니다. | [큐 전송](/ko/development/comfy-router/queue)을 사용하세요. 제출 후 폴링 연산을 제공하는 파트너 프록시는 공급자 자체의 제어 기능을 노출합니다. |
+| 진행 상황 표시 또는 출력 스트리밍 | 호출 중에는 실시간 진행 상황, 스트리밍, 미리보기 프레임이 없습니다. | 불확정 상태를 표시하거나, 지원되는 프록시 연산을 사용하세요. |
+| 연결이 끊긴 이후 복구 | Router가 수락된 생성에 대한 핸들을 보관한 경우 동일 키 수집을 사용할 수 있습니다. | 키를 보존하고 [재시도 가이드](/ko/development/comfy-router/api#retry-outcomes)를 따르세요. |
+| Comfy 청구 내역 대사 | 응답에 범용 Comfy 비용 또는 크레딧 잔액 필드가 없습니다. | [워크스페이스 청구](https://platform.comfy.org)를 사용하세요. |
+| 결과를 영구적으로 저장 | 에셋 URL은 재호스팅 및 재생된 URL을 포함해 만료될 수 있습니다. | 에셋을 다운로드하세요. [결과 에셋](/ko/development/comfy-router/reference#결과-에셋)을 참고하세요. |
+| 대용량 미디어를 인라인으로 전송 | 요청 본문에는 크기 상한이 있으며, base64로 인코딩된 미디어도 이 상한에 포함됩니다. | 본문을 상한 이하로 유지하세요. [요청 본문 크기](#요청-본문-크기-상한)를 참고하세요. |
+
+<span id="no-queued-submission" />
+
+## 대기 중 제출
+
+동기 경로는 모델이 실행되는 동안 연결을 유지합니다. 비동기 공급자의 경우 Router가 작업을 제출하고 내부적으로 폴링합니다. 대기 중 전달(제출, `request_id` 받기, 폴링, 수집)이 대안입니다. [큐 전송](/ko/development/comfy-router/queue)을 참고하세요. 이는 자격 증명 뒤의 워크스페이스로 범위가 지정되므로, Comfy 워크스페이스에서 생성된 키가 필요합니다. 워크스페이스가 없는 레거시 키, 자체 키 사용(bring-your-own-key) 요청, 또는 실행 대기열이 실행할 수 없는 모델은 제출 경로에서 `403`과 함께 `not_enabled`를 반환합니다. 어느 모드도 콜백이나 웹훅을 제공하지 않습니다.
+
+요청을 충분히 오래 열어 둘 수 없다면 실행 대기열에 넣으세요. 공급자 자체의 제출 및 폴링 제어가 필요할 때는 [파트너 프록시](#router는-모든-파트너-작업을-다루지-않습니다)를 사용하세요.
+
+현재 두 모델은 동기 전용이며, 실행 대기열에 제출하면 `403` / `not_enabled`로 거부됩니다: `elevenlabs/eleven_sfx_v2` 및 `elevenlabs/eleven_v3`. 이들은 JSON 결과 문서가 아닌 원시 오디오 바이트를 반환하며, 대기 중 전달은 이를 저장할 곳이 없습니다. 동기 경로에서 실행하세요. 그러면 해당 바이트가 정상적으로 반환됩니다.
+
+LTX v1 텍스트 기반 비디오 생성 및 이미지 기반 비디오 생성 연산도 같은 이유로 원시 비디오 바이트를 반환하며, 대기 중 전달은 이를 저장할 수 없습니다. 하지만 이들은 Router 모델 id가 아니라 `/proxy/ltx/v1/…`의 [파트너 프록시](#router는-모든-파트너-작업을-다루지-않습니다)를 통해서만 접근할 수 있습니다. 모든 `ltx/*` 카탈로그 모델은 대기열에 넣을 수 있는 v2 제출 및 폴링 연산으로 해석됩니다.
+
+## 서버 데드라인에 도달하면 호출이 끊깁니다
+
+Router의 기본 데드라인은 **10분**이며, 배포 시 구성할 수 있습니다. Router가 먼저 오류와 요청 ID를 반환할 수 있도록 클라이언트 타임아웃을 그보다 길게 설정하세요.
+
+`504` / `deadline_exceeded`는 Router가 대기를 중단했음을 의미하고, `504` / `provider_timeout`은 공급자가 타임아웃했음을 의미합니다. 타임아웃이나 연결 끊김은 해당 생성에 대한 비용이 청구되지 않았다는 증거가 되지 않으며, 수락된 공급자 작업을 취소하지도 않습니다. 재시도하기 전에 [타임아웃과 청구](/ko/development/comfy-router/api#timeouts-and-collection)를 읽어보세요.
+
+<span id="no-way-to-resume-a-call-you-lost" />
+
+## 복구는 공급자에 따라 달라집니다
+
+Router는 수락된 submit-and-poll 생성에 대해 공급자 핸들을 보유할 수 있습니다. 동일한 `Idempotency-Key`를 재사용하면 나중에 이를 수집할 수 있으며, 완료된 재생 가능 응답도 키 기록에서 가져올 수 있습니다.
+
+연결 해제된 모든 호출이 복구 가능한 것은 아닙니다. 전송하기 전에 요청과 키를 보존한 다음, [재시도 결과 표](/ko/development/comfy-router/api#retry-outcomes)를 사용하십시오. 새 키는 새 호출을 생성하며 추가 요금이 발생할 수 있습니다.
+
+## 요청 본문 크기 상한
+
+Router는 본문이 **100 MiB(104,857,600바이트)**보다 큰 요청을 거부합니다. 이 상한은 Router가 무엇이든 파싱하기 전에 측정한, 전송한 원시 바이트에 적용되므로 모든 라우트와 동기 및 대기 중 전달 모두에 적용됩니다.
+
+인라인 미디어는 호출자가 이 상한을 마주치는 지점입니다. Base64 인코딩은 바이너리 데이터를 약 4/3로 부풀리므로, 인코딩된 미디어를 담은 본문은 대략 **실제 이미지, 오디오, 비디오 바이트 75 MB**에서 상한에 도달합니다. 디스크상의 파일이 아니라 인코딩된 문자열의 크기를 기준으로 하고, 한 번의 호출에 포함된 모든 입력을 계산하세요. 참조 이미지 두 개를 담은 요청은 두 이미지 모두에 여유분을 사용하며, 프롬프트, 파라미터, JSON 구조도 포함됩니다.
+
+**거부의 형태.** `413`, `X-Comfy-Error-Type`에 `invalid_input`, 그리고 다른 응답과 마찬가지로 `X-Comfy-Request-Id`가 설정됩니다. 본문은 [`RouterErrorResponse`](/ko/development/comfy-router/reference#routererrorresponse)이며, 이 응답의 `detail`은 초과된 상한을 설명합니다. `detail`을 파싱하기보다 `error_type`을 기준으로 분기하고, API가 반환하는 수치와 이 페이지의 수치가 다르면 API가 반환하는 값을 권위 있는 것으로 취급하세요. Router는 무엇이든 전달하기 전에 거부를 발생시키므로 생성이 실행되지 않았고 아무것도 청구되지 않았습니다.
+
+이 상한은 `Idempotency-Key`를 포함하든 하지 않든 모든 요청에 적용됩니다. 이는 멱등성 제한이 아니며, 동일한 키를 다시 보내도 결과는 달라지지 않습니다. 너무 큰 본문은 시도할 때마다 너무 큽니다.
+
+**공급자는 자체적으로 더 낮은 제한을 부과할 수 있으며, 이 상한에 이르면 대개 그렇게 합니다.** 공급자는 인라인 미디어에 대한 자체 상한을 게시하며, 구속력 있는 제약은 둘 중 더 작은 쪽입니다. 예를 들어 Google의 모델은 최대 20 MB(십진수 20,000,000바이트)의 인라인 페이로드를 허용하며, Google 모델 페이지의 `Size limit: 20MB` 줄은 전체 요청 본문에 대한 Router의 상한이 아니라 Google 자체 사양에서 인용된 Google의 필드별 상한입니다. Router의 상한은 Router가 앞에 두고 있는 모든 파트너 상한보다 의도적으로 높게 설정되어 있으므로, 단일 인라인 에셋에 대해서는 보통 공급자의 자체 제한에 먼저 부딪힙니다. Router의 상한은 하나의 본문에 여러 에셋이 담길 때 구속력을 가집니다. Router의 상한은 통과하지만 공급자의 자체 제한을 초과하는 본문은 Router가 아니라 공급자가 거부하며, `413`이 아닌 공급자 오류로 반환됩니다.
+
+## 요청은 호출자별로 속도 제한됨
+
+| 응답 | 원인 | 조치 |
+| --- | --- | --- |
+| `429` / `concurrency_limit_exceeded` | 동시 호출이 너무 많거나, 약정 지출(committed-spend) 상한 아래의 여유가 부족함. | 동시 작업을 줄이세요. 지출 헤더를 보면 지출 상한과 호출 수 제한을 구분할 수 있습니다. |
+| `429` / `rate_limited` | 요청 허용량이 소진됨. | 재시도하기 전에 `Retry-After`를 기다리세요. |
+
+요청 속도 제한은 호출(invocation)과 카탈로그/스키마 읽기에 적용되며, 생성 이전에 거부된 요청도 포함합니다. 이 제한은 소스 IP가 아니라 인증된 호출자를 따릅니다. 호출자의 공급자 키를 사용한 호출은 예외이며, 공급자 측 제한은 여전히 적용됩니다.
+
+카탈로그와 스키마 읽기는 캐시하세요. 스키마는 `ETag`와 `If-None-Match`로 재검증하세요. 재시도 및 약정 지출 필드에 대해서는 [Headers](/ko/development/comfy-router/headers)를 참고하세요.
+
+## 호출이 실행되는 동안에는 진행 상황이 표시되지 않음
+
+Router는 최종 응답만 반환하며, 스트리밍되는 토큰, 서버 전송 이벤트(Server-Sent Events), 백분율 업데이트, 중간 미리보기 프레임은 제공하지 않습니다. 요청이 처리되는 동안 공급자의 내부 폴링 상태는 전달되지 않습니다.
+
+불확정 진행 표시기를 사용하세요. 진행 상황이나 스트리밍이 필요하다면 이를 노출하는 파트너 프록시 작업을 사용하세요.
+
+<span id="no-cost-or-credit-figures-on-a-response" />
+
+## Comfy 요금 및 사용량
+
+응답에는 공급자 사용량 또는 비용 필드가 포함될 수 있습니다. 이는 보편적인 Comfy 요금을 나타내지 않습니다. `X-Comfy-Credits-Used`는 선택 사항이며 재전송되지 않습니다. 잔액, 사용량, 청구서는 Comfy 플랫폼에서 확인하세요.
+
+카탈로그는 가격 대신 `billing.charges_on_policy_rejection`을 포함한 청구 관련 사실 정보를 제공합니다. `yes`, `no`, `unknown`은 명시적으로 처리하세요. 자세한 내용은 [billing](/ko/development/comfy-router/api#model-billing-facts)을 참조하세요.
+
+## Router는 모든 파트너 작업을 다루지 않습니다
+
+Router는 모델을 실행합니다. 파일 업로드, 계정 읽기, 에셋 관리, 스트리밍, 공급자 작업 제어에는 `/proxy/…` 아래의 파트너 프록시 라우트가 필요할 수 있습니다. [Comfy API 명세](/openapi-v2.yaml)를 확인하세요. 지원 여부는 공급자마다 다릅니다.
+
+## 모델 출력 및 저장된 에셋
+
+입력과 출력 필드는 모델에 따라 다릅니다. 공급자 SDK나 프록시에서 옮겨오면 라우트와 결과를 읽는 방식이 모두 달라질 수 있습니다.
+
+일부 에셋은 Comfy 스토리지에 다시 호스팅되고, 다른 에셋은 공급자 URL이거나 인라인 바이트입니다. 수명과 재생 동작은 [결과 에셋](/ko/development/comfy-router/reference#결과-에셋)을 참조하세요.
+
+## 다음
+
+<CardGroup cols={2}>
+  <Card title="빠른 시작" icon="rocket" href="/ko/development/comfy-router/quickstart">
+    Comfy Router를 통해 첫 번째 이미지를 생성해 보세요.
+  </Card>
+  <Card title="Router API 사용하기" icon="code" href="/ko/development/comfy-router/api">
+    모델을 선택하고 스키마를 확인한 뒤 결과와 재시도를 처리합니다.
+  </Card>
+</CardGroup>

@@ -73,6 +73,24 @@ Or talk to us on our [discord](https://discord.com/invite/comfyorg)
 
 The documentation is built with Mintlify, please refer to [Mintlify documentation](https://mintlify.com/docs) to learn how to use it.
 
+### Sync-owned files
+
+Some files in this repository are written by the Comfy API v2 specification sync and rewritten from upstream sources every time it runs. Editing them here publishes the change until the next sync, which then silently reverts it. Do not edit these files in a PR:
+
+| File | Where the edit belongs |
+|------|------------------------|
+| `openapi-v2.yaml` | The API contract upstream. This file is a vendored projection of it. |
+| `development/comfy-router/reference.mdx` | The API contract upstream. This page is generated from it. |
+| `development/comfy-router/quickstart.mdx` | The upstream `quickstart.mdx`, which is published here verbatim. |
+| `development/comfy-router/limitations.mdx` | The upstream `limitations.mdx`, which is published here verbatim. |
+| `router-schemas/**` | The API contract upstream. The whole directory is re-mirrored on every sync. |
+| `development/comfy-router/models.mdx` | A model's `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+| `development/comfy-router/models/**/code.mdx` | The sibling `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+
+Two things inside that tree stay editable: `docs.json` (the sync rewrites only the `Models` nav group and the model-page redirects) and the hand-curated `development/comfy-router/models/**/code.yaml` generator inputs, which are where a change to a generated model page belongs.
+
+The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last two rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
+
 ### i18n Contributions
 
 English MDX at the repo root is the **source of truth**. Translations mirror the same relative paths under language directories (for example `zh/get_started/introduction.mdx`, `ja/get_started/introduction.mdx`, `ko/get_started/introduction.mdx`). Reusable fragments live in `snippets/` with per-language copies under `snippets/zh/`, `snippets/ja/`, `snippets/ko/`, and so on.
@@ -145,7 +163,7 @@ npm run translate:repair-truncated -- --lang ko
 - **Input**: English MDX (primary) + existing target-language file as context (if present)
 - **Output**: Updated files under `zh/`, `ja/`, `ko/`, etc., with refreshed `translationSourceHash` in frontmatter (snippets use an HTML comment for the hash)
 - **Review notes (mismatch)**: When the model reports semantic issues via `=== MISMATCHES ===`, they go to `.github/i18n-logs/translate/mismatches.json` and `mismatches.txt` (gitignored), not into MDX. Only produced during `npm run translate`, not by the truncation scanner.
-- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#truncated-translations) above.
+- **Truncation log**: Structural issues (unclosed code fences, short body) go to `.github/i18n-logs/translate/truncation-issues.json` — see [Truncated translations](#automated-translation) above.
 - **Skipped paths**: `built-in-nodes/` (configured in `translation-config.json` → `skip_paths`)
 - **Chunked files**: `changelog/index.mdx` is handled by `<Update label="v0.x.x">` version labels. The script compares EN vs target labels, translates only **missing** versions, and inserts them in EN order. Old blocks are never re-translated unless you use `--force`.
 - **Directories**: Subdirectories are created automatically when files are written; you do not need to `mkdir` by hand
@@ -180,7 +198,10 @@ npm run glossary:sync -- --lang ko    # one language
 npm run glossary:sync:dry-run         # report counts without writing
 ```
 
-The frontend locales path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH` env → `frontend_locales_path` in `translation-config.json` → `../ComfyUI_frontend/src/locales`.
+The frontend locales source resolves in order:
+
+- **Remote (default):** `frontend_locales_url` in `translation-config.json` (GitHub raw `main` branch). Override with `FRONTEND_LOCALES_URL` or `--frontend-url <url>`.
+- **Local (optional):** `--frontend <path>` or `FRONTEND_LOCALES_PATH` when you need an offline or forked checkout.
 
 #### Quality review
 
@@ -200,7 +221,7 @@ Configure a dedicated cheap judge model via `REVIEW_API_KEY` / `REVIEW_API_BASE_
 
 #### Adding a new language
 
-See [Request a new language](#request-a-new-language) above — please open an issue rather than adding a language in a PR yourself.
+See [Request a new language](#adding-a-new-language) above — please open an issue rather than adding a language in a PR yourself.
 
 Maintainers: add one entry under `languages` in `.github/scripts/i18n/translation-config.json` (`code`, `name`, `dir`, `snippets_dir`). Path exclusion, link localization, and English-file scanning are derived automatically by `i18n-config.mjs` in the same folder — no per-language edits in translate scripts when adding a locale. Then add navigation in `docs.json` (see [Mintlify Localization](https://mintlify.com/docs/navigation/localization)), and batch-translate:
 

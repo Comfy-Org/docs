@@ -17,7 +17,8 @@ Push **draft** release notes to Strapi CMS. Content is **simplified for end user
 
 - Do **not** use `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
 - Get user approval on **staging EN** before `cms:prepare:locales`; on **all staging** before `cms:sync`.
-- Sync and publish **comfyui only** by default (`--project comfyui`). Use `--project cloud` only after explicit user confirmation.
+- Sync and publish **comfyui only** by default (`--project comfyui`).
+- **Cloud hard gate:** every time someone asks to push/sync/publish to CMS, **ask again** whether Cloud should go out. Run `--project cloud` only after they manually confirm Cloud staging (links + copy) in that request. Pasted Cloud URLs or “push to CMS” alone are not Cloud approval. The gate covers **preview, sync, and publish**. See skill `cms-changelog-sync` → **Hard gate: Cloud push / publish**.
 - Strapi publish is **manual by default** — run `pnpm cms:publish` after review (not automatic on sync).
 - Do commit `.github/scripts/cms/staging/` and `published-versions.json` after Strapi publish.
 
@@ -60,6 +61,10 @@ Strapi drafts → publish → published-versions.json
 
 Each version is **saved immediately** after simplify/translate (safe to resume).
 
+After prepare:en, secondary projects (cloud) merge only the prepared `<Update>` blocks from comfyui. If cloud EN already has that version, incoming tracking shortlinks are rewritten to match cloud EN (local vs cloud campaign URLs). `prepare:locales` translates each project from its own staging EN and does not copy comfyui locale files onto cloud.
+
+**Bullet URLs** (agents rewrite after prepare:en; see skill `cms-changelog-sync`): Cloud prefers a user-supplied UTM/`links.comfy.org` URL, else `https://cloud.comfy.org/?template=<name>` from [workflow_templates `index.json`](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (video: r2v → i2v → t2v). Docs and local CMS prefer a [blog.comfy.org](https://blog.comfy.org/) post, then the GitHub PR, then the repo commit/tag. **Cloud copy** is shorter than local (announce the model, do not enumerate every node).
+
 ## Projects & attention
 
 | Project | CLI | Default attention |
@@ -78,14 +83,15 @@ Persists to `attention-overrides.json` (used on sync). Or edit that file manuall
 ## Commands
 
 ```bash
-pnpm cms:prepare:en -- --force v0.25.0      # Step 1: simplify EN
-pnpm cms:prepare:locales -- v0.25.1         # Step 2: translate (after EN approved)
-pnpm cms:preview -- v0.25.1                 # Step 3: dry-run sync
-pnpm cms:sync -- v0.25.1                    # Step 3: push drafts (after staging approved)
-pnpm cms:publish -- v0.25.1                 # publish + refresh published-versions.json
+pnpm cms:prepare:en -- --force v0.25.0                 # Step 1: simplify EN
+pnpm cms:prepare:locales -- v0.25.1                    # Step 2: translate (after EN approved)
+pnpm cms:preview -- --project comfyui v0.25.1          # Step 3: dry-run sync (comfyui only)
+pnpm cms:sync -- --project comfyui v0.25.1             # Step 3: push drafts (after staging approved)
+pnpm cms:publish -- --project comfyui v0.25.1          # publish + refresh published-versions.json
+# Cloud: pnpm cms:preview|sync|publish -- --project cloud …  only after Hard gate confirmation
 ```
 
-Default: **comfyui + cloud** on prepare. **Sync/publish default for agents: comfyui only** — add `--project cloud` only when the user confirms.
+Default: **comfyui + cloud** on prepare. **Sync/publish/preview default for agents: comfyui only** — add `--project cloud` only when the user **explicitly confirms Cloud** after the agent asks (hard gate; every CMS push/publish request; includes preview).
 
 Local default (no args): **all unpublished EN versions** (from `published-versions.json`). Full backfill: `CMS_SYNC_ALL=1`.
 
@@ -98,13 +104,13 @@ Configured in `cms-config.json` → `simplify`:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `max_bullets_total` | **10** | Bullets for the **entire version** (not per section) |
-| `max_sections` | **3** | `**New Open-Source Model Support**` → `**New Node Updates**` → `**Partner Node Updates**` (bold labels, not `##`) |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → optional `**New Node Updates**` (bold labels, not `##`) |
 
-- Section order is **fixed**: open-source models first, node updates second, partner nodes last
-- Include **all meaningful New Nodes** entries from the docs changelog (workflows, output sockets, multimodal nodes)
+- Section order is **fixed** when present: open-source models first, partner nodes second, node updates last
+- **New Node Updates is optional by default.** Omit from the CMS popup even if docs has New Nodes; include only when a human explicitly asks
 - Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
 - **Keep PR links** when the source has them
-- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping
+- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and New Nodes unless requested
 - English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
 - Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
 
@@ -125,9 +131,10 @@ See [`.env.local.example`](../../../.env.local.example) (`TRANSLATE_*` for prepa
 After reviewing drafts in Strapi (or trusting staging content):
 
 ```bash
-pnpm cms:publish --preview -- v0.25.1   # dry-run
-pnpm cms:publish -- v0.25.1             # publish + auto-refresh published-versions.json
-pnpm cms:publish -- v0.25.1 --no-registry   # publish only, skip JSON
+pnpm cms:publish --preview -- --project comfyui v0.25.1   # dry-run
+pnpm cms:publish -- --project comfyui v0.25.1             # publish + auto-refresh published-versions.json
+pnpm cms:publish -- --project comfyui v0.25.1 --no-registry   # publish only, skip JSON
+# Cloud publish: only after Hard gate confirmation, with --project cloud
 ```
 
 - Publishes every locale that has a **draft** (en first, then zh/ja/ko/fr/ru/es)

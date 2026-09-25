@@ -86,15 +86,16 @@ import {
   changelogLabelHash,
   documentBlockHashes,
   getSectionSyncStatus,
+  mapTargetSectionsByStoredLabels,
   parseBlockHashLabelOrderFromFrontmatter,
   parseBlockHashesFromFrontmatter,
   parseDocument,
   parseFrontmatterAndBody,
   parseHeadingSections,
-  parseTargetSectionsByIndex,
   resolveChunkStrategy,
   serializeChunkedDocument,
   splitOversizedBlock,
+  frontmatterMetaPrefix,
   stripTranslationMetaFromFrontmatter,
   syncUpdateBlockDescription,
   validateTranslatedBlock,
@@ -331,7 +332,7 @@ function setTranslationMeta(content: string, hash: string, enPath: string): stri
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripAndSanitizeTranslationMeta(body);
 
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 /** Set hash on snippet files (no frontmatter) via HTML comment */
@@ -446,8 +447,10 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "The English source is authoritative — always follow it for meaning.",
     "If a current translation is provided, use it as context: preserve wording where the English is unchanged; only update sections that differ from the English.",
     "Preserve ALL MDX/JSX syntax exactly: component tags, import statements, code blocks, URLs, frontmatter YAML structure.",
+    "For Markdown headings, preserve custom anchor syntax like {#workflow-id} exactly. Never convert it to visible inline code such as (`workflow_id`). The {#...} anchor must remain outside the translated heading text.",
     "DO translate: title, description, sidebarTitle in frontmatter; all prose; Card title/children text; table content; list items.",
-    "Do NOT translate: component tag names, code inside ``` blocks, code identifiers in backticks, URLs, file paths, image paths.",
+    "Do NOT translate or rewrite code inside ``` fenced blocks: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag and the closing fence must stay byte-for-byte identical to the English source.",
+    "DO translate the text of code comments inside ``` fenced blocks, both whole-line comments and trailing comments that follow code, keeping each comment on the same line and in the same position as the English source. Python docstrings (a triple-quoted string that opens a def, class or module) are documentation too: translate their text. Never translate or alter a shebang line (`#!...`), a string literal used as a value, a variable name, or any code token. Translate all other prose outside fenced blocks.",
     preserveStr ? `Do NOT translate these technical terms: ${preserveStr}` : "",
     "If you notice semantic issues in the existing translation relative to the English (wrong meaning, missing section, untranslated prose), note them AFTER the MDX content, separated by a line containing only '=== MISMATCHES ===' followed by one issue per line.",
     "Do NOT report expected localization as issues: /{lang}/ internal links, translated snippet import paths, or other path prefix changes applied for the target locale.",
@@ -686,10 +689,6 @@ async function translateChunkedFile(
   const existingByLabel = new Map(
     (existingDoc?.blocks ?? []).map((b) => [b.label, b.content])
   );
-  const existingByIndex =
-    strategy === "heading_sections" && existingContent
-      ? parseTargetSectionsByIndex(parseFrontmatterAndBody(existingContent).body, enDoc.blocks.length)
-      : [];
 
   // Use stored label order (from frontmatter) to map EN labels to target section positions.
   // This handles the case where a new H2 section is inserted in the middle of the English
@@ -698,32 +697,47 @@ async function translateChunkedFile(
   const storedLabels = existingFmBody
     ? parseBlockHashLabelOrderFromFrontmatter(existingFmBody)
     : [];
+  const targetBody = existingContent
+    ? parseFrontmatterAndBody(existingContent).body
+    : "";
   const targetHeadingSections =
     strategy === "heading_sections" && existingContent
-      ? parseHeadingSections(parseFrontmatterAndBody(existingContent).body)
+      ? parseHeadingSections(targetBody)
       : [];
-
-  const slots: BlockSlot[] = enDoc.blocks.map((b, i) => {
-    if (!force && !status.pendingBlocks.includes(b.label)) {
-      let content: string | null = null;
-
-      if (strategy === "heading_sections") {
-        // Match by stored label position (stable across insertions), not by EN index
-        const storedPos = storedLabels.indexOf(b.label);
-        if (storedPos >= 0 && storedPos < targetHeadingSections.length) {
-          content = targetHeadingSections[storedPos].content;
-        }
-        // Fallback to positional (works when target and EN section counts match)
-        if (!content?.trim()) {
-          content = existingByIndex[i] ?? null;
-        }
-      } else {
-        content = existingByLabel.get(b.label) ?? null;
+  const mappedByStoredLabel =
+    strategy === "heading_sections" && existingContent
+      ? mapTargetSectionsByStoredLabels(targetBody, storedLabels)
+      : new Map<string, string>();
+  const existingContentForLabel = new Map<string, string>();
+  if (strategy === "heading_sections") {
+    if (mappedByStoredLabel.size > 0) {
+      for (const [label, content] of mappedByStoredLabel) {
+        existingContentForLabel.set(label, content);
       }
-
-      return { label: b.label, content: content?.trim() ? content : null };
+    } else if (targetHeadingSections.length !== storedLabels.length) {
+      // Section count drift: positional seeding preserves already-translated blocks
+      // without borrowing content across a mismatched intro boundary.
+      storedLabels.forEach((label, index) => {
+        if (index < targetHeadingSections.length) {
+          existingContentForLabel.set(label, targetHeadingSections[index]!.content);
+        }
+      });
     }
-    return { label: b.label, content: null };
+  } else {
+    for (const [label, content] of existingByLabel) {
+      existingContentForLabel.set(label, content);
+    }
+  }
+  const pendingLabels = new Set(
+    force ? enDoc.blocks.map((b) => b.label) : status.pendingBlocks
+  );
+
+  // Keep old target content in pending slots until a replacement succeeds. This
+  // makes checkpoints non-destructive and prevents an interrupted run from
+  // dropping all blocks that had not been processed yet.
+  const slots: BlockSlot[] = enDoc.blocks.map((b) => {
+    const content = existingContentForLabel.get(b.label) ?? null;
+    return { label: b.label, content: content?.trim() ? content : null };
   });
 
   if (status.needsReserialize && status.pendingBlocks.length === 0) {
@@ -757,8 +771,24 @@ async function translateChunkedFile(
   const allMismatches: string[] = [];
   let blocksTranslated = 0;
   let frontmatterDirty = false;
-  const hashesForMeta: Record<string, string> = { ...enBlockHashes };
+  const hashesForMeta: Record<string, string> = {};
+  for (const slot of slots) {
+    if (!slot.content?.trim()) continue;
+    if (!pendingLabels.has(slot.label)) {
+      hashesForMeta[slot.label] = enBlockHashes[slot.label]!;
+    } else if (oldBlockHashes[slot.label]) {
+      hashesForMeta[slot.label] = oldBlockHashes[slot.label]!;
+    }
+  }
   const failedLabels: string[] = [];
+  const checkpointFileHash = (): string => {
+    const allCurrent = enDoc.blocks.every(
+      (b) =>
+        slots.find((s) => s.label === b.label)?.content?.trim() &&
+        hashesForMeta[b.label] === enBlockHashes[b.label]
+    );
+    return allCurrent ? fileHash : aggregateDocumentHash(hashesForMeta);
+  };
 
   let translatedFrontmatter = existingDoc?.frontmatter ?? "";
   if (force || status.needsFrontmatter) {
@@ -781,7 +811,7 @@ async function translateChunkedFile(
       targetPath,
       translatedFrontmatter,
       slots,
-      fileHash,
+      checkpointFileHash(),
       enRel,
       hashesForMeta,
       strategy,
@@ -792,13 +822,10 @@ async function translateChunkedFile(
 
   for (let i = 0; i < slots.length; i++) {
     const slot = slots[i]!;
-    if (slot.content !== null) continue;
+    if (!pendingLabels.has(slot.label)) continue;
 
     const enBlock = enDoc.blocks[i]!;
-    const existingBlock =
-      strategy === "heading_sections"
-        ? existingByIndex[i] ?? ""
-        : existingByLabel.get(slot.label) ?? "";
+    const existingBlock = existingContentForLabel.get(slot.label) ?? "";
 
     const blockTag =
       strategy === "heading_sections"
@@ -838,6 +865,7 @@ async function translateChunkedFile(
       failedLabels.push(slot.label);
     } else {
       slot.content = translatedBlock;
+      hashesForMeta[slot.label] = enBlockHashes[slot.label]!;
       blocksTranslated++;
     }
 
@@ -846,8 +874,7 @@ async function translateChunkedFile(
       targetPath,
       translatedFrontmatter,
       slots,
-      // Keep source hash as full EN aggregate only when nothing failed.
-      failedLabels.length === 0 ? fileHash : aggregateDocumentHash(hashesForMeta),
+      checkpointFileHash(),
       enRel,
       hashesForMeta,
       strategy,
@@ -961,6 +988,23 @@ async function translateFile(
 
   let output = sanitizeMdxFrontmatter(cleanModelOutput(result.content));
   output = localizeMdxPaths(output, lang, config.languages);
+
+  // Non-chunked pages used to be written without structural validation. A
+  // model response could therefore be accepted after being cut short even
+  // when finish_reason was "stop". Reuse the same guard as chunked pages and
+  // keep the previous translation intact when the response is unsafe.
+  const valid = validateTranslatedBlock(
+    "heading_sections",
+    { label: "_intro", content: enContent },
+    output,
+    { finishReason: result.finishReason }
+  );
+  if (!valid) {
+    console.log(
+      `  [FAIL] [${lang.code}] ${relPath}: rejected truncated or invalid response; keeping existing translation`
+    );
+    return { mismatches: result.mismatches, status: "failed" };
+  }
 
   if (snippetsMode) {
     output = setSnippetHash(output, hash);
@@ -1390,6 +1434,7 @@ async function main() {
   );
 
   let totalFailed = 0;
+  const translatedTargets: string[] = [];
   for (const phase of phases) {
     const result = await runTranslatePhase({
       snippetsMode: phase.snippetsMode,
@@ -1401,6 +1446,10 @@ async function main() {
       repairTruncated,
     });
     totalFailed += result.failed;
+    for (const job of result.translatedJobs) {
+      const { targetPath } = makeMapping(job.lang, job.relPath, phase.snippetsMode);
+      translatedTargets.push(targetPath);
+    }
   }
 
   if (dryRun) {
@@ -1411,6 +1460,31 @@ async function main() {
       });
     }
     return;
+  }
+
+  // Auto-fix anchor fragments after translation: translation localizes
+  // heading text but keeps the English anchor fragment in links, so those
+  // anchors die on the translated page. fixAnchorSlugs rewrites them to the
+  // localized slug (see fix-anchor-slugs.ts). A full scan keeps check-anchors
+  // green: not only this run's files but also untouched translated pages can
+  // link to a heading whose localized slug changed in this run.
+  if (translatedTargets.length > 0) {
+    const { fixAnchorSlugs } = await import("./fix-anchor-slugs.ts");
+    // Keep the language and content scope the user asked for; a full scan
+    // would rewrite files outside the requested --lang / --snippets scope.
+    const stats = await fixAnchorSlugs({
+      langs: selectedLangs,
+      snippetsMode: snippetsOnly,
+      pagesOnly,
+    });
+    if (stats.unresolved > 0) {
+      console.warn(
+        `⚠️ Anchor repair: ${stats.fixed} fixed, ${stats.unresolved} need manual review ` +
+          `(target structure drifted; check-anchors may still fail for those).`
+      );
+    } else {
+      console.log(`Anchor repair: ${stats.fixed} fixed, 0 unresolved.`);
+    }
   }
 
   if (repairTruncated && totalFailed === 0) {

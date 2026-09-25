@@ -30,6 +30,7 @@ import {
   canonicalBlockLabelOrder,
   changelogLabelHash,
   documentBlockHashes,
+  frontmatterMetaPrefix,
   getSectionSyncStatus,
   parseDocument,
   parseFrontmatterAndBody,
@@ -79,7 +80,7 @@ function setTranslationMeta(content: string, hash: string, enPath: string): stri
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripTranslationMetaFromFrontmatter(body);
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 function setSnippetHash(content: string, hash: string): string {
@@ -168,8 +169,14 @@ function syncChunkedHashes(
     strategy,
     enDoc.blocks.map((b) => b.label)
   );
+  // `frontmatter` already carries the newline that separates it from `body`
+  // (parseFrontmatterAndBody appends one and consumes the original), so
+  // `frontmatter + body` reconstructs the file exactly. Adding another "\n"
+  // here injected a blank line on every run, which made `output` differ from
+  // `targetContent` forever and left the `unchanged` branch in syncOneFile
+  // unreachable. See https://github.com/Comfy-Org/docs/issues/1358.
   const bodyText = body.endsWith("\n") ? body : `${body}\n`;
-  const raw = `${frontmatter}\n${bodyText}`;
+  const raw = `${frontmatter}${bodyText}`;
   return setChunkedTranslationMeta(raw, fileHash, enRel, enBlockHashes, labelOrder);
 }
 
@@ -434,7 +441,13 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Guarded so the module can be imported by tests without running a full sync
+// over the repo. Nothing else changes: `bun sync-hash-i18n.ts` still runs main().
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export { computeSyncedContent, syncChunkedHashes, syncPlainHashes };

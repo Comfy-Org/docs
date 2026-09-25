@@ -1,0 +1,809 @@
+---
+title: "Comfy Router で Nano Banana 2 を使う"
+description: "Comfy Router 経由で HTTP を使って Nano Banana 2 (Gemini 3.1 Flash Image) で画像を生成するための Python、TypeScript、cURL スニペット、およびリクエストのフィールドと結果の形状"
+sidebarTitle: "Nano Banana 2"
+translationSourceHash: 2706481a
+translationFrom: development/comfy-router/models/google/nano-banana-2/code.mdx
+translationBlockHashes:
+  "_intro": 8a65bc55
+  "Quick start": 0e6b2ec6
+  "Serving providers": f4a7c8b8
+  "Schema": 3095fcbf
+  "Examples": d294783d
+---
+
+{/* 生成されたファイルです。このディレクトリの code.yaml を編集し、`pnpm code-pages:gen` を実行してください。 */}
+
+import RouterCodeFooter from "/snippets/ja/comfy-router/model-code-footer.mdx";
+
+Nano Banana 2 の API リファレンスです。Nano Banana 2（Gemini 3.1 Flash Image）はテキストから画像を生成し、入力画像が指定された場合はその画像を編集します。
+
+## クイックスタート
+
+[お使いの Comfy ワークスペース](https://platform.comfy.org/profile/api-keys?onboarding=router)でキーを作成し、`COMFY_API_KEY` としてエクスポートします。Python、TypeScript、Swift のスニペットは Comfy SDK（`pip install comfy-sdk`、`npm install @comfyorg/sdk`、および [`ComfySwiftSDK`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift パッケージ）を使用しています。cURL のスニペットは、生の HTTP で同じ呼び出しを行います。
+
+**モデル ID:** `vertexai/gemini-3.1-flash-image`
+
+**エンドポイント:** `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image`
+
+<Tabs>
+
+<Tab title="結果を待つ">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# SDK は冪等キーを自動的に作成し、自動リトライのために再利用します。
+with Comfy() as client:
+    result = client.models.run(
+        "vertexai/gemini-3.1-flash-image",
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "a single red maple leaf on a plain white background, studio lighting",
+                        },
+                    ],
+                },
+            ],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+                "imageConfig": {
+                    "aspectRatio": "1:1",
+                },
+            },
+        },
+    )
+
+print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// SDK は冪等キーを自動的に作成し、自動リトライのために再利用します。
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-3.1-flash-image", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "a single red maple leaf on a plain white background, studio lighting",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    responseModalities: ["IMAGE"],
+    imageConfig: {
+      aspectRatio: "1:1",
+    },
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// SDK は呼び出しごとに冪等キーを生成し、自動リトライのために再利用します。
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let result = try await client.models.run(
+    "vertexai/gemini-3.1-flash-image",
+    input: [
+        "contents": [
+            [
+                "role": "user",
+                "parts": [
+                    [
+                        "text": "a single red maple leaf on a plain white background, studio lighting",
+                    ],
+                ],
+            ],
+        ],
+        "generationConfig": [
+            "responseModalities": ["IMAGE"],
+            "imageConfig": [
+                "aspectRatio": "1:1",
+            ],
+        ],
+    ]
+)
+
+print("image (base64):", result.output["candidates"][0]["content"]["parts"][0]["inlineData"]["data"].stringValue ?? "")
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="キューに送信して後で収集する">
+同じボディを `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests` に送信します。Router は実行が受け付けられるとすぐに `201` と `request_id` を返し、結果は準備が整い次第、このプロセスまたは別のプロセスから収集されます。[キュー配信](/ja/development/comfy-router/queue)では、ステータス、キャンセル、収集の流れを説明しています。
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動リトライで再利用します。
+with Comfy() as client:
+    handle = client.models.submit(
+        "vertexai/gemini-3.1-flash-image",
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "a single red maple leaf on a plain white background, studio lighting",
+                        },
+                    ],
+                },
+            ],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+                "imageConfig": {
+                    "aspectRatio": "1:1",
+                },
+            },
+        },
+    )
+    print("request_id:", handle.request_id)  # モデル ID と合わせて、別のプロセスが必要とするすべて
+
+    # リクエストが完了するまでポーリングし、サーバーが指定する Retry-After だけ待機します。
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # プロバイダー自身のペイロードで、models.run() が返すのと同じ値です。
+    # 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを発生させます。
+    result = handle.get()
+
+print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動リトライで再利用します。
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-3.1-flash-image", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "a single red maple leaf on a plain white background, studio lighting",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    responseModalities: ["IMAGE"],
+    imageConfig: {
+      aspectRatio: "1:1",
+    },
+  },
+});
+console.log("requestId:", handle.requestId); // モデル ID と合わせて、別のプロセスが必要とするすべて
+
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After だけ待機します。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// models.run() が返すのと同じ結果です。失敗またはキャンセルされたリクエストは、ここで reject されます。
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```swift Swift
+import Foundation
+import ComfySwiftSDK
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動リトライで再利用します。
+let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
+let handle = try await client.models.submit(
+    "vertexai/gemini-3.1-flash-image",
+    input: [
+        "contents": [
+            [
+                "role": "user",
+                "parts": [
+                    [
+                        "text": "a single red maple leaf on a plain white background, studio lighting",
+                    ],
+                ],
+            ],
+        ],
+        "generationConfig": [
+            "responseModalities": ["IMAGE"],
+            "imageConfig": [
+                "aspectRatio": "1:1",
+            ],
+        ],
+    ]
+)
+print("requestId:", handle.requestId)  // モデル ID と合わせて、別のプロセスが必要とするすべて
+
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After だけ待機します。
+for try await update in handle.events() {
+    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
+}
+
+// プロバイダー自身のペイロードで、models.run() が返すのと同じ値です。
+// 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを発生させます。
+let result = try await handle.result()
+
+print("image (base64):", result.output["candidates"][0]["content"]["parts"][0]["inlineData"]["data"].stringValue ?? "")
+```
+
+```bash cURL
+# 1. 送信。Router は request_id、status_url、response_url、cancel_url とともに 201 を返します。
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
+
+# 2. ステータスが COMPLETED になるまでポーリングし、各レスポンスが指定する Retry-After 秒だけ待機します。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 収集。モデルのネイティブ出力とともに 200、まだ実行中の場合はステータスボディとともに 202 を返します。
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## サービングプロバイダー
+
+このモデルは、リクエストで別のプロバイダーが指定されない限り、Comfy Router が直接提供します。以下のプロバイダーも、同じエンドポイントかつ同じモデル ID でこのモデルを提供しており、`model_provider` クエリパラメータで選択します。
+
+- **Comfy**（デフォルト）: `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image`
+- **fal**、`fal/fal-nano-banana-2` として: `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image?model_provider=fal`
+- **Runware**、`runware/runware-nano-banana-2` として: `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image?model_provider=runware`
+
+`strict_mode` のデフォルトは false であるため、Router はこのページで説明されているネイティブのリクエストボディをプロバイダー独自のスキーマに変換し、レスポンスを元に戻す変換を行います。API リファレンスの [`model_provider`、`strict_mode`、`fallback_provider`](/ja/development/comfy-router/reference#post-v2modelsprovidermodel) を参照し、この方法でルーティングされるすべてのモデルについては[サービングプロバイダー](/ja/development/comfy-router/providers)を参照してください。
+
+## スキーマ
+
+### 入力
+
+<ParamField body="contents" type="object[]" required>
+  モデルとの現在の会話のコンテンツです。単一ターンのクエリでは、これは単一のインスタンスです。マルチターンのクエリでは、これは会話履歴と最新のリクエストを含む繰り返しフィールドです。
+</ParamField>
+
+<ParamField body="contents[].parts" type="object[]" required>
+   
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData" type="object">
+  URI ベースのデータです。
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.fileUri" type="string">
+  URI
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.mimeType" type="string">
+  data フィールドまたは fileUri フィールドで指定されたファイルのメディアタイプです。使用可能な値は次のとおりです。gemini-2.0-flash-lite および gemini-2.0-flash では、オーディオファイルの最大長は 8.4 時間、ビデオファイル (オーディオなし) の最大長は 1 時間です。詳細については、Gemini のオーディオとビデオの要件を参照してください。テキストファイルは UTF-8 でエンコードされている必要があります。テキストファイルのコンテンツはトークン制限にカウントされます。画像の解像度に制限はありません。
+
+  使用可能な値: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData" type="object">
+  生のバイト形式のインラインデータです。gemini-2.0-flash-lite および gemini-2.0-flash では、inlineData を使用して最大 3000 枚の画像を指定できます。
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.data" type="string (byte)">
+  プロンプトにインラインで含める画像、PDF、またはビデオの base64 エンコードです。メディアをインラインで含める場合は、データのメディアタイプ (mimeType) も指定する必要があります。サイズ制限: 20MB
+
+  形式: `byte`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.mimeType" type="string">
+  data フィールドまたは fileUri フィールドで指定されたファイルのメディアタイプです。使用可能な値は次のとおりです。gemini-2.0-flash-lite および gemini-2.0-flash では、オーディオファイルの最大長は 8.4 時間、ビデオファイル (オーディオなし) の最大長は 1 時間です。詳細については、Gemini のオーディオとビデオの要件を参照してください。テキストファイルは UTF-8 でエンコードされている必要があります。テキストファイルのコンテンツはトークン制限にカウントされます。画像の解像度に制限はありません。
+
+  使用可能な値: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].mediaProcessing" type="string">
+  モデルがこのパートのビデオを読み取る方法です。固定レートのフレームサンプリングではなく、モデルに検査するセグメントを決定させるには "AGENTIC" を設定します。省略すると、デフォルトの固定レートサンプリングが使用されます。gemini-3.7-flash 以降の Flash モデルでサポートされています。
+</ParamField>
+
+<ParamField body="contents[].parts[].text" type="string">
+  テキストプロンプトまたはコードスニペット。
+</ParamField>
+
+<ParamField body="contents[].parts[].thought" type="boolean">
+  このパートがモデルによる思考/推論ステップであることを示します。
+</ParamField>
+
+<ParamField body="contents[].role" type="string">
+  使用可能な値: `user`, `model`
+</ParamField>
+
+<ParamField body="generationConfig" type="object">
+  生成のサンプリング、長さ、出力の設定です。すべてのフィールドは任意です。以下で `default` を宣言しているフィールドは省略時にその値が適用され、それ以外はモデル自身の動作にフォールバックします。
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig" type="object">
+  画像生成の設定
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.aspectRatio" type="string">
+  生成される画像のアスペクト比
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions" type="object">
+  任意。生成された画像の画像出力形式です。
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.compressionQuality" type="integer">
+  任意。出力画像の圧縮品質です。
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.mimeType" type="string">
+  任意。出力を保存する画像形式です。
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageSize" type="string">
+  任意。生成される画像のサイズを指定します。サポートされる値は 1K、2K、4K です。指定しない場合、モデルはデフォルト値の 1K を使用します。
+</ParamField>
+
+<ParamField body="generationConfig.maxOutputTokens" type="integer">
+  応答で生成できるトークンの最大数です。1 トークンは約 4 文字です。100 トークンはおよそ 60～80 語に相当します。
+
+  範囲: `16` から `65536`
+</ParamField>
+
+<ParamField body="generationConfig.responseModalities" type="`TEXT`, `IMAGE`[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.seed" type="integer">
+  シードを特定の値に固定すると、モデルは繰り返しのリクエストに対して同じ応答を返すよう最善を尽くします。決定論的な出力は保証されません。また、temperature などのモデルやパラメータ設定を変更すると、同じシード値を使用していても応答が変動する可能性があります。デフォルトでは、ランダムなシード値が使用されます。以下のモデルで利用できます: gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-preview-04-1, gemini-2.5-pro-preview-05-0, gemini-2.0-flash-lite-00, gemini-2.0-flash-001
+</ParamField>
+
+<ParamField body="generationConfig.stopSequences" type="string[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.temperature" type="number" default="1">
+  temperatureは、topPおよびtopKが適用される応答生成中のサンプリングに使用されます。temperatureは、トークン選択におけるランダム性の度合いを制御します。低いtemperatureは、より開かれた、あるいは創造的な応答を必要としないプロンプトに適しており、高いtemperatureはより多様または創造的な結果につながる可能性があります。temperatureが0の場合、常に最も確率の高いトークンが選択されます。この場合、特定のプロンプトに対する応答はほとんど確定的ですが、わずかなばらつきが生じる可能性は残ります。モデルが返す応答が一般的すぎる、短すぎる、またはフォールバック応答を返す場合は、temperatureを上げてみてください
+
+  範囲: `0` から `2`
+
+  形式: `float`
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig" type="object">
+  省略可能。thinking機能の設定です。thinkingとは、モデルが複雑なタスクをより小さなステップに分解し、より高品質な応答を生成するプロセスです。
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.includeThoughts" type="boolean">
+  省略可能。trueの場合、モデルは応答に自身の思考を含めます。
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingBudget" type="integer">
+  省略可能。モデルのthinkingプロセスに割り当てるトークン予算です。モデルはこの予算内に収まるよう最善を尽くします。
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingLevel" type="string">
+  省略可能。モデルのthinkingレベルです。
+
+  指定可能な値: `THINKING_LEVEL_UNSPECIFIED`、`LOW`、`MEDIUM`、`HIGH`、`MINIMAL`
+</ParamField>
+
+<ParamField body="generationConfig.topK" type="integer" default="40">
+  Top-Kは、モデルが出力するトークンを選択する方法を変更します。Top-Kが1の場合、次に選択されるトークンは、モデルの語彙内のすべてのトークンの中で最も確率が高いものになります。Top-Kが3の場合、次に選択されるトークンは、確率が上位3位までのトークンの中からtemperatureを用いて選択されます。
+
+  範囲: `1` から `…`
+</ParamField>
+
+<ParamField body="generationConfig.topP" type="number" default="0.95">
+  指定した場合、nucleusサンプリングが使用されます。
+Top-Pは、モデルが出力するトークンを選択する方法を変更します。トークンは、確率の合計がtop-Pの値に等しくなるまで、最も確率が高いもの（top-Kを参照）から最も低いものへと選択されます。たとえば、トークンA、B、Cの確率がそれぞれ0.3、0.2、0.1で、top-Pの値が0.5の場合、モデルはtemperatureを用いてAまたはBのいずれかを次のトークンとして選択し、Cは候補から除外します。
+よりランダム性の低い応答には低い値を、よりランダム性の高い応答には高い値を指定してください。
+
+  範囲: `0` から `1`
+
+  形式: `float`
+</ParamField>
+
+<ParamField body="safetySettings" type="object[]">
+  安全でないコンテンツをブロックするためのリクエストごとの設定です。GenerateContentResponse.candidatesに適用されます。
+</ParamField>
+
+<ParamField body="safetySettings[].category" type="string" required>
+  指定可能な値: `HARM_CATEGORY_SEXUALLY_EXPLICIT`、`HARM_CATEGORY_HATE_SPEECH`、`HARM_CATEGORY_HARASSMENT`、`HARM_CATEGORY_DANGEROUS_CONTENT`
+</ParamField>
+
+<ParamField body="safetySettings[].threshold" type="string" required>
+  指定可能な値: `OFF`、`BLOCK_NONE`、`BLOCK_LOW_AND_ABOVE`、`BLOCK_MEDIUM_AND_ABOVE`、`BLOCK_ONLY_HIGH`
+</ParamField>
+
+<ParamField body="systemInstruction" type="object">
+  モデルをより良いパフォーマンスへ導くための指示です。たとえば、「できるだけ簡潔に回答してください」や「回答に専門用語を使わないでください」などです。テキスト文字列はトークン制限にカウントされます。systemInstructionのroleフィールドは無視され、モデルのパフォーマンスには影響しません。注: partsではテキストのみを使用し、各partのcontentは別々の段落にしてください。
+</ParamField>
+
+<ParamField body="systemInstruction.parts" type="object[]" required>
+  1つのメッセージを構成する順序付けられたpartのリストです。partごとに異なるIANA MIMEタイプを使用できます。最大トークン数や画像数などの入力に関する制限については、Google modelsページのモデル仕様を参照してください。
+</ParamField>
+
+<ParamField body="systemInstruction.parts[].text" type="string">
+  テキストプロンプトまたはコードスニペット。
+</ParamField>
+
+<ParamField body="systemInstruction.role" type="string">
+  メッセージを作成するエンティティの識別情報です。以下の値がサポートされています。user: メッセージが実在の人物によって送信されたことを示します。通常はユーザーが生成したメッセージです。model: メッセージがモデルによって生成されたことを示します。modelの値は、マルチターン会話においてモデルからのメッセージを会話に挿入するために使用されます。マルチターンでない会話では、このフィールドは空欄または未設定のままにできます。
+
+  指定可能な値: `user`、`model`
+</ParamField>
+
+<ParamField body="tools" type="object[]">
+  システムがモデルの知識と範囲の外にあるアクションまたは一連のアクションを実行するために、外部システムと連携できるようにするコードです。Function callingを参照してください。
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations" type="object[]">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].description" type="string">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].name" type="string" required>
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].parameters" type="object">
+  関数パラメータのJSONスキーマ
+</ParamField>
+
+<ParamField body="uploadImagesToStorage" type="boolean">
+  trueの場合、生成された画像はクラウドストレージにアップロードされ、インラインのbase64データではなく署名付きURLとして返されます。URLは24時間後に有効期限が切れます。
+</ParamField>
+
+<ParamField body="videoMetadata" type="object">
+  ビデオ入力の場合、ビデオの開始オフセットと終了オフセットをDuration形式で指定します。たとえば、1:00から始まる10秒のクリップを指定するには、"startOffset": \{ "seconds": 60 } および "endOffset": \{ "seconds": 70 } を設定します。メタデータは、ビデオデータがinlineDataまたはfileDataで提示されている場合にのみ指定してください。
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset" type="object">
+  ビデオタイムライン上の位置に対する再生時間のオフセットを表します。
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.nanos" type="integer">
+  ナノ秒単位の符号付き秒の小数部。小数を含む負の秒の値であっても、nanos の値は負でない必要があります。
+
+  範囲: `0` から `999999999` まで
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.seconds" type="integer">
+  期間の符号付き秒数。-315,576,000,000 から +315,576,000,000 まで（両端を含む）である必要があります。
+
+  範囲: `-315576000000` から `315576000000` まで
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset" type="object">
+  ビデオタイムライン上の位置に対する再生時間のオフセットを表します。
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.nanos" type="integer">
+  ナノ秒単位の符号付き秒の小数部。小数を含む負の秒の値であっても、nanos の値は負でない必要があります。
+
+  範囲: `0` から `999999999` まで
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.seconds" type="integer">
+  期間の符号付き秒数。-315,576,000,000 から +315,576,000,000 まで（両端を含む）である必要があります。
+
+  範囲: `-315576000000` から `315576000000` まで
+</ParamField>
+
+`GET /v2/models/vertexai/gemini-3.1-flash-image/openapi.json` で Router が提供するスキーマから生成されています。これは、リクエストがプロバイダーに到達する前に Router が呼び出しを検証する際に使用するドキュメントと同じものです。
+
+### 出力
+
+<ResponseField name="candidates" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].authors" type="string[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].endIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].license" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].publicationDate" type="string (date)">
+  形式: `date`
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].startIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].title" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].uri" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content" type="object">
+  モデルとの現在の会話のコンテンツ。単一ターンのクエリでは、これは単一のインスタンスです。マルチターンのクエリでは、これは会話履歴と最新のリクエストを含む繰り返しフィールドです。
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts" type="object[]" required>
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData" type="object">
+  URI ベースのデータ。
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.fileUri" type="string">
+  URI
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.mimeType" type="string">
+  data フィールドまたは fileUri フィールドで指定されたファイルのメディアタイプ。許容される値は次のとおりです。gemini-2.0-flash-lite および gemini-2.0-flash では、オーディオファイルの最大長は 8.4 時間で、ビデオファイル (オーディオなし) の最大長は 1 時間です。詳細については、Gemini のオーディオとビデオの要件を参照してください。テキストファイルは UTF-8 でエンコードする必要があります。テキストファイルの内容はトークン制限にカウントされます。画像の解像度に制限はありません。
+
+  可能な値: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData" type="object">
+  生のバイト形式のインラインデータ。gemini-2.0-flash-lite および gemini-2.0-flash では、inlineData を使用して最大 3000 枚の画像を指定できます。
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.data" type="string (byte)">
+  プロンプトにインラインで含める画像、PDF、またはビデオの base64 エンコーディング。メディアをインラインで含める場合は、データのメディアタイプ (mimeType) も指定する必要があります。サイズ制限: 20MB
+
+  形式: `byte`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.mimeType" type="string">
+  data フィールドまたは fileUri フィールドで指定されたファイルのメディアタイプ。許容される値は次のとおりです。gemini-2.0-flash-lite および gemini-2.0-flash では、オーディオファイルの最大長は 8.4 時間で、ビデオファイル (オーディオなし) の最大長は 1 時間です。詳細については、Gemini のオーディオとビデオの要件を参照してください。テキストファイルは UTF-8 でエンコードする必要があります。テキストファイルの内容はトークン制限にカウントされます。画像の解像度に制限はありません。
+
+  可能な値: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].mediaProcessing" type="string">
+  モデルがこのパートのビデオをどのように読み取るか。「AGENTIC」を設定すると、固定レートのフレームサンプリングではなく、モデルが検査するセグメントを判断します。デフォルトの固定レートサンプリングを使用する場合は省略します。gemini-3.7-flash 以降の Flash モデルでサポートされています。
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].text" type="string">
+  テキストプロンプトまたはコードスニペット。
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].thought" type="boolean">
+  このパートがモデルからの思考/推論ステップであることを示します。
+</ResponseField>
+
+<ResponseField name="candidates[].content.role" type="string">
+  可能な値: `user`, `model`
+</ResponseField>
+
+<ResponseField name="candidates[].finishReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].category" type="string">
+  可能な値: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].probability" type="string">
+  コンテンツが指定された安全性カテゴリに違反する確率
+
+  可能な値: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="createTime" type="string">
+  レスポンスが作成されたタイムスタンプ。
+</ResponseField>
+
+<ResponseField name="modelVersion" type="string">
+  レスポンスの生成に使用されたモデルのバージョン。
+</ResponseField>
+
+<ResponseField name="promptFeedback" type="object">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReasonMessage" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].category" type="string">
+  指定可能な値:  `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].probability" type="string">
+  コンテンツが指定された安全性カテゴリに違反する確率
+
+  指定可能な値: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="responseId" type="string">
+  レスポンスの一意の識別子。
+</ResponseField>
+
+<ResponseField name="usageMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="usageMetadata.cachedContentTokenCount" type="integer">
+  出力専用。入力内のキャッシュされた部分（キャッシュされたコンテンツ）のトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokenCount" type="integer">
+  レスポンス内のトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails" type="object[]">
+  モダリティ別の候補トークンの内訳。
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].modality" type="string">
+  入力または出力コンテンツのモダリティの種類。
+
+  指定可能な値: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].tokenCount" type="integer">
+  指定されたモダリティのトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokenCount" type="integer">
+  リクエスト内のトークン数。cachedContent が設定されている場合でも、これは有効なプロンプトの合計サイズであり、キャッシュされたコンテンツ内のトークン数も含まれます。
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails" type="object[]">
+  モダリティ別のプロンプトトークンの内訳。
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].modality" type="string">
+  入力または出力コンテンツのモダリティの種類。
+
+  指定可能な値: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].tokenCount" type="integer">
+  指定されたモダリティのトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.thoughtsTokenCount" type="integer">
+  thoughts 出力に含まれるトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokenCount" type="integer">
+  ツール使用プロンプトに含まれるトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails" type="object[]">
+  モダリティ別のツール使用プロンプトトークンの内訳。
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].modality" type="string">
+  入力または出力コンテンツのモダリティの種類。
+
+  指定可能な値: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].tokenCount" type="integer">
+  指定されたモダリティのトークン数。
+</ResponseField>
+
+<ResponseField name="usageMetadata.totalTokenCount" type="integer">
+  トークンの合計数（プロンプト + 候補）。
+</ResponseField>
+
+<ResponseField name="usageMetadata.trafficType" type="string">
+  リクエストに使用されたトラフィックタイプ（例: PROVISIONED_THROUGHPUT）。
+</ResponseField>
+
+## 例
+
+### 入力
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "a single red maple leaf on a plain white background, studio lighting"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": [
+      "IMAGE"
+    ],
+    "imageConfig": {
+      "aspectRatio": "1:1"
+    }
+  }
+}
+```
+
+### 出力
+
+```json
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "PGJhc2U2ND4="
+            }
+          }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 12,
+    "candidatesTokenCount": 1290
+  }
+}
+```
+
+デフォルトでは、生成済み画像の part には `inlineData.data` に base64 バイトデータが、`inlineData.mimeType` にメディアタイプが含まれます。バイトデータをデコードしてファイルに保存してください。`uploadImagesToStorage: true` を指定した場合、アップロードされた画像は代わりに、署名付き URL に `fileData.fileUri`、メディアタイプに `fileData.mimeType` を使用します。これらの画像は、URL が作成されてから 24 時間後に失効するため、失効する前にダウンロードしてください。アップロードに失敗すると、その画像はインラインのまま残ります。そのため、各 part に `inlineData` または `fileData` が含まれているかを確認してください。テキストの part も含まれる場合があり、画像が必ず最初の part であるとは限りません。上記のクイックスタートのサンプルにある `candidates[0].content.parts[0].inlineData.data` というパスは、このページのサンプルレスポンスにある単一のインライン part を読み取るものです。実際のレスポンスに対しては、位置 0 を指定するのではなく、`parts` をスキャンして目的のキーを探してください。
+
+<RouterCodeFooter />

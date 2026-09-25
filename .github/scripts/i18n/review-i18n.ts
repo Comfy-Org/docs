@@ -262,7 +262,7 @@ function buildJudgePrompt(
     "- fluency: reads naturally in the target language",
     "",
     "Do NOT penalize: expected localization (e.g. /{lang}/ internal links, translated snippet import paths),",
-    "code blocks / identifiers / URLs left in English, or terms intentionally kept in English.",
+    "code blocks / identifiers / URLs left in English, code comments localized while the code lines themselves stay identical, or terms intentionally kept in English.",
     glossaryBlock ? `${glossaryBlock}\n` : "",
     "Respond with ONLY a JSON object, no prose, no code fences:",
     '{"scores":{"accuracy":N,"completeness":N,"terminology":N,"fluency":N},"overall":N,"issues":["short issue", "..."]}',

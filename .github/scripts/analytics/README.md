@@ -28,7 +28,7 @@ There is no CSV export API — only paginated JSON. The dashboard “Export to C
 CLI → 7-day date chunks (configurable) → paginated API pages → store/ merge → by-day/ + summary files
 ```
 
-- **Incremental:** if `manifest.json` exists, only fetch since last `dateTo` (1-day overlap).
+- **Incremental:** if `manifest.json` exists, fetch a window ending `ANALYTICS_DELAY_DAYS` (7) days in the past with a small overlap, because Mintlify analytics data is delayed ~1-2 weeks — a window ending "tomorrow" always returns 0 rows.
 - **Checkpoint:** `checkpoint.json` + `store/` survive Ctrl+C, 504, or 429; re-run the same command to resume.
 - **Flush:** every 10 API pages and after each chunk; assistant reports are written before searches start.
 - **Rate limit:** 100 requests/org/hour shared across all analytics endpoints. Default 36s between pages.
@@ -103,5 +103,6 @@ Use `--fresh` when changing the date window so old checkpoint/store does not mix
 
 ### Resilience
 
-- **504 / 414:** 7-day chunks; page 2+ sends cursor only; auto-bisect on 414
+- **504 / 414:** 7-day chunks; auto-bisect on 414
+- **Pagination:** `dateFrom`/`dateTo` are sent on every page (Mintlify's cursor does not encode the date window; dropping them lets pagination escape the requested range and pull the whole dataset)
 - **429:** backoff + resume; override throttle via `ANALYTICS_PAGE_LIMIT` / `ANALYTICS_PAGE_DELAY_MS` (see `.env.local.example`)

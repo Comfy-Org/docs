@@ -3,14 +3,32 @@ name: cms-changelog-sync
 description: >-
   Sync ComfyUI release notes to Strapi CMS: LLM-simplify English changelog for
   in-app popup, translate to zh/ja/ko/fr/ru/es in staging, push drafts to CMS.
-  Use when updating changelog/index.mdx for CMS, running cms:prepare/cms:sync,
-  Strapi release-notes, published-versions.json, CMS staging, simplifying
-  release notes for the notification popup, or cms:publish to go live.
+  Resolves docs/local/cloud bullet URLs (blog.comfy.org, workflow_templates
+  index.json, Cloud ?template=, user UTM, GitHub PRs). HARD GATE: before any
+  cms:sync/cms:publish for Cloud, always ask the user to manually confirm Cloud;
+  default push is comfyui only. Use when updating changelog/index.mdx for CMS,
+  running cms:prepare/cms:sync, Strapi release-notes, published-versions.json,
+  CMS staging, simplifying release notes for the notification popup, or
+  cms:publish to go live.
 ---
 
 # CMS Changelog Sync
 
 Push **draft** release notes to Strapi (`release-notes` content type). Docs changelog stays full; CMS uses committed staging with popup-sized copy.
+
+## Hard gate: Cloud push / publish (ask every time)
+
+Whenever the user asks to **push**, **sync**, or **publish** to CMS (in any language), agents **must**:
+
+1. Default to **`--project comfyui` only**. Do **not** run `cms:sync` / `cms:publish` / `cms:preview` for cloud in the same turn as the request.
+2. **Stop and ask a second confirmation about Cloud**, even if the user already mentioned Cloud links, templates, or “push both”. Ask in plain language, for example:
+   > Should Cloud go to CMS this time as well? Please check Cloud staging (links and copy) yourself, then confirm. Until you confirm, I will only handle comfyui.
+3. Run **`--project cloud`** for preview/sync/publish **only after** the user replies with an explicit yes for Cloud in **this** conversation turn chain (e.g. “yes, push Cloud”, “cloud too”). Linking shortlinks earlier, preparing staging, or saying “push to CMS” alone is **not** Cloud approval.
+4. If unsure, ask again. Never infer Cloud approval from prior releases, PR text, or that Cloud staging already exists.
+
+`cms:prepare:en` / `cms:prepare:locales` may still prepare both projects’ staging files. The gate applies to **Strapi preview, push, and publish** (`cms:preview`, `cms:sync`, `cms:publish`), not to local staging generation.
+
+Write this skill and related CMS agent docs in **English**. Match the user’s language only when asking the confirmation question in chat.
 
 ## Architecture
 
@@ -25,7 +43,7 @@ staging/en/changelog/index.mdx         ← simplified popup EN → **review & ap
         ▼  Step 2: pnpm cms:prepare:locales
 staging/{zh,ja,ko,fr,ru,es}/…          ← translated from staging EN → **review & approve**
         │
-        ▼  Step 3: pnpm cms:preview → cms:sync  (only after user confirms)
+        ▼  Step 3: pnpm cms:preview / cms:sync -- --project comfyui  (only after user confirms)
 Strapi CMS (draft) → manual Publish → published-versions.json
 ```
 
@@ -64,10 +82,11 @@ Strapi release-notes (draft)
 
 **Key points:**
 
-- `cms:prepare:locales` does **not** re-simplify English — it reads existing `staging/en/` only
+- `cms:prepare:locales` does **not** re-simplify English — it reads each project's own staging EN (`staging/en/` and `staging/cloud/en/`)
 - If staging EN is missing the version, translate fails — run `cms:prepare:en` first
 - Target locales: **zh, ja, ko, fr, ru, es** (see `cms-config.json`)
 - `--force` re-translates existing locale blocks (common after manual EN edits)
+- Never copy comfyui locale files onto cloud; cloud campaign shortlinks live on cloud EN
 
 ## Environment (`.env.local`)
 
@@ -91,14 +110,46 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 |------|-------|
 | Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
 | Section headings max | **3** (`max_sections: 3`) |
-| Section order | **New Open-Source Model Support** → **New Node Updates** → **Partner Node Updates** |
+| Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** (optional) |
 | Words per version | ~60–120 |
 | Bullet format | `[**Name**](pr_url): 6–12 words with one key trait` |
 | PR links | **Keep** when source has them; never invent URLs |
-| New Node Updates | Include meaningful entries from source **New Nodes** section (workflows, sockets, multimodal nodes) |
-| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below) |
+| New Node Updates | **Optional by default.** Omit from CMS popup even if docs has **New Nodes**; add only when a human explicitly asks |
+| Drop | Bug fixes, performance, pure Load3D plumbing, internal refactors, **ComfyUI-WIKI dependency bumps** (see below), and New Nodes unless requested. **Do not drop** partner removals, deprecations, or EOL |
 
 Style: principle-only prompt in `cms-simplify-prompt.ts` (no concrete version examples — avoids LLM contamination).
+
+`prepare:en` copies docs URLs and local-length copy into Cloud. After it runs, rewrite **Cloud EN** (links and wording) before translating. Never invent URLs.
+
+**Copy length (local vs Cloud):** Cloud popup users skim. After merge, shorten Cloud bullets so they do not list every node, mode, or task type. One short clause is enough: added the model, or one capability. Local CMS (`staging/en/`) and docs `changelog/index.mdx` can keep the fuller scope (which nodes, which modes). Do not shorten local to match Cloud.
+
+Example: docs/local may say H3 Max landed on text-to-video, first-last-frame, and reference nodes. Cloud: `Added H3 Max model support`.
+
+**OSS bullets name the model, not the plumbing.** After `prepare:en`, rewrite open-source bullets to match names users already see in `tutorials/` (checkpoint family, `fl2va` / `ref2va`, ControlNet Union, and similar). If a tutorial page already documents the model, the popup should say we added support for that model. Do not describe loader internals: optional VAE, keyframe wiring, skipped LoRA keys, unless that is the only user-facing change.
+
+**LoRA / trainer format:** say we support LoRAs trained in that format (or by that trainer). Do not mention the previous load bug.
+
+**Removals, deprecations, EOL:** keep them on the popup (do not drop as housekeeping). On Cloud, still list the retired node or model names so users know which graphs break. The "one short clause" Cloud rule does not apply to removal bullets.
+
+## Bullet links (docs, local CMS, Cloud CMS)
+
+Resolve each feature bullet **before** `cms:prepare:locales`. Search these sources every time a new version lands:
+
+| Source | Where |
+|--------|--------|
+| Template index | [templates/index.json](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (raw: `https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/index.json`) |
+| Blog | [blog.comfy.org](https://blog.comfy.org/) ([archive](https://blog.comfy.org/archive)) |
+
+Match a template by `name`, `title`, or `models` to the changelog item. Search the **whole** index: partner `api_*` and OSS `video_*`, `image_*`, `3d_*` (and any other prefix). Do not grep `api_` only. Match a blog post only if it covers **this** product or version (MiniMax H3 day-0 is not MiniMax H3 Max).
+
+**Video templates:** when several templates exist, pick one by suffix on `name`, in this order: **r2v → i2v → t2v**. Example: `api_minimax_h3_max_r2v` over `_i2v` / `_t2v`. If none of those suffixes exist, use the remaining matching template (`flf2v`, `edit`, `fun_controlnet_union`, and similar). Cloud URL shape: `https://cloud.comfy.org/?template=<name>` (no UTM unless the user supplied one).
+
+| Surface | Link priority (first match wins) |
+|---------|----------------------------------|
+| **Cloud** CMS (`staging/cloud/`) | 1. UTM / `links.comfy.org` URL **the user provided** 2. Cloud template URL from the index 3. GitHub PR 4. ComfyUI repo commit/tag/compare |
+| **Docs** `changelog/index.mdx` and **local** CMS (`staging/en/` etc.) | 1. Matching [blog.comfy.org](https://blog.comfy.org/) post 2. GitHub PR 3. ComfyUI repo commit/tag/compare |
+
+Do **not** put Cloud `?template=` URLs on docs or local popup. Do **not** copy local blog/PR links onto Cloud when a template (or user UTM) exists. After `prepare:en` merges comfyui → cloud, replace Cloud bullets that still point at PRs if the index has a template.
 
 ## ComfyUI-WIKI commits (omit from changelog)
 
@@ -112,24 +163,30 @@ When curating `changelog/index.mdx` from ComfyUI git history, **do not add bulle
 
 Also omit standalone **frontend package semver bumps** unless tied to a user-visible fix worth its own bullet. CMS simplify must never promote WIKI-only items into popup copy even if they appear in the full docs block.
 
-Example staging shape (placeholders only):
+Example staging shape (placeholders only). **New Node Updates** is optional and usually omitted:
 
 ```markdown
 **New Open-Source Model Support**
 * [**Model Name**](source_url): Short description with 1–2 traits from the release data
 
-**New Node Updates**
-* [**Node Name**](source_url): What the node does and why it matters
-
 **Partner Node Updates**
 * [**Partner Node**](source_url): Partner scope and capability from the release data
+```
+
+Only when a human asks to include nodes:
+
+```markdown
+**New Node Updates**
+* [**Node Name**](source_url): What the node does and why it matters
 ```
 
 Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.
 
 ## Projects (comfyui + cloud)
 
-`cms:prepare` may generate both projects so staging stays mirrored. For `cms:sync` and `cms:publish`, agents must treat **comfyui as the default project** and pass `--project comfyui`. Only sync or publish **cloud** after the user explicitly confirms cloud, using `--project cloud`.
+`cms:prepare` may generate both projects so staging stays mirrored. For `cms:sync` and `cms:publish`, agents must treat **comfyui as the default project** and pass `--project comfyui`.
+
+**Cloud is never implied.** Follow **Hard gate: Cloud push / publish** above: ask every time the user requests a CMS push or publish; run `--project cloud` only after they explicitly confirm Cloud in that request chain.
 
 Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI` vs `# Cloud`).
 
@@ -138,7 +195,7 @@ Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI
 | `comfyui` | `staging/{locale}/…` | `# ComfyUI vX.Y.Z` |
 | `cloud` | `staging/cloud/{locale}/…` | `# Cloud vX.Y.Z` |
 
-Prepare runs LLM once on comfyui, then **copies staging to cloud**. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
+When prepare:en targets both projects, it runs the LLM once on comfyui, then merges those version blocks into cloud while keeping any tracking shortlinks already on cloud EN for that version. `prepare:locales` translates each project from its own staging EN. It does not copy comfyui locale files onto cloud. With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then ask for Cloud confirmation, then `--project cloud` only after that yes.
 
 Single project: `--project comfyui`, `--project cloud`, or `CMS_PROJECT=<project>`.
 
@@ -180,7 +237,7 @@ Requires **Bun**. Loads `.env.local` automatically.
 
 ### New release version
 
-1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged).
+1. Add full `<Update>` block to `changelog/index.mdx` (docs quality — unchanged). Set each bullet URL using **Bullet links** (blog → PR → repo for docs).
 
 2. **Step 1 — Simplify EN** — review before translating:
 
@@ -188,7 +245,7 @@ Requires **Bun**. Loads `.env.local` automatically.
    pnpm cms:prepare:en -- --force v0.25.1
    ```
 
-   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx` → **stop until approved**
+   Inspect: `.github/scripts/cms/staging/en/changelog/index.mdx` (blog/PR/repo, fuller copy). Rewrite `.github/scripts/cms/staging/cloud/en/changelog/index.mdx`: user UTM or `?template=` from the index, and **shorter** bullets (model support, not every node). → **stop until approved**
 
 3. **Step 2 — Translate** — from approved staging EN only:
 
@@ -213,17 +270,24 @@ Requires **Bun**. Loads `.env.local` automatically.
    pnpm cms:publish -- --project comfyui v0.25.1
    ```
 
-6. **Cloud is separate**: run cloud preview/sync/publish only after the user explicitly confirms cloud, using `--project cloud`.
+6. **Cloud is separate (hard gate)**: before any cloud `cms:preview` / `cms:sync` / `cms:publish`, **ask the user to manually confirm Cloud** (see **Hard gate: Cloud push / publish**). Do not treat “push to CMS” or pasted Cloud URLs as that confirmation. Only then:
+
+   ```bash
+   pnpm cms:preview -- --project cloud v0.25.1
+   pnpm cms:sync -- --project cloud v0.25.1
+   pnpm cms:publish -- --project cloud v0.25.1   # only if they asked to publish
+   ```
 
 7. Commit `.github/scripts/cms/staging/` and `.github/scripts/cms/published-versions.json` after publish.
 
 ### Catch up all unpublished versions locally
 
 ```bash
-pnpm cms:prepare:en -- --force              # Step 1: all unpublished EN
-pnpm cms:prepare:locales -- --force         # Step 2: all locales
-pnpm cms:preview
-pnpm cms:sync                               # Step 3: after review
+pnpm cms:prepare:en -- --force                         # Step 1: all unpublished EN
+pnpm cms:prepare:locales -- --force                    # Step 2: all locales
+pnpm cms:preview -- --project comfyui
+pnpm cms:sync -- --project comfyui                     # Step 3: after review (comfyui only)
+# Cloud preview/sync/publish: only after Hard gate confirmation, with --project cloud
 ```
 
 ### After prompt or config changes
@@ -260,11 +324,15 @@ Re-run with `--force`. Staging without `--force` **skips** existing `<Update>` b
 When user asks to update CMS release notes:
 
 - [ ] Confirm `changelog/index.mdx` has the new `<Update>` block
+- [ ] Resolve bullet URLs: search the **full** template `index.json` (`api_*` and OSS `video_*` / `image_*` / `3d_*`) and [blog.comfy.org/archive](https://blog.comfy.org/archive); Cloud = user UTM then `?template=` (video r2v → i2v → t2v); docs/local = blog then PR then repo
+- [ ] Align OSS popup names with existing `tutorials/` model names (added support for X). Not loader plumbing
+- [ ] Shorten Cloud EN bullets (added model support, skip node lists). Keep local/docs more detailed. Exception: Cloud removal/EOL bullets still list what was retired
+- [ ] LoRA format bullets: support that trainer/format, not the previous skip-keys bug
 - [ ] Omit ComfyUI-WIKI items (embedded docs, workflow templates, model blueprints) unless user explicitly asks
-- [ ] Run `pnpm cms:prepare:en`; show staging EN → **wait for user approval**
+- [ ] Run `pnpm cms:prepare:en`; rewrite Cloud EN links; show staging EN → **wait for user approval**
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
 - [ ] Run `pnpm cms:preview -- --project comfyui ...` then `pnpm cms:sync -- --project comfyui ...` **only after user confirms staging**
-- [ ] Run cloud `cms:sync` / `cms:publish` only after separate explicit cloud confirmation
+- [ ] **Before any Cloud push/publish:** stop and ask the user to manually confirm Cloud (hard gate). Do not sync/publish `--project cloud` until they explicitly say yes this time
 - [ ] Remind: Strapi publish is manual; then `--write` on published-versions
 - [ ] Commit `.github/scripts/cms/staging/` together with `published-versions.json` after publish
 - [ ] Do **not** shorten docs changelog for CMS — staging is separate
@@ -292,5 +360,6 @@ When user asks to update CMS release notes:
 |--|-----------|-----------|
 | Source | `changelog/index.mdx` | `staging/en/…` |
 | Length | Full detail | 3–5 bullets |
+| New Nodes | Keep in full changelog | **Optional**; omit by default unless a human asks |
 | i18n | `zh/changelog/` etc. | `staging/zh/` etc. |
 | Deploy | Mintlify | Strapi draft → publish |

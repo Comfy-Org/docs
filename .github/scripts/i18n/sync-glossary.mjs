@@ -25,11 +25,15 @@
  * in a document are injected, framed as *preferred* hints, not mandatory
  * substitutions. Genuinely harmful single words go in the override ignore-list.
  *
- * Frontend path resolution (first that exists wins):
- *   1. --frontend <path>   CLI flag
- *   2. FRONTEND_LOCALES_PATH env var
- *   3. frontend_locales_path in translation-config.json
- *   4. ../ComfyUI_frontend/src/locales (sibling-repo default)
+ * Locale source resolution (first match wins):
+ *   Local (only when explicitly set and the path exists):
+ *     1. --frontend <path>   CLI flag
+ *     2. FRONTEND_LOCALES_PATH env var
+ *   Remote (default — fetches latest on each run):
+ *     3. --frontend-url <url>   CLI flag
+ *     4. FRONTEND_LOCALES_URL env var
+ *     5. frontend_locales_url in translation-config.json
+ *     6. https://raw.githubusercontent.com/Comfy-Org/ComfyUI_frontend/main/src/locales
  *
  * Usage:
  *   bun .github/scripts/i18n/sync-glossary.mjs               # all configured langs
@@ -43,6 +47,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { loadI18nConfig, REPO_ROOT, parseLangArg } from "./i18n-config.mjs";
 import { FRONTEND_DIR } from "./glossary.mjs";
+
+const DEFAULT_FRONTEND_LOCALES_URL =
+  "https://raw.githubusercontent.com/Comfy-Org/ComfyUI_frontend/main/src/locales";
 
 const config = loadI18nConfig();
 const args = process.argv.slice(2);
@@ -78,21 +85,66 @@ function flagValue(name) {
 }
 
 // ---------------------------------------------------------------------------
-// Resolve frontend locales path
+// Resolve frontend locales source (local path or remote URL)
 // ---------------------------------------------------------------------------
 
-function resolveFrontendPath() {
-  const candidates = [
-    flagValue("--frontend"),
-    process.env.FRONTEND_LOCALES_PATH,
-    config.frontend_locales_path,
-    join(REPO_ROOT, "../ComfyUI_frontend/src/locales"),
-  ].filter(Boolean);
+function resolveLocalFrontendPath() {
+  const candidates = [flagValue("--frontend"), process.env.FRONTEND_LOCALES_PATH].filter(Boolean);
   for (const c of candidates) {
     const abs = c.startsWith("/") ? c : join(REPO_ROOT, c);
     if (existsSync(join(abs, "en", "main.json"))) return abs;
   }
   return null;
+}
+
+function resolveRemoteFrontendUrl() {
+  return (
+    flagValue("--frontend-url") ||
+    process.env.FRONTEND_LOCALES_URL ||
+    config.frontend_locales_url ||
+    DEFAULT_FRONTEND_LOCALES_URL
+  );
+}
+
+function resolveFrontendSource() {
+  const local = resolveLocalFrontendPath();
+  if (local) return { kind: "local", value: local };
+  return { kind: "remote", value: resolveRemoteFrontendUrl().replace(/\/$/, "") };
+}
+
+// ---------------------------------------------------------------------------
+// Locale data access (local filesystem or remote fetch)
+// ---------------------------------------------------------------------------
+
+function readLocalLocaleFile(frontendPath, langCode, file) {
+  const filePath = join(frontendPath, langCode, file);
+  if (!existsSync(filePath)) return null;
+  return JSON.parse(readFileSync(filePath, "utf-8"));
+}
+
+async function fetchRemoteLocaleFile(baseUrl, langCode, file) {
+  const url = `${baseUrl}/${langCode}/${file}`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${url}: HTTP ${res.status} ${res.statusText}`);
+  }
+  return JSON.parse(await res.text());
+}
+
+async function createLocaleReader(source) {
+  if (source.kind === "local") {
+    return (langCode, file) => readLocalLocaleFile(source.value, langCode, file);
+  }
+
+  const cache = new Map();
+  return async (langCode, file) => {
+    const key = `${langCode}/${file}`;
+    if (!cache.has(key)) {
+      cache.set(key, await fetchRemoteLocaleFile(source.value, langCode, file));
+    }
+    return cache.get(key);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,16 +197,17 @@ function isTermLike(en) {
  * Build the frontend mirror { enTermLower: target } for one language from all
  * source files. First definition of a given English term wins on duplicates.
  */
-function extractTerms(frontend, langCode) {
+async function extractTerms(readLocale, langCode) {
   const enFlat = {};
   const tFlat = {};
   for (const file of SOURCE_FILES) {
-    const enObj = JSON.parse(readFileSync(join(frontend, "en", file), "utf-8"));
-    Object.assign(enFlat, flattenFile(file, enObj));
-    const tPath = join(frontend, langCode, file);
-    if (existsSync(tPath)) {
-      Object.assign(tFlat, flattenFile(file, JSON.parse(readFileSync(tPath, "utf-8"))));
+    const enObj = await readLocale("en", file);
+    if (!enObj) {
+      throw new Error(`Missing English locale file: en/${file}`);
     }
+    Object.assign(enFlat, flattenFile(file, enObj));
+    const tObj = await readLocale(langCode, file);
+    if (tObj) Object.assign(tFlat, flattenFile(file, tObj));
   }
 
   const terms = {};
@@ -182,17 +235,15 @@ function serialize(obj) {
 // Main
 // ---------------------------------------------------------------------------
 
-function main() {
-  const frontend = resolveFrontendPath();
-  if (!frontend) {
-    console.error(
-      "Frontend locales not found. Set FRONTEND_LOCALES_PATH, pass --frontend <path>, " +
-        "or set frontend_locales_path in translation-config.json.\n" +
-        "Expected to find <path>/en/main.json"
-    );
-    process.exit(1);
+async function main() {
+  const source = resolveFrontendSource();
+  if (source.kind === "local") {
+    console.log(`Frontend locales (local): ${source.value}`);
+  } else {
+    console.log(`Frontend locales (remote): ${source.value}`);
   }
-  console.log(`Frontend locales: ${frontend}`);
+
+  const readLocale = await createLocaleReader(source);
 
   let selectedLangs;
   try {
@@ -205,7 +256,7 @@ function main() {
   if (!dryRun) mkdirSync(FRONTEND_DIR, { recursive: true });
 
   for (const lang of selectedLangs) {
-    const terms = extractTerms(frontend, lang.code);
+    const terms = await extractTerms(readLocale, lang.code);
     const total = Object.keys(terms).length;
     console.log(`[${lang.code}] ${total} terms mirrored from frontend`);
 
@@ -217,4 +268,7 @@ function main() {
   else console.log(`\nFrontend mirror written to ${FRONTEND_DIR}`);
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});
