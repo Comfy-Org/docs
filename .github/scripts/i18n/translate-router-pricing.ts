@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadI18nConfig, localizeMdxPaths, REPO_ROOT } from "./i18n-config.mjs";
 import { fixAnchorSlugs } from "./fix-anchor-slugs.ts";
@@ -172,6 +173,25 @@ function replaceRequired(content: string, from: string, to: string): string {
   return content.replaceAll(from, to);
 }
 
+function fallBackMissingLocaleLinks(content: string, locale: string): string {
+  const prefix = `/${locale}/`;
+  return content.replace(/\]\((\/[^)]+)\)/g, (link, url: string) => {
+    const match = url.match(/^(\/[^?#]*)([?#].*)?$/);
+    if (!match || !match[1].startsWith(prefix)) return link;
+
+    const localizedPath = match[1].slice(prefix.length);
+    const candidates = [
+      join(REPO_ROOT, locale, `${localizedPath}.mdx`),
+      join(REPO_ROOT, locale, localizedPath, "index.mdx"),
+      join(REPO_ROOT, locale, localizedPath),
+    ];
+    if (candidates.some((candidate) => existsSync(candidate))) return link;
+
+    const englishPath = `/${localizedPath}${match[2] ?? ""}`;
+    return link.replace(url, englishPath);
+  });
+}
+
 function localize(content: string, locale: keyof typeof strings, fields: string[]): string {
   const translated = strings[locale];
   let output = replaceRequired(content, 'title: "Comfy Router pricing by model"', `title: "${translated.title}"`);
@@ -205,7 +225,10 @@ function localize(content: string, locale: keyof typeof strings, fields: string[
   const config = loadI18nConfig();
   const language = config.languages.find((candidate) => candidate.code === locale);
   if (!language) throw new Error(`No language configuration found for ${locale}`);
-  return localizeMdxPaths(output, language, config.languages);
+  return fallBackMissingLocaleLinks(
+    localizeMdxPaths(output, language, config.languages),
+    locale
+  );
 }
 
 async function main() {
