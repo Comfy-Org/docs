@@ -1,0 +1,191 @@
+---
+title: "Comfy Router のエラーとリトライ"
+sidebarTitle: "エラーとリトライ"
+description: "Comfy Router のエラー応答と検証の詳細を確認し、同じ Idempotency-Key でリトライし、タイムアウト後に復旧する方法を説明します。"
+translationSourceHash: 4aa30beb
+translationFrom: development/comfy-router/errors.mdx
+translationBlockHashes:
+  "_intro": c6490339
+  "Read errors defensively": 65a4930f
+  "Validation errors": 24eacd50
+  "Retry safely": e9469646
+  "Retry outcomes": 4ce558e5
+  "Timeouts and collection": cb83f8f6
+  "Next": 2ae95bd4
+---
+失敗した Router 呼び出しには、HTTP ステータス、`X-Comfy-Error-Type` に入るエラーバケット、`X-Comfy-Request-Id` に入るリクエスト ID が含まれます。再試行するかどうかを判断する前に、これら 3 つすべてと、送信した `Idempotency-Key` を保存しておいてください。
+
+## エラーを防御的に読み取る
+
+失敗したリクエストは、プロキシの HTML エラーページ、切り詰められた JSON、またはプレーンテキストを返すことがあります。JSON パースエラーによって HTTP ステータスやリクエスト ID が隠れてしまわないようにしてください。これらのヘルパーは Python では `httpx.Response` を、TypeScript では Fetch の `Response` を使用します。SDK はノーマルな SDK 呼び出し向けのエラーフィールドをすでに公開しています。
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+```swift
+// Package.swift に追加します:
+//   .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
+import ComfySwiftSDK
+
+// SDK はレスポンスを防御的に読み取ります。Router の失敗は HTTP ステータス、
+// リクエスト ID、エラーバケット、およびフィールドごとの検証の詳細がすでに抽出された
+// ComfyError.router としてスローされます。ボディが HTML のエラーページや切り詰められた
+// JSON であっても同様です。任意の client.models 呼び出しからキャッチしてください。
+struct RouterErrorInfo {
+    let status: Int
+    let requestId: String?
+    let errorType: String
+    let message: String
+    let validation: [RouterValidationErrorDetail]
+}
+
+// `client.models.run` は `async throws` なので、型指定のない `catch` は `Error` にバインドされます。
+// ここでは `Error` を受け取ることで、キャッチした値をそのまま渡せるようにします。
+func readRouterError(_ error: Error) -> RouterErrorInfo? {
+    guard let comfyError = error as? ComfyError,
+          case .router(let router) = comfyError else { return nil }
+    return RouterErrorInfo(
+        status: router.httpStatus,
+        requestId: router.requestId,
+        errorType: router.errorType.rawValue,
+        message: router.detail,
+        validation: router.validationErrors
+    )
+}
+```
+
+</CodeGroup>
+
+## 検証エラー
+
+Router の `422` は、プロバイダーの呼び出し前に検証に失敗したことを意味し、課金されません。そのボディには `detail[]` 配列があり、拒否されたフィールドごとに 1 つのエントリが含まれます。エラーカテゴリはボディではなく `X-Comfy-Error-Type` にあります。例えば:
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+これはあくまで形状の例です。寛容な入力スキーマを持つモデルは、Router の `422` を返す代わりに、不足しているフィールドをプロバイダーに転送することがあります。
+
+| フィールド | 意味 |
+| --- | --- |
+| `loc` | 拒否されたフィールドへのパス。最も外側のセグメントが先頭になります。 |
+| `msg` | 失敗の理由を人間が読める形式で示したもの。 |
+| `type` | `missing`、`greater_than`、`image_too_small` など、プロバイダー固有の理由。 |
+| `ctx` | そのプロバイダーエラーの任意の境界値または追加データ。 |
+
+`400` は、このフィールド単位の検証ボディではなく、不正なカーソルなどのリクエストレベルの問題を表します。[エラーリファレンス](/ja/development/comfy-router/reference#エラーバケット)にサポートされているカテゴリの一覧があります。不明なカテゴリは制御フロー上は `internal_error` として扱いますが、診断用にオリジナルの値は保持してください。新しいエラー値をハード拒否したり、予測されるエラーカテゴリがあたかも既に発生しているかのように実装したりしないでください。
+
+## 安全に再試行する
+
+モデル ID とリクエストボディとともに、キーを**送信する前に**永続化してください。その論理呼び出しのすべての試行で同じキーを再利用します。Router はレスポンスで `Idempotency-Key` を返しません。Python SDK は送出する例外にキーを含めます。TypeScript では、指定したキーを自分で保持してください。
+
+キーは、認証情報が伴うワークスペース内で共有されるか、ワークスペースを伴わない場合はユーザーにスコープされます。そのスコープ内で一意の UUID を使用し、同じ認証情報で再試行してください。別のワークスペースメンバーのキーを再利用すると、そのメンバーの記録済み結果が返されたり、競合が発生したりする可能性があります。認証情報を変更すると、別の課金対象の呼び出しが開始される可能性があります。
+
+Router はキー付きのレスポンスまたはコレクションの状態を 24 時間保持します。再試行によって新しい保持ウィンドウが開始されることはありません。その状態が期限切れになった後は、古いキーで結果を復元したり、新しいディスパッチを防いだりできるとは期待しないでください。また、キーを使用しても、期限切れのアセット URL が再び使用可能になることはありません。
+
+## 再試行の結果
+
+| ステータス | バケット | 意味 | 対処方法 |
+| --- | --- | --- | --- |
+| `200` | `Idempotent-Replayed: true` ヘッダー | Router が結果を再生したか、収集済みの生成を返しました。 | 結果を使用してください。この再生は 2 回目の Comfy 課金ではありません。 |
+| `409` | `concurrency_limit_exceeded` | そのキーのオリジナルの呼び出しがまだ実行中です。 | `Retry-After` を待ってから、同じキーを再送信してください。 |
+| `504` | `deadline_exceeded`、`Retry-After` 付き | Router が受け付けたプロバイダーの処理へのハンドルを保持しています。 | 指定された間隔を待ち、同じリクエストとキーを再送信して収集してください。まだ実行中である可能性があります。 |
+| `429` | `rate_limited` | リクエストの許容量が使い果たされています。 | `Retry-After` を待ってから、同じキーで再試行してください。 |
+| `429` | `concurrency_limit_exceeded` | 同時呼び出しまたはコミット済み支出の上限がリクエストを拒否しました。 | 同時実行数を減らし、同じキーで再試行してください。支出ヘッダーを確認してください。 |
+| `409` | `invalid_input` | リクエストがキーのオリジナルのリクエストと異なるか、その録画を再生できません。 | 競合を確認してください。変更されている場合はオリジナルのリクエストを復元してください。新しく課金される可能性のある呼び出しを意図する場合にのみ、新しいキーを開始してください。 |
+| 収集のヒントがない `504`、その他の `5xx`、または応答なし | さまざま | ステータスだけでは、処理が受け付けられたのか、保持されたのか、解放されたのかを特定できません。 | 同じキーとリクエストを保持してください。上限付きの再試行ポリシーを使用してください。復旧は保証されません。 |
+
+競合は、方法、モデルパス、クエリ、ボディを比較します。キーは、サイズ超過の応答、失敗した応答の書き込み、または安全に再生できないアセットの後に、再生不能になることがあります。待機しても、消費済みの結果は復旧しません。新しいキーは新しい呼び出しを開始します。古い出力を取得するものではありません。
+
+プロバイダーへのディスパッチ前の拒否は、キーを解放します。ディスパッチされた呼び出しは、プロバイダーのハンドルを保持したり、再生不能になったりすることがあります。ステータスコードだけからキーの状態や課金を推測しないでください。
+
+呼び出しがタイムアウトした、あるいは接続が切断されたというだけで、まったく新しいキーを発行しないでください。Router がすでに生成を受け付けていた場合、新しいキーは 2 つ目の論理的な実行を作成し、したがって 2 回目の課金対象の結果を生む可能性があります。オリジナルの呼び出しが復旧不能であると判明するまで、同じキーを再利用してください。
+
+## タイムアウトと収集
+
+Router の呼び出し 1 回は、デフォルトで 10 分間接続を保持することがあります。クライアントのタイムアウトはその上限より長く設定してください。そうすることで、不透明なローカル abort ではなく、型付きの `504` とリクエスト ID を取得できます。アプリケーションがそれほど長く接続を保持できない場合、[キュー中の配信](/ja/development/comfy-router/queue) が `request_id` を即座に返し、後で結果を収集できます。
+
+`deadline_exceeded` は Router の待機上限であり、`provider_timeout` はプロバイダーの期限です。完了したプロバイダーの生成は、呼び出し元がタイムアウトを受け取ったか切断された場合でも課金されることがあります。クライアントのキャンセルは待機と SDK のリトライを停止しますが、受け入れられたプロバイダーの処理を必ずしもキャンセルするわけではありません。
+
+送信とポーリングを行うプロバイダーでは、保持されたハンドルにより、同じキーのリクエストがオリジナルの生成の収集を続けることができます。復元可能なハンドルなしで途切れたディスパッチ済みの呼び出しは、再生可能な結果を残さずにキーを消費する可能性があり、その場合、同じキーでのリトライは `409` を返します。成功が捕捉されていないプロバイダー起因の一時的な障害では、別の試行のためにキーを解放できる場合もあります。ハンドルが存在しないことだけでは、どちらの結果が当てはまるかは分かりません。
+
+SDK は一部の失敗を限られた予算内でリトライします。エラーが返されたら、新しいリクエストやキーを生成するのではなく、そのリクエストとキーを保持してください。生の HTTP の場合、次の例では 2 つの明示的な収集ヒントのみをリトライします：
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+オリジナルのモデル、ボディ、保存したキーを渡してください。これは試行回数を制限するもので、合計の実時間を制限するものではありません。各呼び出しはクライアントのタイムアウトまで続く可能性があり、各待機は `Retry-After` に従います。HTTP エラーは検査用にレスポンスを保持し、トランスポートエラーはキーを置き換えずに伝播します。アプリケーションがより長いリカバリウィンドウを必要とする場合は、保存したキーで後での収集をスケジュールしてください。
+
+## 次のステップ
+
+- [請求](/ja/development/comfy-router/billing): 拒否、タイムアウト、リプレイにかかるコスト。
+- [ヘッダー](/ja/development/comfy-router/headers): 冪等性、リクエスト ID、リトライ間隔のヘッダー。
+- [API リファレンス](/ja/development/comfy-router/reference#エラーバケット): Router が返すすべてのエラーバケット。

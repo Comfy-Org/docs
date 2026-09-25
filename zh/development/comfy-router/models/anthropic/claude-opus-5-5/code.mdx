@@ -1,0 +1,310 @@
+---
+title: "使用 Claude Opus 5.5 搭配 Comfy Router"
+description: "通过 Comfy Router 调用 anthropic/claude-opus-5-5：端点、请求形状以及 Router 返回的响应。"
+sidebarTitle: "Claude Opus 5.5"
+translationSourceHash: 99a42c12
+translationFrom: development/comfy-router/models/anthropic/claude-opus-5-5/code.mdx
+translationBlockHashes:
+  "_intro": bf71c745
+  "Quick start": c6539c4b
+  "Schema": 3c0dd311
+  "Examples": fd6d9b8d
+---
+{/* 已生成文件。由 `pnpm code-pages:gen` 从 router-schemas/anthropic/claude-opus-5-5.json 生成。 */}
+
+import RouterCodeFooter from "/snippets/zh/comfy-router/model-code-footer.mdx";
+
+`anthropic/claude-opus-5-5` 的 API 参考，由 Comfy Router 从 Anthropic 提供。
+
+## 快速开始
+
+在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建一个密钥，并将其导出为 `COMFY_API_KEY`。Python 和 TypeScript 代码片段使用 Comfy SDK（`pip install comfy-sdk` 和 `npm install @comfyorg/sdk`）；cURL 代码片段是同一个调用，通过原始 HTTP 发送。
+
+**模型 ID：** `anthropic/claude-opus-5-5`
+
+**端点：** `POST https://api.comfy.org/v2/models/anthropic/claude-opus-5-5`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="等待结果">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 从环境变量中读取 COMFY_API_KEY。
+# SDK 会自动创建幂等键，并在自动重试时复用它。
+with Comfy() as client:
+    result = client.models.run(
+        "anthropic/claude-opus-5-5",
+        {
+            "max_tokens": 16,
+            "messages": [
+                {
+                    "content": "Reply with the single word: ok",
+                    "role": "user",
+                },
+            ],
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量中读取 COMFY_API_KEY。
+// SDK 会自动创建幂等键，并在自动重试时复用它。
+const { data } = await comfy.models.run("anthropic/claude-opus-5-5", {
+  max_tokens: 16,
+  messages: [
+    {
+      content: "Reply with the single word: ok",
+      role: "user",
+    },
+  ],
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/anthropic/claude-opus-5-5 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"max_tokens\": 16, \"messages\": [{\"content\":\"Reply with the single word: ok\",\"role\":\"user\"}]}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="排队并稍后收集">
+相同的请求体，发送到 `POST https://api.comfy.org/v2/models/anthropic/claude-opus-5-5/requests`。只要运行被接纳，Router 就会返回 `201` 以及一个 `request_id`，结果就绪后即可收集，可以从当前进程收集，也可以从另一个进程收集。[排队交付](/zh/development/comfy-router/queue) 介绍了状态、取消和收集的流程。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 从环境变量中读取 COMFY_API_KEY。
+# 每次调用 submit() 都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "anthropic/claude-opus-5-5",
+            {
+                "max_tokens": 16,
+                "messages": [
+                    {
+                        "content": "Reply with the single word: ok",
+                        "role": "user",
+                    },
+                ],
+            },
+        )
+        print("request_id:", handle.request_id)  # 配合模型 ID，就是另一个进程所需要的全部信息
+
+        # 轮询直到请求完成，按照服务器指定的 Retry-After 等待。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # 提供商自身的负载，与 models.run() 返回的值相同。
+        # 失败或已取消的请求会在这里抛出类型化的 Router 错误。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量中读取 COMFY_API_KEY。
+// 每次调用 submit() 都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+const handle = await comfy.models.submit("anthropic/claude-opus-5-5", {
+  max_tokens: 16,
+  messages: [
+    {
+      content: "Reply with the single word: ok",
+      role: "user",
+    },
+  ],
+});
+console.log("requestId:", handle.requestId); // 配合模型 ID，就是另一个进程所需要的全部信息
+
+// 轮询直到请求完成，按照服务器指定的 Retry-After 等待。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// 与 models.run() 返回的结果相同。失败或已取消的请求会在这里被拒绝。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 提交。Router 返回 201，以及 request_id、status_url、response_url 和 cancel_url。
+curl https://api.comfy.org/v2/models/anthropic/claude-opus-5-5/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"max_tokens\": 16, \"messages\": [{\"content\":\"Reply with the single word: ok\",\"role\":\"user\"}]}"
+
+# 2. 轮询直到状态为 COMPLETED，每次响应中指定的 Retry-After 秒数需要等待。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/anthropic/claude-opus-5-5/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 收集。200 表示返回模型的原始输出，202 表示仍在运行时返回状态信息。
+curl https://api.comfy.org/v2/models/anthropic/claude-opus-5-5/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## 架构 {#schema}
+
+### 输入
+
+<ParamField body="max_tokens" type="integer" required>
+  在停止之前可生成的最大 token 数量。
+</ParamField>
+
+<ParamField body="messages" type="object[]" required>
+  对话轮次。完整的内容块分类请参阅 Anthropic Messages API 文档。
+</ParamField>
+
+<ParamField body="messages[].content" type="object" required>
+  可以是字符串简写，也可以是内容块数组（text、image、document、tool_use、tool_result 等）。
+</ParamField>
+
+<ParamField body="messages[].role" type="string" required>
+  可选值：`user`、`assistant`
+</ParamField>
+
+<ParamField body="model" type="string">
+  Anthropic 模型标识符（例如 `claude-sonnet-4-5`、`claude-opus-4-7`）。
+</ParamField>
+
+<ParamField body="stream" type="boolean">
+  当为 是 时，响应是 Anthropic 消息事件的 `text/event-stream`，而不是单个 JSON 主体。
+</ParamField>
+
+<ParamField body="system" type="object">
+  顶层系统提示词。可以是字符串，也可以是内容块数组；两者都会原样传递给 Anthropic。
+</ParamField>
+
+由 Router 在 `GET /v2/models/anthropic/claude-opus-5-5/openapi.json` 处提供的架构生成，该文档与请求到达提供商之前用于校验调用的文档是同一份。
+
+### 输出
+
+<ResponseField name="id" type="string">
+   
+</ResponseField>
+
+<ResponseField name="model" type="string">
+   
+</ResponseField>
+
+<ResponseField name="role" type="string">
+   
+</ResponseField>
+
+<ResponseField name="stop_reason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="stop_sequence" type="string">
+   
+</ResponseField>
+
+<ResponseField name="type" type="string">
+   
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Anthropic Messages API 调用的 token 用量。
+</ResponseField>
+
+<ResponseField name="usage.cache_creation" type="object">
+  Anthropic Messages API 调用中缓存写入输入 token 按 TTL 的明细。
+</ResponseField>
+
+<ResponseField name="usage.cache_creation.ephemeral_1h_input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="usage.cache_creation.ephemeral_5m_input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="usage.cache_creation_input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="usage.cache_read_input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="usage.input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="usage.output_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="content" type="object[]" required>
+  回复的内容块，按顺序排列。每个已完成的消息都会包含该字段；当该轮次没有产生任何内容时为空。
+</ResponseField>
+
+<ResponseField name="content[].text" type="string">
+  该块的文本。仅出现在 `text` 块中，其他所有类型都不包含。
+</ResponseField>
+
+<ResponseField name="content[].type" type="string">
+  块类型。`text` 是携带 `text` 的那一种；Anthropic 目前还会发送 `thinking`、`redacted_thinking`、`tool_use`、`server_tool_use` 以及工具结果块，并且该列表是开放的。
+</ResponseField>
+
+## 示例
+
+### 输入
+
+```json
+{
+  "max_tokens": 16,
+  "messages": [
+    {
+      "content": "Reply with the single word: ok",
+      "role": "user"
+    }
+  ]
+}
+```
+
+### 输出
+
+```json
+{
+  "content": [
+    {
+      "text": "ok",
+      "type": "text"
+    }
+  ],
+  "id": "msg_01ExampleInvalidPlaceholder",
+  "model": "claude-opus-5-5",
+  "role": "assistant",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "input_tokens": 16,
+    "output_tokens": 3
+  }
+}
+```
+
+
+<RouterCodeFooter />

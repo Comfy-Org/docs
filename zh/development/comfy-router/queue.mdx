@@ -2,68 +2,68 @@
 title: "排队交付"
 sidebarTitle: "排队交付"
 description: "提交一个 Comfy Router 请求，立即返回请求 ID，随后跟踪其状态、收集结果或取消请求。提供 Python、TypeScript 和 cURL 示例，使用 SDK 的 submit、subscribe 和 handle 方法。"
-translationSourceHash: fd615e57
+translationSourceHash: 2d60a78d
 translationFrom: development/comfy-router/queue.mdx
 translationBlockHashes:
-  "_intro": fbfae216
-  "Two delivery modes, one request": c4e5e326
-  "The four routes": c1baed5a
-  "Queue a request": 5afd30d4
-  "What the responses look like": 67d7093a
+  "_intro": bb9adff0
+  "Choose a delivery mode": 04a18c01
+  "Queue routes": e666df87
+  "Submit and collect a request": 8e776a91
+  "Queue response shapes": 5d24692b
   "Idempotency and billing": b03b4156
-  "Errors": 3ce9124d
-  "Next": f52db897
+  "Queue error responses": 01118a93
+  "Next": af716b3d
 ---
 
-`POST /v2/models/{provider}/{model}` 会一直保持连接，直到模型完成。队列投递使用相同的模型 ID 和相同的原生请求体，但一旦 Router 接纳了本次运行就会立即返回。你会立刻拿到一个 `request_id`，并在结果就绪时获取它，可以在同一进程中，也可以在另一个进程中。
+`POST /v2/models/{provider}/{model}` 会一直保持连接，直到模型完成。队列投递使用相同的模型 ID 和相同的原生请求体，但只要 Router 接纳了本次运行就会立即返回。你会立刻拿到一个 `request_id`，并在结果就绪时获取它，可以在同一进程中，也可以在另一个进程中。
 
-**同步路由有 10 分钟的上限。** 这个上限正是本页存在的原因：Router 的默认截止时间为 10 分钟（可按部署配置），同步调用一旦达到该时限就会被切断，返回 `504` / `deadline_exceeded`，不论提供商是否仍在工作。如果一次生成的运行时间可能超过这个上限，或者调用方无法将连接保持打开十分钟，就必须使用队列。关于截止时间会告诉你什么、不会告诉你关于计费的什么，请参阅[调用会在服务器截止时间被切断](/zh/development/comfy-router/limitations#调用会在服务器截止时间被中断)。
+**同步路由有 10 分钟的上限。** Router 的默认截止时间可按部署配置。同步调用一旦达到该时限就会被切断，返回 `504` / `deadline_exceeded`，不论提供商是否仍在工作。如果一次运行可能超过该截止时间，或者调用方无法将连接保持打开那么久，就请使用队列。关于截止时间对计费会说明什么、不会说明什么，请参阅[调用会在服务器截止时间被切断](/zh/development/comfy-router/limitations#调用会在服务器截止时间被中断)。
 
 在以下情况使用队列：一次生成可能超出你能保持的连接时长；Web 请求必须立即返回；你在一个进程中提交、在另一个进程中收集结果；或者你希望同时进行多次生成。排序、接纳、重试、超时、计费和过期都由服务器决定。SDK 只是在其上增加了轮询和易用性封装，别无其他。
 
-## 两种交付模式，一个请求
+## 选择交付模式
 
-| | 同步 | 队列 |
+| | 同步 | 排队 |
 | --- | --- | --- |
 | 路由 | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
-| 应答 | `200`，返回模型的原生输出 | `201`，返回一个 `request_id` 和三个 URL |
-| 结果 | 在响应中 | 稍后收集，输出逐字节完全相同 |
-| 时间限制 | 受 Router 的 [10 分钟截止时间](/zh/development/comfy-router/limitations#调用会在服务器截止时间被中断)约束，之后返回 `504` / `deadline_exceeded` | 运行本身没有限制。完成的结果会[保留 24 小时](#幂等性与计费) |
+| 应答 | `200`，返回模型的原生输出 | `201`，附带 `request_id` 和三个 URL |
+| 结果 | 在响应中返回 | 稍后收集，输出逐字节相同 |
+| 时间限制 | Router 的[10 分钟截止时间](/zh/development/comfy-router/limitations#调用会在服务器截止时间被中断)，随后是 `504` / `deadline_exceeded` | 运行本身没有限制。已完成的结果会[保留 24 小时](#幂等性与计费) |
 
-SDK（`comfy-sdk` 和 `@comfyorg/sdk`，0.3.0 或更高版本）在 `run` 旁边通过三个方法暴露队列：
+SDK（`comfy-sdk` 和 `@comfyorg/sdk`，0.3.0 或更高版本）在 `run` 旁边将队列暴露为三个方法:
 
-- **`submit(model, body)`** 发送请求并立即返回一个句柄。该句柄带有 `status()`、`get()`、`cancel()` 以及一个事件迭代器（Python 中为 `iter_events()`，TypeScript 中为 `events()`）。
-- **`subscribe(model, body, ...)`** 通过一次调用完成提交、轮询和收集，并带有进度回调。
-- **`handle(model, request_id)`** 根据这两个 ID 在另一个进程中重建句柄，而无需发起任何调用。
+- **`submit(model, body)`** 立即发送请求并返回一个句柄。该句柄提供 `status()`、`get()`、`cancel()` 以及一个事件迭代器（Python 中为 `iter_events()`，TypeScript 中为 `events()`）。
+- **`subscribe(model, body, ...)`** 在一次调用中完成提交、轮询和收集，并带有进度回调。
+- **`handle(model, request_id)`** 在另一个进程中根据这两个 ID 重建句柄，不会发起任何调用。
 
-两个 ID 在所有地方都需要，因为二者共同寻址该请求：路由为 `/v2/models/{provider}/{model}/requests/{request_id}`。
+这两个 ID 在任何地方都必不可少，因为它们共同定位该请求: 路由是 `/v2/models/{provider}/{model}/requests/{request_id}`。
 
 <Note>
-  这里的 `events()` **不是** Comfy Cloud 客户端的 `job.events()`。这里的是轮询状态路由，并为 Router 请求产生队列观测结果（状态和队列位置）。Comfy Cloud 的那个则是 ComfyUI 工作流任务的实时 SSE 流，携带进度、预览和输出。`subscribe()` 又是另一种东西：它根本不是迭代器，而是把提交、轮询和收集合并到一次调用中。请参阅 [`events()` 不是 `subscribe()`](/zh/development/api-development/sdks#events-不是-subscribe)。
+  这里的 `events()` **不是** Comfy Cloud 客户端的 `job.events()`。这里的 `events()` 会轮询状态路由，并为 Router 请求产生队列观察结果（状态和队列位置）。Cloud 的那个则是 ComfyUI 工作流任务的实时 SSE 流，携带进度、预览和输出。`subscribe()` 又是第三种东西: 它根本不是迭代器，而是把提交、轮询和收集合并成一次调用。参见 [`events()` 不是 `subscribe()`](/zh/development/api-development/sdks#events-不是-subscribe)。
 </Note>
 
-## 四种路由
+## 队列路由
 
 | 路由 | 响应 |
 | --- | --- |
 | `POST /v2/models/{provider}/{model}/requests` | `201`，包含 `request_id`、`status`、`queue_position`、`status_url`、`response_url`、`cancel_url` |
 | `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200`，包含当前的 `status` 和 `queue_position`，以及一个 `Retry-After` 提示 |
-| `GET /v2/models/{provider}/{model}/requests/{request_id}` | 完成后返回 `200` 及模型的原始输出，未完成时返回 `202` 及状态正文 |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | 完成后返回 `200` 及模型的原生输出；未完成时返回 `202` 及状态响应体 |
 | `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED`，或 `409` `ALREADY_COMPLETED` |
 
-`status` 是 `IN_QUEUE`、`IN_PROGRESS` 或 `COMPLETED` 之一。不存在单独的失败或已取消状态：未成功的请求会处于 `COMPLETED` 并携带 `error_type`，因此请根据该字段是否存在来分支处理，而不是依据第四个状态值。SDK 已经替你处理好了这一点：`get()` 会抛出或以类型化的 Router 错误拒绝，而不是把失败作为结果返回。
+`status` 为 `IN_QUEUE`、`IN_PROGRESS` 或 `COMPLETED` 之一。不存在单独的失败或已取消状态：未成功的请求会是携带 `error_type` 的 `COMPLETED`，因此请根据该字段是否存在来分支处理，而不是根据第四种状态值。SDK 已为你处理这一点：`get()` 会抛出或拒绝并返回类型化的 Router 错误，而不是把失败作为结果返回。
 
-没有进度事件、webhook 或优先级等级：跟踪请求的方式就是状态路由。[API 参考](/zh/development/comfy-router/reference#端点) 包含每个路由的完整约定。
+没有进度事件、webhook 或优先级级别：状态路由就是你跟踪请求的方式。[API 参考](/zh/development/comfy-router/reference#端点) 包含了每个路由的完整约定。
 
-## 将请求加入队列
+## 提交并收集请求
 
-这会将[快速开始](/zh/development/comfy-router/quickstart) 所发送的同一请求加入队列，并收集生成的图像。请先将你的密钥导出为 `COMFY_API_KEY`。
+这会排队与[快速入门](/zh/development/comfy-router/quickstart)发送的相同请求，并收集图像。请先将你的密钥导出为 `COMFY_API_KEY`。
 
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
 
-# 从环境变量中读取 COMFY_API_KEY。
+# 从环境中读取 COMFY_API_KEY。
 # 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
 with Comfy() as client:
     handle = client.models.submit(
@@ -72,12 +72,12 @@ with Comfy() as client:
     )
     print("request_id:", handle.request_id)  # 配合模型 ID，就是另一个进程所需的全部信息
 
-    # 轮询直到请求完成，按服务器给出的 Retry-After 等待。
+    # 轮询直到请求完成，按服务器指定的 Retry-After 等待。
     for update in handle.iter_events():
         print(update.status, update.queue_position)
 
     # 提供商自己的负载，与 models.run() 返回的值相同。
-    # 失败或被取消的请求会在这里抛出类型化的 Router 错误。
+    # 失败或已取消的请求会在这里抛出类型化的 Router 错误。
     result = handle.get()
 
 print("image:", result["result"]["sample"])
@@ -86,7 +86,7 @@ print("image:", result["result"]["sample"])
 ```typescript TypeScript
 import { comfy } from "@comfyorg/sdk";
 
-// 从环境变量中读取 COMFY_API_KEY。
+// 从环境中读取 COMFY_API_KEY。
 // 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
 type FluxResult = { result: { sample: string } };
 const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
@@ -94,12 +94,12 @@ const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
 });
 console.log("requestId:", handle.requestId); // 配合模型 ID，就是另一个进程所需的全部信息
 
-// 轮询直到请求完成，按服务器给出的 Retry-After 等待。
+// 轮询直到请求完成，按服务器指定的 Retry-After 等待。
 for await (const update of handle.events()) {
   console.log(update.status, update.queuePosition);
 }
 
-// 与 models.run() 返回的结果相同。失败或被取消的请求会在这里被拒绝。
+// models.run() 返回的相同结果。失败或已取消的请求会在这里拒绝。
 const result = await handle.get();
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
@@ -109,30 +109,30 @@ console.log("image:", result.data.result.sample);
 ```bash cURL
 BASE="https://api.comfy.org/v2/models/bfl/flux-2-pro"
 
-# 1. 提交。Router 返回 201，包含 request_id、status_url、response_url 和 cancel_url。
+# 1. 提交。Router 以 201 应答，包含 request_id、status_url、response_url 和 cancel_url。
 curl "$BASE/requests" \
   -H "X-API-Key: $COMFY_API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "a red teapot on a windowsill, morning light"}'
 
-# 2. 轮询直到状态为 COMPLETED，按每个响应给出的 Retry-After 秒数等待。
+# 2. 轮询直到状态为 COMPLETED，每个响应都按指定的 Retry-After 秒数等待。
 REQUEST_ID="<request_id from the 201 body>"
 curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
 
 # 3. 收集。返回 200 及模型的原生输出；仍在运行时返回 202 及状态正文。
 curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
 
-# 4. 取消尚未完成的请求。这只是一次请求，而不是保证。
+# 4. 取消尚未完成的请求。这是请求，不是保证。
 curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
 ```
 </CodeGroup>
 
-每个[模型页面](/zh/development/comfy-router/models) 都会在 **排队并稍后收集** 一节下，为其自身的模型提供这种形态，与同步示例并列。
+每个[模型页面](/zh/development/comfy-router/models)都会在自己的模型下、**排队并稍后收集**中带有这种形式，与同步代码片段并列。
 
-### 一次调用中跟踪进度并收集结果
+### 在一次调用中跟踪进度并收集
 
-当你确实想要等待、同时也想展示进度时，`subscribe` 会将提交、轮询和收集合并为一次调用：
+当你确实想要等待，同时也想显示进度时，`subscribe` 会将提交、轮询和收集合并为一次调用：
 
 <CodeGroup>
 ```python Python
@@ -159,11 +159,11 @@ const result = await comfy.models.subscribe<FluxResult>(
 ```
 </CodeGroup>
 
-超时是客户端的约束，在服务端没有含义。超时之后，`subscribe` 会在抛出之前尽力执行一次取消。取消只对尚未开始运行的请求生效：已经在合作方那里进行中的一次生成会照常完成并计费，无论是否有人收集它。当请求的生命周期需要长于调用者时，请使用 `submit`。
+超时是客户端侧的界限，在服务器端没有含义。超时后，`subscribe` 会在抛出异常前进行一次尽力而为的取消。取消只对尚未开始运行的请求生效：已经在合作伙伴处进行中的生成会完成并被计费，无论是否有人收集它。当请求应当比调用方存活更久时，请使用 `submit`。
 
-### 从另一个进程收集结果
+### 从另一个进程收集
 
-请把 `request_id` 与模型 ID 一起保存。重建句柄需要这两者，而在你使用它之前不会发起任何调用。
+将 `request_id` 与模型 ID 一起存储。重建句柄两者都需要，在你使用它之前不会发起任何调用。
 
 <CodeGroup>
 ```python Python
@@ -179,7 +179,7 @@ const result = await handle.get();
 
 ### 检查状态或取消
 
-`status()` 只进行一次轮询并返回当前状态。`cancel()` 请求服务器停止一个尚未完成的请求。这是一次请求，而不是保证：已经在合作方那里发出的运行可能依然会完成，而随后一次 `status()` 才是真实情况。
+`status()` 是一次轮询，返回当前状态。`cancel()` 请求服务器停止尚未完成的请求。这是一个请求，不是保证：已经在合作伙伴处开始执行的运行可能仍会完成，而下一次 `status()` 才是真实情况。
 
 <CodeGroup>
 ```python Python
@@ -199,7 +199,7 @@ await handle.cancel();
 
 ### 异步 Python
 
-`AsyncComfy` 对应了每一个名称、参数和参数顺序。没有 `submit_async`，原因与没有 `run_async` 相同。
+`AsyncComfy` 镜像了每个名称、参数和参数顺序。没有 `submit_async`，原因与没有 `run_async` 相同。
 
 ```python
 from comfy_sdk import AsyncComfy
@@ -216,11 +216,11 @@ async with AsyncComfy() as client:
 
 ### SDK 抛出的错误
 
-已完成但未成功的请求会以 `COMPLETED` 并携带 `error_type` 的形式上报。`get()` 和 `subscribe()` 会把它转换为该类别的类型化 Router 错误：Python 中是 `comfy_sdk.router_exceptions` 里的类，TypeScript 中是 `routerErrors.*`。事件迭代器在该情况下不会抛出，因为它只是队列进度的视图：携带 `error_type` 的完成会作为最后一次观测产出，而由 `get()` 负责收集。提交时的 `403` `not_enabled` 会以 `NotEnabled` 到达，并且是终止性的，因此 SDK 不会重试它。
+已完成但未成功的请求会报告为 `COMPLETED` 并带有 `error_type`。`get()` 和 `subscribe()` 会将其转换为该类别对应的类型化 Router 错误：Python 中是 `comfy_sdk.router_exceptions` 中的类，TypeScript 中是 `routerErrors.*`。事件迭代器在这种情况下不会抛出异常，因为它是队列进度的视图：带有 `error_type` 的完成会作为最后一条观察结果产出，而收集工作由 `get()` 完成。提交时的 `403` `not_enabled` 会以 `NotEnabled` 形式到达，并且是终端错误，因此 SDK 不会重试它。
 
-## 响应是什么样的
+## 队列响应形状
 
-**提交，`201`。** 此时 `status` 始终为 `IN_QUEUE`。这三个 URL 都是绝对地址，并使用与提交时相同的密钥进行身份验证。
+**提交，`201`。** 此时 `status` 始终为 `IN_QUEUE`。这三个 URL 都是绝对地址，并使用与提交相同的密钥进行鉴权。
 
 ```json
 {
@@ -233,9 +233,9 @@ async with AsyncComfy() as client:
 }
 ```
 
-`request_id` 同时也是提交请求的 `X-Comfy-Request-Id` 头部的值。请把模型 ID 和它一起记下来：请求需要靠这两者来寻址。
+`request_id` 同时也是提交请求的 `X-Comfy-Request-Id` 头的值。请把它与模型 ID 放在一起：该请求需要二者共同定位。
 
-**状态查询，`200`。** 结构相同，只是展示当前状态。`queue_position` 统计排在你前面的请求数量，当本次运行位于队首时该值为 `0`。此响应中的 `Retry-After` 是 Router 对何时再次轮询才值得往返一次的估计。它只是一个提示，并非硬性限制，而且排在队尾的请求被告知要等待的时间会比已经在运行的请求更长。轮询得更快并不会让你更早获知任何信息，反而会消耗你自己的速率限制额度。
+**状态，`200`。** 形状相同，但包含当前状态。`queue_position` 统计排在你前面的请求数量，当运行位于队首时其值为 `0`。此响应上的 `Retry-After` 是 Router 对何时值得再次轮询一次往返的预估。它只是提示，不是硬性限制，排在队列末尾的请求会被要求等待得比已在运行的请求更久。轮询得再快也不会更早获知任何信息，只会消耗你自己的速率限制额度。
 
 ```json
 {
@@ -248,7 +248,7 @@ async with AsyncComfy() as client:
 }
 ```
 
-未成功完成的请求状态为 `COMPLETED`，并带有 `error_type`，其携带的粗分类与结果读取在 `X-Comfy-Error-Type` 中标出的一致。该字段在成功时是缺失的，而不是 `null`。
+一个已完成但未成功的请求为 `COMPLETED`，并带有 `error_type`，其中携带的粗粒度分类与读取结果时放在 `X-Comfy-Error-Type` 上的相同。该字段在成功时是缺失的，而不是 `null`。
 
 ```json
 {
@@ -261,46 +261,34 @@ async with AsyncComfy() as client:
 }
 ```
 
-**结果。** `200` 携带模型自身的原生输出，与同步路由针对相同模型和输入返回的内容逐字节一致，并使用提供商自己的 `Content-Type`。当请求尚未完成时，该读取会返回 `202` 以及上面的状态响应体，因此只轮询结果 URL 的客户端只需解析一种类型。失败的请求会以设置了 `X-Comfy-Error-Type` 的错误响应返回，分类与同步路由相同。
+**结果。** `200` 携带模型自身的原生输出，与同一模型和输入的同步路由所返回的内容逐字节一致，并使用提供商自己的 `Content-Type`。当请求尚未完成时，读取会返回 `202` 和上面的状态响应体，因此只轮询结果 URL 的客户端只需解析一种类型。失败的请求会作为错误响应返回，并设置 `X-Comfy-Error-Type`，其分类与同步路由相同。
 
-**取消。** 返回 `202` 和 `CANCELLATION_REQUESTED` 表示取消请求已被接受，并不代表运行已经停止。已经在合作伙伴侧开始执行的运行仍可能照常完成，而合作伙伴完成的生成无论是否有人取回，都会被计费。之后请读取状态：已生效的取消会显示为 `COMPLETED` 并带有 `error_type: cancelled`。在能够运行之前就已超时的请求，会以相同方式显示 `queue_timeout`。已经完成的请求会返回 `409` 和 `ALREADY_COMPLETED`。
+**取消。** `202` 加 `CANCELLATION_REQUESTED` 表示取消请求已被接受，并不表示运行已经停止。已经发往合作伙伴处运行的请求仍可能完成，而合作伙伴已完成的一次生成无论是否有人取回都会被计费。之后请读取状态：生效的取消会显示为 `COMPLETED`，并带有 `error_type: cancelled`。在能够运行之前就已超时的请求会以同样方式显示 `queue_timeout`。已经完成的请求会返回 `409`，并带有 `ALREADY_COMPLETED`。
 
 ## 幂等性与计费
 
-- **与同步路由收费相同。** 费用在提供商向 Comfy 计费时产生。在队列中等待的时间不计费。
-- **每次提交使用一个 `Idempotency-Key`。** SDK 会为每次 `submit` 调用生成一个新的键，因此对同一输入的两次有意提交就是两个请求。在同一个键下重试同一个调用不会再次排队运行：它会返回原始句柄，并带有 `Idempotent-Replayed: true`。当响应丢失可能让你损失 `request_id` 时，请传入你自己的键。参见 [Headers](/zh/development/comfy-router/headers)。
-- **结果会过期。** 已完成的请求在完成后会保留 24 小时。之后，状态和结果读取会返回 `410`，结果也就消失了。请及时收集，并下载输出中包含的任何资产 URL。
-- **轮询也是请求。** 状态和结果读取会计入[每个调用者的请求速率](/zh/development/comfy-router/limitations#请求按调用方进行速率限制)。请遵守 `Retry-After`，而不是以固定的短间隔进行轮询。
+- **与同步路由相同的收费。** 提供商向 Comfy 计费时才会向你计费。在队列中等待所花费的时间不计费。
+- **每次提交使用一个 `Idempotency-Key`。** SDK 会为每次 `submit` 调用生成一个新密钥，因此对同一输入的两次有意提交就是两个请求。同一次调用在同一密钥下的重试不会排入第二次运行：它会返回原始句柄，并带有 `Idempotent-Replayed: true`。当响应丢失可能让你损失 `request_id` 时，请传入你自己的密钥。参见[请求头](/zh/development/comfy-router/headers)。
+- **结果会过期。** 已完成请求在完成后会保留 24 小时。之后，状态和结果的读取会返回 `410`，结果已不复存在。请及时收集并下载输出所携带的任何资产 URL。
+- **轮询也是请求。** 状态和结果的读取都会计入[每个调用方的请求速率](/zh/development/comfy-router/limitations#请求按调用方进行速率限制)。请遵守 `Retry-After`，而不要以固定的短间隔持续轮询。
 
-## 错误
+## 队列错误响应
 
-| 状态码 | `X-Comfy-Error-Type` | 含义 |
+| 状态 | `X-Comfy-Error-Type` | 含义 |
 | --- | --- | --- |
-| `402` | `insufficient_credits` | 工作区无法为该次运行提供资金。不会有任何内容进入队列，也不会产生扣费，充值后可以重新发送同一个 `Idempotency-Key`。 |
-| `403` | `not_enabled` | 该调用方无法使用队列：背后没有工作区的密钥（早于工作区概念的传统密钥）、自带密钥（bring-your-own-key）请求，或队列无法运行的模型。对该请求而言是终止性的，请勿重试。 |
-| `404` | `model_not_found` | 该 `{provider}/{model}` ID 未解析到任何 Router 模型。 |
-| `404` | `request_not_found` | 该调用方和模型下不存在使用该 ID 的请求。 |
-| `409` | `concurrency_limit_exceeded` | 同一个 `Idempotency-Key` 仍处于准入过程中。等待 `Retry-After` 后重新发送同一个 key，即可获得原始句柄。 |
-| `409` | `invalid_input` | 该 `Idempotency-Key` 已被另一个不同的请求占用。请用新的 key 发送此请求。 |
-| `409` | 响应体中的 `ALREADY_COMPLETED` | 仅出现在取消路由上：该请求已经完成，因此没有可取消的内容。 |
-| `410` | | 该请求曾经存在，但已超过其保留窗口，即完成 24 小时之后。对该 ID 而言是永久性的。 |
-| `422` | `invalid_input` | 模型拒绝了该输入。响应体中包含逐字段的详细信息，与同步路由上完全一致。 |
+| `402` | `insufficient_credits` | 工作区无法为该次运行提供资金。不会入队任何内容，也不会扣费；充值后可以重新发送同一个 `Idempotency-Key`。 |
+| `403` | `not_enabled` | 该调用方无法使用队列：背后没有工作区的密钥（早于工作区出现的传统密钥）、自带密钥请求，或队列无法运行的模型。对该请求而言这是终态，请勿重试。 |
+| `404` | `model_not_found` | `{provider}/{model}` ID 无法解析到任何 Router 模型。 |
+| `404` | `request_not_found` | 该调用方和该模型下不存在具有此 ID 的请求。 |
+| `409` | `concurrency_limit_exceeded` | 同一个 `Idempotency-Key` 仍在准入过程中。等待 `Retry-After` 后重新发送同一个密钥，即可获得原始句柄。 |
+| `409` | `invalid_input` | 该 `Idempotency-Key` 已被另一个不同的请求占用。请用新的密钥发送此请求。 |
+| `409` | 响应体中的 `ALREADY_COMPLETED` | 仅适用于取消路由：该请求已经完成，因此没有什么可取消的。 |
+| `410` | | 该请求曾经存在，但已超出其保留窗口，即完成 24 小时之后。对此 ID 而言是永久性的。 |
+| `422` | `invalid_input` | 模型拒绝了该输入。响应体携带逐字段的详细信息，与同步路由完全一致。 |
 
-每个错误响应都带有 `X-Comfy-Request-Id`。联系支持时请提供该 ID。
+每个错误响应都携带 `X-Comfy-Request-Id`。联系支持时请附上该 ID。
 
-## 下一步
+## 后续
 
-<CardGroup cols={2}>
-  <Card title="快速开始" icon="rocket" href="/zh/development/comfy-router/quickstart">
-    同一模型的同步调用，从无到有生成图像。
-  </Card>
-  <Card title="模型" icon="grid" href="/zh/development/comfy-router/models">
-    每个模型页面都包含针对其自身模型和请求体的队列代码片段。
-  </Card>
-  <Card title="请求头" icon="list" href="/zh/development/comfy-router/headers">
-    认证、幂等性、请求 ID、错误分桶、重试节奏。
-  </Card>
-  <Card title="API 参考" icon="book" href="/zh/development/comfy-router/reference#端点">
-    四个队列路由，逐字段说明。
-  </Card>
-</CardGroup>
+- [错误与重试](/zh/development/comfy-router/errors)：了解错误响应，并在不产生二次扣费的情况下重试。
+- [API 参考](/zh/development/comfy-router/reference#端点)：每条队列路由的完整契约。
