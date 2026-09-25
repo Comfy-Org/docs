@@ -3,6 +3,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { loadI18nConfig, localizeMdxPaths, REPO_ROOT } from "./i18n-config.mjs";
+import { fixAnchorSlugs } from "./fix-anchor-slugs.ts";
 
 const ENGLISH_PATH = "development/comfy-router/pricing.mdx";
 const ENGLISH_FILE = join(REPO_ROOT, ENGLISH_PATH);
@@ -214,11 +215,18 @@ async function main() {
   };
   const fields = [...new Set(snapshot.models.flatMap((model) => model.rates.flatMap((rate) => rate.fields.map((field) => field.label))))];
 
+  const targetFiles: string[] = [];
   for (const locale of Object.keys(strings) as Array<keyof typeof strings>) {
     const targetFile = join(REPO_ROOT, locale, ENGLISH_PATH);
     await mkdir(dirname(targetFile), { recursive: true });
     await writeFile(targetFile, localize(english, locale, fields));
+    targetFiles.push(`${locale}/${ENGLISH_PATH}`);
     console.log(`wrote ${targetFile}`);
+  }
+
+  const anchors = await fixAnchorSlugs({ fileArgs: targetFiles });
+  if (anchors.unresolved > 0) {
+    throw new Error(`Could not localize ${anchors.unresolved} pricing source anchor(s)`);
   }
 }
 
