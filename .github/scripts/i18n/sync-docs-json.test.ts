@@ -129,6 +129,40 @@ describe("syncTab", () => {
 
     expect(syncTab(enTab, existingTab, zh, LANG_DIRS).pages[0].group).toBe("Cloud API 참조");
   });
+
+  test("allows sibling groups to share the same localized label after a restructure", () => {
+    const enTab = {
+      tab: "Cloud",
+      pages: [
+        { group: "New A", pages: ["cloud/import-models"] },
+        { group: "New B", pages: ["cloud/share-workflow"] },
+      ],
+    };
+    const existingTab = {
+      tab: "云端",
+      pages: [
+        {
+          group: "共同标签",
+          pages: [
+            "zh/cloud/import-models",
+            "zh/cloud/getting-started",
+            "zh/cloud/manage-subscription",
+          ],
+        },
+        {
+          group: "共同标签",
+          pages: [
+            "zh/cloud/share-workflow",
+            "zh/cloud/workspace",
+            "zh/cloud/organizations",
+          ],
+        },
+      ],
+    };
+
+    const synced = syncTab(enTab, existingTab, zh, LANG_DIRS);
+    expect(synced.pages.map((group) => group.group)).toEqual(["共同标签", "共同标签"]);
+  });
 });
 
 describe("mergeNavPages", () => {

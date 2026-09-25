@@ -383,9 +383,10 @@ export function mergeNavPages(
       match?.group ??
       (sourceKey ? labelIndex.get(`openapi:${sourceKey}`) : undefined) ??
       labelFromIndex(newChild.pages, labelIndex, langDirs, claimed);
+    const descendantClaims = new Set(claimed);
     if (localizedLabel) {
       merged.group = localizedLabel;
-      claimed.add(localizedLabel);
+      descendantClaims.add(localizedLabel);
     }
     if (match?.icon) merged.icon = match.icon;
     merged.pages = mergeNavPages(
@@ -393,7 +394,7 @@ export function mergeNavPages(
       match?.pages ?? [],
       langDirs,
       labelIndex,
-      claimed
+      descendantClaims
     );
     return merged;
   });
