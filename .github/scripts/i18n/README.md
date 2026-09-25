@@ -195,8 +195,8 @@ pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged file
 
 `pnpm router-pricing:gen` generates the English Comfy Router pricing page, then
 generates Japanese, Simplified Chinese, and Korean versions from the English
-page using the localized UI labels for this pricing table. Model names,
-provider names, Router IDs, source links, and pricing values stay unchanged.
+page using localized labels and descriptive rate units. Model names, provider
+names, Router IDs, source links, and numeric rate amounts stay unchanged.
 Internal links use a localized target when it exists and fall back to the English
 page when that page has no translation yet.
 Translation hashes are synced so `pnpm translate` skips these pages when their
