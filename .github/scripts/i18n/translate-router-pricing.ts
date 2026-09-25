@@ -369,6 +369,15 @@ function translateRateValue(locale: keyof typeof strings, field: string, value: 
   });
 
   translated = translated.replace(
+    /(\d+(?:\.\d+)?) \/ sec, plus (\d+(?:\.\d+)?) \/ image over 5/g,
+    (_match, rate: string, extra: string) => {
+      if (locale === "ja") return `${rate} / 秒、画像が 5 枚を超えると 1 枚あたり ${extra} 追加`;
+      if (locale === "zh") return `每秒 ${rate}，图像超过 5 张后每张另加 ${extra}`;
+      return `초당 ${rate}, 이미지가 5장을 넘으면 장당 ${extra} 추가`;
+    }
+  );
+
+  translated = translated.replace(
     /(?:(\d+(?:\.\d+)?) input \+ )?(\d+(?:\.\d+)?) \(medium\) \/ (\d+(?:\.\d+)?) \(low\) per output image/g,
     (_match, inputPrice: string | undefined, mediumPrice: string, lowPrice: string) => {
       if (locale === "ja") {
