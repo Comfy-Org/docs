@@ -74,8 +74,8 @@ const strings = {
       Status: "状态",
       Model: "模型",
       "Input credits / 1K": "输入积分 / 1K",
-      "5m Cache Write credits / 1K": "5m 缓存写入积分 / 1K",
-      "1h Cache Write credits / 1K": "1h 缓存写入积分 / 1K",
+      "5m Cache Write credits / 1K": "5分钟缓存写入积分 / 1K",
+      "1h Cache Write credits / 1K": "1小时缓存写入积分 / 1K",
       "Cache Hit credits / 1K": "缓存命中积分 / 1K",
       "Output credits / 1K": "输出积分 / 1K",
       Resolution: "分辨率",
@@ -162,6 +162,156 @@ const strings = {
   },
 } as const;
 
+const categoricalValues = {
+  ja: {
+    Status: { Active: "有効" },
+    "Video input": { no: "いいえ", yes: "はい" },
+    "token type": {
+      input: "入力",
+      "output (image)": "出力（画像）",
+      "input (image)": "入力（画像）",
+      "input (text)": "入力（テキスト）",
+    },
+    task: { generate: "生成", edit: "編集", generation: "生成" },
+    "Image input": { No: "なし" },
+    "Style reference": { No: "なし", Yes: "あり" },
+    Moodboard: { No: "なし", Yes: "あり" },
+    mode: { creative: "creative（クリエイティブ）", precise: "precise（高精度）" },
+    rendering_speed: {
+      TURBO: "TURBO（ターボ）",
+      DEFAULT: "DEFAULT（標準）",
+      QUALITY: "QUALITY（高品質）",
+    },
+    generate_audio: { off: "off（オフ）", on: "on（オン）" },
+  },
+  zh: {
+    Status: { Active: "启用" },
+    "Video input": { no: "否", yes: "是" },
+    "token type": {
+      input: "输入",
+      "output (image)": "图像输出",
+      "input (image)": "图像输入",
+      "input (text)": "文本输入",
+    },
+    task: { generate: "生成", edit: "编辑", generation: "生成" },
+    "Image input": { No: "无" },
+    "Style reference": { No: "无", Yes: "有" },
+    Moodboard: { No: "无", Yes: "有" },
+    mode: { creative: "creative（创意）", precise: "precise（精准）" },
+    rendering_speed: {
+      TURBO: "TURBO（极速）",
+      DEFAULT: "DEFAULT（默认）",
+      QUALITY: "QUALITY（高质量）",
+    },
+    generate_audio: { off: "off（关闭）", on: "on（开启）" },
+  },
+  ko: {
+    Status: { Active: "활성" },
+    "Video input": { no: "아니요", yes: "예" },
+    "token type": {
+      input: "입력",
+      "output (image)": "이미지 출력",
+      "input (image)": "이미지 입력",
+      "input (text)": "텍스트 입력",
+    },
+    task: { generate: "생성", edit: "편집", generation: "생성" },
+    "Image input": { No: "없음" },
+    "Style reference": { No: "없음", Yes: "있음" },
+    Moodboard: { No: "없음", Yes: "있음" },
+    mode: { creative: "creative(크리에이티브)", precise: "precise(정밀)" },
+    rendering_speed: {
+      TURBO: "TURBO(터보)",
+      DEFAULT: "DEFAULT(기본)",
+      QUALITY: "QUALITY(고품질)",
+    },
+    generate_audio: { off: "off(끔)", on: "on(켬)" },
+  },
+} as const;
+
+const creditFormulaTerms = {
+  ja: [
+    ["per output image", "出力画像あたり"],
+    [" (with first/last frame)", "（最初/最後のフレーム付き）"],
+    [" (with reference media)", "（参照メディア付き）"],
+    ["(text only)", "（テキストのみ）"],
+    ["input + output video", "入力 + 出力動画"],
+    ["extension sec output", "延長秒の出力"],
+    ["sec output", "秒あたりの出力"],
+    ["first/last frame", "最初/最後のフレーム"],
+    ["reference media", "参照メディア"],
+    ["output image", "出力画像"],
+    ["input image", "入力画像"],
+    ["ref image", "参照画像"],
+    ["extra MP", "追加 MP"],
+    ["input + output", "入力 + 出力"],
+    [" plus ", " 追加で "],
+    [" over 5", " 5 枚超"],
+    ["medium", "中"],
+    ["low", "低"],
+    ["range", "範囲"],
+    ["/ sec", "/ 秒"],
+    ["/ run", "/ 回"],
+    ["/ image", "/ 画像"],
+    [", plus ", "、さらに "],
+    ["input", "入力"],
+    ["output", "出力"],
+  ],
+  zh: [
+    ["per output image", "每张输出图像"],
+    [" (with first/last frame)", "（包含首帧/尾帧）"],
+    [" (with reference media)", "（包含参考媒体）"],
+    ["(text only)", "（仅文本）"],
+    ["input + output video", "输入 + 输出视频"],
+    ["extension sec output", "延长秒数输出"],
+    ["sec output", "每秒输出"],
+    ["first/last frame", "首帧/尾帧"],
+    ["reference media", "参考媒体"],
+    ["output image", "输出图像"],
+    ["input image", "输入图像"],
+    ["ref image", "参考图像"],
+    ["extra MP", "额外 MP"],
+    ["input + output", "输入 + 输出"],
+    [" plus ", "，另加 "],
+    [" over 5", "，超过 5 张"],
+    ["medium", "中等"],
+    ["low", "低"],
+    ["range", "范围"],
+    ["/ sec", "/ 秒"],
+    ["/ run", "/ 次"],
+    ["/ image", "/ 图像"],
+    [", plus ", "，另加 "],
+    ["input", "输入"],
+    ["output", "输出"],
+  ],
+  ko: [
+    ["per output image", "출력 이미지당"],
+    [" (with first/last frame)", "(첫/마지막 프레임 포함)"],
+    [" (with reference media)", "(참조 미디어 포함)"],
+    ["(text only)", "(텍스트 전용)"],
+    ["input + output video", "입력 + 출력 동영상"],
+    ["extension sec output", "연장 초 출력"],
+    ["sec output", "초당 출력"],
+    ["first/last frame", "첫/마지막 프레임"],
+    ["reference media", "참조 미디어"],
+    ["output image", "출력 이미지"],
+    ["input image", "입력 이미지"],
+    ["ref image", "참조 이미지"],
+    ["extra MP", "추가 MP"],
+    ["input + output", "입력 + 출력"],
+    [" plus ", " 추가 "],
+    [" over 5", " 5장 초과"],
+    ["medium", "중간"],
+    ["low", "낮음"],
+    ["range", "범위"],
+    ["/ sec", "/ 초"],
+    ["/ run", "/ 회"],
+    ["/ image", "/ 이미지"],
+    [", plus ", ", 추가로 "],
+    ["input", "입력"],
+    ["output", "출력"],
+  ],
+} as const;
+
 const englishTableHeader = "| Model | Router model ID | Comfy credit rate | Pricing source |";
 const englishNote =
   "Prices are in Comfy credits. A dash means the official source has no matching rate row. [Pricing details](/tutorials/partner-nodes/pricing).";
@@ -192,6 +342,75 @@ function fallBackMissingLocaleLinks(content: string, locale: string): string {
   });
 }
 
+function splitMarkdownTableRow(line: string): string[] {
+  const cells: string[] = [];
+  let start = 0;
+  let backslashes = 0;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === "|" && backslashes % 2 === 0) {
+      cells.push(line.slice(start, index));
+      start = index + 1;
+    }
+    backslashes = char === "\\" ? backslashes + 1 : 0;
+  }
+  cells.push(line.slice(start));
+  return cells;
+}
+
+function translateRateValue(locale: keyof typeof strings, field: string, value: string): string {
+  const categorical = (categoricalValues[locale] as Record<string, Record<string, string>>)[field]?.[value];
+  if (categorical) return categorical;
+  if (field !== "Credits") return value;
+
+  let translated = value.replace(/\b(\d+)s\b/g, (_match, seconds: string) => {
+    const unit = locale === "ja" || locale === "zh" ? "秒" : "초";
+    return `${seconds}${unit}`;
+  });
+
+  translated = translated.replace(
+    /(?:(\d+(?:\.\d+)?) input \+ )?(\d+(?:\.\d+)?) \(medium\) \/ (\d+(?:\.\d+)?) \(low\) per output image/g,
+    (_match, inputPrice: string | undefined, mediumPrice: string, lowPrice: string) => {
+      if (locale === "ja") {
+        return `${inputPrice ? `入力 ${inputPrice} + ` : ""}出力画像あたり ${mediumPrice}（中） / ${lowPrice}（低）`;
+      }
+      if (locale === "zh") {
+        return `${inputPrice ? `输入 ${inputPrice}；` : ""}每张输出图像 ${mediumPrice}（中） / ${lowPrice}（低）`;
+      }
+      return `${inputPrice ? `입력 ${inputPrice}; ` : ""}출력 이미지당 ${mediumPrice}(중간) / ${lowPrice}(낮음)`;
+    }
+  );
+  translated = translated.replace(
+    /(\d+(?:\.\d+)?) \/ sec output \(\+(\d+(?:\.\d+)?) input image\)/g,
+    (_match, outputPrice: string, inputPrice: string) => {
+      if (locale === "ja") return `出力 ${outputPrice} / 秒（入力画像 ${inputPrice}）`;
+      if (locale === "zh") return `输出 ${outputPrice} / 秒（输入图像 ${inputPrice}）`;
+      return `출력 ${outputPrice} / 초(입력 이미지 ${inputPrice})`;
+    }
+  );
+  translated = translated.replace(
+    /(\d+(?:\.\d+)?) \/ sec output \+ (\d+(?:\.\d+)?) \/ ref image/g,
+    (_match, outputPrice: string, referencePrice: string) => {
+      if (locale === "ja") return `出力 ${outputPrice} / 秒 + 参照画像 ${referencePrice}`;
+      if (locale === "zh") return `输出 ${outputPrice} / 秒 + 参考图像 ${referencePrice}`;
+      return `출력 ${outputPrice} / 초 + 참조 이미지 ${referencePrice}`;
+    }
+  );
+  translated = translated.replace(
+    /(\d+(?:\.\d+)?) \/ sec \(input \+ output video\)/g,
+    (_match, rate: string) => {
+      if (locale === "ja") return `入力 + 出力動画 ${rate} / 秒`;
+      if (locale === "zh") return `输入 + 输出视频 ${rate} / 秒`;
+      return `입력 + 출력 동영상 ${rate} / 초`;
+    }
+  );
+
+  for (const [source, target] of [...creditFormulaTerms[locale]].sort(([a], [b]) => b.length - a.length)) {
+    translated = translated.replaceAll(source, target);
+  }
+  return translated;
+}
+
 function localize(content: string, locale: keyof typeof strings, fields: string[]): string {
   const translated = strings[locale];
   let output = replaceRequired(content, 'title: "Comfy Router pricing by model"', `title: "${translated.title}"`);
@@ -213,12 +432,23 @@ function localize(content: string, locale: keyof typeof strings, fields: string[
     .split("\n")
     .map((line) => {
       if (!line.startsWith("| [") || !line.includes("/development/comfy-router/models/")) return line;
-      for (const field of fields) {
-        const localized = translated.fields[field as keyof typeof translated.fields];
-        if (localized === undefined) throw new Error(`No ${locale} translation configured for pricing field: ${field}`);
-        if (localized !== field) line = line.replaceAll(`${field}: `, `${localized}: `);
-      }
-      return line;
+      const cells = splitMarkdownTableRow(line);
+      if (cells.length < 6) throw new Error(`Malformed generated Router pricing row: ${line}`);
+      const rateParts = cells[3].split(/(; |<br \/>)/g).map((part) => {
+        const leading = part.match(/^\s*/)?.[0] ?? "";
+        const trailing = part.match(/\s*$/)?.[0] ?? "";
+        const content = part.slice(leading.length, part.length - trailing.length);
+        const colon = content.indexOf(": ");
+        if (colon < 0) return part;
+        const field = content.slice(0, colon).trim();
+        const value = content.slice(colon + 2);
+        if (!fields.includes(field)) throw new Error(`Unexpected pricing field in generated row: ${field}`);
+        const localizedField = translated.fields[field as keyof typeof translated.fields];
+        if (localizedField === undefined) throw new Error(`No ${locale} translation configured for pricing field: ${field}`);
+        return `${leading}${localizedField}: ${translateRateValue(locale, field, value)}${trailing}`;
+      });
+      cells[3] = rateParts.join("");
+      return cells.join("|");
     })
     .join("\n");
 
