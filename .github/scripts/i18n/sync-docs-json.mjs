@@ -3,7 +3,8 @@
  *
  * Mirrors EN tab structure and page paths for each configured language,
  * prefixing paths with the language directory (e.g. ko/installation/foo).
- * Preserves localized tab/group labels when subtrees overlap.
+ * Preserves localized tab/group labels, OpenAPI operation rows, and pages that
+ * only exist in a locale; only the EN structure is mirrored.
  * Nav label translation is opt-in (translateLabels: true); default is path-only sync.
  */
 
@@ -66,6 +67,19 @@ function isAlreadyLocalized(existingMap, enLabel) {
 export const DOCS_JSON_PATH = join(REPO_ROOT, "docs.json");
 
 /**
+ * API operation rows (for example "GET /users") are sidebar entries rendered from an
+ * OpenAPI spec, not page paths. They must never be resolved against disk or pruned
+ * when no matching file exists.
+ * @param {unknown} value
+ */
+export function isApiOperationRow(value) {
+  return (
+    typeof value === "string" &&
+    /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\s+\//.test(value)
+  );
+}
+
+/**
  * Resolve a nav page path to the on-disk path (case-correct). Returns null if missing.
  * @param {string} pagePath
  */
@@ -108,6 +122,10 @@ export function normalizeNavTree(nodes, options = {}) {
   const out = [];
   for (const node of nodes) {
     if (typeof node === "string") {
+      if (isApiOperationRow(node)) {
+        out.push(node);
+        continue;
+      }
       const resolved = resolvePagePathOnDisk(node);
       if (!resolved) {
         if (!pruneMissing) out.push(node);
@@ -160,7 +178,7 @@ export function localizeNavTree(nodes, langDir, langDirs) {
   if (!Array.isArray(nodes)) return [];
   return nodes.map((node) => {
     if (typeof node === "string") {
-      return localizePagePath(node, langDir, langDirs);
+      return isApiOperationRow(node) ? node : localizePagePath(node, langDir, langDirs);
     }
     if (node && typeof node === "object") {
       const next = { ...node };
@@ -276,7 +294,75 @@ function findOpenApiMatch(existingPages, newChild) {
   );
 }
 
-export function mergeNavPages(newPages, existingPages, langDirs) {
+/**
+ * EN-relative page path -> locale label of the group that contains it, built from the
+ * existing localized tree. Keeps localized labels when the EN tree is restructured and
+ * findGroupMatch() can no longer line the old and new nodes up.
+ * @param {unknown[]} nodes
+ * @param {string[]} langDirs
+ */
+function buildLocaleLabelIndex(nodes, langDirs) {
+  /** @type {Map<string, string>} */
+  const index = new Map();
+  /**
+   * @param {unknown[]} list
+   * @param {string | null} inherited
+   */
+  const walk = (list, inherited) => {
+    if (!Array.isArray(list)) return;
+    for (const node of list) {
+      if (typeof node === "string") {
+        if (inherited) index.set(toEnRelativePath(node, langDirs), inherited);
+        continue;
+      }
+      if (node && typeof node === "object") {
+        const sourceKey = openApiSourceKey(node.openapi);
+        if (sourceKey && node.group) {
+          index.set(`openapi:${sourceKey}`, node.group);
+        }
+        if (Array.isArray(node.pages)) {
+          walk(node.pages, node.group ?? inherited);
+        }
+      }
+    }
+  };
+  walk(nodes, null);
+  return index;
+}
+
+/**
+ * Most common locale label among the pages of an EN group. Labels already used by an
+ * ancestor group are skipped, so a new EN subgroup does not inherit the parent's label.
+ * @param {unknown[]} pages
+ * @param {Map<string, string>} labelIndex
+ * @param {string[]} langDirs
+ * @param {Set<string>} [claimed]
+ */
+function labelFromIndex(pages, labelIndex, langDirs, claimed = new Set()) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const path of collectPagePaths(pages, langDirs)) {
+    const label = labelIndex.get(toEnRelativePath(path, langDirs));
+    if (label && !claimed.has(label)) counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [label, count] of counts) {
+    if (count > bestCount) {
+      best = label;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+export function mergeNavPages(
+  newPages,
+  existingPages,
+  langDirs,
+  labelIndex = new Map(),
+  claimed = new Set()
+) {
   if (!Array.isArray(newPages)) return [];
   return newPages.map((newChild) => {
     if (typeof newChild === "string") return newChild;
@@ -292,9 +378,23 @@ export function mergeNavPages(newPages, existingPages, langDirs) {
 
     const match = findGroupMatch(existingPages, newChild, langDirs);
     const merged = { ...newChild };
-    if (match?.group) merged.group = match.group;
+    const sourceKey = openApiSourceKey(newChild.openapi);
+    const localizedLabel =
+      match?.group ??
+      (sourceKey ? labelIndex.get(`openapi:${sourceKey}`) : undefined) ??
+      labelFromIndex(newChild.pages, labelIndex, langDirs, claimed);
+    if (localizedLabel) {
+      merged.group = localizedLabel;
+      claimed.add(localizedLabel);
+    }
     if (match?.icon) merged.icon = match.icon;
-    merged.pages = mergeNavPages(newChild.pages, match?.pages ?? [], langDirs);
+    merged.pages = mergeNavPages(
+      newChild.pages,
+      match?.pages ?? [],
+      langDirs,
+      labelIndex,
+      claimed
+    );
     return merged;
   });
 }
@@ -387,17 +487,27 @@ function collectTabPagePaths(tabs, langDirs) {
  */
 export function syncTab(enTab, existingTab, lang, langDirs) {
   if (enTab.openapi != null) {
-    return {
+    /** @type {Record<string, unknown>} */
+    const synced = {
       tab: existingTab?.tab ?? enTab.tab,
       openapi: localizeOpenApi(enTab.openapi, lang.dir),
     };
+    // EN lists the operations the spec renders as sidebar entries (for example
+    // "GET /users"). Carry them over, otherwise localized API references lose
+    // their operation list.
+    if (Array.isArray(enTab.pages) && enTab.pages.length > 0) {
+      synced.pages = normalizeNavTree(enTab.pages, { pruneMissing: false });
+    }
+    return synced;
   }
 
   const localizedPages = localizeNavTree(enTab.pages ?? [], lang.dir, langDirs);
+  const labelIndex = buildLocaleLabelIndex(existingTab?.pages ?? [], langDirs);
   const mergedPages = mergeNavPages(
     localizedPages,
     existingTab?.pages ?? [],
-    langDirs
+    langDirs,
+    labelIndex
   );
   const normalizedPages = normalizeNavTree(mergedPages, {
     pruneMissing: lang.code !== "en",
@@ -415,10 +525,40 @@ export function syncTab(enTab, existingTab, lang, langDirs) {
  * @param {{ code: string, dir: string }} lang
  * @param {string[]} langDirs
  */
-export function syncLanguageEntry(enEntry, langEntry, lang, langDirs) {
+export function syncLanguageEntry(enEntry, langEntry, lang, langDirs, onLocaleOnlyPages) {
   const syncedTabs = (enEntry.tabs ?? []).map((enTab, i) =>
     syncTab(enTab, langEntry?.tabs?.[i], lang, langDirs)
   );
+
+  // Pages that exist only in this locale (their English source was removed) keep their
+  // nav row: dropping it silently makes a published translation unreachable.
+  const enPaths = new Set(
+    collectTabPagePaths(enEntry.tabs ?? [], langDirs).map((p) =>
+      toEnRelativePath(p, langDirs)
+    )
+  );
+  /** @type {string[]} */
+  const localeOnlyPages = [];
+  syncedTabs.forEach((tab, i) => {
+    const syncedPaths = new Set(
+      collectPagePaths(tab.pages ?? [], langDirs).map((p) =>
+        toEnRelativePath(p, langDirs)
+      )
+    );
+    const extra = collectPagePaths(langEntry?.tabs?.[i]?.pages ?? [], langDirs).filter(
+      (path) =>
+        !enPaths.has(toEnRelativePath(path, langDirs)) &&
+        !syncedPaths.has(toEnRelativePath(path, langDirs)) &&
+        resolvePagePathOnDisk(path)
+    );
+    if (extra.length > 0) {
+      syncedTabs[i] = { ...tab, pages: [...(tab.pages ?? []), ...extra] };
+      localeOnlyPages.push(...extra);
+    }
+  });
+  if (localeOnlyPages.length > 0 && typeof onLocaleOnlyPages === "function") {
+    onLocaleOnlyPages(localeOnlyPages);
+  }
 
   return {
     ...(langEntry ?? {}),
@@ -525,7 +665,7 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
     enEntry.tabs = normalizedEnTabs;
   }
 
-  /** @type {Array<{ lang: string, added: string[], removed: string[], translatedLabels: string[], pendingLabels?: string[] }>} */
+  /** @type {Array<{ lang: string, added: string[], removed: string[], translatedLabels: string[], localeOnlyPages?: string[], pendingLabels?: string[] }>} */
   const changes = [];
 
   for (const lang of languages) {
@@ -533,7 +673,11 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
 
     const idx = nav.languages.findIndex((l) => l.language === lang.code);
     const existing = idx >= 0 ? nav.languages[idx] : null;
-    let synced = syncLanguageEntry(enEntry, existing, lang, langDirs);
+    /** @type {string[]} */
+    const localeOnlyPages = [];
+    let synced = syncLanguageEntry(enEntry, existing, lang, langDirs, (pages) =>
+      localeOnlyPages.push(...pages)
+    );
 
     /** @type {{ entry: object, translatedLabels: string[], pendingOnly?: boolean }} */
     let labelResult;
@@ -574,6 +718,7 @@ export async function syncDocsJsonNavigation(docsJson, languages, options = {}) 
         added,
         removed,
         translatedLabels: labelResult.translatedLabels,
+        localeOnlyPages,
         pendingLabels: labelResult.pendingOnly
           ? labelResult.translatedLabels
           : labelResult.pendingLabels,
@@ -622,7 +767,7 @@ export function formatNavSyncReport(changes) {
   }
 
   const lines = ["docs.json navigation updates:"];
-  for (const { lang, added, removed, translatedLabels, pendingLabels } of changes) {
+  for (const { lang, added, removed, translatedLabels, localeOnlyPages, pendingLabels } of changes) {
     lines.push(`  [${lang}] +${added.length} / -${removed.length} page path(s)`);
     for (const path of added.slice(0, 12)) {
       lines.push(`    + ${path}`);
@@ -632,6 +777,17 @@ export function formatNavSyncReport(changes) {
       lines.push(`    - ${path}`);
     }
     if (removed.length > 8) lines.push(`    ... -${removed.length - 8} more`);
+    if (localeOnlyPages?.length) {
+      lines.push(
+        `    kept ${localeOnlyPages.length} page(s) that exist only in ${lang} (no English source):`
+      );
+      for (const path of localeOnlyPages.slice(0, 8)) {
+        lines.push(`      · ${path}`);
+      }
+      if (localeOnlyPages.length > 8) {
+        lines.push(`      ... +${localeOnlyPages.length - 8} more`);
+      }
+    }
     if (pendingLabels?.length) {
       lines.push(
         `    nav labels still English (${pendingLabels.length} total, not auto-translated):`
