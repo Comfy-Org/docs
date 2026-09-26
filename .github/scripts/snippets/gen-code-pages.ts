@@ -1293,7 +1293,7 @@ export function renderModelsIndex(pages: IndexPage[], hasProviders: boolean): st
     .map(([label, list]) => {
       const rows = [...list]
         .sort((a, b) => a.page.localeCompare(b.page))
-        .map((p) => `| [${cellText(p.title)}](/${p.page}) | \`${p.model}\` | ${modalityCell(p.input, "input")} | ${modalityCell(p.output, "output")} |`)
+        .map((p) => `| [${cellText(p.title)}](/${p.page}) | \`${p.model}\` | ${cellText(modalityCell(p.input, "input"))} | ${cellText(modalityCell(p.output, "output"))} |`)
         .join("\n");
       return `## ${label}\n\n| Model | ID | Input | Output |\n| --- | --- | --- | --- |\n${rows}`;
     })

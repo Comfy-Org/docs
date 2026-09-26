@@ -615,6 +615,11 @@ describe("renderModelsIndex: modality columns and Find by output", () => {
     expect(index).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | \u2014 | \u2014 |`);
   });
 
+  test("a modality containing a pipe is escaped so it cannot split the row", () => {
+    const piped = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old", input: ["text|image"], output: ["audio|video"] }], false);
+    expect(piped).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | Text\\|image | Audio\\|video |`);
+  });
+
   test("a video+audio model is listed under both Video and Audio", () => {
     const accordion = (title: string) => index.match(new RegExp(`<Accordion title="${title}">([\\s\\S]*?)</Accordion>`))?.[1] ?? "";
     expect(accordion("Video \\(1\\)")).toContain(`\`${H3}\``);
