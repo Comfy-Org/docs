@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   isOpaqueBody,
   loadModelSchema,
+  modalityCell,
+  modalityLine,
   modelPageRedirects,
   modelsNav,
   opaqueOutputExample,
@@ -11,8 +13,11 @@ import {
   outputSchemaFields,
   providerCoverage,
   providerRelationRows,
+  readModalities,
   readRelations,
+  renderDerivedPage,
   renderDocsJson,
+  renderModelsIndex,
   renderProvidersPage,
   servingProvidersSection,
 } from "./gen-code-pages.ts";
@@ -533,5 +538,129 @@ describe("resolving the alt-provider relationship to Providers rows", () => {
       new Map()
     );
     expect(problems).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modalities: `x-comfy-router-input-modalities` / `-output-modalities` on the
+// schema document root. Fixtures are inline for the same reason as above.
+// ---------------------------------------------------------------------------
+
+/** The minimax-h3 shape: text and image in, a video with its own soundtrack out. */
+const WITH_MODALITIES = {
+  paths: {},
+  "x-comfy-router-input-modalities": ["text", "image"],
+  "x-comfy-router-output-modalities": ["video", "audio"],
+};
+/** A document synced before the extensions existed. */
+const WITHOUT_MODALITIES = { paths: {} };
+
+const H3 = "minimax/minimax-h3";
+const H3_PAGE = "development/comfy-router/models/minimax/minimax-h3/code";
+const OLD = "minimax/minimax-old";
+const OLD_PAGE = "development/comfy-router/models/minimax/minimax-old/code";
+
+const indexPages = () => {
+  const h3 = readModalities(WITH_MODALITIES);
+  const old = readModalities(WITHOUT_MODALITIES);
+  return [
+    { model: H3, page: H3_PAGE, title: "MiniMax H3", input: h3.inputModalities, output: h3.outputModalities },
+    { model: OLD, page: OLD_PAGE, title: "MiniMax Old", input: old.inputModalities, output: old.outputModalities },
+    { model: "openai/gpt-image-2", page: "development/comfy-router/models/openai/gpt-image-2/code", title: "GPT Image 2", input: ["text", "image"], output: ["image"] },
+  ];
+};
+
+describe("readModalities", () => {
+  test("copies both lists through in the published order", () => {
+    expect(readModalities(WITH_MODALITIES)).toEqual({ inputModalities: ["text", "image"], outputModalities: ["video", "audio"] });
+  });
+
+  test("a document that predates the extensions has neither", () => {
+    expect(readModalities(WITHOUT_MODALITIES)).toEqual({ inputModalities: undefined, outputModalities: undefined });
+  });
+
+  test("a malformed or empty list is unknown, not rendered", () => {
+    const bad = readModalities({ paths: {}, "x-comfy-router-input-modalities": "text" as unknown as string[], "x-comfy-router-output-modalities": [] });
+    expect(bad).toEqual({ inputModalities: undefined, outputModalities: undefined });
+  });
+});
+
+describe("modalityCell and modalityLine", () => {
+  test("output joins secondaries onto the primary, input is a plain list", () => {
+    expect(modalityCell(["video", "audio"], "output")).toBe("Video + Audio");
+    expect(modalityCell(["text", "image"], "input")).toBe("Text, Image");
+    expect(modalityCell(["3d"], "output")).toBe("3D");
+  });
+
+  test("an unknown list renders as an em dash", () => {
+    expect(modalityCell(undefined, "input")).toBe("\u2014");
+  });
+
+  test("the page line needs both lists", () => {
+    expect(modalityLine(["text", "image"], ["video", "audio"])).toBe("**Input:** Text, Image \u00b7 **Output:** Video + Audio");
+    expect(modalityLine(["text"], undefined)).toBe("");
+    expect(modalityLine(undefined, ["video"])).toBe("");
+  });
+});
+
+describe("renderModelsIndex: modality columns and Find by output", () => {
+  const index = renderModelsIndex(indexPages(), false);
+
+  test("each provider section is a Model | ID | Input | Output table", () => {
+    expect(index).toContain("## MiniMax\n\n| Model | ID | Input | Output |\n| --- | --- | --- | --- |\n");
+    expect(index).toContain(`| [MiniMax H3](/${H3_PAGE}) | \`${H3}\` | Text, Image | Video + Audio |`);
+  });
+
+  test("a model with no published modalities shows the fallback in both cells", () => {
+    expect(index).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | \u2014 | \u2014 |`);
+  });
+
+  test("a modality containing a pipe is escaped so it cannot split the row", () => {
+    const piped = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old", input: ["text|image"], output: ["audio|video"] }], false);
+    expect(piped).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | Text\\|image | Audio\\|video |`);
+  });
+
+  test("a video+audio model is listed under both Video and Audio", () => {
+    const accordion = (title: string) => index.match(new RegExp(`<Accordion title="${title}">([\\s\\S]*?)</Accordion>`))?.[1] ?? "";
+    expect(accordion("Video \\(1\\)")).toContain(`\`${H3}\``);
+    expect(accordion("Audio \\(1\\)")).toContain(`\`${H3}\``);
+    expect(accordion("Image \\(1\\)")).toContain("`openai/gpt-image-2`");
+    expect(accordion("Image \\(1\\)")).not.toContain(`\`${H3}\``);
+  });
+
+  test("the jump list sits above the provider groups, in the fixed modality order, skipping empty ones", () => {
+    const find = index.indexOf("## Find by output");
+    expect(find).toBeGreaterThan(-1);
+    expect(find).toBeLessThan(index.indexOf("## MiniMax"));
+    const titles = [...index.matchAll(/<Accordion title="([^"]+)">/g)].map((m) => m[1]);
+    expect(titles).toEqual(["Video (1)", "Image (1)", "Audio (1)"]);
+    expect(index).not.toContain(`[MiniMax Old](/${OLD_PAGE}): `);
+  });
+
+  test("with no model publishing an output list there is no empty jump section", () => {
+    const bare = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old" }], false);
+    expect(bare).not.toContain("Find by output");
+    expect(bare).not.toContain("AccordionGroup");
+  });
+
+  test("the description names the modality columns", () => {
+    expect(index).toContain('description: "Every model available through Comfy Router, grouped by provider, with the input and output modality of each."');
+  });
+});
+
+describe("renderDerivedPage: the modality line under the intro", () => {
+  const page = (doc: typeof WITH_MODALITIES | typeof WITHOUT_MODALITIES) =>
+    renderDerivedPage(H3, { authored: false, components: {}, altProviders: [], ...readModalities(doc) });
+
+  test("follows the intro line when both lists are published", () => {
+    expect(page(WITH_MODALITIES)).toContain(
+      `API Reference for \`${H3}\`, served by Comfy Router from MiniMax.\n\n**Input:** Text, Image \u00b7 **Output:** Video + Audio\n`
+    );
+  });
+
+  test("is omitted entirely on a document that predates the extensions", () => {
+    const text = page(WITHOUT_MODALITIES);
+    expect(text).not.toContain("**Input:**");
+    expect(text).not.toContain("**Output:**");
   });
 });

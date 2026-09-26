@@ -548,6 +548,8 @@ type SchemaDoc = {
   "x-comfy-router-alt-providers"?: unknown;
   "x-comfy-router-alias-of"?: unknown;
   "x-comfy-router-alias-provider"?: unknown;
+  "x-comfy-router-input-modalities"?: string[];
+  "x-comfy-router-output-modalities"?: string[];
 };
 
 /** One alternate serving provider for a native model, from `x-comfy-router-alt-providers`. */
@@ -576,6 +578,10 @@ type ModelSchema = {
   /** Media type the 200 response is keyed under; unset only when the 200 publishes no content. */
   outputMediaType?: string;
   components: Record<string, any>;
+  /** From `x-comfy-router-input-modalities`; unset on a document that predates it. */
+  inputModalities?: string[];
+  /** From `x-comfy-router-output-modalities`, primary modality first; unset on a document that predates it. */
+  outputModalities?: string[];
   // Partial so a caller that only needs the output half (the schema-rendering
   // tests) can still build one; `loadModelSchema` always fills both in.
 } & Partial<ModelRelations>;
@@ -665,8 +671,53 @@ export function loadModelSchema(model: string): ModelSchema | null {
     outputExample: res?.example ?? res?.schema?.example,
     outputMediaType: res?.mediaType,
     components: doc.components?.schemas ?? {},
+    ...readModalities(doc),
     ...readRelations(model, doc),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Modalities
+//
+// Router publishes what a model takes and what it returns as two root
+// extensions on its schema document. The output list is ordered: the first
+// entry is the primary artifact (a video model that also returns a soundtrack
+// is `["video", "audio"]`). A document from before the extensions existed
+// carries neither, and every consumer below renders that as unknown rather
+// than guessing.
+// ---------------------------------------------------------------------------
+
+const MODALITY_LABEL: Record<string, string> = { text: "Text", image: "Image", video: "Video", audio: "Audio", "3d": "3D" };
+
+/** The order the "Find by output" list walks, most-browsed first. */
+const OUTPUT_ORDER = ["video", "image", "audio", "3d", "text"];
+
+const modalityLabel = (m: string) => MODALITY_LABEL[m] ?? m.charAt(0).toUpperCase() + m.slice(1);
+
+/** A modality list as published, or undefined when it is absent or not a list of strings. */
+const modalityList = (v: unknown): string[] | undefined =>
+  Array.isArray(v) && v.length > 0 && v.every((m) => typeof m === "string" && m !== "") ? (v as string[]) : undefined;
+
+export function readModalities(doc: SchemaDoc): { inputModalities?: string[]; outputModalities?: string[] } {
+  return {
+    inputModalities: modalityList(doc["x-comfy-router-input-modalities"]),
+    outputModalities: modalityList(doc["x-comfy-router-output-modalities"]),
+  };
+}
+
+/**
+ * One modality list as a table cell: input as `Text, Image`, output as
+ * `Video + Audio` (the primary first, secondaries joined on). Unknown is `—`.
+ */
+export function modalityCell(list: string[] | undefined, kind: "input" | "output"): string {
+  if (!list) return "\u2014";
+  return list.map(modalityLabel).join(kind === "output" ? " + " : ", ");
+}
+
+/** The `**Input:** … · **Output:** …` line under a page's intro, or `""` unless both lists are known. */
+export function modalityLine(input: string[] | undefined, output: string[] | undefined): string {
+  if (!input || !output) return "";
+  return `**Input:** ${modalityCell(input, "input")} \u00b7 **Output:** ${modalityCell(output, "output")}`;
 }
 
 function deref(schema: any, components: Record<string, any>, depth = 0): any {
@@ -992,6 +1043,14 @@ function renderPage(spec: Spec, dir: string): string {
   // publishes. A spec with no aliased model renders no section at all.
   const serving = servingProvidersSection(spec.variants.map((v) => ({ model: v.model, legs: loadModelSchema(v.model)?.altProviders ?? [] })));
   const after = serving ? `\n\n${serving}` : "";
+  // One modality line for the page, and only when every model on it publishes the
+  // same pair: a multi-model page whose variants differ says nothing rather than
+  // describing the first variant as if it were all of them.
+  const lines = spec.variants.map((v) => {
+    const s = loadModelSchema(v.model);
+    return modalityLine(s?.inputModalities, s?.outputModalities);
+  });
+  const modalities = lines.every((l) => l === lines[0]) ? lines[0] : "";
   let body: string;
   if (!both) {
     body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}${after}\n\n${sections(spec.variants[0], spec, false)}`;
@@ -1014,7 +1073,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
-${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
 ${body}
 
 <RouterCodeFooter />
@@ -1114,7 +1173,7 @@ function responseExampleForModel(model: string, example: unknown): unknown {
   return sample;
 }
 
-function renderDerivedPage(model: string, s: ModelSchema): string {
+export function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const requestExample = bodyExample(s.inputExample);
   const clients = requestExample
@@ -1149,6 +1208,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const requestSetup = requestExample ? derivedSnippets(model, requestExample) : `<Note>\n${noExample}\n</Note>`;
   const serving = servingProvidersSection([{ model, legs: s.altProviders ?? [] }]);
   const title = modelTitle(model);
+  const modalities = modalityLine(s.inputModalities, s.outputModalities);
   return `---
 title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
 description: ${JSON.stringify(`Call ${model} through Comfy Router: endpoint, request shape and the response Router returns.`)}
@@ -1160,7 +1220,7 @@ sidebarTitle: ${JSON.stringify(title)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
-${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
 ## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}
@@ -1193,8 +1253,35 @@ ${output}${examples}
 // page lists every model page, grouped by provider like the sidebar.
 // ---------------------------------------------------------------------------
 
-function renderModelsIndex(pages: { model: string; page: string; title: string }[], hasProviders: boolean): string {
-  const byProvider = new Map<string, { model: string; page: string; title: string }[]>();
+/** One row of the catalog index: a model page and the modalities its document publishes. */
+export type IndexPage = { model: string; page: string; title: string; input?: string[]; output?: string[] };
+
+/** A table cell holds one line of inline markdown, so a literal `|` must not end it early. */
+const cellText = (v: string) => v.replace(/\|/g, "\\|");
+
+/**
+ * The `## Find by output` jump list: one accordion per output modality, in
+ * {@link OUTPUT_ORDER}, listing every model whose output includes it. A model
+ * returning `["video", "audio"]` is under both. Empty when no model publishes an
+ * output list yet, so a catalog synced before the extension renders no section.
+ */
+function findByOutput(pages: IndexPage[]): string {
+  const sorted = [...pages].sort((a, b) => a.page.localeCompare(b.page));
+  const known = new Set(pages.flatMap((p) => p.output ?? []));
+  const order = [...OUTPUT_ORDER, ...[...known].filter((m) => !OUTPUT_ORDER.includes(m)).sort()];
+  const groups = order
+    .map((modality) => ({ modality, list: sorted.filter((p) => p.output?.includes(modality)) }))
+    .filter((g) => g.list.length > 0)
+    .map(
+      ({ modality, list }) =>
+        `  <Accordion title="${attr(modalityLabel(modality))} (${list.length})">\n\n${list.map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``).join("\n")}\n\n  </Accordion>`
+    );
+  if (!groups.length) return "";
+  return `## Find by output\n\n<AccordionGroup>\n${groups.join("\n")}\n</AccordionGroup>`;
+}
+
+export function renderModelsIndex(pages: IndexPage[], hasProviders: boolean): string {
+  const byProvider = new Map<string, IndexPage[]>();
   for (const p of pages) {
     const label = providerLabel(providerOf(p.model));
     const list = byProvider.get(label) ?? [];
@@ -1206,22 +1293,23 @@ function renderModelsIndex(pages: { model: string; page: string; title: string }
     .map(([label, list]) => {
       const rows = [...list]
         .sort((a, b) => a.page.localeCompare(b.page))
-        .map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``)
+        .map((p) => `| [${cellText(p.title)}](/${p.page}) | \`${p.model}\` | ${cellText(modalityCell(p.input, "input"))} | ${cellText(modalityCell(p.output, "output"))} |`)
         .join("\n");
-      return `## ${label}\n\n${rows}`;
+      return `## ${label}\n\n| Model | ID | Input | Output |\n| --- | --- | --- | --- |\n${rows}`;
     })
     .join("\n\n");
+  const jump = findByOutput(pages);
   return `---
 title: "Comfy Router models"
 sidebarTitle: "All models"
-description: "Every model available through Comfy Router, grouped by provider."
+description: "Every model available through Comfy Router, grouped by provider, with the input and output modality of each."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
 Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
 ${hasProviders ? `\nSome of these models can also be served by an aggregator on the same route and the same model ID. [Serving providers](${PROVIDERS_URL}) lists which provider covers which model, and how to select one.\n` : ""}
-${sections}
+${jump ? `${jump}\n\n` : ""}${sections}
 `;
 }
 
@@ -1504,7 +1592,7 @@ if (import.meta.main) {
   const doValidate = process.argv.includes("--validate");
   const prune = process.argv.includes("--prune");
 
-  type Page = { model: string; page: string; title: string; text: string; out: string };
+  type Page = IndexPage & { text: string; out: string };
 
   const pages: Page[] = [];
   const covered = new Set<string>();
@@ -1548,7 +1636,18 @@ if (import.meta.main) {
       covered.add(v.model);
       pageByModel.set(v.model, { page: `${dir}/code`, title: v.title ?? spec.name });
     }
-    pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
+    // The index row is the page's first model, so its modalities are that model's.
+    // renderPage above already loaded this document, so it cannot throw here.
+    const first = loadModelSchema(spec.variants[0].model);
+    pages.push({
+      model: spec.variants[0].model,
+      page: `${dir}/code`,
+      title: spec.name,
+      input: first?.inputModalities,
+      output: first?.outputModalities,
+      text,
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
   if (specCount === 0) {
     console.error(`no specs matched ${SPEC_GLOB}`);
@@ -1602,7 +1701,15 @@ if (import.meta.main) {
     }
     claimed.set(`${dir}/code`, rel);
     pageByModel.set(model, { page: `${dir}/code`, title: modelTitle(model) });
-    pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
+    pages.push({
+      model,
+      page: `${dir}/code`,
+      title: modelTitle(model),
+      input: schema.inputModalities,
+      output: schema.outputModalities,
+      text: renderDerivedPage(model, schema),
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
 
   // ---- alias documents, now that every native page is known
@@ -1626,7 +1733,15 @@ if (import.meta.main) {
     console.warn(`${a.rel}: alias of \`${a.aliasOf}\`, which has no page here; keeping its own page until that model is documented`);
     claimed.set(`${dir}/code`, a.rel);
     pageByModel.set(a.model, { page: `${dir}/code`, title: modelTitle(a.model) });
-    pages.push({ model: a.model, page: `${dir}/code`, title: modelTitle(a.model), text: renderDerivedPage(a.model, a.schema), out: join(ROOT, dir, "code.mdx") });
+    pages.push({
+      model: a.model,
+      page: `${dir}/code`,
+      title: modelTitle(a.model),
+      input: a.schema.inputModalities,
+      output: a.schema.outputModalities,
+      text: renderDerivedPage(a.model, a.schema),
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
 
   // ---- the alt-provider relationship, resolved to pages
@@ -1657,6 +1772,16 @@ if (import.meta.main) {
   }
 
   // ---- catalog landing page
+  //
+  // A model with no published modality renders `—` in the index. That is a
+  // warning, not a failure: the sync that first carries the extensions can land
+  // after this generator does, and a document may predate them.
+  if (check) {
+    const unknown = pages.filter((p) => !p.input || !p.output).map((p) => p.model);
+    if (unknown.length) {
+      console.warn(`warning: ${unknown.length} model(s) publish no x-comfy-router-input/output-modalities, shown as \u2014 in ${MODELS_DIR}.mdx:\n  ${unknown.join("\n  ")}`);
+    }
+  }
   const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
   const indexText = renderModelsIndex(pages, providersText !== null);
   if (check) {
