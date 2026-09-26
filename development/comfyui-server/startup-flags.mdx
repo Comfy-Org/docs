@@ -47,6 +47,7 @@ python main.py --port 8443 --tls-keyfile key.pem --tls-certfile cert.pem
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--base-directory` `PATH` | ComfyUI root | Base directory for models, custom_nodes, input, output, temp, and user directories. |
+| `--models-directory` `PATH` | ComfyUI root/models | Models directory. Overrides the models folder in `--base-directory`. |
 | `--extra-model-paths-config` `PATH` | — | Load one or more `extra_model_paths.yaml` files. Can be specified multiple times. |
 | `--output-directory` `PATH` | — | Output directory. Overrides `--base-directory`. |
 | `--temp-directory` `PATH` | — | Temp directory. Overrides `--base-directory`. |
@@ -144,6 +145,7 @@ See the [UNET precision](#unet-precision) section for the explanation of each FP
 | `--force-channels-last` | disabled | Force channels-last memory format during inference. |
 | `--supports-fp8-compute` | disabled | Act as if the device supports fp8 compute. |
 | `--enable-triton-backend` | disabled | Enable Triton backend in comfy-kitchen. Disabled by default at launch. |
+| `--disable-triton-backend` | disabled | Force-disable the comfy-kitchen Triton backend, overriding `--enable-triton-backend`. |
 
 ## Preview
 
@@ -155,15 +157,20 @@ See the [UNET precision](#unet-precision) section for the explanation of each FP
 ## Cache
 
 <Note>
-  Cache mode flags are mutually exclusive. Only one of `--cache-ram`, `--cache-classic`, `--cache-lru`, or `--cache-none` should be used.
+  Cache mode flags are mutually exclusive. Only one of `--cache-ram`, `--cache-classic`, `--high-ram`, `--cache-lru`, or `--cache-none` should be used.
 </Note>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--cache-ram` `[GB] [GB]` | enabled (default mode) | RAM pressure caching. First value: active-cache threshold in GB. Optional second value: inactive-cache/pin threshold in GB. When no values given: active = 10% of system RAM (min 2 GB, max 10 GB); inactive = 100% of system RAM (max 96 GB). Accepts at most two values. |
+| `--cache-ram` `[GB] [GB]` | enabled (default mode) | RAM pressure caching. First value: active-cache threshold in GB. Optional second value: inactive-cache/pin threshold in GB. When no values given: active = 10% of system RAM (min 2 GB, max 10 GB); inactive = 100% of system RAM (max 128 GB). Accepts at most two values. |
 | `--cache-classic` | — | Use the old aggressive caching style. |
+| `--high-ram` | disabled | Can improve performance slightly on systems with plenty of RAM or where pagefile use is preferred over reloading models. Also enables classic caching. |
 | `--cache-lru` `N` | `0` (disabled) | LRU caching with a maximum of N node results cached. No hard upper limit; bounded by available RAM/VRAM. May use more RAM/VRAM. |
 | `--cache-none` | — | Reduced RAM/VRAM usage; re-executes every node on each run. |
+
+<Note>
+  ComfyUI reuses cached node results between runs in the same session, which is what makes repeat runs faster. Use `--cache-none` when you would rather every run start from a clean cache, for example while debugging a workflow or ruling out cached reuse between runs. Every node re-executes, so generations take longer. It is a startup flag, so restart ComfyUI for it to take effect.
+</Note>
 
 ## Attention
 
@@ -178,6 +185,7 @@ See the [UNET precision](#unet-precision) section for the explanation of each FP
 | `--use-pytorch-cross-attention` | Use PyTorch 2.0 cross attention. |
 | `--use-sage-attention` | Use Sage attention. |
 | `--use-flash-attention` | Use FlashAttention. |
+| `--use-ck-attention` | Use Comfy Kitchen attention. Requires hardware support for its INT8 kernels. |
 | `--disable-xformers` | Disable xformers. |
 | `--force-upcast-attention` | Force attention upcasting. Report if this fixes black images. Mutually exclusive with `--dont-upcast-attention`. |
 | `--dont-upcast-attention` | Disable all attention upcasting. For debugging only. |
@@ -196,11 +204,17 @@ See the [UNET precision](#unet-precision) section for the explanation of each FP
 | `--novram` | — | Minimal VRAM usage when `--lowvram` is not enough. |
 | `--cpu` | — | Use CPU for everything (slow). |
 | `--reserve-vram` `GB` | OS-dependent | VRAM in GB to reserve for the OS and other software. |
+| `--vram-headroom` `GB` | `0` | Extra VRAM in GB for dynamic VRAM to keep free above the default headroom. ComfyUI tries to keep this much VRAM completely free and unused, even counting VRAM used by other apps. |
+| `--disable-nvml-pressure` | disabled | Use CUDA instead of NVML to report dynamic VRAM memory pressure. |
 | `--async-offload` `[NUM_STREAMS]` | enabled on Nvidia | Async weight offloading. Optional stream count (default: 2). |
 | `--disable-async-offload` | — | Disable async weight offloading. |
 | `--disable-dynamic-vram` | — | Disable dynamic VRAM; use estimate-based model loading. |
 | `--enable-dynamic-vram` | auto on Nvidia, ROCm 7.14+ | Enable dynamic VRAM on systems where it is not enabled by default. |
 | `--fast-disk` | disabled | Prefer disk-backed dynamic loading over unpinned RAM. Useful with fast NVMe. |
+| `--disable-fast-disk` | disabled | Disable disk-backed dynamic loading and offload, so unpinned RAM is used instead. Overrides `--fast-disk`. |
+| `--disable-cuda-graphs` | disabled | Disable CUDA graphs. |
+| `--disable-comfy-compiler` | disabled | Disable the Comfy model compiler, including its CUDA graph subfeature. |
+| `--assert-graph-breaks` | disabled | Fail on Comfy model compiler graph breaks. |
 | `--force-non-blocking` | disabled | Force non-blocking tensor operations. May help on non-Nvidia systems; can break some workflows. |
 | `--disable-smart-memory` | disabled | Aggressively offload to RAM instead of keeping models in VRAM. |
 | `--disable-pinned-memory` | disabled | Disable pinned memory use. |
@@ -214,6 +228,7 @@ See the [UNET precision](#unet-precision) section for the explanation of each FP
 | `--fast` `[OPT...]` | disabled | Enable experimental optimizations that may affect quality or stability. `--fast` alone enables all. Specific options: `fp16_accumulation`, `fp8_matrix_mult`, `cublas_ops`, `autotune`. |
 | `--deterministic` | disabled | Use slower deterministic PyTorch algorithms where possible. Does not guarantee identical images in all cases. |
 | `--default-hashing-function` | `sha256` | Hash function for duplicate filename/content comparison. Choices: `md5`, `sha1`, `sha256`, `sha512`. |
+| `--debug-hang` | disabled | Enable stack trace dumps on Ctrl-C for debugging hangs. |
 
 ```bash
 # Enable all fast optimizations (experimental)
@@ -231,7 +246,7 @@ See [ComfyUI-Manager Installation](/manager/install) for setup instructions.
 |------|-------------|
 | `--enable-manager` | Enable ComfyUI-Manager. |
 | `--disable-manager-ui` | Disable Manager UI and endpoints only. Background tasks (scheduled installs, etc.) continue. Requires `--enable-manager`. |
-| `--enable-manager-legacy-ui` | Use the legacy Manager UI. Requires `--enable-manager`. |
+| `--enable-manager-legacy-ui` | Use the legacy Manager UI. Implies `--enable-manager`. Mutually exclusive with `--disable-manager-ui`. |
 
 ## Custom Nodes & API Nodes
 
@@ -242,6 +257,10 @@ See [ComfyUI-Manager Installation](/manager/install) for setup instructions.
 | `--disable-api-nodes` | disabled | Disable API nodes and prevent the frontend from communicating with the internet. |
 | `--disable-metadata` | disabled | Disable saving prompt metadata in output files. |
 
+<Note>
+  `--disable-api-nodes` also changes what the browser is allowed to load. The flag adds a Content-Security-Policy that keeps the page on resources served by ComfyUI itself, so images, fonts, media, frames, and network requests from other origins are blocked, and API nodes (Partner Nodes) are not registered at all. If a preview or a thumbnail that normally loads goes missing after a restart, check the launch arguments for this flag before troubleshooting the node.
+</Note>
+
 ```bash
 # Troubleshoot custom node issues
 python main.py --disable-all-custom-nodes
@@ -249,6 +268,7 @@ python main.py --disable-all-custom-nodes
 # Allow only specific custom nodes
 python main.py --disable-all-custom-nodes --whitelist-custom-nodes ComfyUI-Manager
 ```
+
 
 ## Frontend & API
 
@@ -259,6 +279,7 @@ python main.py --disable-all-custom-nodes --whitelist-custom-nodes ComfyUI-Manag
 | `--comfy-api-base` | `https://api.comfy.org` | Base URL for the ComfyUI API. |
 | `--database-url` | `sqlite:///<ComfyUI>/user/comfyui.db` | Database URL. Use `sqlite:///:memory:` for in-memory. |
 | `--enable-assets` | disabled | Enable the assets system (API routes, database sync, background scanning). |
+| `--enable-asset-hashing` | disabled | Compute blake3 content hashes when scanning assets. Enables future asset portability features such as deduplication and cross-machine model resolution, at the cost of startup time and per-output hashing on large model directories. Off by default. |
 | `--feature-flag` `KEY[=VALUE]` | — | Set a server feature flag. Bare `KEY` sets true. Can be repeated. Booleans and numbers are auto-converted. |
 | `--list-feature-flags` | — | Print known CLI-settable feature flags as JSON and exit. |
 
@@ -274,7 +295,7 @@ python main.py --feature-flag show_signin_button=true
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--verbose` `[LEVEL]` | `INFO` | Logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. `--verbose` alone sets `DEBUG`. |
+| `--verbose` `[LEVEL] [FILE]` | `INFO` | Logging level. Choices: `DEBUG`, `DETAIL`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. `--verbose` alone sets `DEBUG`. Add a level followed by a file path to write that level to a file as well; the flag can be repeated to configure the console and file outputs together. |
 | `--log-stdout` | disabled | Send normal process output to stdout instead of stderr. |
 | `--dont-print-server` | disabled | Do not print server output to the console. |
 | `--multi-user` | disabled | Enable per-user storage. |

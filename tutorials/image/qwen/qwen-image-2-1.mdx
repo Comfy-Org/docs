@@ -13,7 +13,7 @@ import UpdateReminder from '/snippets/tutorials/update-reminder.mdx'
 - **Native 2K output**: generate at up to 2048x2048 directly instead of upscaling a smaller result
 - **Professional typography**: dense small text and complex layouts hold up, for infographics, slides, UI mockups, posters, and packaging designs
 - **Alpha channel support**: the VAE carries four channels, so transparent-background images can be generated and edited directly instead of being cut out afterwards
-- **Multi-image editing**: reference images are spliced into the text encoder in slot order. The node exposes `image_1` through `image_16` slots, and the prompt addresses them by index, for example `image_1` is written as `<image1>`
+- **Multi-image editing**: reference images are spliced into the text encoder in slot order. The Text Encode Qwen Image 2.1 node accepts up to 16 slots (`image_1` to `image_16`); the two edit templates on this page wire the first 10 (`image_1` to `image_10`). `image_1` is the image being edited and the rest supply content, so the prompt addresses them by index, for example `image_1` is written as `<image1>`
 - **Localized edits**: describe the object or region to change and the rest of the image is preserved
 
 **Related Links**:
@@ -141,11 +141,22 @@ The three workflows load the same files. All of them use the int8 versions of th
 
 All three workflows sample with `steps` 25, `cfg` 1, the `euler` sampler, and the `simple` scheduler.
 
+At `cfg` 1 ComfyUI skips the negative conditioning pass, so a negative prompt has no effect on these workflows. The template keeps `cfg` 1, which is the path Qwen-Image-2.1 is published for; raise it only when you want the negative prompt to take effect. `cfg` 2 follows dense prompts more closely, including small text and numbers, at the cost of over-sharpened edges. Higher values shift exposure toward over-bright or over-dim, `cfg` 5 degrades quality badly, and `cfg` 0.5 breaks the image. Change one value at a time, and compare at a fixed seed.
+
+`steps` is the second lever. The published pipeline for Qwen-Image-2.1 uses about 40 to 50 steps with the `euler` sampler, and the template starts lower at 25. Simple localized edits hold up at 4 to 8 steps, so a request such as changing one garment's color runs several times faster than at the default, while edits that rewrite the whole frame lose coherence and need the full 25. Stubborn fine detail such as hands and fingers settles by about 30 steps, and going from 25 to 40 steps reduces fizzle in detailed areas. Adjust `steps` only when something specific fails to resolve.
+
 ### Resolution
 
 **Text to image**: the **Resolution Selector** node sets the aspect ratio and a megapixel target, where 1.0 MP is about 1024x1024. Qwen-Image-2.1 generates natively at 2K, so set the target to about 4.0 MP for a 2048x2048 square output.
 
-**Image edit**: the output follows the first reference image's aspect ratio, scaled to about `resolution` x `resolution` pixels (default 1024). Set `resolution` to 0 to keep each reference image at its own size. Turn on `custom_size` to use the **Resolution Selector** canvas instead, and keep it close to the resized reference size, otherwise the edit can shift.
+**Image edit**: the canvas comes from the `resolution` control on the Image Edit subgraph node (range `0` to `4096`, step `32`). The node's own default is `1024`, and the template ships `0`. With `custom_size` off, which is the template default, the edit is generated at the size of the first reference image, `image_1`:
+
+- `resolution` `0` keeps each reference at its own pixel size, rounded to a multiple of 32, so a 3000x4000 photo gives a 3008x4000 canvas
+- `resolution` above `0` scales `image_1`'s aspect ratio to a `resolution` x `resolution` pixel budget, which is a total pixel count rather than a width or height, rounded to multiples of 32, so `resolution` `1024` on the same photo gives about 896x1184
+
+Turn on `custom_size` to take the canvas from the **Resolution Selector** instead, and keep it close to the resized `image_1` size, otherwise the edit can shift.
+
+The canvas size is what drives the cost: a 3000x4000 reference with `resolution` 0 samples at 3008x4000 (about 12 MP), while the same edit at `resolution` 1024 samples at about 896x1184 (about 1 MP). On an RTX 5090 that is roughly 6 s/it against about 0.3 s/it. Lowering `resolution` speeds an edit up by generating a smaller result, not by adding detail. If an edit feels slow, check `resolution` and the pixel size of the reference images before changing anything else. Several large references slow the edit further, and the KV cache settings below affect that cost. Targets well above the model's 2K trained size, such as 4K, lose prompt adherence.
 
 ### Prompting for image edit
 
@@ -155,6 +166,15 @@ Reference images are spliced into the text encoder in slot order, and the prompt
 Keep the character and pose in <image1> unchanged, put this light blue denim shirt from <image2> on the character, preserve the original facial features, hair, body shape and pose
 ```
 
+To point an edit at one region, mark that region on the image first. Open the Mask Editor on the `LoadImage` node that supplies `image_1` (node 470: right-click the node, then **Open in Mask Editor**), paint over the region with the **Paint Pen**, and save. Paint Pen strokes go on the image's RGB layer rather than into the mask, so saving writes the marked image back into the node and the marks become part of the reference the edit reads. Naming the mark's color in the prompt points the instruction at that region, for example "change the jacket in the red area". Keep the mark inside the region you want changed, and state the color you want in the prompt as well when the mark's color appears in the output.
+
 ### KV cache
 
 The edit workflows include the **Qwen Image 2.1 Cache** node, which keeps the cached text and reference prefix in memory between sampling steps. The template defaults work for most setups.
+
+The node is experimental, and it exposes two controls:
+
+| Control | Values | Effect |
+| --- | --- | --- |
+| `device` | `auto` (default), `gpu`, `cpu`, `off` | `auto` uses spare VRAM, then RAM. `cpu` is prefetched behind compute and costs little speed. `off` recomputes the prefix every step, which is slower but rules the cache out when debugging |
+| `dtype` | `default` (default), `int8`, `int4` | Storage precision. `default` is lossless. `int8` halves the cache at about bf16 accuracy, and `int4` quarters it but roughly doubles the per-step error |
