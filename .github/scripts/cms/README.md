@@ -17,7 +17,8 @@ Push **draft** release notes to Strapi CMS. Content is **simplified for end user
 
 - Do **not** use `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
 - Get user approval on **staging EN** before `cms:prepare:locales`; on **all staging** before `cms:sync`.
-- Sync and publish **comfyui only** by default (`--project comfyui`). Use `--project cloud` only after explicit user confirmation.
+- Sync and publish **comfyui only** by default (`--project comfyui`).
+- **Cloud hard gate:** every time someone asks to push/sync/publish to CMS, **ask again** whether Cloud should go out. Run `--project cloud` only after they manually confirm Cloud staging (links + copy) in that request. Pasted Cloud URLs or “push to CMS” alone are not Cloud approval. The gate covers **preview, sync, and publish**. See skill `cms-changelog-sync` → **Hard gate: Cloud push / publish**.
 - Strapi publish is **manual by default** — run `pnpm cms:publish` after review (not automatic on sync).
 - Do commit `.github/scripts/cms/staging/` and `published-versions.json` after Strapi publish.
 
@@ -82,14 +83,15 @@ Persists to `attention-overrides.json` (used on sync). Or edit that file manuall
 ## Commands
 
 ```bash
-pnpm cms:prepare:en -- --force v0.25.0      # Step 1: simplify EN
-pnpm cms:prepare:locales -- v0.25.1         # Step 2: translate (after EN approved)
-pnpm cms:preview -- v0.25.1                 # Step 3: dry-run sync
-pnpm cms:sync -- v0.25.1                    # Step 3: push drafts (after staging approved)
-pnpm cms:publish -- v0.25.1                 # publish + refresh published-versions.json
+pnpm cms:prepare:en -- --force v0.25.0                 # Step 1: simplify EN
+pnpm cms:prepare:locales -- v0.25.1                    # Step 2: translate (after EN approved)
+pnpm cms:preview -- --project comfyui v0.25.1          # Step 3: dry-run sync (comfyui only)
+pnpm cms:sync -- --project comfyui v0.25.1             # Step 3: push drafts (after staging approved)
+pnpm cms:publish -- --project comfyui v0.25.1          # publish + refresh published-versions.json
+# Cloud: pnpm cms:preview|sync|publish -- --project cloud …  only after Hard gate confirmation
 ```
 
-Default: **comfyui + cloud** on prepare. **Sync/publish default for agents: comfyui only** — add `--project cloud` only when the user confirms.
+Default: **comfyui + cloud** on prepare. **Sync/publish/preview default for agents: comfyui only** — add `--project cloud` only when the user **explicitly confirms Cloud** after the agent asks (hard gate; every CMS push/publish request; includes preview).
 
 Local default (no args): **all unpublished EN versions** (from `published-versions.json`). Full backfill: `CMS_SYNC_ALL=1`.
 
@@ -129,9 +131,10 @@ See [`.env.local.example`](../../../.env.local.example) (`TRANSLATE_*` for prepa
 After reviewing drafts in Strapi (or trusting staging content):
 
 ```bash
-pnpm cms:publish --preview -- v0.25.1   # dry-run
-pnpm cms:publish -- v0.25.1             # publish + auto-refresh published-versions.json
-pnpm cms:publish -- v0.25.1 --no-registry   # publish only, skip JSON
+pnpm cms:publish --preview -- --project comfyui v0.25.1   # dry-run
+pnpm cms:publish -- --project comfyui v0.25.1             # publish + auto-refresh published-versions.json
+pnpm cms:publish -- --project comfyui v0.25.1 --no-registry   # publish only, skip JSON
+# Cloud publish: only after Hard gate confirmation, with --project cloud
 ```
 
 - Publishes every locale that has a **draft** (en first, then zh/ja/ko/fr/ru/es)

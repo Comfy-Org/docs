@@ -1,18 +1,18 @@
 ---
 title: "Comfy Router quickstart"
 sidebarTitle: "Quickstart"
-description: "From a first request to a generated result in Python, TypeScript and Swift with the Comfy Router."
+description: "Generate images and videos using the latest frontier media models in minutes."
 ---
 
 <div className="router-quickstart-marker" />
 
-Comfy Router lets you call partner models through `https://api.comfy.org` with one Comfy API key. Send the model's input to `POST /v2/models/{provider}/{model}` and wait for the finished result. This example runs `byteplus/dreamina-seedance-2-5-260628`, a video model.
+Comfy Router gives you one API for hosted image and video models at `https://api.comfy.org`. Create an API key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router), then call any model with the official [Python and TypeScript SDKs](/development/api-development/sdks) or over plain HTTP. Billing is pay per use: each request draws credits from your workspace balance, with no subscription.
 
-These examples use Comfy as the default provider. To use an alternate provider, add `model_provider` to the SDK call or `?model_provider=<provider>` to the URL. The [provider coverage matrix](/development/comfy-router/providers) lists the available model and provider combinations.
+<Note>
+  **Using Higgsfield?** Save your own Higgsfield key and those generations bill to your Higgsfield account instead of your Comfy credits — same endpoint, same request body. See [Higgsfield with your own key](/development/comfy-router/higgsfield-byok).
+</Note>
 
-Start with `byteplus/dreamina-seedance-2-5-260628` below, or [choose another model](/development/comfy-router/models) first.
-
-<Steps>
+<Steps titleSize="h2">
   <Step title="Create an API key">
     Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router). In a Bash-compatible terminal, set:
 
@@ -25,59 +25,66 @@ Start with `byteplus/dreamina-seedance-2-5-260628` below, or [choose another mod
     Router charges credits per request. If your workspace has no credit balance, the first live call returns `402` with `error_type: insufficient_credits`. This check runs before body validation, so an unfunded workspace can return `402` even for an invalid request. Add credits at [workspace billing](https://platform.comfy.org) before debugging the request body.
   </Step>
 
-  <Step title="Save a key for this request">
-    Generate this value once for this request. If you retry the same request, reuse it.
-
-    ```bash
-    export COMFY_REQUEST_KEY="$(uuidgen)"
-    ```
-
-    If `uuidgen` is unavailable, use another UUID generator. Use a new key when you start a new generation.
-  </Step>
-
-  <Step title="Run the model">
+  <Step title="Queue a request">
     Choose your language and run the example. Generation can take a few minutes.
 
     <CodeGroup>
-
-    ```bash cURL
-    curl --max-time 660 \
-      https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628 \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Idempotency-Key: $COMFY_REQUEST_KEY" \
-      -H "Content-Type: application/json" \
-      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
-    ```
 
     ```python Python
     # Python 3.10+
     # Install: python -m pip install "comfy-sdk>=0.3.0"
     # Save as quickstart.py, then run: python quickstart.py
 
-    import os
+    import asyncio
 
-    from comfy_sdk import Comfy
+    from comfy_sdk import AsyncComfy
 
-    # Comfy reads COMFY_API_KEY from the environment.
-    with Comfy() as client:
-        result = client.models.run(
-            "byteplus/dreamina-seedance-2-5-260628",
-            {
-                "content": [
-                    {
-                        "text": "A red fox trotting through a snowy pine forest",
-                        "type": "text",
-                    },
-                ],
-                "duration": 5,
-                "ratio": "16:9",
-                "resolution": "720p",
-            },
-            idempotency_key=os.environ["COMFY_REQUEST_KEY"],
-            timeout=660.0,
-        )
+    # AsyncComfy reads COMFY_API_KEY from the environment.
+    async def main():
+        async with AsyncComfy() as client:
+            handle = await client.models.submit(
+                "byteplus/dreamina-seedance-2-5-260628",
+                {
+                    "content": [
+                        {
+                            "text": "A red fox trotting through a snowy pine forest",
+                            "type": "text",
+                        },
+                    ],
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                },
+            )
+            print("request_id:", handle.request_id)
 
-    print("result:", result)
+            # Poll until the request completes, waiting the Retry-After the server names.
+            async for update in handle.iter_events():
+                print(update.status, update.queue_position)
+
+            result = await handle.get()
+
+        print("result:", result)
+
+    asyncio.run(main())
+    ```
+
+    ```bash cURL
+    # 1. Submit the request. Save the request_id from the 201 response.
+    curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+
+    # 2. Poll until the status is COMPLETED, waiting the Retry-After value each time.
+    REQUEST_ID="paste-request-id-from-201-response"
+    curl -i "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID/status" \
+      -H "X-API-Key: $COMFY_API_KEY"
+
+    # 3. Collect the model result.
+    curl "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID" \
+      -H "X-API-Key: $COMFY_API_KEY"
     ```
 
     ```typescript TypeScript
@@ -88,10 +95,7 @@ Start with `byteplus/dreamina-seedance-2-5-260628` below, or [choose another mod
     import { comfy } from "@comfyorg/sdk";
 
     // Comfy reads COMFY_API_KEY from the environment.
-    const idempotencyKey = process.env.COMFY_REQUEST_KEY;
-    if (!idempotencyKey) throw new Error("Set COMFY_REQUEST_KEY first.");
-
-    const result = await comfy.models.run(
+    const handle = await comfy.models.submit(
       "byteplus/dreamina-seedance-2-5-260628",
       {
         content: [
@@ -104,67 +108,23 @@ Start with `byteplus/dreamina-seedance-2-5-260628` below, or [choose another mod
         ratio: "16:9",
         resolution: "720p",
       },
-      { idempotencyKey, timeoutMs: 660_000 },
     );
+    console.log("requestId:", handle.requestId);
+
+    // Poll until the request completes, waiting the Retry-After the server names.
+    for await (const update of handle.events()) {
+      console.log(update.status, update.queuePosition);
+    }
+
+    const result = await handle.get();
 
     console.log("result:", result.data);
     ```
 
-    ```swift Swift
-    // Swift 5.9+ (macOS 14+, iOS 17+). This snippet is a command-line program.
-    // Do not ship the key inside an iOS app: it is extractable from the binary.
-    // In an app, call your own backend and keep the key there.
-    // Install: add .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
-    // Add ComfySwiftSDK to your target, put this in Sources/.../main.swift, then run: swift run
-
-    import ComfySwiftSDK
-    import Foundation
-
-    let env = ProcessInfo.processInfo.environment
-
-    guard let apiKey = env["COMFY_API_KEY"], !apiKey.isEmpty else {
-        fatalError("Set COMFY_API_KEY first.")
-    }
-    guard let requestKey = env["COMFY_REQUEST_KEY"], !requestKey.isEmpty else {
-        fatalError("Set COMFY_REQUEST_KEY first.")
-    }
-
-    let client = ComfyCloudClient(apiKey: apiKey)
-
-    let result = try await client.models.run(
-        "byteplus/dreamina-seedance-2-5-260628",
-        input: [
-            "content": [
-                [
-                    "text": "A red fox trotting through a snowy pine forest",
-                    "type": "text",
-                ],
-            ],
-            "duration": 5,
-            "ratio": "16:9",
-            "resolution": "720p",
-        ],
-        idempotencyKey: requestKey,
-        timeout: 660  // seconds
-    )
-
-    print(result.output)
-    ```
-
     </CodeGroup>
 
-    All four examples take the key from `COMFY_API_KEY`: the Python and TypeScript
-    clients read it from the environment themselves, and the Swift example reads it and
-    passes it to `ComfyCloudClient(apiKey:)`.
-  </Step>
-
-  <Step title="Read the result">
-    Router returns the model's native result. Inspect the response body and read the fields your application needs.
+    Each SDK submit call creates an idempotency key and reuses it for automatic retries.
+    The cURL example creates one with `uuidgen`. If it is unavailable, use another UUID generator.
+    For status, cancellation, and collection details, see [Queued delivery](/development/comfy-router/queue).
   </Step>
 </Steps>
-
-## Queue instead of waiting
-
-`run` holds the connection until the image is ready. To get a `request_id` back at once and collect the result later, from this process or another one, call `submit` instead (the SDK versions step 3 installs have it), or send the same body to `POST /v2/models/{provider}/{model}/requests` over HTTP. Send an `Idempotency-Key` with it as you did in step 2: a submit retried after a dropped connection then returns the original request instead of queueing and billing a second one. The SDKs mint one per `submit` call. Every model page has a **Queue and collect later** tab beside the synchronous snippet, and [Queued delivery](/development/comfy-router/queue) walks through status, cancellation and collection.
-
-Queued delivery is scoped to the workspace behind your key, which a key created in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) carries.
