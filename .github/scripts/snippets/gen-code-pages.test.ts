@@ -392,16 +392,17 @@ describe("the Providers page", () => {
   });
 });
 
-describe("modelsNav: the Providers page sits beside the catalog index", () => {
+describe("modelsNav: pricing and provider indexes sit beside the catalog", () => {
   const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
 
-  test("with legs, it is the second entry of the Models group, ahead of every provider sub-group", () => {
+  test("with legs, pricing and provider indexes precede the All Models group", () => {
     const pages = modelsNav(live, true).pages;
-    expect(pages.slice(0, 2)).toEqual([
+    expect(pages.slice(0, 3)).toEqual([
       "development/comfy-router/models",
+      "development/comfy-router/pricing",
       "development/comfy-router/providers",
     ]);
-    expect(pages[2]).toEqual({
+    expect(pages[3]).toEqual({
       group: "All Models",
       pages: [{
         group: "Kling",
@@ -410,8 +411,11 @@ describe("modelsNav: the Providers page sits beside the catalog index", () => {
     });
   });
 
-  test("with no legs the nav is exactly what it is today", () => {
-    expect(modelsNav(live, false)).toEqual(modelsNav(live));
+  test("without legs, pricing remains available and providers are omitted", () => {
+    expect(modelsNav(live, false).pages.slice(0, 2)).toEqual([
+      "development/comfy-router/models",
+      "development/comfy-router/pricing",
+    ]);
     expect(JSON.stringify(modelsNav(live))).not.toContain("providers");
   });
 });

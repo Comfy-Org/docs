@@ -44,12 +44,22 @@ jobs:
           MISSING=$(node -e "
             const data = require('$CHECK_I18N_OUTPUT');
             if (data.skipped) process.exit(2);
-            const n = Object.values(data.missingByLang || {}).reduce((s, v) => s + v.files.length, 0);
+            const autoTranslated = new Set(['development/comfy-router/pricing.mdx']);
+            const n = Object.values(data.missingByLang || {}).reduce((s, v) => s + v.files.filter(f => !autoTranslated.has(f)).length, 0);
             if (n === 0) process.exit(2);
             process.stdout.write(String(n));
           " 2>/dev/null) || true
 
           if [ -z "$MISSING" ]; then
+            REPO="${{ github.repository }}"
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            MARKER="<!-- i18n-sync-check -->"
+            EXISTING_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --jq '.[] | select(.body | contains("'"$MARKER"'")) | .id' | head -1)
+            if [ -n "$EXISTING_ID" ]; then
+              gh api -X DELETE "repos/${REPO}/issues/comments/${EXISTING_ID}"
+              echo "Removed the resolved i18n reminder comment."
+            fi
             echo "No missing translations; skipping PR comment."
             exit 0
           fi
@@ -64,8 +74,10 @@ jobs:
               '',
             ];
             for (const [code, { name, files }] of Object.entries(data.missingByLang)) {
+              const manualFiles = files.filter(f => f !== 'development/comfy-router/pricing.mdx');
+              if (manualFiles.length === 0) continue;
               lines.push('### ' + name + ' (\`' + code + '\`)');
-              for (const f of files) lines.push('- \`' + f + '\`');
+              for (const f of manualFiles) lines.push('- \`' + f + '\`');
               lines.push('');
             }
             lines.push('---');

@@ -2,8 +2,9 @@
 """
 Link validation script for multilingual documentation.
 
-Validates that each locale's documents link to matching locale content:
-- zh / ja / ko docs must not use English internal links or snippet imports
+Validates that each locale's documents link to matching locale content when it
+exists, and use English fallback links when a translated target is unavailable:
+- zh / ja / ko docs must prefer translated targets when those files exist
 - English docs must not use localized (zh / ja / ko) links or images
 - Localized docs may use shared English images under /images/ (not /images/zh/)
 
@@ -15,6 +16,7 @@ Usage:
 
 import argparse
 import glob
+import os
 import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -177,6 +179,24 @@ def is_english_internal_link(link: str) -> bool:
     if get_link_locale(link) is not None:
         return False
     return True
+
+
+def localized_target_exists(locale: str, link: str) -> bool:
+    """Whether an equivalent localized document exists for this English link."""
+    path = re.split(r'[?#]', link, maxsplit=1)[0].replace('\\', '/')
+    if not path.startswith('/'):
+        return False
+
+    if path.startswith('/snippets/'):
+        localized = f"snippets/{locale}/{path[len('/snippets/') :]}"
+    else:
+        localized = f"{locale}/{path.lstrip('/')}"
+
+    candidates = [localized]
+    if not localized.endswith(('.mdx', '.md')):
+        candidates.extend((f"{localized}.mdx", f"{localized}.md"))
+        candidates.extend((f"{localized}/index.mdx", f"{localized}/index.md"))
+    return any(os.path.isfile(candidate) for candidate in candidates)
 
 
 def is_shared_asset_path(path: str) -> bool:
@@ -417,7 +437,7 @@ def fix_locale_paths(file_path: str, content: str) -> Tuple[str, bool]:
 
 
 def validate_localized_link(file_path: str, locale: str, link: str, match: str) -> None:
-    """Localized docs must not point to English internal paths or other locales."""
+    """Prefer locale paths, but allow English fallback if no locale target exists."""
     locale_name = LOCALES[locale]['name']
     link_locale = get_link_locale(link)
 
@@ -432,7 +452,7 @@ def validate_localized_link(file_path: str, locale: str, link: str, match: str) 
         )
         return
 
-    if is_english_internal_link(link):
+    if is_english_internal_link(link) and localized_target_exists(locale, link):
         add_error(
             file_path,
             'link',
