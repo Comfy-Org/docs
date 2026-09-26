@@ -27,6 +27,29 @@ changelog/index.mdx
 - **Code in translations**: code lines must stay byte-for-byte identical to the
   English source; the comment text inside a fenced block **is** translated, as
   it is documentation prose. See [Code and comments in translations](#code-and-comments-in-translations).
+- **Values in translations**: a value the caller sends (booleans, enums, JSON
+  keys, model ids, endpoint paths) stays byte-for-byte identical, in code blocks
+  and in prose labels alike. See [Values, headings and punctuation](#values-headings-and-punctuation).
+- **Headings**: translate the heading text the way the target language's own
+  pages do, and keep any `{#anchor}` exactly as the English source has it.
+
+## Values, headings and punctuation
+
+| Part | Rule |
+|------|------|
+| Booleans, enums and other values the caller sends (`true`, `false`, `auto`, `disabled`, `standard`, `fast`, `mp4`, `mov`) | byte-for-byte identical to the English source, including the label punctuation (`true:` stays `true:`, `standard =` stays `standard =`) and its own line |
+| JSON keys and values, model ids, endpoint paths (`seedream-5.0-pro`, `POST /v2/models/byteplus/{model}`) | byte-for-byte identical, also inside prose |
+| Explanation that follows a label (`true: Returns the last frame`) | translated; the label itself is untouched |
+| Heading text (`## Schema`, `### Input`, `### Output`, `## Examples`) | translated as the target language's pages do it: ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出. zh model pages keep `## Schema` in English |
+| `{#anchor}` inside a heading | identical to the English source, never localized, never dropped |
+| Chinese prose punctuation | full-width (，。：；（）), not ASCII commas or colons |
+| Terminology | the glossary (`glossary.mjs` plus the per-language overrides) is authoritative; the same term is rendered the same way inside a file; no invented words (fixed is 固定, not 顶固), and senses kept apart: a URL or document hyperlink is a 链接, a link between nodes in a graph (LLink, node connections) is a 连线 |
+| Sentence polarity | unchanged from the English: a consequence such as `so it applies here` must never read as `so it does not apply here` |
+
+These are also enforced in the prompts: `buildTranslationInstructions` in
+`translate-i18n.ts` tells the translator, and the judge prompt in `review-i18n.ts`
+reports a translated literal, an English heading, ASCII punctuation in Chinese
+prose or a reversed polarity as an issue.
 
 ## Code and comments in translations
 
