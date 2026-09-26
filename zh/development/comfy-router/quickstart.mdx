@@ -1,20 +1,20 @@
 ---
 title: "Comfy Router 快速入门"
 sidebarTitle: "快速入门"
-description: "使用 Comfy Router，在 Python、TypeScript 和 Swift 中，从首次请求到生成结果。"
-translationSourceHash: 830c8778
+description: "在几分钟内使用最新前沿媒体模型生成图像和视频。"
+translationSourceHash: a500b711
 translationFrom: development/comfy-router/quickstart.mdx
 ---
 
 <div className="router-quickstart-marker" />
 
-Comfy Router 让您用一个 Comfy API 密钥，通过 `https://api.comfy.org` 调用合作伙伴模型。将模型的输入发送到 `POST /v2/models/{provider}/{model}`，然后等待已完成的结果。本示例运行 `byteplus/dreamina-seedance-2-5-260628`，这是一个视频模型。
+Comfy Router 为您提供一个用于托管图像和视频模型的 API，地址为 `https://api.comfy.org`。在[您的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建 API 密钥，然后使用官方 [Python 和 TypeScript SDK](/zh/development/api-development/sdks) 或通过纯 HTTP 调用任意模型。计费按使用量付费：每次请求都会从您的工作区余额中扣除积分，无需订阅。
 
-这些示例默认使用 Comfy 作为提供商。如需使用其他提供商，请在 SDK 调用中添加 `model_provider`，或在 URL 中添加 `?model_provider=<provider>`。[提供商覆盖矩阵](/zh/development/comfy-router/providers)列出了可用的模型与提供商组合。
+<Note>
+  **使用 Higgsfield？** 保存您自己的 Higgsfield 密钥，这些生成就会计入您的 Higgsfield 账户，而不是您的 Comfy 积分：相同的端点，相同的请求体。请参阅[使用自己的密钥调用 Higgsfield](/zh/development/comfy-router/higgsfield-byok)。
+</Note>
 
-请从下面的 `byteplus/dreamina-seedance-2-5-260628` 开始，或先[选择其他模型](/zh/development/comfy-router/models)。
-
-<Steps>
+<Steps titleSize="h2">
   <Step title="创建 API 密钥">
     在[您的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建一个密钥。在兼容 Bash 的终端中，设置：
 
@@ -27,59 +27,66 @@ Comfy Router 让您用一个 Comfy API 密钥，通过 `https://api.comfy.org` �
     Router 每次请求都会扣除积分。如果您的工件区没有积分余额，首次实际调用会返回 `402`，以及 `error_type: insufficient_credits`。该校验在请求体验证之前执行，因此未充值的工作区即使发送无效请求也会收到 `402`。在调试请求体之前，请先前往[工作区账单](https://platform.comfy.org)添加积分。
   </Step>
 
-  <Step title="为本次请求保存一个密钥">
-    为本次请求生成一次该值。如果重试同一个请求，请复用它。
-
-    ```bash
-    export COMFY_REQUEST_KEY="$(uuidgen)"
-    ```
-
-    如果 `uuidgen` 不可用，请使用其他 UUID 生成器。开始新的生成时，请使用新的密钥。
-  </Step>
-
-  <Step title="运行模型">
+  <Step title="将请求加入队列">
     选择您的语言并运行示例。生成可能需要几分钟。
 
     <CodeGroup>
-
-    ```bash cURL
-    curl --max-time 660 \
-      https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628 \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Idempotency-Key: $COMFY_REQUEST_KEY" \
-      -H "Content-Type: application/json" \
-      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
-    ```
 
     ```python Python
     # Python 3.10+
     # 安装：python -m pip install "comfy-sdk>=0.3.0"
     # 保存为 quickstart.py，然后运行：python quickstart.py
 
-    import os
+    import asyncio
 
-    from comfy_sdk import Comfy
+    from comfy_sdk import AsyncComfy
 
-    # Comfy 会从环境中读取 COMFY_API_KEY。
-    with Comfy() as client:
-        result = client.models.run(
-            "byteplus/dreamina-seedance-2-5-260628",
-            {
-                "content": [
-                    {
-                        "text": "A red fox trotting through a snowy pine forest",
-                        "type": "text",
-                    },
-                ],
-                "duration": 5,
-                "ratio": "16:9",
-                "resolution": "720p",
-            },
-            idempotency_key=os.environ["COMFY_REQUEST_KEY"],
-            timeout=660.0,
-        )
+    # AsyncComfy 会从环境中读取 COMFY_API_KEY。
+    async def main():
+        async with AsyncComfy() as client:
+            handle = await client.models.submit(
+                "byteplus/dreamina-seedance-2-5-260628",
+                {
+                    "content": [
+                        {
+                            "text": "A red fox trotting through a snowy pine forest",
+                            "type": "text",
+                        },
+                    ],
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                },
+            )
+            print("request_id:", handle.request_id)
 
-    print("result:", result)
+            # 轮询直到请求完成，每次等待服务器指定的 Retry-After。
+            async for update in handle.iter_events():
+                print(update.status, update.queue_position)
+
+            result = await handle.get()
+
+        print("result:", result)
+
+    asyncio.run(main())
+    ```
+
+    ```bash cURL
+    # 1. 提交请求。保存 201 响应中的 request_id。
+    curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+
+    # 2. 轮询直到状态为 COMPLETED，每次都等待 Retry-After 指定的时长。
+    REQUEST_ID="paste-request-id-from-201-response"
+    curl -i "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID/status" \
+      -H "X-API-Key: $COMFY_API_KEY"
+
+    # 3. 获取模型结果。
+    curl "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID" \
+      -H "X-API-Key: $COMFY_API_KEY"
     ```
 
     ```typescript TypeScript
@@ -90,10 +97,7 @@ Comfy Router 让您用一个 Comfy API 密钥，通过 `https://api.comfy.org` �
     import { comfy } from "@comfyorg/sdk";
 
     // Comfy 会从环境中读取 COMFY_API_KEY。
-    const idempotencyKey = process.env.COMFY_REQUEST_KEY;
-    if (!idempotencyKey) throw new Error("Set COMFY_REQUEST_KEY first.");
-
-    const result = await comfy.models.run(
+    const handle = await comfy.models.submit(
       "byteplus/dreamina-seedance-2-5-260628",
       {
         content: [
@@ -106,65 +110,23 @@ Comfy Router 让您用一个 Comfy API 密钥，通过 `https://api.comfy.org` �
         ratio: "16:9",
         resolution: "720p",
       },
-      { idempotencyKey, timeoutMs: 660_000 },
     );
+    console.log("requestId:", handle.requestId);
+
+    // 轮询直到请求完成，每次等待服务器指定的 Retry-After。
+    for await (const update of handle.events()) {
+      console.log(update.status, update.queuePosition);
+    }
+
+    const result = await handle.get();
 
     console.log("result:", result.data);
     ```
 
-    ```swift Swift
-    // Swift 5.9+（macOS 14+、iOS 17+）。此代码片段是一个命令行程序。
-    // 不要将密钥打包进 iOS 应用：它可以被从二进制文件中提取出来。
-    // 在应用中，请调用您自己的后端，并将密钥保存在那里。
-    // 安装：添加 .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
-    // 将 ComfySwiftSDK 添加到您的 target，把这段代码放进 Sources/.../main.swift，然后运行：swift run
-
-    import ComfySwiftSDK
-    import Foundation
-
-    let env = ProcessInfo.processInfo.environment
-
-    guard let apiKey = env["COMFY_API_KEY"], !apiKey.isEmpty else {
-        fatalError("Set COMFY_API_KEY first.")
-    }
-    guard let requestKey = env["COMFY_REQUEST_KEY"], !requestKey.isEmpty else {
-        fatalError("Set COMFY_REQUEST_KEY first.")
-    }
-
-    let client = ComfyCloudClient(apiKey: apiKey)
-
-    let result = try await client.models.run(
-        "byteplus/dreamina-seedance-2-5-260628",
-        input: [
-            "content": [
-                [
-                    "text": "A red fox trotting through a snowy pine forest",
-                    "type": "text",
-                ],
-            ],
-            "duration": 5,
-            "ratio": "16:9",
-            "resolution": "720p",
-        ],
-        idempotencyKey: requestKey,
-        timeout: 660  // 秒
-    )
-
-    print(result.output)
-    ```
-
     </CodeGroup>
 
-    四个示例都从 `COMFY_API_KEY` 获取密钥：Python 和 TypeScript 客户端会自行从环境中读取它，而 Swift 示例会读取它并将其传给 `ComfyCloudClient(apiKey:)`。
-  </Step>
-
-  <Step title="读取结果">
-    Router 会返回模型的原始结果。请检查响应体，并读取您的应用所需的字段。
+    每次 SDK 的 submit 调用都会创建一个幂等键，并在自动重试时复用它。
+    cURL 示例使用 `uuidgen` 创建一个。如果它不可用，请使用其他 UUID 生成器。
+    关于状态、取消与结果收集的详情，请参阅[队列投递](/zh/development/comfy-router/queue)。
   </Step>
 </Steps>
-
-## 无需等待，改用队列
-
-`run` 会保持连接，直到图像就绪。若想立即拿回 `request_id`，并在之后从当前进程或其他进程收集结果，请改为调用 `submit`（第 3 步安装的 SDK 版本已包含该功能），或通过 HTTP 将相同的请求体发送到 `POST /v2/models/{provider}/{model}/requests`。调用时请像第 2 步那样一并发送 `Idempotency-Key`：这样，在连接中断后重试的 submit 会返回原始请求，而不会再次入队并被重复计费。各 SDK 每调用一次 `submit` 都会生成一个。每个模型页面在同步代码片段旁都有一个 **Queue and collect later** 标签页，[队列投递](/zh/development/comfy-router/queue)详细介绍了状态、取消与结果收集。
-
-队列投递的作用范围限于您的密钥所对应的工作区，而在[您的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建的密钥会携带该工作区。
