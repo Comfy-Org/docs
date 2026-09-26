@@ -43,7 +43,7 @@ changelog/index.mdx
 | Heading text (`## Schema`, `### Input`, `### Output`, `## Examples`) | translated as the target language's pages do it: ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出. zh model pages keep `## Schema` in English |
 | `{#anchor}` inside a heading | identical to the English source, never localized, never dropped |
 | Chinese prose punctuation | full-width (，。：；（）), not ASCII commas or colons |
-| Terminology | the wording sibling pages of the same language already use; no invented words (fixed is 固定, not 顶固; link is 链接, not 连线) |
+| Terminology | the wording sibling pages of the same language already use; no invented words (fixed is 固定, not 顶固), and senses kept apart: a URL or document hyperlink is a 链接, a link between nodes in a graph (LLink, node connections) is a 连线 |
 | Sentence polarity | unchanged from the English: a consequence such as `so it applies here` must never read as `so it does not apply here` |
 
 These are also enforced in the prompts: `buildTranslationInstructions` in
