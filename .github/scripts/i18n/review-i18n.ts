@@ -265,7 +265,7 @@ function buildJudgePrompt(
     "- a value the caller sends (boolean `true`/`false`, enum such as `auto`, `disabled`, `standard`, `fast`, `mp4`, `mov`, JSON key, model id, endpoint path) that was translated instead of kept byte-for-byte, or whose label punctuation (`:` / `=`) was changed",
     "- a heading left in English on a page whose siblings in that language localize it (`Schema`, `Input`, `Output`, `Examples`)",
     "- Chinese prose that uses ASCII commas or colons instead of full-width punctuation",
-    "- a term that disagrees with the sibling pages of the same language, an invented word (for example 顶固 for 固定), or a word whose sense was not distinguished (a URL hyperlink translated as 连线 instead of 链接, or a graph link translated as 链接 instead of 连线)",
+    "- a term that contradicts the preferred terminology supplied below, is rendered inconsistently within the same file, is an invented word (for example 顶固 for 固定), or has lost its sense (a URL hyperlink translated as 连线 instead of 链接, or a graph link translated as 链接 instead of 连线)",
     "",
     "Do NOT penalize: expected localization (e.g. /{lang}/ internal links, translated snippet import paths),",
     "code blocks / identifiers / URLs left in English, code comments localized while the code lines themselves stay identical, or terms intentionally kept in English.",

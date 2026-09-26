@@ -78,10 +78,11 @@ conventionally keep `## Schema` in English, so leave that heading alone for zh.
 Other rules that the reviews keep flagging:
 
 - Chinese prose uses full-width punctuation (，。：；（）), not ASCII commas or colons.
-- Terminology follows the sibling pages of the same language; no invented words
-  (fixed is 固定, not 顶固). Keep senses apart: an English `link` pointing at a URL
-  or a document is a 链接, a link between nodes in a graph (`LLink`, node
-  connections, canvas wiring) is a 连线.
+- Terminology follows the glossary (`glossary.mjs` and the per-language
+  overrides) and stays consistent inside a file; no invented words (fixed is
+  固定, not 顶固). Keep senses apart: an English `link` pointing at a URL or a
+  document is a 链接, a link between nodes in a graph (`LLink`, node connections,
+  canvas wiring) is a 连线.
 - Never reverse the polarity of a sentence: `so it applies here` must not become
   `so it does not apply here`, and a limit that "never adjudicates a real prompt"
   is not an instruction to configure it.
