@@ -57,6 +57,33 @@ byte-identical. Opening and closing fence lines stay byte-identical too.
   dropped or commented-out code line still fails and the block is retried.
 - When editing a translation by hand, translate its comments and docstrings too.
 
+### Values, headings and punctuation
+
+Values the caller sends are not prose. In code blocks **and in prose labels**
+they stay byte-for-byte identical to the English source:
+
+- booleans `true` / `false`, enums such as `auto`, `disabled`, `standard`, `fast`,
+  `mp4`, `mov`, JSON keys, model ids, endpoint paths
+- the label punctuation and its own line: `true:` stays `true:`, `standard =`
+  stays `standard =`, and every labelled item keeps its own line (`mp4:` must not
+  be glued to the sentence above it)
+- only the explanation after the label is translated: `true: Returns the last
+  frame` becomes `true: 最終フレームを返します`, never `真：…`
+
+Headings: translate the heading text the way the target language's pages do
+(ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出), and keep any
+`{#anchor}` exactly as the English source has it. Chinese model pages
+conventionally keep `## Schema` in English, so leave that heading alone for zh.
+
+Other rules that the reviews keep flagging:
+
+- Chinese prose uses full-width punctuation (，。：；（）), not ASCII commas or colons.
+- Terminology follows the sibling pages of the same language; no invented words
+  (fixed is 固定, not 顶固; link is 链接, not 连线).
+- Never reverse the polarity of a sentence: `so it applies here` must not become
+  `so it does not apply here`, and a limit that "never adjudicates a real prompt"
+  is not an instruction to configure it.
+
 ### Title / description frontmatter (localized pages)
 
 `title` and `description` frontmatter carry localized meaning, not word-for-word
