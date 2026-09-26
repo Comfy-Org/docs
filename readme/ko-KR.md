@@ -88,7 +88,7 @@ PR을 생성해 주시면 며칠 내에 검토합니다.
 
 다른 언어 문서가 필요하신가요? [Issue를 열어](https://github.com/Comfy-Org/docs/issues/new) 원하는 로케일(예: 프랑스어, 독일어, 브라질 포르투갈어)을 알려 주세요. 메인테이너가 `translation-config.json`과 `docs.json`에 추가한 뒤 **전체 콘텐츠를 일괄 번역**합니다. 요청만 보내시면 됩니다. 번역 MDX PR은 필요 없습니다.
 
-MDX 편집 규격은 [Mintlify](https://mintlify.com/docs/page) Writing Content 섹션을 참고하세요.
+MDX 편집 규격은 [Mintlify](https://www.mintlify.com/docs/pages) Writing Content 섹션을 참고하세요.
 
 > **참고**: `built-in-nodes/`는 [embedded-docs](https://github.com/Comfy-Org/embedded-docs)에서 관리되며, 번역 스크립트가 이 디렉터리를 **자동으로 건너뜁니다**.
 

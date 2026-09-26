@@ -88,7 +88,7 @@ ComfyUI 现在为内置节点和自定义节点都增加了内置的节点帮助
 
 需要其它语言版本？[提交 Issue](https://github.com/Comfy-Org/docs/issues/new) 说明所需语言（例如法语、德语或巴西葡萄牙语）。维护者会将其加入 `translation-config.json` 和 `docs.json`，并**批量翻译全部内容**。你只需发起请求，无需自行提交完整译文的 PR。
 
-文件编辑规范见 [Mintlify](https://mintlify.com/docs/page) 文档 Writing Content 部分。
+文件编辑规范见 [Mintlify](https://www.mintlify.com/docs/pages) 文档 Writing Content 部分。
 
 > **说明**：`built-in-nodes/` 由 [embedded-docs](https://github.com/Comfy-Org/embedded-docs) 仓库维护，翻译脚本会**自动跳过**该目录。
 
