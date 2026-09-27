@@ -2,7 +2,7 @@
 title: "Comfy API: 서버리스 배포"
 description: "버전 관리되는 ComfyUI 환경을 빌드하고, 관리형 엔드포인트로 배포한 뒤 API를 통해 워크플로를 실행합니다."
 icon: "cloud-arrow-up"
-translationSourceHash: 66c22a87
+translationSourceHash: ce0b4e9d
 translationFrom: development/serverless/overview.mdx
 translationBlockHashes:
   "_intro": 9e73b36a
@@ -14,14 +14,17 @@ translationBlockHashes:
   "Build targets": 9066374f
   "Regions and GPU availability": 3cf9a951
   "3. Deploy a release": 2052f8d5
-  "4. Run a workflow": 30eca3a8
-  "Operate a deployment": de5e72b5
+  "4. Run a workflow": 7e841f82
+  "Operate a deployment": 9728789c
+  "Ship an update": 677e7ba9
+  "Monitor a deployment": cb019313
   "Inspect and clean up": 0555575c
   "Limits and quotas": 4e58c59a
   "Usage and spend": 0233f6c0
   "FAQ": d8ba4515
   "Next steps": 8765dc11
 ---
+
 
 
 
@@ -260,6 +263,18 @@ comfy deploy run \
 
 `COMFY_BASE_URL`을 배포 URL로 설정하면 [Comfy SDK](/ko/development/api-development/sdks)에서도 이 엔드포인트를 호출할 수 있습니다. SDK 요청에는 여전히 API 키가 필요합니다. [기본 URL 선택](/ko/development/api-development/sdks#기본-url-선택)을 참조하세요.
 
+`comfy deploy run`은 작업을 기다린 뒤 출력을 다운로드합니다. 다음 플래그는 워크플로의 입력과 출력을 처리하는 방식을 변경합니다:
+
+| 플래그 | 기능 |
+| :-- | :-- |
+| `--wait` / `--no-wait` | 작업을 기다리고 출력을 다운로드하거나, 작업이 제출되는 즉시 반환합니다. |
+| `--timeout <seconds>` | 작업 대기 시간을 제한합니다. |
+| `--output-dir <dir>` | 완료된 출력이 기록되는 디렉토리입니다. |
+| `--asset-root <dir>` | 워크플로의 입력이 이름으로 지정할 수 있는 파일들이 있는 디렉토리입니다. 반복 지정할 수 있습니다. |
+| `--no-upload` | 플랫폼에 아직 없는 로컬 입력이 필요한 실행을, 업로드하는 대신 실패시킵니다. |
+
+로컬 입력 파일을 참조하는 워크플로는 입력이 지정한 경로와 모든 `--asset-root` 디렉토리에서 해당 파일을 찾습니다. 플랫폼에 아직 없는 입력은 한 번 업로드되고 이후 실행에서 재사용됩니다.
+
 ## 배포 운영
 
 ```bash
@@ -270,6 +285,46 @@ comfy deploy scale --deployment dep_123456 --min 2 --max 5
 comfy deploy stop --deployment dep_123456
 comfy deploy start --deployment dep_123456
 ```
+
+실행 중인 배포는 동일한 URL에서 새로운 워커 범위를 그대로 적용하며, 기다려야 할 상태 전환이 없습니다. GPU 클래스와 리전은 프로비저닝될 때 고정되므로, 먼저 중지한 다음 변경하세요:
+
+```bash
+comfy deploy stop --deployment dep_123456
+comfy deploy scale --deployment dep_123456 --gpu <gpu> --region <region>
+comfy deploy start --deployment dep_123456
+```
+
+중지되었거나 실패한 배포에서는 `comfy deploy scale`이 나머지 컴퓨트 구성도 함께 저장하며, 이는 다음 시작 시에 적용됩니다. 실행 중인 배포에서 상한을 올리면 해당 용량에 대한 비용이 즉시 청구되기 시작하므로, 결제 사유로 변경이 거부될 수 있습니다.
+
+`Stop`은 배포를 일시 중지합니다. 엔드포인트와 스테이징된 모델을 그대로 유지합니다. 이를 해제하는 것은 `Delete`이며, `Delete`는 어떤 상태에서든 허용되므로 배포를 먼저 중지할 필요가 없습니다. 삭제된 배포는 제거된 항목의 기록으로서 목록에 남습니다.
+
+## 업데이트 배포
+
+배포는 생성될 때 고정된 하나의 릴리스를 실행합니다. ComfyUI 환경의 변경 사항은 새로운 릴리스와 새로운 배포로 프로덕션에 반영됩니다:
+
+```bash
+comfy build update --yes
+comfy build push --release --target linux/nvidia
+comfy deploy up --gpu <gpu> --region <region> --min 0 --max 1 --watch
+```
+
+`comfy deploy up`은 릴리스를 확인한 다음, 해당 릴리스의 라이브 배포를 찾습니다. 라이브 배포가 없으면 `--gpu`와 `--region`이 필요한 새 배포를 생성합니다. 이미 있으면 전달한 `--min`과 `--max`를 적용하고, 생략한 항목에 대해서는 현재 라이브 워커 범위를 유지합니다.
+
+이전 릴리스의 배포는 중지하거나 삭제할 때까지 계속 트래픽을 처리하며, 해당 배포가 존재하는 동안에는 스테이징된 네트워크 스토리지에 대한 비용이 계속 청구됩니다. `comfy deploy status`는 릴리스의 최신 상태를 보고하므로, 현재 실행 중인 배포보다 더 새로운 릴리스를 가진 Build가 있는지 확인할 수 있습니다.
+
+## 배포 모니터링
+
+```bash
+comfy deploy status --deployment dep_123456 --watch
+comfy deploy events --deployment dep_123456
+comfy deploy logs --deployment dep_123456
+```
+
+배포는 `queued`, `provisioning`, `starting`, `ready` 순서로 진행됩니다. `stopped`와 `failed`는 최종 상태입니다. 어느 쪽에도 속하지 않는 두 가지 상태가 있습니다. `unhealthy`는 엔드포인트가 서비스를 시작한 뒤 성능이 저하되거나 사라졌다는 뜻이며, 복구되면 플랫폼이 이를 `ready`로 되돌립니다. `stop_failed`는 중지가 컴퓨트를 해제하지 못했다는 뜻이므로 배포가 여전히 컴퓨트를 점유하고 그에 대한 요금이 청구될 수 있으며, 다시 중지하면 재시도됩니다.
+
+`events`는 상태 타임라인으로, 전환마다 항목이 하나씩 있고 가장 오래된 것부터 표시됩니다. `logs`는 워커의 부팅 로그와 마지막 헬스 프로브 시점에 수집된 ComfyUI 로그의 마지막 부분입니다. 헬스 프로브가 실행되기 전까지는 비어 있으며, 실패한 배포가 정리된 이후에도 유지됩니다.
+
+플랫폼이 배포의 컴퓨트를 샘플링한 경우, 상태에는 실행 중인 워커, 워커가 실행되는 용량, 실행 대기열 깊이, 그리고 샘플 시간이 함께 포함됩니다. 이 수치들은 수명 주기가 아니라 컴퓨트를 설명하며 오래된 값일 수 있으므로 샘플 시간을 확인하세요. `error`는 무엇이 잘못되었는지 알려 주기 위해 작성된 문장이며, 파싱을 위한 것이 아닙니다.
 
 ## 검사 및 정리
 

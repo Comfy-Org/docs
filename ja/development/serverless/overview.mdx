@@ -2,7 +2,7 @@
 title: "Comfy API：サーバーレスデプロイ"
 description: "バージョン管理された ComfyUI 環境を構築し、マネージドエンドポイントとしてデプロイして、API 経由でワークフローを実行します。"
 icon: "cloud-arrow-up"
-translationSourceHash: 66c22a87
+translationSourceHash: ce0b4e9d
 translationFrom: development/serverless/overview.mdx
 translationBlockHashes:
   "_intro": 9e73b36a
@@ -14,14 +14,17 @@ translationBlockHashes:
   "Build targets": 9066374f
   "Regions and GPU availability": 3cf9a951
   "3. Deploy a release": 2052f8d5
-  "4. Run a workflow": 30eca3a8
-  "Operate a deployment": de5e72b5
+  "4. Run a workflow": 7e841f82
+  "Operate a deployment": 9728789c
+  "Ship an update": 677e7ba9
+  "Monitor a deployment": cb019313
   "Inspect and clean up": 0555575c
   "Limits and quotas": 4e58c59a
   "Usage and spend": 0233f6c0
   "FAQ": d8ba4515
   "Next steps": 8765dc11
 ---
+
 
 
 
@@ -260,6 +263,18 @@ comfy deploy run \
 
 `COMFY_BASE_URL` にデプロイメントの URL を設定すれば、[Comfy SDK](/ja/development/api-development/sdks) からもこのエンドポイントを呼び出せます。SDK のリクエストには引き続き API キーが必要です。詳しくは[ベース URL の選択](/ja/development/api-development/sdks#ベースurlの選択)を参照してください。
 
+`comfy deploy run` はジョブの完了を待ち、その出力をダウンロードします。以下のフラグは、ワークフローの入力と出力に対する動作を変更します:
+
+| フラグ | 動作 |
+| :-- | :-- |
+| `--wait` / `--no-wait` | ジョブの完了を待って出力をダウンロードするか、ジョブを送信するとすぐに戻ります。 |
+| `--timeout <seconds>` | ジョブの待機時間に上限を設定します。 |
+| `--output-dir <dir>` | 完了した出力の書き込み先ディレクトリ。 |
+| `--asset-root <dir>` | ワークフローの入力がファイルを指定できるディレクトリ。複数回指定できます。 |
+| `--no-upload` | プラットフォームがまだ保持していないローカル入力が必要な実行を、アップロードせずに失敗させます。 |
+
+ローカルの入力ファイルを参照するワークフローは、指定されたパスと `--asset-root` ディレクトリからそれらを解決します。プラットフォームがまだ保持していない入力は、一度アップロードされ、以降の実行で再利用されます。
+
 ## デプロイメントの運用
 
 ```bash
@@ -270,6 +285,46 @@ comfy deploy scale --deployment dep_123456 --min 2 --max 5
 comfy deploy stop --deployment dep_123456
 comfy deploy start --deployment dep_123456
 ```
+
+稼働中のデプロイメントは、同じ URL のまま新しいワーカー数の上下限をその場で受け付け、待つべきステータス遷移はありません。GPU クラスとリージョンはプロビジョニング時に固定されるため、先に停止してから変更します。
+
+```bash
+comfy deploy stop --deployment dep_123456
+comfy deploy scale --deployment dep_123456 --gpu <gpu> --region <region>
+comfy deploy start --deployment dep_123456
+```
+
+停止中または失敗したデプロイメントでは、`comfy deploy scale` は残りのコンピュート設定も保存し、それは次回の起動時に適用されます。稼働中のデプロイメントで上限を引き上げると、その容量の料金をすぐに支払うことになるため、請求上の理由から変更が拒否されることがあります。
+
+`Stop` はデプロイメントを一時停止します。エンドポイントとステージ済みのモデルはそのまま保持されます。それらを解放するのが `Delete` であり、これはどのステータスでも受け付けられるため、デプロイメントを事前に停止しておく必要はありません。削除済みのデプロイメントは、何が削除されたかのレコードとして一覧に残ります。
+
+## 更新をリリースする
+
+デプロイは作成時に固定された 1 つのリリースを実行します。ComfyUI 環境への変更は、新しいリリースと新しいデプロイとして本番環境に反映されます。
+
+```bash
+comfy build update --yes
+comfy build push --release --target linux/nvidia
+comfy deploy up --gpu <gpu> --region <region> --min 0 --max 1 --watch
+```
+
+`comfy deploy up` はリリースを解決してから、そのリリースの稼働中のデプロイを探します。存在しなければ新規に作成し、その場合は `--gpu` と `--region` が必要です。存在する場合は、渡した `--min` と `--max` を適用し、省略した稼働中のワーカー数の範囲はそのまま維持します。
+
+先行リリースのデプロイは、停止または削除するまで提供を続け、ステージングされたネットワークストレージは存在する間は課金され続けます。`comfy deploy status` はリリースの鮮度を報告するため、実行中のデプロイより新しいリリースが Build にあるかどうかを確認できます。
+
+## デプロイの監視
+
+```bash
+comfy deploy status --deployment dep_123456 --watch
+comfy deploy events --deployment dep_123456
+comfy deploy logs --deployment dep_123456
+```
+
+デプロイは `queued`、`provisioning`、`starting`、`ready` と遷移します。`stopped` と `failed` は終了状態です。そのどちらでもない状態が 2 つあります。`unhealthy` は、エンドポイントがサービス提供後に劣化または消失したことを意味し、回復すればプラットフォームはそれを `ready` に戻します。`stop_failed` は、停止がコンピュートを解放できなかったことを意味するため、デプロイがそのコンピュートを保持し課金され続ける可能性があり、再度停止すると再試行されます。
+
+`events` はステータスのタイムラインで、遷移ごとに 1 件のエントリがあり、古い順に並びます。`logs` はワーカーの起動ログと、最後のヘルスプローブ時に取得された ComfyUI ログの末尾です。プローブが実行されるまでは空で、失敗したデプロイの破棄後も保持されます。
+
+プラットフォームがデプロイのコンピュートをサンプリングしている間は、そのステータスに実行中のワーカー、それらが稼働するキャパシティ、キューの深さも、サンプリングした時間とともに含まれます。これらのカウントはライフサイクルではなくコンピュートを表しており、古くなっている可能性があるため、サンプリング時間を確認してください。`error` は何が問題だったかを伝えるために書かれた文章であり、パースすることを意図したものではありません。
 
 ## 確認とクリーンアップ
 

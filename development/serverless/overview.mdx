@@ -240,6 +240,18 @@ comfy deploy run \
 
 The endpoint can also be called from the [Comfy SDKs](/development/api-development/sdks) by setting `COMFY_BASE_URL` to the deployment URL. The SDK request still needs an API key: see [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
 
+`comfy deploy run` waits for the job and downloads its outputs. These flags change what it does with the workflow's inputs and outputs:
+
+| Flag | What it does |
+| :-- | :-- |
+| `--wait` / `--no-wait` | Wait for the job and download its outputs, or return as soon as the job is submitted. |
+| `--timeout <seconds>` | Cap the wait for the job. |
+| `--output-dir <dir>` | Directory completed outputs are written to. |
+| `--asset-root <dir>` | A directory whose files the workflow's inputs may name. Repeatable. |
+| `--no-upload` | Fail a run that needs a local input the platform does not already hold, instead of uploading it. |
+
+Workflows that reference local input files resolve them from the paths they name plus any `--asset-root` directories. An input the platform does not already hold is uploaded once and reused by later runs.
+
 ## Operate a deployment
 
 ```bash
@@ -250,6 +262,46 @@ comfy deploy scale --deployment dep_123456 --min 2 --max 5
 comfy deploy stop --deployment dep_123456
 comfy deploy start --deployment dep_123456
 ```
+
+A live deployment accepts new worker bounds in place, at the same URL, with no status transition to wait for. Its GPU class and region are fixed when it is provisioned, so stop it first, then change them:
+
+```bash
+comfy deploy stop --deployment dep_123456
+comfy deploy scale --deployment dep_123456 --gpu <gpu> --region <region>
+comfy deploy start --deployment dep_123456
+```
+
+On a stopped or failed deployment, `comfy deploy scale` also stores the rest of the compute configuration, which applies on the next start. Raising a bound on a live deployment starts paying for that capacity at once, so the change can be refused on billing grounds.
+
+`Stop` pauses a deployment: it keeps its endpoint and its staged models. `Delete` is what releases them, and it is accepted in any status, so a deployment does not have to be stopped first. A deleted deployment stays in the list as the record of what was removed.
+
+## Ship an update
+
+A deployment runs one release, fixed when it is created. A change to your ComfyUI environment reaches production as a new release and a new deployment:
+
+```bash
+comfy build update --yes
+comfy build push --release --target linux/nvidia
+comfy deploy up --gpu <gpu> --region <region> --min 0 --max 1 --watch
+```
+
+`comfy deploy up` resolves the release, then looks for a live deployment of it. With none, it creates one, which needs `--gpu` and `--region`. With one, it applies the `--min` and `--max` you pass and keeps the live worker bounds you omit.
+
+The deployment of the earlier release keeps serving until you stop or delete it, and its staged network storage keeps billing while it exists. `comfy deploy status` reports release freshness, so you can tell when a Build has a newer release than the deployments you are running.
+
+## Monitor a deployment
+
+```bash
+comfy deploy status --deployment dep_123456 --watch
+comfy deploy events --deployment dep_123456
+comfy deploy logs --deployment dep_123456
+```
+
+A deployment moves through `queued`, `provisioning`, `starting`, and `ready`. `stopped` and `failed` are final. Two states are neither: `unhealthy` means the endpoint degraded or vanished after serving, and the platform returns it to `ready` if it recovers; `stop_failed` means a stop could not release the compute, so the deployment can still hold and bill for it, and stopping it again retries.
+
+`events` is the status timeline, one entry per transition, oldest first. `logs` is the worker's boot log and the ComfyUI log tail captured at the last health probe: empty until a probe has run, and kept after a failed deploy's teardown.
+
+While the platform has sampled a deployment's compute, its status also carries the workers running, the capacity they run on, and the queue depth, with the time of the sample. Those counts describe the compute, not the lifecycle, and can be stale, so read the sample time. `error` is a sentence written for you saying what went wrong, and is not meant to be parsed.
 
 ## Inspect and clean up
 
