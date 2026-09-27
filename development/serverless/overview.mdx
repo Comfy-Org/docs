@@ -84,6 +84,40 @@ comfy deploy run --workflow workflow_api.json --deployment <deployment-id> --out
   </Step>
 </Steps>
 
+Prefer the browser? The console creates and deploys the same Builds on the same workspace. See [Use the console](#use-the-console).
+
+## Use the console
+
+The console at [platform.comfy.org](https://platform.comfy.org) works on the same workspace as the CLI, so a Build created in one is visible in the other.
+
+Under `Builds`, start a new Build and drop in a workflow. The builder reads the workflow's models and custom nodes and preselects them. The Build list shows each Build's contents and its latest release, plus `Create release` and `Deploy` actions. A release with no serverless target reads as `Built without a serverless target`; see [Build targets](#build-targets).
+
+### The deploy dialog
+
+`Deploy` on a Build opens a dialog with the settings a deployment runs with:
+
+| Field | What it sets |
+| :-- | :-- |
+| `GPU` | The graphics hardware that runs your workflows. More powerful GPUs cost more per hour. |
+| `Region` | The datacenter where your deployment runs. Available GPUs vary by region. |
+| `Active workers` | Always-warm workers kept running to avoid cold starts. `0` scales to zero when idle. |
+| `Max workers` | The most workers that can run at the same time. |
+| `ComfyUI startup flags` | Extra flags passed to ComfyUI when a worker starts. See below. |
+
+The same dialog estimates the deployment before it is created. `Estimated time` reports how many gigabytes of models the release has to download and a range of minutes `Until ready`, counted until the deployment is ready. `Estimated cost` reports the GPU rate multiplied by the worker count, plus the network storage rate for the models the release holds.
+
+`Deployments` lists every deployment with its endpoint, status, compute, and `Spend · 7d`. Each row can copy its endpoint URL, or `Start`, `Stop`, and `Delete` the deployment. A stopped deployment keeps its record.
+
+### ComfyUI startup flags
+
+The deploy dialog passes extra flags to ComfyUI when a worker starts. Separate them with spaces:
+
+```text
+--highvram --reserve-vram 2
+```
+
+Only VRAM, precision, attention, cache, and performance flags are accepted. Anything else is refused when you save the deployment. Flags are fixed while a deployment runs: stop it, change the flags, then start it again.
+
 ## The Build file
 
 `comfy-build.yaml` is the local source of truth for a Build. It stores the Build definition and the last known remote state, so the CLI can choose the right Build automatically and warn before local changes overwrite a newer remote definition.
@@ -129,6 +163,29 @@ Follow one release's build log with:
 
 ```bash
 comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## Build targets
+
+Every release is built per target, an operating system and accelerator pair. The builder can produce:
+
+| Target | Console label |
+| :-- | :-- |
+| `linux/nvidia` | Linux · NVIDIA |
+| `linux/cpu` | Linux · CPU |
+| `windows/nvidia` | Windows · NVIDIA |
+| `windows/cpu` | Windows · CPU |
+
+Only a `linux/nvidia` artifact carries the image a deployment runs, so a release cut for another target alone cannot be deployed. Cut the deployable target alongside any others you need. `--target` is repeatable:
+
+```bash
+comfy build push --release --target linux/nvidia --target windows/nvidia
+```
+
+When `--target` is omitted, the builder cuts `linux/nvidia` alone. List the targets a version can be cut for:
+
+```bash
+comfy build refs build-targets
 ```
 
 ## Regions and GPU availability
@@ -202,16 +259,50 @@ comfy build ls
 comfy build show --id bld_123456
 comfy build release ls
 comfy build release show rel_123456
+comfy build release manifest rel_123456
 
 # Deployment state
 comfy deploy ls --workspace --status ready
+comfy deploy show --deployment dep_123456
 comfy deploy logs --deployment dep_123456
 comfy deploy events --deployment dep_123456
 ```
 
+Other build commands:
+
+| Command | What it does |
+| :-- | :-- |
+| `comfy build validate` | Check the local `comfy-build.yaml` without contacting the builder. |
+| `comfy build pull` | Replace the local spec with the Build's remote definition, keeping local asset identities. |
+| `comfy build refs base-images` | List the curated base images a Build can build on. |
+| `comfy build refs model-dirs` | List the model directories a model may be placed in. |
+| `comfy build refs resolve <filename>` | Resolve model filenames to public download candidates (Hugging Face, Civitai). |
+| `comfy build release delete rel_123456` | Delete a release and free its slot against the workspace release limit. |
+
 <Warning>
   Deleting a deployment and deleting a Build are separate irreversible operations. Confirm the target before using `comfy deploy delete --yes` or `comfy build delete --id bld_123456 --yes`.
 </Warning>
+
+## Limits and quotas
+
+Comfy API deployments are in beta, and the beta holds every workspace to ceilings on builds, releases, active deployments, and workers per deployment. Your current ceilings are on the `Limits` page in the console ([platform.comfy.org/profile/limits](https://platform.comfy.org/profile/limits)), with the GPU and network storage rates that apply to your deployments and an `Ask for a higher limit` link.
+
+Ceilings are per workspace and can be raised. When one is reached:
+
+- Creating a Build is refused until you delete a Build, and creating a deployment is refused until you stop or delete one. The console counts active deployments, so `Stop` is enough to make room.
+- The worker ceiling caps autoscaling in addition to the deployment's `--max`, so a deployment never runs more workers than either allows.
+- A workspace with no credit balance cannot create, scale, or resume a deployment. If credits run out, deployments are stopped automatically.
+
+Releases count against the same workspace. `comfy build release delete rel_123456` frees one.
+
+## Usage and spend
+
+The console reports what deployments cost:
+
+- `Deployments` shows `Spend · 7d` per deployment: GPU credits charged over the last seven UTC days. Model storage is billed separately and is not included.
+- `Usage` ([platform.comfy.org/profile/usage](https://platform.comfy.org/profile/usage)) ranks deployments by what they cost over a period and separates GPU time from network storage, so you can tell which deployment and which resource drove the spend.
+
+Deployment compute and storage are charged to your workspace's credit balance. The console and the [Comfy pricing page](https://www.comfy.org/pricing) show the rates that apply. The CLI reports deployment state rather than spend: use `comfy deploy ls` and `comfy deploy status` to find a deployment, then read its cost in the console.
 
 ## FAQ
 
@@ -268,6 +359,16 @@ comfy deploy events --deployment dep_123456
     Deleting a deployment removes its endpoint and releases its compute. It does not delete the Build or its releases. After you delete the last deployment using that Build in a region, its staged network storage is cleaned up and storage billing ends shortly afterward.
 
     Deleting the Build is a separate operation: `comfy build delete --id <build-id> --yes`.
+  </Accordion>
+
+  <Accordion title="Why can't I deploy my release?">
+    A deployment runs a `linux/nvidia` artifact. A release cut only for `linux/cpu`, `windows/nvidia`, or `windows/cpu` builds honest artifacts but carries no image, so the console reads it as `Built without a serverless target` and `Deploy` stays unavailable. Cut a release with `--target linux/nvidia`: see [Build targets](#build-targets).
+  </Accordion>
+
+  <Accordion title="How long will a deployment take to become ready, and what will it cost?">
+    The deploy dialog in the console estimates both before it creates the deployment. `Estimated time` covers the models the release has to download and the endpoint starting up, counted until the deployment is ready. A first request can still wait for a worker to start, and running a workflow is not counted. `Estimated cost` shows the GPU rate multiplied by the worker count, plus the network storage rate for the models the release holds.
+
+    GPU time is billed only while a worker is up, and the estimate is a range, not a promise. For current rates, see the [Comfy pricing page](https://www.comfy.org/pricing).
   </Accordion>
 </AccordionGroup>
 
