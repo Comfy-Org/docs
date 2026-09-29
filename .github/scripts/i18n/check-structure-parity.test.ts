@@ -141,6 +141,30 @@ describe("compare", () => {
 });
 
 describe("introducesNewGap", () => {
+  test("detects a newly missing URL even when the missing-link count stays equal", () => {
+    const localized = "https://cloud.comfy.org/kept";
+    const before = compare("https://cloud.comfy.org/old", localized, "ja/x.mdx", "english");
+    const after = compare("https://cloud.comfy.org/new", localized, "ja/x.mdx", "english");
+    expect(before.missingLinks).toHaveLength(1);
+    expect(after.missingLinks).toHaveLength(1);
+    expect(introducesNewGap(after, before)).toBe(true);
+  });
+
+  test("detects an additional missing occurrence of the same URL", () => {
+    const url = "https://cloud.comfy.org/template";
+    const before = compare(url, "", "ja/x.mdx", "english");
+    const after = compare(`${url}\n${url}`, "", "ja/x.mdx", "english");
+    expect(introducesNewGap(after, before)).toBe(true);
+  });
+
+  test("does not blame unchanged or reduced missing-link debt on the change", () => {
+    const url = "https://cloud.comfy.org/template";
+    const before = compare(`${url}\n${url}`, "", "ja/x.mdx", "english");
+    const after = compare(url, "", "ja/x.mdx", "english");
+    expect(introducesNewGap(before, before)).toBe(false);
+    expect(introducesNewGap(after, before)).toBe(false);
+  });
+
   const base = EN;
   const changed = EN.replace(
     "</CardGroup>",

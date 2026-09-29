@@ -338,7 +338,7 @@ export function introducesNewGap(finding: Finding, baseFinding: Finding): boolea
     if (c.en - c.localized > (baseGaps.get(c.label) ?? 0)) return true;
   }
 
-  return finding.missingLinks.length > baseFinding.missingLinks.length;
+  return multisetDiff(finding.missingLinks, baseFinding.missingLinks).length > 0;
 }
 
 function main(): void {
