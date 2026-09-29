@@ -28,10 +28,15 @@
  *   bun .github/scripts/i18n/check-structure-parity.ts               # changed files, both directions
  *   bun .github/scripts/i18n/check-structure-parity.ts --all         # whole repo, backlog report
  *   bun .github/scripts/i18n/check-structure-parity.ts --base=<ref>  # explicit base
+ *   bun .github/scripts/i18n/check-structure-parity.ts --head=<ref>  # explicit head
  *   bun .github/scripts/i18n/check-structure-parity.ts --json        # machine readable
  *
- * In CI the base comes from STRUCTURE_PARITY_BASE (the PR base SHA or the
- * previous commit on push), matching the anchor check.
+ * In CI the range comes from STRUCTURE_PARITY_BASE and STRUCTURE_PARITY_HEAD:
+ * the base branch SHA and the pull request head for a pull request, the previous
+ * and current commit for a push, matching the anchor check. The scan must run on
+ * that range rather than on the checked out merge commit, because the merge
+ * commit already carries everything the base branch added after the branch
+ * point.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -270,11 +275,22 @@ export function resolveRepoRoot(cwd = process.cwd()): string {
   }
 }
 
-function changedFiles(repoRoot: string, base: string, paths: string[]): string[] {
-  // A force-push can leave the base SHA unreachable; fall back to the previous
-  // commit so the gate still sees the change instead of crashing.
+/**
+ * Ranges for the changed-file scan, narrowest first. `base` is the base branch
+ * SHA for a pull request (the previous commit on a push) and `head` the commit
+ * under review. The second range covers a force-push that left `base`
+ * unreachable, so the gate still sees the change instead of crashing.
+ */
+export function diffRanges(base: string, head: string): string[] {
+  return [`${base}...${head}`, `${head}~1...${head}`];
+}
+
+function changedFiles(repoRoot: string, base: string, head: string, paths: string[]): string[] {
+  // The range stays inside what the change owns. Diffing against the checked out
+  // merge commit instead would list every file the base branch changed after the
+  // branch point, and the gate would then audit pages this change never touched.
   let out = "";
-  for (const range of [`${base}...HEAD`, "HEAD~1...HEAD"]) {
+  for (const range of diffRanges(base, head)) {
     try {
       out = sh(["git", "diff", "--name-only", range, "--", ...paths], repoRoot);
       break;
@@ -297,12 +313,12 @@ function changedFiles(repoRoot: string, base: string, paths: string[]): string[]
   ];
 }
 
-export function changedLocalizedFiles(repoRoot: string, base: string): string[] {
-  return changedFiles(repoRoot, base, LOCALES);
+export function changedLocalizedFiles(repoRoot: string, base: string, head = "HEAD"): string[] {
+  return changedFiles(repoRoot, base, head, LOCALES);
 }
 
-export function changedEnglishFiles(repoRoot: string, base: string): string[] {
-  const candidates = changedFiles(repoRoot, base, ["."]);
+export function changedEnglishFiles(repoRoot: string, base: string, head = "HEAD"): string[] {
+  const candidates = changedFiles(repoRoot, base, head, ["."]);
   return candidates.filter(
     (path) => !LOCALES.includes(path.split("/")[0]) && !isExempt(path)
   );
@@ -347,6 +363,8 @@ function main(): void {
   const json = argv.includes("--json");
   const baseArg = argv.find((a) => a.startsWith("--base="));
   const base = baseArg ? baseArg.slice("--base=".length) : process.env.STRUCTURE_PARITY_BASE || "origin/main";
+  const headArg = argv.find((a) => a.startsWith("--head="));
+  const head = headArg ? headArg.slice("--head=".length) : process.env.STRUCTURE_PARITY_HEAD || "HEAD";
   const repoRoot = resolveRepoRoot();
 
   const failures: Finding[] = [];
@@ -383,7 +401,7 @@ function main(): void {
     }
   } else {
     // Direction 1: a localized page changed -> compare it with its English source.
-    for (const localized of changedLocalizedFiles(repoRoot, base)) {
+    for (const localized of changedLocalizedFiles(repoRoot, base, head)) {
       if (isExempt(localized)) continue;
       const en = englishCounterpart(localized, repoRoot);
       if (!en) {
@@ -403,7 +421,7 @@ function main(): void {
     }
 
     // Direction 2: an English page changed -> check every existing counterpart.
-    for (const english of changedEnglishFiles(repoRoot, base)) {
+    for (const english of changedEnglishFiles(repoRoot, base, head)) {
       if (isExempt(english)) continue;
       const baseRaw = gitShow(repoRoot, base, english);
       if (baseRaw === null) continue; // new page: translations do not exist yet
