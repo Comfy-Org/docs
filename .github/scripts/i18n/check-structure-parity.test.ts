@@ -122,6 +122,13 @@ describe("compare", () => {
     expect(finding.extraComponents.map((c) => c.label)).toContain("Card");
   });
 
+  test("treats a case-only path difference in an asset link as the same link", () => {
+    const en = "see https://github.com/Comfy-Org/embedded-docs/blob/main/comfyui_embedded_docs/docs/CLIPMergeSimple/en.md";
+    const ja = "see https://github.com/Comfy-Org/embedded-docs/blob/main/comfyui_embedded_docs/docs/ClipMergeSimple/ja.md";
+    const finding = compare(en, ja, "ja/x.mdx");
+    expect(finding.missingLinks).toHaveLength(0);
+  });
+
   test("passes an identical page", () => {
     const finding = compare(EN, EN, "ko/x.mdx");
     expect(finding.missingComponents).toHaveLength(0);

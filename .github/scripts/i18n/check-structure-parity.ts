@@ -49,6 +49,20 @@ const EXEMPT_PATTERNS: RegExp[] = [
   /(^|\/)docs\.json$/, // navigation, not a page
 ];
 
+/**
+ * Paths whose content is generated from another repository, so a gap cannot be
+ * fixed durably here: `docs-generation/scripts/sync_to_comfy_docs.py` in
+ * Comfy-Org/embedded-docs rewrites every localized built-in-nodes page from the
+ * localized `.md` upstream, which overwrites hand edits. Findings there are
+ * reported as warnings pointing at the upstream file.
+ */
+const EXTERNAL_SOURCE_PATTERNS: { re: RegExp; note: string }[] = [
+  {
+    re: /^built-in-nodes\//,
+    note: "generated from Comfy-Org/embedded-docs; fix the localized .md upstream",
+  },
+];
+
 const HEADING_RES: { label: string; re: RegExp }[] = [
   { label: "h2", re: /^## /gm },
   { label: "h3", re: /^### /gm },
@@ -146,11 +160,19 @@ export function assetLinks(body: string): string[] {
   return found;
 }
 
+/**
+ * Multiset difference with a case-folded key. GitHub paths are case-sensitive on
+ * the web but the embedded-docs generator emits node-name casing on the English
+ * side and doc-path casing on the localized side (CLIPMergeSimple/en.md versus
+ * ClipMergeSimple/ja.md), which is the same document; comparing case-insensitively
+ * keeps that from reading as a missing link.
+ */
 function multisetDiff(want: string[], have: string[]): string[] {
-  const remaining = [...have];
+  const remaining = have.map((item) => ({ item, key: item.toLowerCase() }));
   const missing: string[] = [];
   for (const item of want) {
-    const at = remaining.indexOf(item);
+    const key = item.toLowerCase();
+    const at = remaining.findIndex((entry) => entry.key === key);
     if (at === -1) missing.push(item);
     else remaining.splice(at, 1);
   }
@@ -160,6 +182,8 @@ function multisetDiff(want: string[], have: string[]): string[] {
 export interface Finding {
   file: string;
   source: "localized" | "english";
+  /** Set when the page is generated from another repository. */
+  note?: string;
   missingComponents: { label: string; en: number; localized: number }[];
   extraComponents: { label: string; en: number; localized: number }[];
   missingLinks: string[];
@@ -213,6 +237,14 @@ export function localizedCounterparts(english: string, repoRoot: string): string
   return LOCALES.map((locale) => `${locale}/${english}`).filter((path) =>
     existsSync(join(repoRoot, path))
   );
+}
+
+/** Upstream generator note for externally generated pages, or null. */
+export function externalSource(relativePath: string): string | null {
+  const parts = relativePath.split("/");
+  const rest = LOCALES.includes(parts[0]) ? parts.slice(1).join("/") : relativePath;
+  const hit = EXTERNAL_SOURCE_PATTERNS.find(({ re }) => re.test(rest));
+  return hit ? hit.note : null;
 }
 
 export function isExempt(relativePath: string): boolean {
@@ -319,6 +351,14 @@ function main(): void {
 
   const failures: Finding[] = [];
   const warnings: Finding[] = [];
+  const file = (finding: Finding, failed: boolean): void => {
+    const interesting =
+      failed || finding.extraComponents.length > 0 || finding.extraLinks.length > 0;
+    if (!interesting) return; // a clean page is not a warning
+    finding.note = externalSource(finding.file) ?? undefined;
+    if (failed && !finding.note) failures.push(finding);
+    else warnings.push(finding);
+  };
   let checked = 0;
   let skipped = 0;
 
@@ -338,8 +378,8 @@ function main(): void {
         continue;
       }
       const finding = compare(enRaw, trRaw, localized);
-      if (finding.missingComponents.length || finding.missingLinks.length) failures.push(finding);
-      else if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
+      const failed = finding.missingComponents.length > 0 || finding.missingLinks.length > 0;
+      file(finding, failed);
     }
   } else {
     // Direction 1: a localized page changed -> compare it with its English source.
@@ -358,8 +398,8 @@ function main(): void {
       }
       checked += 1;
       const finding = compare(enRaw, trRaw, localized, "localized");
-      if (finding.missingComponents.length || finding.missingLinks.length) failures.push(finding);
-      else if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
+      const failed = finding.missingComponents.length > 0 || finding.missingLinks.length > 0;
+      file(finding, failed);
     }
 
     // Direction 2: an English page changed -> check every existing counterpart.
@@ -375,12 +415,11 @@ function main(): void {
         checked += 1;
         const finding = compare(enRaw, trRaw, localized, "english");
         if (!finding.missingComponents.length && !finding.missingLinks.length) {
-          if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
+          file(finding, false);
           continue;
         }
         const baseFinding = compare(baseRaw, trRaw, localized, "english");
-        if (introducesNewGap(finding, baseFinding)) failures.push(finding);
-        else warnings.push(finding);
+        file(finding, introducesNewGap(finding, baseFinding));
       }
     }
   }
@@ -407,7 +446,7 @@ function main(): void {
         ...f.extraLinks,
       ].join(", ");
       const kind = f.source === "english" ? "pre-existing drift, not caused by this change" : "extra content";
-      console.log(`\n⚠ ${f.file}: ${kind} (${extra})`);
+      console.log(`\n⚠ ${f.file}: ${f.note ?? kind} (${extra})`);
     }
     console.log(`\nchecked ${checked} localized file(s), skipped ${skipped}`);
     if (failures.length) {
