@@ -184,6 +184,19 @@ export function isExempt(localized: string): boolean {
   return EXEMPT_PATTERNS.some((re) => re.test(rest.join("/")));
 }
 
+/**
+ * The repository this run inspects: the git work tree containing the working
+ * directory, so the script can be invoked from any checkout (CI runs it from the
+ * repo root; tooling may call it from elsewhere).
+ */
+export function resolveRepoRoot(): string {
+  try {
+    return sh(["git", "rev-parse", "--show-toplevel"], process.cwd()).trim();
+  } catch {
+    return join(dirname(new URL(import.meta.url).pathname), "..", "..", "..");
+  }
+}
+
 function sh(cmd: string[], cwd: string): string {
   return execFileSync(cmd[0], cmd.slice(1), { cwd, encoding: "utf8" });
 }
@@ -229,7 +242,7 @@ function main(): void {
   const json = argv.includes("--json");
   const baseArg = argv.find((a) => a.startsWith("--base="));
   const base = baseArg ? baseArg.slice("--base=".length) : process.env.STRUCTURE_PARITY_BASE || "origin/main";
-  const repoRoot = join(dirname(new URL(import.meta.url).pathname), "..", "..", "..");
+  const repoRoot = resolveRepoRoot();
 
   const candidates = all ? allLocalizedFiles(repoRoot) : changedLocalizedFiles(repoRoot, base);
   const findings: Finding[] = [];
