@@ -4,6 +4,7 @@ import {
   changedEnglishFiles,
   compare,
   componentCounts,
+  diffRanges,
   englishCounterpart,
   introducesNewGap,
   isExempt,
@@ -237,5 +238,17 @@ describe("path helpers", () => {
     const repoRoot = new URL("../../..", import.meta.url).pathname;
     const files = changedEnglishFiles(repoRoot, "HEAD~1");
     expect(files.every((f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/"))).toBe(true);
+  });
+});
+
+describe("diffRanges", () => {
+  test("spans base..head so the scan stays inside the change under review", () => {
+    // The checked out merge commit also carries every commit the base branch
+    // added after the branch point, so a range that ends at HEAD instead of at
+    // head would audit pages this change never touched.
+    expect(diffRanges("base-sha", "head-sha")).toEqual([
+      "base-sha...head-sha",
+      "head-sha~1...head-sha",
+    ]);
   });
 });
