@@ -33,6 +33,48 @@ changelog/index.mdx
 - **Headings**: translate the heading text the way the target language's own
   pages do, and keep any `{#anchor}` exactly as the English source has it.
 
+## Structure parity (`check-structure-parity.ts`)
+
+A localized page must carry the same MDX structure as its English source. The
+check compares, for every localized file with an English counterpart:
+
+| Compared | Detail |
+|----------|--------|
+| Components | every capitalized JSX tag, counted by name, so a new component is covered without editing the check; plus h2/h3/h4 counts |
+| Images | `<img ...>` and `![alt](...)` counted separately, so a form swap shows up |
+| Asset links | `raw.githubusercontent.com`, `github.com/Comfy-Org/*`, `cloud.comfy.org` (normalized, so embedded-docs locale paths compare equal) |
+
+Missing elements and links fail; extra elements warn, because a locale may add
+something on purpose (the zh home page carries an extra social icon). Frontmatter
+and fenced code blocks are stripped first (CommonMark fence rules: the closer must
+match the opener's character, be at least as long, and carry nothing else), so a
+`<Card>` shown inside a code sample is never counted. Deleted or renamed localized
+pages are skipped instead of crashing the run.
+
+```bash
+bun .github/scripts/i18n/check-structure-parity.ts              # changed files, both directions
+bun .github/scripts/i18n/check-structure-parity.ts --all        # whole repo, backlog report
+bun .github/scripts/i18n/check-structure-parity.ts --base=<ref> # explicit base
+bun .github/scripts/i18n/check-structure-parity.ts --json       # machine readable
+```
+
+Changed-file mode covers both directions:
+
+- a **localized page changed** -> compared with its English source, blocking;
+- an **English page changed** -> every existing ja/zh/ko counterpart is compared
+  with the updated English page. This direction only fails when the counterpart
+  matched the English page *before* the change, so pre-existing debt in untouched
+  pages is reported as a warning and never blocks a pull request.
+
+That keeps it a ratchet: the check bites the area a pull request touches, and the
+backlog is burned down with `--all` (131 files when the gate landed).
+
+Exemptions live in `EXEMPT_PATTERNS`: `pricing.mdx` (hand translated),
+`api-reference/**` (generated), `snippets/**` (imported), root
+`comfy-router-*.mdx` orphans, `changelog/**` (a separate pipeline) and
+`docs.json` (navigation). Workflow:
+[`.github/workflows/structure-parity.yml`](../../workflows/structure-parity.yml).
+
 ## Values, headings and punctuation
 
 | Part | Rule |
