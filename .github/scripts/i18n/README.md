@@ -33,6 +33,35 @@ changelog/index.mdx
 - **Headings**: translate the heading text the way the target language's own
   pages do, and keep any `{#anchor}` exactly as the English source has it.
 
+## Structure parity (`check-structure-parity.ts`)
+
+A localized page must carry the same MDX structure as its English source. This
+check fails when a changed localized page lost something the English page has:
+
+| Compared | Detail |
+|----------|--------|
+| Components | `Card`, `CardGroup`, `Tab`, `Tabs`, tip-style callouts, `Steps`, `Step`, `Accordion`, `AccordionGroup`, `Frame`, `Columns`, `Tiles`, and h2/h3/h4 counts |
+| Images | `<img ...>` and `![alt](...)` |
+| Asset links | `raw.githubusercontent.com`, `github.com/Comfy-Org/*`, `cloud.comfy.org` (normalized, so embedded-docs locale paths compare equal) |
+
+Missing elements and links fail the run; extra elements are warnings, because a
+locale may legitimately add something (the zh home page carries an extra social
+icon). Frontmatter and fenced code blocks are stripped before counting, so a
+`<Card>` shown inside a code sample is never counted.
+
+```bash
+bun .github/scripts/i18n/check-structure-parity.ts              # changed files vs origin/main (CI gate)
+bun .github/scripts/i18n/check-structure-parity.ts --all        # whole repo, backlog report
+bun .github/scripts/i18n/check-structure-parity.ts --base=<ref> # explicit base
+bun .github/scripts/i18n/check-structure-parity.ts --json       # machine readable
+```
+
+The gate is scoped to the files a pull request changes (the ratchet), because
+older pages carry a backlog. Exemptions live in `EXEMPT_PATTERNS`: `pricing.mdx`
+(hand translated), `api-reference/**` (generated), `snippets/**` (imported),
+root `comfy-router-*.mdx` orphans, and `changelog/**` (a separate pipeline).
+Workflow: [`.github/workflows/structure-parity.yml`](../../workflows/structure-parity.yml).
+
 ## Values, headings and punctuation
 
 | Part | Rule |
