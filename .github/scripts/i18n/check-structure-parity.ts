@@ -3,27 +3,29 @@
  * Structure parity check for localized pages.
  *
  * A translated page must carry the same MDX structure as its English source:
- * the same cards, the same CardGroup wrappers around them, the same images and
- * the same asset links. When a localized page is translated before the English
- * page gained that structure (or when a translation drops it), nothing else
- * catches it: `translate:dry-run` compares section hashes only, `mint-checks`
- * only fails on broken links, and the markdown renders without the missing
- * pieces. The result is a page that quietly loses its download cards, workflow
- * previews or card grouping, which is exactly what this gate reports.
+ * the same components (counted per tag name, so a new library like `<CardGroup>`
+ * or any other capitalized JSX tag is covered without touching this file), the
+ * same images, headings and asset links. When a localization is translated
+ * before the English page gains that structure, or when a translation drops it,
+ * nothing else catches it: `translate:dry-run` compares section hashes only,
+ * `mint-checks` fails on broken links only, and the markdown renders fine
+ * without the missing pieces. The result is a page that quietly loses its
+ * download cards, workflow previews or card grouping.
  *
- * What it compares, per localized file with an English counterpart:
- *   - component counts: Card, CardGroup, Tab, Tabs, tip-style callouts, Steps,
- *     Step, Accordion, AccordionGroup, Frame, Columns, Tiles
- *   - images: `<img ...>` and `![alt](...)`
- *   - asset links: raw.githubusercontent.com, github.com/Comfy-Org/*,
- *     cloud.comfy.org (a localized page must not drop one the English page has)
+ * Both directions are covered in changed-file mode:
+ *   - a localized page changed -> compare it with its English source;
+ *   - an English page changed -> compare every existing ja/zh/ko counterpart
+ *     with the updated English page.
+ * The second direction only fails when the counterpart was in parity before the
+ * change, so pre-existing debt in untouched pages never blocks a pull request
+ * (it is reported as a warning instead).
  *
  * Missing elements and links fail the run. Extra elements are reported as
  * warnings, because a locale may legitimately add something (the zh home page
  * carries an extra social icon).
  *
  * Usage:
- *   bun .github/scripts/i18n/check-structure-parity.ts               # changed files vs origin/main
+ *   bun .github/scripts/i18n/check-structure-parity.ts               # changed files, both directions
  *   bun .github/scripts/i18n/check-structure-parity.ts --all         # whole repo, backlog report
  *   bun .github/scripts/i18n/check-structure-parity.ts --base=<ref>  # explicit base
  *   bun .github/scripts/i18n/check-structure-parity.ts --json        # machine readable
@@ -32,7 +34,7 @@
  * previous commit on push), matching the anchor check.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const LOCALES = ["ja", "zh", "ko"];
@@ -44,22 +46,10 @@ const EXEMPT_PATTERNS: RegExp[] = [
   /^snippets\//, // snippets are imported, not standalone pages
   /^comfy-router-[^/]+\.mdx$/, // legacy orphans with no English source
   /^changelog\//, // CMS changelog pipeline, separate from docs translation
+  /(^|\/)docs\.json$/, // navigation, not a page
 ];
 
-const COMPONENTS: { label: string; re: RegExp }[] = [
-  { label: "Card", re: /<Card[\s>/]/g },
-  { label: "CardGroup", re: /<CardGroup[\s>/]/g },
-  { label: "Tab", re: /<Tab[\s>/]/g },
-  { label: "Tabs", re: /<Tabs[\s>/]/g },
-  { label: "callout", re: /<(Tip|Note|Warning|Info|Check|Danger)[\s>/]/g },
-  { label: "Steps", re: /<Steps[\s>/]/g },
-  { label: "Step", re: /<Step[\s>/]/g },
-  { label: "Accordion", re: /<Accordion[\s>/]/g },
-  { label: "AccordionGroup", re: /<AccordionGroup[\s>/]/g },
-  { label: "Frame", re: /<Frame[\s>/]/g },
-  { label: "Columns", re: /<Columns[\s>/]/g },
-  { label: "Tiles", re: /<Tiles[\s>/]/g },
-  { label: "image", re: /<img[\s>/]|!\[[^\]]*\]\(/g },
+const HEADING_RES: { label: string; re: RegExp }[] = [
   { label: "h2", re: /^## /gm },
   { label: "h3", re: /^### /gm },
   { label: "h4", re: /^#### /gm },
@@ -71,19 +61,20 @@ const ASSET_HOSTS = [
   "cloud.comfy.org",
 ];
 
-export interface Counts {
-  [label: string]: number;
-}
+export type Counts = Record<string, number>;
 
 /**
  * Drop frontmatter and fenced code blocks so component-looking text inside a
- * code sample is never counted.
+ * code sample is never counted. Fence handling follows CommonMark: the closing
+ * fence must use the same character as the opener, be at least as long, and have
+ * nothing but whitespace after it, so a three-backtick sample inside a
+ * four-backtick block (or a `~~~` line inside a backtick fence) stays content.
  */
 export function strippedBody(raw: string): string {
   const lines = raw.split("\n");
   const out: string[] = [];
   let inFrontmatter = lines[0]?.trim() === "---";
-  let inFence = false;
+  let fence: { char: string; len: number } | null = null;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (i === 0 && inFrontmatter) continue;
@@ -91,21 +82,46 @@ export function strippedBody(raw: string): string {
       if (line.trim() === "---") inFrontmatter = false;
       continue;
     }
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (match) {
+      const marker = match[1];
+      const rest = match[2];
+      if (!fence) {
+        // A backtick fence cannot carry backticks in its info string.
+        if (marker[0] === "`" && rest.includes("`")) {
+          out.push(line);
+          continue;
+        }
+        fence = { char: marker[0], len: marker.length };
+        continue;
+      }
+      if (marker[0] === fence.char && marker.length >= fence.len && rest.trim() === "") {
+        fence = null;
+      }
       continue;
     }
-    if (inFence) continue;
+    if (fence) continue;
     out.push(line);
   }
   return out.join("\n");
 }
 
-export function countComponents(body: string): Counts {
+/**
+ * Count every capitalized JSX tag by name. Lowercase tags are HTML (`img`,
+ * `div`, `video`), so this picks up any MDX component without keeping a list of
+ * known names: a new component is covered the moment it appears.
+ */
+export function componentCounts(body: string): Counts {
   const counts: Counts = {};
-  for (const { label, re } of COMPONENTS) {
+  for (const match of body.matchAll(/<([A-Z][A-Za-z0-9_.]*)/g)) {
+    const name = match[1];
+    counts[name] = (counts[name] ?? 0) + 1;
+  }
+  for (const { label, re } of HEADING_RES) {
     counts[label] = (body.match(re) ?? []).length;
   }
+  counts["img"] = (body.match(/<img[\s>/]/g) ?? []).length;
+  counts["markdown-image"] = (body.match(/!\[[^\]]*\]\(/g) ?? []).length;
   return counts;
 }
 
@@ -123,8 +139,7 @@ export function normalizeAssetUrl(url: string): string {
 
 export function assetLinks(body: string): string[] {
   const found: string[] = [];
-  const re = /https:\/\/[^\s)"'<>\]`]+/g;
-  for (const match of body.match(re) ?? []) {
+  for (const match of body.match(/https:\/\/[^\s)"'<>\]`]+/g) ?? []) {
     const url = normalizeAssetUrl(match);
     if (ASSET_HOSTS.some((host) => url.includes(host))) found.push(url);
   }
@@ -144,30 +159,45 @@ function multisetDiff(want: string[], have: string[]): string[] {
 
 export interface Finding {
   file: string;
+  source: "localized" | "english";
   missingComponents: { label: string; en: number; localized: number }[];
   extraComponents: { label: string; en: number; localized: number }[];
   missingLinks: string[];
   extraLinks: string[];
 }
 
-export function compare(enRaw: string, localizedRaw: string, file: string): Finding {
+export function compare(
+  englishRaw: string,
+  localizedRaw: string,
+  file: string,
+  source: Finding["source"] = "localized"
+): Finding {
   // Strip frontmatter and fenced code here so every caller gets the same view:
   // a `<Card>` inside a code sample is documentation, not a component.
-  const enBody = strippedBody(enRaw);
-  const localizedBody = strippedBody(localizedRaw);
-  const en = countComponents(enBody);
-  const localized = countComponents(localizedBody);
+  const en = componentCounts(strippedBody(englishRaw));
+  const localized = componentCounts(strippedBody(localizedRaw));
   const missingComponents: Finding["missingComponents"] = [];
   const extraComponents: Finding["extraComponents"] = [];
-  for (const { label } of COMPONENTS) {
+  for (const label of Object.keys(en)) {
     const want = en[label] ?? 0;
     const have = localized[label] ?? 0;
     if (have < want) missingComponents.push({ label, en: want, localized: have });
-    else if (have > want) extraComponents.push({ label, en: want, localized: have });
   }
-  const missingLinks = multisetDiff(assetLinks(enBody), assetLinks(localizedBody));
-  const extraLinks = multisetDiff(assetLinks(localizedBody), assetLinks(enBody));
-  return { file, missingComponents, extraComponents, missingLinks, extraLinks };
+  for (const label of Object.keys(localized)) {
+    const want = en[label] ?? 0;
+    const have = localized[label] ?? 0;
+    if (have > want) extraComponents.push({ label, en: want, localized: have });
+  }
+  const enLinks = assetLinks(strippedBody(englishRaw));
+  const trLinks = assetLinks(strippedBody(localizedRaw));
+  return {
+    file,
+    source,
+    missingComponents,
+    extraComponents,
+    missingLinks: multisetDiff(enLinks, trLinks),
+    extraLinks: multisetDiff(trLinks, enLinks),
+  };
 }
 
 /** English counterpart of a localized path, or null when it does not exist. */
@@ -178,10 +208,21 @@ export function englishCounterpart(localized: string, repoRoot: string): string 
   return existsSync(join(repoRoot, en)) ? en : null;
 }
 
-export function isExempt(localized: string): boolean {
-  const [locale, ...rest] = localized.split("/");
-  if (!LOCALES.includes(locale)) return false;
-  return EXEMPT_PATTERNS.some((re) => re.test(rest.join("/")));
+/** Localized counterparts of an English page, for locales where they exist. */
+export function localizedCounterparts(english: string, repoRoot: string): string[] {
+  return LOCALES.map((locale) => `${locale}/${english}`).filter((path) =>
+    existsSync(join(repoRoot, path))
+  );
+}
+
+export function isExempt(relativePath: string): boolean {
+  const parts = relativePath.split("/");
+  const rest = LOCALES.includes(parts[0]) ? parts.slice(1).join("/") : relativePath;
+  return EXEMPT_PATTERNS.some((re) => re.test(rest));
+}
+
+function sh(cmd: string[], cwd: string): string {
+  return execFileSync(cmd[0], cmd.slice(1), { cwd, encoding: "utf8" });
 }
 
 /**
@@ -189,25 +230,21 @@ export function isExempt(localized: string): boolean {
  * directory, so the script can be invoked from any checkout (CI runs it from the
  * repo root; tooling may call it from elsewhere).
  */
-export function resolveRepoRoot(): string {
+export function resolveRepoRoot(cwd = process.cwd()): string {
   try {
-    return sh(["git", "rev-parse", "--show-toplevel"], process.cwd()).trim();
+    return sh(["git", "rev-parse", "--show-toplevel"], cwd).trim();
   } catch {
     return join(dirname(new URL(import.meta.url).pathname), "..", "..", "..");
   }
 }
 
-function sh(cmd: string[], cwd: string): string {
-  return execFileSync(cmd[0], cmd.slice(1), { cwd, encoding: "utf8" });
-}
-
-export function changedLocalizedFiles(repoRoot: string, base: string): string[] {
+function changedFiles(repoRoot: string, base: string, paths: string[]): string[] {
   // A force-push can leave the base SHA unreachable; fall back to the previous
   // commit so the gate still sees the change instead of crashing.
   let out = "";
   for (const range of [`${base}...HEAD`, "HEAD~1...HEAD"]) {
     try {
-      out = sh(["git", "diff", "--name-only", range, "--", ...LOCALES], repoRoot);
+      out = sh(["git", "diff", "--name-only", range, "--", ...paths], repoRoot);
       break;
     } catch {
       // try the next range
@@ -215,7 +252,7 @@ export function changedLocalizedFiles(repoRoot: string, base: string): string[] 
   }
   let unstaged = "";
   try {
-    unstaged = sh(["git", "diff", "--name-only", "--", ...LOCALES], repoRoot);
+    unstaged = sh(["git", "diff", "--name-only", "--", ...paths], repoRoot);
   } catch {
     unstaged = "";
   }
@@ -228,12 +265,48 @@ export function changedLocalizedFiles(repoRoot: string, base: string): string[] 
   ];
 }
 
-export function allLocalizedFiles(repoRoot: string): string[] {
-  const out = sh(["git", "ls-files", "--", ...LOCALES], repoRoot);
-  return out
+export function changedLocalizedFiles(repoRoot: string, base: string): string[] {
+  return changedFiles(repoRoot, base, LOCALES);
+}
+
+export function changedEnglishFiles(repoRoot: string, base: string): string[] {
+  const candidates = changedFiles(repoRoot, base, ["."]);
+  return candidates.filter(
+    (path) => !LOCALES.includes(path.split("/")[0]) && !isExempt(path)
+  );
+}
+
+function allLocalizedFiles(repoRoot: string): string[] {
+  return sh(["git", "ls-files", "--", ...LOCALES], repoRoot)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.endsWith(".mdx"));
+}
+
+function readIfExists(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+function gitShow(repoRoot: string, ref: string, path: string): string | null {
+  try {
+    return sh(["git", "show", `${ref}:${path}`], repoRoot);
+  } catch {
+    return null; // added in this change, or unreachable ref
+  }
+}
+
+/**
+ * Does this change own the gap? The counterpart counts as "in parity before the
+ * change" when its gaps were no larger before: a gap that already existed is
+ * historical debt (warning), a gap the change introduced is this PR's to fix.
+ */
+export function introducesNewGap(finding: Finding, baseFinding: Finding): boolean {
+  const baseGaps = new Map(baseFinding.missingComponents.map((c) => [c.label, c.en - c.localized]));
+  for (const c of finding.missingComponents) {
+    if (c.en - c.localized > (baseGaps.get(c.label) ?? 0)) return true;
+  }
+
+  return finding.missingLinks.length > baseFinding.missingLinks.length;
 }
 
 function main(): void {
@@ -244,36 +317,83 @@ function main(): void {
   const base = baseArg ? baseArg.slice("--base=".length) : process.env.STRUCTURE_PARITY_BASE || "origin/main";
   const repoRoot = resolveRepoRoot();
 
-  const candidates = all ? allLocalizedFiles(repoRoot) : changedLocalizedFiles(repoRoot, base);
-  const findings: Finding[] = [];
+  const failures: Finding[] = [];
+  const warnings: Finding[] = [];
   let checked = 0;
-  let skippedNoEnglish = 0;
+  let skipped = 0;
 
-  for (const localized of candidates) {
-    if (isExempt(localized)) continue;
-    const en = englishCounterpart(localized, repoRoot);
-    if (!en) {
-      skippedNoEnglish += 1;
-      continue;
+  if (all) {
+    for (const localized of allLocalizedFiles(repoRoot)) {
+      if (isExempt(localized)) continue;
+      const en = englishCounterpart(localized, repoRoot);
+      if (!en) {
+        skipped += 1;
+        continue;
+      }
+      checked += 1;
+      const enRaw = readIfExists(join(repoRoot, en));
+      const trRaw = readIfExists(join(repoRoot, localized));
+      if (enRaw === null || trRaw === null) {
+        skipped += 1;
+        continue;
+      }
+      const finding = compare(enRaw, trRaw, localized);
+      if (finding.missingComponents.length || finding.missingLinks.length) failures.push(finding);
+      else if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
     }
-    checked += 1;
-    const finding = compare(
-      readFileSync(join(repoRoot, en), "utf8"),
-      readFileSync(join(repoRoot, localized), "utf8"),
-      localized
-    );
-    if (finding.missingComponents.length || finding.missingLinks.length) findings.push(finding);
-    else if (finding.extraComponents.length || finding.extraLinks.length) findings.push(finding);
+  } else {
+    // Direction 1: a localized page changed -> compare it with its English source.
+    for (const localized of changedLocalizedFiles(repoRoot, base)) {
+      if (isExempt(localized)) continue;
+      const en = englishCounterpart(localized, repoRoot);
+      if (!en) {
+        skipped += 1;
+        continue;
+      }
+      const enRaw = readIfExists(join(repoRoot, en));
+      const trRaw = readIfExists(join(repoRoot, localized));
+      if (enRaw === null || trRaw === null) {
+        skipped += 1; // deleted or renamed away in this change
+        continue;
+      }
+      checked += 1;
+      const finding = compare(enRaw, trRaw, localized, "localized");
+      if (finding.missingComponents.length || finding.missingLinks.length) failures.push(finding);
+      else if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
+    }
+
+    // Direction 2: an English page changed -> check every existing counterpart.
+    for (const english of changedEnglishFiles(repoRoot, base)) {
+      if (isExempt(english)) continue;
+      const baseRaw = gitShow(repoRoot, base, english);
+      if (baseRaw === null) continue; // new page: translations do not exist yet
+      const enRaw = readIfExists(join(repoRoot, english));
+      if (enRaw === null) continue; // deleted page: the redirect check owns that
+      for (const localized of localizedCounterparts(english, repoRoot)) {
+        const trRaw = readIfExists(join(repoRoot, localized));
+        if (trRaw === null) continue;
+        checked += 1;
+        const finding = compare(enRaw, trRaw, localized, "english");
+        if (!finding.missingComponents.length && !finding.missingLinks.length) {
+          if (finding.extraComponents.length || finding.extraLinks.length) warnings.push(finding);
+          continue;
+        }
+        const baseFinding = compare(baseRaw, trRaw, localized, "english");
+        if (introducesNewGap(finding, baseFinding)) failures.push(finding);
+        else warnings.push(finding);
+      }
+    }
   }
 
-  const failing = findings.filter((f) => f.missingComponents.length || f.missingLinks.length);
-  const warnings = findings.filter((f) => !f.missingComponents.length && !f.missingLinks.length);
-
   if (json) {
-    console.log(JSON.stringify({ checked, skippedNoEnglish, failing, warnings }, null, 2));
+    console.log(JSON.stringify({ checked, skipped, failures, warnings }, null, 2));
   } else {
-    for (const f of failing) {
-      console.log(`\n✖ ${f.file}`);
+    for (const f of failures) {
+      const cause =
+        f.source === "english"
+          ? "the English source changed and this translation is now stale"
+          : "this translation lost structure the English source has";
+      console.log(`\n✖ ${f.file} (${cause})`);
       for (const c of f.missingComponents) {
         console.log(`    ${c.label}: English ${c.en}, localized ${c.localized} (missing ${c.en - c.localized})`);
       }
@@ -281,23 +401,25 @@ function main(): void {
       if (f.missingLinks.length > 8) console.log(`    ... and ${f.missingLinks.length - 8} more missing links`);
     }
     for (const f of warnings) {
-      const extra = [...f.extraComponents.map((c) => c.label), ...f.extraLinks].join(", ");
-      console.log(`\n⚠ ${f.file}: extra content vs English (${extra})`);
+      const extra = [
+        ...f.missingComponents.map((c) => `${c.label} short by ${c.en - c.localized}`),
+        ...f.extraComponents.map((c) => `${c.label} +${c.localized - c.en}`),
+        ...f.extraLinks,
+      ].join(", ");
+      const kind = f.source === "english" ? "pre-existing drift, not caused by this change" : "extra content";
+      console.log(`\n⚠ ${f.file}: ${kind} (${extra})`);
     }
-    console.log(
-      `\nchecked ${checked} localized file(s), skipped ${skippedNoEnglish} without an English counterpart`
-    );
-    if (failing.length) {
+    console.log(`\nchecked ${checked} localized file(s), skipped ${skipped}`);
+    if (failures.length) {
       console.log(
-        `\n${failing.length} file(s) lost structure or links that the English source has. ` +
-          `Restore them (keep hrefs byte-identical to English) or add the path to EXEMPT_PATTERNS with a reason.`
+        `\n${failures.length} comparison(s) failed. Restore the missing structure or links ` +
+          `(keep hrefs byte-identical to English), or add the path to EXEMPT_PATTERNS with a reason.`
       );
     } else {
       console.log("\nStructure parity: OK");
     }
   }
-  process.exit(failing.length ? 1 : 0);
+  process.exit(failures.length ? 1 : 0);
 }
 
 if (import.meta.main) main();
-void relative;
