@@ -637,6 +637,12 @@ describe("renderModelsIndex: modality columns and Find by output", () => {
     expect(index).not.toContain(`[MiniMax Old](/${OLD_PAGE}): `);
   });
 
+  test("accordion tags start at column 0 so MDX does not fold a closing tag into the last list item", () => {
+    expect(index).toMatch(/^<Accordion title="Video \(1\)">$/m);
+    expect(index).toMatch(/^<\/Accordion>$/m);
+    expect(index).not.toMatch(/^[ \t]+<\/?Accordion[ >]/m);
+  });
+
   test("with no model publishing an output list there is no empty jump section", () => {
     const bare = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old" }], false);
     expect(bare).not.toContain("Find by output");

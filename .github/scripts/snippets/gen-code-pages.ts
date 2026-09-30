@@ -1274,7 +1274,7 @@ function findByOutput(pages: IndexPage[]): string {
     .filter((g) => g.list.length > 0)
     .map(
       ({ modality, list }) =>
-        `  <Accordion title="${attr(modalityLabel(modality))} (${list.length})">\n\n${list.map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``).join("\n")}\n\n  </Accordion>`
+        `<Accordion title="${attr(modalityLabel(modality))} (${list.length})">\n\n${list.map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``).join("\n")}\n\n</Accordion>`
     );
   if (!groups.length) return "";
   return `## Find by output\n\n<AccordionGroup>\n${groups.join("\n")}\n</AccordionGroup>`;
