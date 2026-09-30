@@ -253,7 +253,7 @@ export function delocalizeImportPath(importPath, languages) {
  *
  * A model that translates `import Requirements from "/snippets/..."` into
  * `import 요구사항 from "/snippets/ko/..."` renames the matching `<Requirements/>`
- * tag too. The page still renders — import and usage agree — so the rename is
+ * tag too. The page still renders (import and usage agree), so the rename is
  * invisible to every gate: `localizeMdxPaths` only rewrites the path, the
  * structure-parity gate counts components that exist, and the review pass is
  * told that localized snippet import paths are expected. The result is a page
