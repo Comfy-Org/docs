@@ -105,7 +105,7 @@ Supported locales are maintained through **automated translation** from English.
 
 Want docs in another language? [Open an issue](https://github.com/Comfy-Org/docs/issues/new) with the locale you need (for example French, German, or Brazilian Portuguese). A maintainer will add the language to `translation-config.json` and `docs.json`, then run a **full batch translation** of all content. You only need to submit the request; no translated MDX PR is required to get started.
 
-Specifications for editing MDX can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document.
+Specifications for editing MDX can be found in the Writing Content section of the [Mintlify](https://www.mintlify.com/docs/pages) document.
 
 > **Note**: `built-in-nodes/` is maintained in [embedded-docs](https://github.com/Comfy-Org/embedded-docs) and is **skipped** by the translation script. Do not run bulk translation against that folder.
 
