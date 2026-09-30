@@ -201,6 +201,35 @@ import Faq from "/snippets/ko/b.mdx";
     expect(restoreImportIdentifiers(ko, en, LANGUAGES)).toBe(ko);
   });
 
+  test("pairs an orphan tag when another alias was renamed in the same call", () => {
+    // Pass 1 renames 요구사항, so pass 2 has to work with the English names or the
+    // remaining translated tag finds nothing to pair with.
+    const en = `import Requirements from "/snippets/a.mdx";
+import Faq from "/snippets/b.mdx";
+
+<Requirements/>
+
+<Faq/>
+`;
+    const ko = `import 요구사항 from "/snippets/ko/a.mdx";
+import Faq from "/snippets/ko/b.mdx";
+
+## 개요
+
+<요구사항/>
+
+## FAQ
+
+<자주묻는질문/>
+`;
+    const out = restoreImportIdentifiers(ko, en, LANGUAGES);
+    expect(out).toContain('import Requirements from "/snippets/ko/a.mdx"');
+    expect(out).toContain("<Requirements/>");
+    expect(out).toContain("<Faq/>");
+    expect(out).not.toContain("자주묻는질문");
+    expect(out).not.toContain("요구사항");
+  });
+
   test("tolerates empty input", () => {
     expect(restoreImportIdentifiers("", EN, LANGUAGES)).toBe("");
     expect(restoreImportIdentifiers("import X from \"/snippets/ko/a.mdx\";", "", LANGUAGES)).toBe(

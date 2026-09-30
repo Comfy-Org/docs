@@ -333,19 +333,20 @@ export function restoreImportIdentifiers(content, enContent, languages) {
   }
   let output = renames.size > 0 ? applyAliasRenames(content, renames) : content;
 
-  // Pass 2: translated tags whose import line is already English.
-  const defined = new Set(matched.map((entry) => entry.alias));
+  // Pass 2: translated tags whose import line is already English. `alias` still
+  // holds the pre-pass-1 name, so every reference below uses `enAlias`, the name
+  // the document actually carries once pass 1 has run.
+  const englishAliases = [...new Set(matched.map((entry) => entry.enAlias))];
+  const defined = new Set(englishAliases);
   const tags = [...new Set([...output.matchAll(TAG_RE)].map((match) => match[1]))];
   const orphanTags = tags.filter((tag) => !defined.has(tag) && hasNonAscii(tag));
   if (orphanTags.length === 0) return output;
 
   const used = new Set(tags);
-  const unusedAliases = [...new Set(matched.map((entry) => entry.alias))].filter(
-    (alias) => !used.has(alias)
-  );
+  const unusedAliases = englishAliases.filter((alias) => !used.has(alias));
   const pairs =
-    orphanTags.length === 1 && matched.length === 1
-      ? [[orphanTags[0], matched[0].alias]]
+    orphanTags.length === 1 && englishAliases.length === 1
+      ? [[orphanTags[0], englishAliases[0]]]
       : orphanTags.length === unusedAliases.length
         ? orphanTags.map((tag, index) => [tag, unusedAliases[index]])
         : [];
