@@ -1,0 +1,141 @@
+---
+title: "Comfy Router pricing"
+sidebarTitle: "Pricing"
+description: "What a Router generation costs, how credits convert to dollars, and how to compare the providers serving the same model."
+---
+
+Router is pay per use. Each generation draws credits from your workspace balance, with no subscription. What a generation costs depends on the model and on which provider serves it.
+
+## Credits and dollars
+
+Comfy prices in credits at a fixed rate:
+
+**$1.00 USD = 211 credits.** One credit is $0.004739.
+
+Buy credits at [workspace billing](https://platform.comfy.org). A workspace with no balance is refused with `402` and `insufficient_credits` before the request body is validated, so an unfunded workspace can answer `402` even for a malformed request. A call billed to [your own provider key](#bring-your-own-provider-key) does not draw credits and is not refused for an empty balance.
+
+## Read the price off the response
+
+A successful generation can carry an `X-Comfy-Credits-Used` response header giving what that run cost, in credits. It is priced from the same rate card the charge itself is billed against, and on a run that reached the provider through more than one billed call it is their sum.
+
+```bash
+curl -sD - -o /dev/null \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"a red bicycle"}]}]}' \
+  https://api.comfy.org/v2/models/vertexai/gemini-3.1-flash-image \
+  | grep -i x-comfy-credits-used
+```
+
+Divide by 211 for dollars: a header reading `25.32` means that run cost $0.12. This model's default provider is metered, so that figure is one run's cost, not the model's price — the next request can read differently. The value is rounded to two decimals, so treat it as a figure to display and reconcile, not as an exact ledger amount.
+
+<Warning>
+**The header is not present on every response, and absent does not mean free.**
+
+- **Coverage is partial.** Not every model reports it yet, and coverage is widening. A missing header means "not reported", never "free" — branch on whether the header is present, not on whether its value is non-zero.
+- **It is absent** on a call billed to your own provider key, on a call whose cost could not be rated, and on every error response — including a charged content-policy refusal.
+- **It is a price, not a receipt.** On a model that submits and then polls, it is the price the charge will settle at, recorded before that charge settles. Reconcile against your workspace's usage and billing records rather than against the header alone.
+- **A rated run that genuinely cost nothing reads `0`** — a reported cost, not a missing one. Never sum absent headers as zero.
+</Warning>
+
+Within a single run the header is the **sum** of every billed call that run made. Across retries it is not: a replayed response — one served from the record held against an `Idempotency-Key`, marked `Idempotent-Replayed: true` — is not charged a second time and carries the original run's figure again. **Do not add the header up across retries of one key**, or a cost-tracking integration will overstate spend.
+
+<Note>
+Where a figure on this page and the header disagree, the header reflects the rate card the charge is billed against — treat this page as a guide to the shape of a model's pricing, not as the rate card.
+</Note>
+
+## Two ways a model is priced
+
+Models do not all price the same way, and the difference is what decides whether a single number can describe a model at all.
+
+| Shape | What you pay | How it behaves |
+| --- | --- | --- |
+| **Flat per generation** | One price per successful call, sometimes varying across a small set of named options such as resolution, mode, quality, style, or rendering speed. | Predictable. The same request served by the same provider always costs the same. |
+| **Metered per unit** | A rate applied to what the request actually consumed — image or text tokens, output resolution, video duration. | Varies per call, sometimes by more than an order of magnitude between a small cheap request and a large one. |
+
+Which shape applies is a property of the model and the provider serving it, so the same model can be flat on one provider and metered on another. A flat shape is only predictable while the call stays on the provider you chose — see [provider fallback](#provider-fallback-can-change-the-price).
+
+Most token-priced models — the Gemini, GPT, and Claude families — are metered. Most dedicated image and video generators are flat, or flat within a named option.
+
+## Comparing providers for the same model
+
+Some models are served by more than one provider. The model is the same; the price and the pricing shape are not. Where a model has alternates, they are listed on its page and on [Providers](/development/comfy-router/providers).
+
+Two image models where the difference is large and worth knowing:
+
+### `vertexai/gemini-3-pro-image`
+
+| Provider | Call it as | Pricing |
+| --- | --- | --- |
+| Vertex AI (default) | `vertexai/gemini-3-pro-image` | Metered — per token, across input text, image, audio and video plus output text, image and reasoning. Varies per request. |
+| fal | `fal/fal-nano-banana-pro` | **$0.15** flat per generation |
+| Wavespeed | `wavespeed/wavespeed-nano-banana-pro` | **$0.14** per generation at 1K and 2K, **$0.24** at 4K |
+| Runware | `runware/runware-nano-banana-pro` | Metered — varies with what the request consumed |
+
+### `vertexai/gemini-3.1-flash-image`
+
+| Provider | Call it as | Pricing |
+| --- | --- | --- |
+| Vertex AI (default) | `vertexai/gemini-3.1-flash-image` | Metered — per token, on the same basis as above. Varies per request. |
+| fal | `fal/fal-nano-banana-2` | **$0.08** flat per generation |
+| Wavespeed | `wavespeed/wavespeed-nano-banana-2` | **$0.07** flat per generation |
+| Runware | `runware/runware-nano-banana-2` | Metered — varies with what the request consumed |
+
+The default provider for both is metered, and the alternates differ in how predictable they are: fal is a single flat price, Wavespeed is flat within a resolution band, and Runware varies per request. If you need a per-image price you can forecast, fal and Wavespeed give you one. If your requests are small, a metered provider can still come out lower — the only way to know for your own traffic is to measure it with the header.
+
+### `openai/gpt-image-2` on Wavespeed
+
+Not every alternate is a single number. Wavespeed prices the GPT image models as a grid of quality against output resolution — flat within each cell, so it is predictable once you know which cell your request lands in:
+
+**Text to image** (`wavespeed/wavespeed-gpt-image-2`)
+
+| Quality | 1K | 2K | 4K |
+| --- | --- | --- | --- |
+| `low` | $0.01 | $0.02 | $0.03 |
+| `medium` | $0.06 | $0.10 | $0.18 |
+| `high` | $0.22 | $0.40 | $0.72 |
+
+**Edit**
+
+| Quality | 1K | 2K | 4K |
+| --- | --- | --- | --- |
+| `low` | $0.02 | $0.03 | $0.04 |
+| `medium` | $0.07 | $0.11 | $0.19 |
+| `high` | $0.23 | $0.41 | $0.73 |
+
+OpenAI's own leg for the same model is token-metered instead, so the two are not comparable cell by cell — pick the row and column your traffic actually uses and compare that against a measured run.
+
+The `gpt-image-2.5` models are priced on the same grid shape with two further quality steps (`xhigh` and `max`). Seedance, Kling and Wan video are metered or multi-tier on every provider that serves them. For all of these, compare measured runs on a request shaped like your real traffic rather than against a single published figure — with `X-Comfy-Credits-Used` where the model reports it, and against your workspace's usage records where it does not.
+
+## Choosing a provider on a request
+
+Send the model's own id and Router uses its default provider. To run the same model on an alternate, either call the alternate's own id directly, or keep the model id and add `model_provider`:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"a red bicycle"}]}]}' \
+  "https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=wavespeed&fallback_provider=false"
+```
+
+With `model_provider`, Router translates the response back into the model's native shape where it can. Translation is best-effort: if it cannot be applied, the successful response is returned in the alternate provider's own shape rather than withheld. Calling an alternate's own id directly uses that id's own request and response contract. See [Providers](/development/comfy-router/providers) for the full list and for `strict_mode`.
+
+### Provider fallback can change the price
+
+Automatic provider fallback is **on by default**: if the first provider fails for a reason that is not the request's own, Router can retry once on another of the model's providers, and that provider's price applies. The response then carries `X-Comfy-Router-Fallback-Provider`, naming the provider that served it. When you pick a provider for its price, add `fallback_provider=false`, as above, so a failure is returned to you rather than served — and charged — elsewhere.
+
+## What you are charged for
+
+| Outcome | Charged |
+| --- | --- |
+| Successful generation | Yes |
+| Replayed response for a reused `Idempotency-Key` | Not again — a replay never adds a charge to whatever the original call was charged |
+| Refused by Router before dispatch — `X-Comfy-Error-Type` of `invalid_input`, `insufficient_credits`, `rate_limited`, `concurrency_limit_exceeded`, `unauthorized`, `forbidden` or `not_enabled` | No |
+| Provider refused the prompt on content policy (`content_policy_violation`) | Sometimes — it depends on the model. The error response carries no `X-Comfy-Credits-Used`, so check your workspace's usage records. |
+| Other provider-side failures (`provider_error`, `provider_timeout`, `model_not_found`) | Can be — the request may have reached the provider |
+| Timeout or lost connection | Not determined by the disconnect. Accepted provider work is not cancelled, and may be charged. See [timeouts and collection](/development/comfy-router/errors#timeouts-and-collection). |
+
+## Bring your own provider key
+
+Saving your own Higgsfield key bills those generations to your Higgsfield account rather than your Comfy credits, through the same endpoint. Those runs carry no `X-Comfy-Credits-Used` header. See [Higgsfield with your own key](/development/comfy-router/higgsfield-byok).
