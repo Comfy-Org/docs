@@ -6,6 +6,7 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "../../..");
 const SOURCE_FILE = join(ROOT, "tutorials/partner-nodes/pricing.mdx");
 const DATA_FILE = join(ROOT, "router-pricing/prices.json");
+const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const PRICING_URL = "/tutorials/partner-nodes/pricing";
@@ -44,6 +45,26 @@ type PricingData = {
     source_key: string | null;
     rates: Array<{ fields: Array<{ label: string; value: string }> }>;
   }>;
+};
+
+type MetronomeRate = {
+  model_id: string;
+  serving_provider: string;
+  kind: "usage" | "flat" | "metered";
+  unit: string;
+  price_usd?: string;
+  credits?: string;
+  conditions?: string;
+  effective_from: string;
+  effective_until?: string;
+  replace_existing?: boolean;
+};
+
+type MetronomeData = {
+  snapshot_at: string;
+  credits_per_usd: number;
+  source_sha256: string;
+  rates: MetronomeRate[];
 };
 
 const normalize = (value: string) =>
@@ -122,7 +143,6 @@ function modelKeys(model: string): string[] {
     const bflAliases: Record<string, string[]> = {
       "flux-kontext-pro": ["flux-1-kontext-pro-image"],
       "flux-kontext-max": ["flux-1-kontext-max-image"],
-      "flux-pro-1.1": ["flux-1-1-pro-ultra-image"],
       "flux-pro-1.1-ultra": ["flux-1-1-pro-ultra-image"],
       "video-edit-v1": ["flux-video-edit"],
       "video-upscale-v1": ["flux-video-upscale"],
@@ -131,7 +151,7 @@ function modelKeys(model: string): string[] {
   }
   if (provider === "wavespeed" && segment === "ultimate-image-upscaler") keys.add("ultimate");
 
-  return [...keys].map(normalize).filter((key) => key.length > 2).sort((a, b) => b.length - a.length);
+  return [...keys].map(normalize).filter((key) => key.length >= 2).sort((a, b) => b.length - a.length);
 }
 
 function providerSection(model: string): string | undefined {
@@ -208,9 +228,10 @@ function findPricingMatch(model: string, rows: SourceRow[]): PricingMatch | unde
   const scopedRows = section ? rows.filter((row) => row.section === section) : [];
   for (const key of modelKeys(model)) {
     const matches = scopedRows.filter((candidate) =>
-      candidate.cells
-        .flatMap((cell) => cell.split(/[(),;]/).map(normalize))
-        .includes(key),
+      candidate.cells.some((cell, index) =>
+        /^(?:model(?:\s+(?:id|name))?|node)$/i.test(candidate.headers[index]?.trim() ?? "") &&
+        cell.split(/[(),;]/).some((value) => normalize(value) === key),
+      ),
     );
     if (matches.length) return { section: matches[0].section, anchor: matches[0].anchor, key, rows: matches };
   }
@@ -234,8 +255,58 @@ function loadPricingData(): PricingData {
   return data;
 }
 
+function loadMetronomeData(): MetronomeData {
+  const data = JSON.parse(readFileSync(METRONOME_FILE, "utf8")) as MetronomeData;
+  if (!data.snapshot_at || data.credits_per_usd <= 0 || !Array.isArray(data.rates)) {
+    throw new Error(`${METRONOME_FILE}: invalid Metronome pricing data`);
+  }
+  for (const rate of data.rates) {
+    if (!rate.model_id || !rate.serving_provider || !rate.unit || !rate.effective_from) {
+      throw new Error(`${METRONOME_FILE}: every route rate requires a model, serving provider, unit, and start date`);
+    }
+    if (rate.kind !== "usage" && (!rate.price_usd || !rate.credits)) {
+      throw new Error(`${METRONOME_FILE}: fixed and metered rates require USD and credit amounts`);
+    }
+    if (rate.kind === "usage" && (rate.price_usd !== undefined || rate.credits !== undefined)) {
+      throw new Error(`${METRONOME_FILE}: usage-based rates must not expose a fixed amount`);
+    }
+    if (rate.price_usd !== undefined && rate.credits !== undefined) {
+      const expected = Number(rate.price_usd) * data.credits_per_usd;
+      if (!Number.isFinite(expected) || Math.abs(expected - Number(rate.credits)) > 0.000051) {
+        throw new Error(`${METRONOME_FILE}: credit conversion does not match USD amount for ${rate.model_id}`);
+      }
+    }
+    if (rate.effective_until && rate.effective_until <= rate.effective_from) {
+      throw new Error(`${METRONOME_FILE}: rate end must follow its start for ${rate.model_id}`);
+    }
+  }
+  return data;
+}
+
+function metronomeRateSummary(rate: MetronomeRate): string {
+  if (rate.kind === "usage") {
+    return `Rate shape: Usage-based; Unit: Variable per request; Conditions: The amount depends on reported usage; Effective: From ${rate.effective_from}`;
+  }
+  const unit = rate.unit.replace(/^per /, "");
+  const conditions = rate.conditions ? `; Conditions: ${rate.conditions}` : "";
+  const end = rate.effective_until ? ` until ${rate.effective_until} (exclusive)` : "";
+  return `USD price: $${rate.price_usd}; Credits: ${rate.credits}; Unit: ${unit}${conditions}; Effective: From ${rate.effective_from}${end}`;
+}
+
 function render(): string {
   const data = loadPricingData();
+  const metronome = loadMetronomeData();
+  const modelIds = new Set(data.models.map((model) => model.id));
+  const missingModels = [...new Set(metronome.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
+  if (missingModels.length) {
+    throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+  }
+  const ratesByModel = new Map<string, MetronomeRate[]>();
+  for (const rate of metronome.rates) {
+    const rates = ratesByModel.get(rate.model_id) ?? [];
+    rates.push(rate);
+    ratesByModel.set(rate.model_id, rates);
+  }
   const grouped = new Map<string, PricingData["models"]>();
   for (const model of data.models) {
     const label = providerLabel(model.id);
@@ -248,14 +319,28 @@ function render(): string {
     .map(([provider, models]) => {
       const rows = [...models]
         .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
-        .map((model) => {
+        .flatMap((model) => {
+          const routeRates = ratesByModel.get(model.id) ?? [];
+          const defaultRate = routeRates.find((rate) => rate.serving_provider.toLowerCase() === provider.toLowerCase());
+          const baseRate = defaultRate
+            ? metronomeRateSummary(defaultRate)
+            : rateSummary(model);
           const reference = model.source_section
             ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
             : `[Partner Node pricing](${PRICING_URL})`;
-          return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rateSummary(model)} | ${reference} |`;
+          const baseReference = defaultRate
+            ? `[Router billing](/development/comfy-router/billing)`
+            : reference;
+          const hideLegacyRate = defaultRate?.replace_existing === true;
+          const base = `| [${model.title}](/${model.page}) | \`${model.id}\` | ${provider} | ${hideLegacyRate ? baseRate : [rateSummary(model), defaultRate ? metronomeRateSummary(defaultRate) : ""].filter(Boolean).join("<br />")} | ${baseReference} |`;
+          const alternates = routeRates
+            .filter((rate) => rate !== defaultRate)
+            .sort((a, b) => a.serving_provider.localeCompare(b.serving_provider) || a.unit.localeCompare(b.unit))
+            .map((rate) => `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rate.serving_provider} | ${metronomeRateSummary(rate)} | [Router billing](/development/comfy-router/billing) |`);
+          return [base, ...alternates];
         })
         .join("\n");
-      return `## ${provider}\n\n| Model | Router model ID | Comfy credit rate | Pricing source |\n| --- | --- | --- | --- |\n${rows}`;
+      return `## ${provider}\n\n| Model | Router model ID | Serving provider | Rate | Pricing source |\n| --- | --- | --- | --- | --- |\n${rows}`;
     })
     .join("\n\n");
 
@@ -269,7 +354,7 @@ mode: "wide"
 {/* GENERATED FILE. Generated from router-pricing/prices.json by \`pnpm router-pricing:gen\`. */}
 
 <Note>
-Prices are in Comfy credits. A dash means the official source has no matching rate row. [Pricing details](${PRICING_URL}).
+Provider-specific rates reflect a Metronome production snapshot from ${metronome.snapshot_at}. Default model rates link to Partner Node pricing. Fixed provider amounts include Comfy credits and their stated units. Usage-based rates vary by request. The \`X-Comfy-Credits-Used\` response header reports the run amount when available. A dash means the linked source has no matching rate row. See [billing details](/development/comfy-router/billing) and [Partner Node pricing](${PRICING_URL}).
 </Note>
 
 ${sections}

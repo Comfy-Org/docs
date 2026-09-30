@@ -14,10 +14,11 @@ const strings = {
     title: "Comfy Router モデル別料金",
     sidebarTitle: "料金",
     description: "Comfy Router のモデル別クレジット料金、請求単位、公式価格ソースを比較できます。",
-    note: "価格は Comfy クレジット単位です。ダッシュは公式ソースに一致する料金行がないことを示します。",
+    note: "プロバイダー別料金は、${snapshotAt} 時点の Metronome 本番スナップショットに基づきます。デフォルトのモデル料金は Partner Node pricing にリンクしています。固定料金には Comfy クレジットと明記された単位が含まれます。使用量ベースの料金はリクエストごとに変動します。利用可能な場合、レスポンスの `X-Comfy-Credits-Used` ヘッダーが実行金額を示します。ダッシュはリンク先ソースに一致する料金行がないことを示します。",
+    billingDetails: "請求の詳細",
     pricingDetails: "料金の詳細",
     partnerPricing: "Partner Node の料金",
-    table: ["モデル", "Router モデル ID", "Comfy クレジット料金", "価格ソース"],
+    table: ["モデル", "Router モデル ID", "提供プロバイダー", "料金", "価格ソース"],
     fields: {
       model: "モデル",
       Credits: "クレジット",
@@ -58,16 +59,23 @@ const strings = {
       "Credits / 1M tokens": "クレジット / 1M トークン",
       generate_audio: "generate_audio",
       "Credits / 10 sec": "クレジット / 10 秒",
+      "Serving provider": "提供プロバイダー",
+      "Rate shape": "料金形態",
+      "USD price": "米ドル価格",
+      Unit: "単位",
+      Conditions: "条件",
+      Effective: "適用期間",
     },
   },
   zh: {
     title: "Comfy Router 模型定价",
     sidebarTitle: "定价",
     description: "查看各个 Comfy Router 模型的积分价格、计费单位以及对应的官方定价来源信息。",
-    note: "价格以 Comfy 积分计。破折号表示官方来源中没有匹配的费率行。",
+    note: "提供商专属费率基于 Metronome 在 ${snapshotAt} 的生产快照。默认模型费率链接到 Partner Node 定价。固定费率包含 Comfy 积分和标明的计费单位。按用量计费的费率会因请求而异。如有提供，响应标头 `X-Comfy-Credits-Used` 会显示本次运行的金额。短横线表示链接来源中没有匹配的费率行。",
+    billingDetails: "计费详情",
     pricingDetails: "定价详情",
     partnerPricing: "Partner Node 定价",
-    table: ["模型", "Router 模型 ID", "Comfy 积分费率", "定价来源"],
+    table: ["模型", "Router 模型 ID", "服务提供商", "费率", "定价来源"],
     fields: {
       model: "模型",
       Credits: "积分",
@@ -108,16 +116,23 @@ const strings = {
       "Credits / 1M tokens": "积分 / 1M Token",
       generate_audio: "generate_audio",
       "Credits / 10 sec": "积分 / 10 秒",
+      "Serving provider": "服务提供商",
+      "Rate shape": "计费方式",
+      "USD price": "美元价格",
+      Unit: "单位",
+      Conditions: "条件",
+      Effective: "生效时间",
     },
   },
   ko: {
     title: "모델별 Comfy Router 요금",
     sidebarTitle: "요금",
     description: "Comfy Router 모델별 크레딧 요금과 청구 단위, 공식 가격 출처를 비교할 수 있습니다.",
-    note: "가격은 Comfy 크레딧 단위입니다. 대시는 공식 출처에 일치하는 요금 행이 없음을 뜻합니다.",
+    note: "제공업체별 요금은 ${snapshotAt} 기준 Metronome 프로덕션 스냅샷을 반영합니다. 기본 모델 요금은 Partner Node 가격으로 연결됩니다. 고정 요금에는 Comfy 크레딧과 명시된 단위가 포함됩니다. 사용량 기반 요금은 요청마다 달라집니다. 응답에 `X-Comfy-Credits-Used` 헤더가 있으면 해당 실행 금액을 확인할 수 있습니다. 대시는 연결된 출처에 일치하는 요금 행이 없음을 뜻합니다.",
+    billingDetails: "청구 세부 정보",
     pricingDetails: "가격 세부 정보",
     partnerPricing: "Partner Node 가격",
-    table: ["모델", "Router 모델 ID", "Comfy 크레딧 요금", "가격 출처"],
+    table: ["모델", "Router 모델 ID", "서비스 제공업체", "요금", "가격 출처"],
     fields: {
       model: "모델",
       Credits: "크레딧",
@@ -158,6 +173,12 @@ const strings = {
       "Credits / 1M tokens": "크레딧 / 1M 토큰",
       generate_audio: "generate_audio",
       "Credits / 10 sec": "크레딧 / 10초",
+      "Serving provider": "서비스 제공업체",
+      "Rate shape": "요금 방식",
+      "USD price": "미국 달러 가격",
+      Unit: "단위",
+      Conditions: "조건",
+      Effective: "적용 기간",
     },
   },
 } as const;
@@ -312,9 +333,9 @@ const creditFormulaTerms = {
   ],
 } as const;
 
-const englishTableHeader = "| Model | Router model ID | Comfy credit rate | Pricing source |";
-const englishNote =
-  "Prices are in Comfy credits. A dash means the official source has no matching rate row. [Pricing details](/tutorials/partner-nodes/pricing).";
+const englishTableHeader = "| Model | Router model ID | Serving provider | Rate | Pricing source |";
+const englishNote = (snapshotAt: string) =>
+  `Provider-specific rates reflect a Metronome production snapshot from ${snapshotAt}. Default model rates link to Partner Node pricing. Fixed provider amounts include Comfy credits and their stated units. Usage-based rates vary by request. The \`X-Comfy-Credits-Used\` response header reports the run amount when available. A dash means the linked source has no matching rate row. See [billing details](/development/comfy-router/billing) and [Partner Node pricing](/tutorials/partner-nodes/pricing).`;
 
 function replaceRequired(content: string, from: string, to: string): string {
   if (!content.includes(from)) {
@@ -361,6 +382,61 @@ function splitMarkdownTableRow(line: string): string[] {
 function translateRateValue(locale: keyof typeof strings, field: string, value: string): string {
   const categorical = (categoricalValues[locale] as Record<string, Record<string, string>>)[field]?.[value];
   if (categorical) return categorical;
+  if (field === "Rate shape" && value === "Usage-based") {
+    if (locale === "ja") return "使用量ベース";
+    if (locale === "zh") return "按用量计费";
+    return "사용량 기반";
+  }
+  if (field === "Unit" && value === "Variable per request") {
+    if (locale === "ja") return "リクエストごとに変動";
+    if (locale === "zh") return "每次请求各不相同";
+    return "요청마다 달라짐";
+  }
+  if (field === "Unit") {
+    const units: Record<string, Record<string, string>> = {
+      ja: { generation: "生成", second: "秒" },
+      zh: { generation: "次生成", second: "秒" },
+      ko: { generation: "회 생성", second: "초" },
+    };
+    return units[locale][value] ?? value;
+  }
+  if (field === "Conditions") {
+    const conditions: Record<string, Record<string, string>> = {
+      ja: {
+        "The amount depends on reported usage": "報告された使用量に応じて金額が変わります",
+        "Text to image, base tier": "テキストから画像、基本ティア",
+        "Text to video, base tier": "テキストから動画、基本ティア",
+        "Kling 3 Standard": "Kling 3 Standard",
+        "720p": "720p",
+        "1080p": "1080p",
+        "480p": "480p",
+      },
+      zh: {
+        "The amount depends on reported usage": "费用取决于报告的用量",
+        "Text to image, base tier": "文生图，基础档",
+        "Text to video, base tier": "文生视频，基础档",
+        "Kling 3 Standard": "Kling 3 Standard",
+        "720p": "720p",
+        "1080p": "1080p",
+        "480p": "480p",
+      },
+      ko: {
+        "The amount depends on reported usage": "보고된 사용량에 따라 금액이 달라집니다",
+        "Text to image, base tier": "텍스트 이미지 생성, 기본 등급",
+        "Text to video, base tier": "텍스트 동영상 생성, 기본 등급",
+        "Kling 3 Standard": "Kling 3 Standard",
+        "720p": "720p",
+        "1080p": "1080p",
+        "480p": "480p",
+      },
+    };
+    return conditions[locale][value] ?? value;
+  }
+  if (field === "Effective") {
+    return value.replace(/^From /, locale === "ja" ? "開始: " : locale === "zh" ? "开始：" : "시작: ")
+      .replace(" until ", locale === "ja" ? " から " : locale === "zh" ? " 至 " : "부터 ")
+      .replace(" (exclusive)", locale === "ja" ? "（終了日は含みません）" : locale === "zh" ? "（结束日期不含）" : "(종료일은 미포함)");
+  }
   if (field !== "Credits") return value;
 
   let translated = value.replace(/\b(\d+)s\b/g, (_match, seconds: string) => {
@@ -420,7 +496,7 @@ function translateRateValue(locale: keyof typeof strings, field: string, value: 
   return translated;
 }
 
-function localize(content: string, locale: keyof typeof strings, fields: string[]): string {
+function localize(content: string, locale: keyof typeof strings, fields: string[], snapshotAt: string): string {
   const translated = strings[locale];
   let output = replaceRequired(content, 'title: "Comfy Router pricing by model"', `title: "${translated.title}"`);
   output = replaceRequired(output, 'sidebarTitle: "Pricing"', `sidebarTitle: "${translated.sidebarTitle}"`);
@@ -431,19 +507,20 @@ function localize(content: string, locale: keyof typeof strings, fields: string[
   );
   output = replaceRequired(
     output,
-    englishNote,
-    `${translated.note} [${translated.pricingDetails}](/tutorials/partner-nodes/pricing).`
+    englishNote(snapshotAt),
+    `${translated.note.replace("${snapshotAt}", snapshotAt)} [${translated.billingDetails}](/development/comfy-router/billing) and [${translated.pricingDetails}](/tutorials/partner-nodes/pricing).`
   );
   output = replaceRequired(output, englishTableHeader, `| ${translated.table.join(" | ")} |`);
   output = output.replaceAll("[Partner Node pricing]", `[${translated.partnerPricing}]`);
+  output = output.replaceAll("[Router billing]", `[${translated.billingDetails}]`);
 
   output = output
     .split("\n")
     .map((line) => {
       if (!line.startsWith("| [") || !line.includes("/development/comfy-router/models/")) return line;
       const cells = splitMarkdownTableRow(line);
-      if (cells.length < 6) throw new Error(`Malformed generated Router pricing row: ${line}`);
-      const rateParts = cells[3].split(/(; |<br \/>)/g).map((part) => {
+      if (cells.length < 7) throw new Error(`Malformed generated Router pricing row: ${line}`);
+      const rateParts = cells[4].split(/(; |<br \/>)/g).map((part) => {
         const leading = part.match(/^\s*/)?.[0] ?? "";
         const trailing = part.match(/\s*$/)?.[0] ?? "";
         const content = part.slice(leading.length, part.length - trailing.length);
@@ -456,7 +533,7 @@ function localize(content: string, locale: keyof typeof strings, fields: string[
         if (localizedField === undefined) throw new Error(`No ${locale} translation configured for pricing field: ${field}`);
         return `${leading}${localizedField}: ${translateRateValue(locale, field, value)}${trailing}`;
       });
-      cells[3] = rateParts.join("");
+      cells[4] = rateParts.join("");
       return cells.join("|");
     })
     .join("\n");
@@ -475,13 +552,17 @@ async function main() {
   const snapshot = JSON.parse(await readFile(join(REPO_ROOT, "router-pricing/prices.json"), "utf8")) as {
     models: Array<{ rates: Array<{ fields: Array<{ label: string }> }> }>;
   };
+  const metronome = JSON.parse(await readFile(join(REPO_ROOT, "router-pricing/metronome-rates.json"), "utf8")) as { snapshot_at: string };
   const fields = [...new Set(snapshot.models.flatMap((model) => model.rates.flatMap((rate) => rate.fields.map((field) => field.label))))];
+  for (const field of ["Serving provider", "Rate shape", "USD price", "Unit", "Conditions", "Effective"]) {
+    if (!fields.includes(field)) fields.push(field);
+  }
 
   const targetFiles: string[] = [];
   for (const locale of Object.keys(strings) as Array<keyof typeof strings>) {
     const targetFile = join(REPO_ROOT, locale, ENGLISH_PATH);
     await mkdir(dirname(targetFile), { recursive: true });
-    await writeFile(targetFile, localize(english, locale, fields));
+    await writeFile(targetFile, localize(english, locale, fields, metronome.snapshot_at));
     targetFiles.push(`${locale}/${ENGLISH_PATH}`);
     console.log(`wrote ${targetFile}`);
   }
