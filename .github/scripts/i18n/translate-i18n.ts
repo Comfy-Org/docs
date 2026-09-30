@@ -59,6 +59,7 @@ import {
   isEnglishPagePath,
   isEnglishSnippetPath,
   localizeMdxPaths,
+  restoreImportIdentifiers,
   parseLangArg as parseLangArgFromConfig,
   TRANSLATE_LOG_DIR,
   TRANSLATE_LOG_REL,
@@ -849,6 +850,13 @@ async function translateChunkedFile(
 
     let translatedBlock = cleanModelOutput(blockResult.content);
     translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
+    // A model can rename an imported component in the same pass (Requirements ->
+    // 요구사항). The import path stays localized, the identifier does not.
+    translatedBlock = restoreImportIdentifiers(
+      translatedBlock,
+      enBlock.content,
+      config.languages
+    );
     if (strategy === "update_blocks") {
       translatedBlock = syncUpdateBlockDescription(translatedBlock, enBlock, lang.code);
     }
@@ -993,6 +1001,7 @@ async function translateFile(
 
   let output = sanitizeMdxFrontmatter(cleanModelOutput(result.content));
   output = localizeMdxPaths(output, lang, config.languages);
+  output = restoreImportIdentifiers(output, enContent, config.languages);
 
   // Non-chunked pages used to be written without structural validation. A
   // model response could therefore be accepted after being cut short even
