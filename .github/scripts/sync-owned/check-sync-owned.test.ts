@@ -16,9 +16,12 @@ const ROOT = join(import.meta.dir, "../../..");
 /** Guarded whatever else the pull request changes. */
 const ALWAYS_GUARDED = [
   "openapi-v2.yaml",
+  "router-openapi.yaml",
   "development/comfy-router/reference.mdx",
   "development/comfy-router/quickstart.mdx",
   "development/comfy-router/limitations.mdx",
+  "development/comfy-router/higgsfield-byok.mdx",
+  "development/comfy-router/pricing.mdx",
   "router-schemas/openai/gpt-image-1.json",
 ];
 
@@ -40,6 +43,8 @@ const EDITABLE = [
   "development/comfy-router/api.mdx",
   "development/comfy-router/queue.mdx",
   "development/comfy-router/headers.mdx",
+  "development/comfy-router/billing.mdx",
+  "zh/development/comfy-router/pricing.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.yaml",
   "snippets/comfy-router/model-code-footer.mdx",
   ".github/scripts/snippets/gen-code-pages.ts",
@@ -189,6 +194,8 @@ describe("formatFailure", () => {
     expect(message).toContain("Edit the contract upstream");
     expect(message).toContain("Edit the upstream quickstart.mdx");
     expect(message).toContain("Edit the upstream limitations.mdx");
+    expect(message).toContain("Edit the upstream higgsfield-byok.mdx");
+    expect(message).toContain("Edit the upstream pricing.mdx");
     expect(message).toContain("Edit the sibling code.yaml");
     expect(message).toContain("code-pages:gen");
   });
@@ -226,10 +233,13 @@ describe("parsePaths", () => {
 describe("the guarded paths exist in this repository", () => {
   const present = [
     "openapi-v2.yaml",
+    "router-openapi.yaml",
     "router-schemas",
     "development/comfy-router/reference.mdx",
     "development/comfy-router/quickstart.mdx",
     "development/comfy-router/limitations.mdx",
+    "development/comfy-router/higgsfield-byok.mdx",
+    "development/comfy-router/pricing.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",
   ];
