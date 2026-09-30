@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadI18nConfig, localizeMdxPaths, REPO_ROOT } from "./i18n-config.mjs";
 import { fixAnchorSlugs } from "./fix-anchor-slugs.ts";
+import { computeSyncedContent } from "./sync-hash-i18n.ts";
 
 const ENGLISH_PATH = "development/comfy-router/pricing.mdx";
 const ENGLISH_FILE = join(REPO_ROOT, ENGLISH_PATH);
@@ -511,7 +512,7 @@ function translateRateValue(locale: keyof typeof strings, field: string, value: 
   }
   if (field === "Effective") {
     return value.replace(/^From /, locale === "ja" ? "開始: " : locale === "zh" ? "开始：" : "시작: ")
-      .replace(" until ", locale === "ja" ? " から " : locale === "zh" ? " 至 " : "부터 ")
+      .replace(" until ", locale === "ja" ? "、終了: " : locale === "zh" ? " 至 " : ", 종료: ")
       .replace(" (exclusive)", locale === "ja" ? "（終了日は含みません）" : locale === "zh" ? "（结束日期不含）" : "(종료일은 미포함)");
   }
   if (field !== "Credits") return value;
@@ -624,26 +625,42 @@ function localize(content: string, locale: keyof typeof strings, fields: string[
   );
 }
 
+function localizedPageContent(english: string, locale: keyof typeof strings, snapshotAt: string, creditsPerUsd: number): string {
+  const fields = ["Rate shape", "USD price", "Credits", "Unit", "Conditions", "Effective"];
+  const localized = localize(english, locale, fields, snapshotAt, creditsPerUsd);
+  return computeSyncedContent(english, localized, ENGLISH_PATH, ENGLISH_PATH, false).output;
+}
+
 async function main() {
+  const check = process.argv.includes("--check");
   const english = await readFile(ENGLISH_FILE, "utf8");
   const metronome = JSON.parse(await readFile(join(REPO_ROOT, "router-pricing/metronome-rates.json"), "utf8")) as {
     snapshot_at: string;
     credits_per_usd: number;
   };
-  const fields = ["Rate shape", "USD price", "Credits", "Unit", "Conditions", "Effective"];
-
   const targetFiles: string[] = [];
   for (const locale of Object.keys(strings) as Array<keyof typeof strings>) {
     const targetFile = join(REPO_ROOT, locale, ENGLISH_PATH);
-    await mkdir(dirname(targetFile), { recursive: true });
-    await writeFile(targetFile, localize(english, locale, fields, metronome.snapshot_at, metronome.credits_per_usd));
+    const output = localizedPageContent(english, locale, metronome.snapshot_at, metronome.credits_per_usd);
+    if (check) {
+      if (!existsSync(targetFile) || await readFile(targetFile, "utf8") !== output) {
+        throw new Error(`${targetFile}: stale or missing, run pnpm router-pricing:gen`);
+      }
+      console.log(`fresh ${targetFile}`);
+    } else {
+      await mkdir(dirname(targetFile), { recursive: true });
+      await writeFile(targetFile, output);
+      console.log(`wrote ${targetFile}`);
+    }
     targetFiles.push(`${locale}/${ENGLISH_PATH}`);
-    console.log(`wrote ${targetFile}`);
   }
 
-  const anchors = await fixAnchorSlugs({ fileArgs: targetFiles });
+  const anchors = await fixAnchorSlugs({ fileArgs: targetFiles, dryRun: check });
   if (anchors.unresolved > 0) {
     throw new Error(`Could not localize ${anchors.unresolved} pricing source anchor(s)`);
+  }
+  if (check && anchors.fixed > 0) {
+    throw new Error("Pricing locale anchors are stale, run pnpm router-pricing:gen");
   }
 }
 
@@ -653,3 +670,5 @@ if (import.meta.main) {
     process.exit(1);
   });
 }
+
+export { localizedPageContent, translateRateValue };

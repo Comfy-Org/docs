@@ -382,6 +382,9 @@ def fix_path_for_locale(locale: str, path: str) -> Optional[str]:
     if not is_english_internal_link(normalized):
         return None
 
+    if not localized_target_exists(locale, normalized):
+        return None
+
     if normalized.startswith('/snippets/'):
         return f'/snippets/{locale}/{normalized[len("/snippets/"):]}'
     return f'/{locale}{normalized}'

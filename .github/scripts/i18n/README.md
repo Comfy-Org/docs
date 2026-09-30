@@ -267,6 +267,10 @@ page when that page has no translation yet.
 Translation hashes are synced so `pnpm translate` skips these pages when their
 English source has not changed. This path does not need the translation API key.
 
+`pnpm router-pricing:check` checks the English page and all three localized
+pages, including their translation metadata, without writing files. Pricing
+page edits trigger this check on both same-repository and fork pull requests.
+
 The localized files are regular translation outputs under `ja/`, `zh/`, and
 `ko/`. For same-repository pull requests, the Router pricing workflow runs this
 generation automatically and commits the locale files to the PR branch. For
