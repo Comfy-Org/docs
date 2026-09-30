@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { loadCatalog, render } from "./gen-router-pricing.ts";
+import { loadCatalog, loadMetronomeData, render, validateCreditConversion } from "./gen-router-pricing.ts";
 
 describe("Router pricing catalog", () => {
   const catalog = loadCatalog();
@@ -15,6 +15,7 @@ describe("Router pricing catalog", () => {
     expect(page).toContain("## OpenAI");
     expect(page).toContain("## Google");
     expect(page).not.toContain("Partner Node");
+    expect(page).toContain("Credit amounts use 211 credits per USD in this snapshot.");
     expect(catalog.find((model) => model.id === "openai/gpt-image-2")?.providers).toEqual([
       "OpenAI",
       "fal",
@@ -60,6 +61,15 @@ describe("Router pricing catalog", () => {
       expect(publicData).not.toContain(privateOrCommercialTerm);
       expect(page).not.toContain(privateOrCommercialTerm);
     }
+  });
+
+  test("rejects malformed credit amounts instead of comparing against NaN", () => {
+    const snapshot = loadMetronomeData();
+    const rate = snapshot.rates.find((candidate) => candidate.price_usd !== undefined && candidate.credits !== undefined);
+    if (!rate) throw new Error("expected at least one numeric Metronome rate");
+    expect(() => validateCreditConversion({ ...rate, credits: "12.66x" }, snapshot.credits_per_usd)).toThrow(
+      "credit conversion does not match USD amount",
+    );
   });
 
   test("has valid frontmatter", () => {
