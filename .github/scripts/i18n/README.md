@@ -84,7 +84,7 @@ Exemptions live in `EXEMPT_PATTERNS`: `pricing.mdx` (hand translated),
 | Explanation that follows a label (`true: Returns the last frame`) | translated; the label itself is untouched |
 | Heading text (`## Schema`, `### Input`, `### Output`, `## Examples`) | translated as the target language's pages do it: ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出. zh model pages keep `## Schema` in English |
 | `{#anchor}` inside a heading | identical to the English source, never localized, never dropped |
-| Snippet import line (`import Requirements from "/snippets/...";`) | the alias stays byte-for-byte identical to the English source and only the path is localized (`/snippets/ko/...`). `restoreImportIdentifiers` restores both the alias and its `<Alias/>` usages when the model translates them |
+| Snippet import line (`import Requirements from "/snippets/...";`) | the alias stays byte-for-byte identical to the English source and only the path is localized (`/snippets/ko/...`). `restoreImportIdentifiers` restores both the alias and its `<Alias/>` usages when the model translates them, applied once to the assembled page (checkpoints included) because the import line and a usage can sit in different sections |
 | Chinese prose punctuation | full-width (，。：；（）), not ASCII commas or colons |
 | Terminology | the glossary (`glossary.mjs` plus the per-language overrides) is authoritative; the same term is rendered the same way inside a file; no invented words (fixed is 固定, not 顶固), and senses kept apart: a URL or document hyperlink is a 链接, a link between nodes in a graph (LLink, node connections) is a 连线 |
 | Sentence polarity | unchanged from the English: a consequence such as `so it applies here` must never read as `so it does not apply here` |

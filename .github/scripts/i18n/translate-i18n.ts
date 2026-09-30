@@ -642,13 +642,20 @@ async function writeChunkedCheckpoint(
   enRel: string,
   blockHashes: Record<string, string>,
   strategy: ChunkStrategy,
+  enContent: string,
   label?: string
 ): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
-  await writeFile(
-    targetPath,
-    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes, strategy)
+  // Restore on the assembled page, not per block: on an auto-chunked page the
+  // import lines live in `_intro` while a usage can sit in a later section, so a
+  // per-block pass would leave those sections pointing at an alias no import
+  // defines.
+  const assembled = restoreImportIdentifiers(
+    serializeChunkedDocument(frontmatter, slots, fileHash, enRel, blockHashes, strategy),
+    enContent,
+    config.languages
   );
+  await writeFile(targetPath, assembled);
   if (label) {
     const done = slots.filter((s) => s.content !== null).length;
     console.log(`    Saved ${label} → disk (${done}/${slots.length} blocks)`);
@@ -754,7 +761,7 @@ async function translateChunkedFile(
         enDoc.blocks,
         lang.code
       );
-      const output = serializeChunkedDocument(
+      let output = serializeChunkedDocument(
         translatedFrontmatter,
         filledSlots,
         fileHash,
@@ -762,6 +769,7 @@ async function translateChunkedFile(
         enBlockHashes,
         strategy
       );
+      output = restoreImportIdentifiers(output, enContent, config.languages);
       await mkdir(dirname(targetPath), { recursive: true });
       await writeFile(targetPath, output);
       console.log(`    Re-serialized (order/date fix, no re-translation)`);
@@ -821,6 +829,7 @@ async function translateChunkedFile(
       enRel,
       hashesForMeta,
       strategy,
+      enContent,
     );
   } else {
     translatedFrontmatter = existingDoc!.frontmatter;
@@ -850,13 +859,6 @@ async function translateChunkedFile(
 
     let translatedBlock = cleanModelOutput(blockResult.content);
     translatedBlock = localizeMdxPaths(translatedBlock, lang, config.languages);
-    // A model can rename an imported component in the same pass (Requirements ->
-    // 요구사항). The import path stays localized, the identifier does not.
-    translatedBlock = restoreImportIdentifiers(
-      translatedBlock,
-      enBlock.content,
-      config.languages
-    );
     if (strategy === "update_blocks") {
       translatedBlock = syncUpdateBlockDescription(translatedBlock, enBlock, lang.code);
     }
@@ -891,11 +893,12 @@ async function translateChunkedFile(
       enRel,
       hashesForMeta,
       strategy,
+      enContent,
       blockTag
     );
   }
 
-  const output = serializeChunkedDocument(
+  let output = serializeChunkedDocument(
     translatedFrontmatter,
     applyChangelogBlockLocalizations(slots, enDoc.blocks, lang.code),
     failedLabels.length === 0 ? fileHash : aggregateDocumentHash(hashesForMeta),
@@ -903,6 +906,7 @@ async function translateChunkedFile(
     hashesForMeta,
     strategy
   );
+  output = restoreImportIdentifiers(output, enContent, config.languages);
   const didWork =
     blocksTranslated > 0 || frontmatterDirty || status.needsFrontmatter || status.needsReserialize;
 

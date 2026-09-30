@@ -112,6 +112,35 @@ import GenerateFirstCall from "/snippets/ko/comfy-cli/generate-first-call.mdx";
     expect(restoreImportIdentifiers(ko, "English prose only.\n", LANGUAGES)).toBe(ko);
   });
 
+  test("restores a usage that sits far below the import line", () => {
+    // Chunked pages keep the imports in `_intro` and can carry a usage in a
+    // later section, so the pipeline restores the assembled page once instead
+    // of each block on its own.
+    const ko = `import 요구사항 from "/snippets/ko/tutorials/partner-nodes/requirements.mdx";
+
+## 개요
+
+본문.
+
+## 스키마
+
+<요구사항/>
+`;
+    const out = restoreImportIdentifiers(ko, EN, LANGUAGES);
+    expect(out).toContain('import Requirements from "/snippets/ko/');
+    expect(out).toContain("<Requirements/>");
+    expect(out).not.toContain("요구사항");
+  });
+
+  test("cannot repair a usage whose import line is absent from the content", () => {
+    // Documents why callers pass the assembled page: a lone block carries no
+    // import line to match against, so an alias inside it cannot be resolved.
+    const blockOnly = "<요구사항/>\n";
+    expect(
+      restoreImportIdentifiers(blockOnly, "## Schema\n\n<Requirements/>\n", LANGUAGES)
+    ).toBe(blockOnly);
+  });
+
   test("tolerates empty input", () => {
     expect(restoreImportIdentifiers("", EN, LANGUAGES)).toBe("");
     expect(restoreImportIdentifiers("import X from \"/snippets/ko/a.mdx\";", "", LANGUAGES)).toBe(
