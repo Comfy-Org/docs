@@ -25,6 +25,17 @@ describe("Router pricing catalog", () => {
     ]);
   });
 
+  test("maps each generated serving route or marks it unpublished", () => {
+    const snapshot = loadMetronomeData();
+    const routes = catalog.flatMap((model) => model.providers.map((provider) => [model.id, provider] as const));
+    const mapped = routes.filter(([modelId, provider]) =>
+      snapshot.rates.some((rate) => rate.model_id === modelId && rate.serving_provider.toLowerCase() === provider.toLowerCase()),
+    );
+    expect(routes).toHaveLength(244);
+    expect(mapped).toHaveLength(229);
+    expect(page.match(/\| [^\n]+ \| `[^`]+` \| [^|]+ \| Not published \| Not published \|/g)).toHaveLength(15);
+  });
+
   test("renders the full pricing table", () => {
     expect(page).toContain("## OpenAI");
     expect(page).toContain("| Model | Router model ID | Serving provider | Rate | Pricing source |");
@@ -50,8 +61,13 @@ describe("Router pricing catalog", () => {
     expect(page).toContain("Unit: output image; Conditions: Output image; output_tier=qima_output_1k");
     expect(page).toContain("Unit: video credit; Conditions: Rate applies to provider-reported video-credit quantity.");
     expect(page).toContain("USD price: $0.03; Credits: 6.33; Unit: image; Conditions: Generated image");
-    expect(page).toContain("USD price: $0.0715; Credits: 15.0865; Unit: 5-second billing increment");
+    expect(page).toContain("USD price: $0.0715; Credits: 15.0865; Unit: second; Conditions: Output video duration");
+    expect(page).toContain("USD price: $0.04; Credits: 8.44; Unit: request; Conditions: Fibo image editing");
+    expect(page).toContain("USD price: $0.018; Credits: 3.798; Unit: request; Conditions: Background removal");
     expect(page).toContain("Unit: additional reference image; Conditions: Reference images after the first five");
+    expect(page).toContain("| `openai/gpt-image-2.5-flare` | Runware | Rate shape: Usage-based");
+    expect(page).toContain("USD price: $0.014; Credits: 2.954; Unit: 1K video tokens; Conditions: Text-to-video; resolution=480p");
+    expect(page).toContain("USD price: $0.0214; Credits: 4.5154; Unit: 1K video tokens; Conditions: Text-to-video; resolution=720p");
     expect(page).not.toContain("Minimax H3 | `minimax/minimax-h3` | MiniMax | USD price: $0.0572; Credits: 12.0692; Unit: image; Conditions: Image generation");
     expect(page).not.toContain("USD price: $1.0; Credits: 211.0; Unit: request");
     expect(page).not.toContain("Router model rows");
