@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { formatAmount, formatDate, formatOption, formatUnit, pricingCopy, type PricingCategory, type PricingLocale } from "./router-pricing-display.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
@@ -13,6 +14,7 @@ type CatalogModel = {
   title: string;
   page: string;
   providers: string[];
+  category: PricingCategory;
 };
 
 type MetronomeRate = {
@@ -97,6 +99,13 @@ function modelTitle(pageText: string, model: string): string {
 }
 
 function loadCatalog(): CatalogModel[] {
+  const modalities = new Map<string, string[]>();
+  for (const rel of new Bun.Glob("router-schemas/**/*.json").scanSync({ cwd: ROOT })) {
+    const schema = JSON.parse(readFileSync(join(ROOT, rel), "utf8"));
+    if (schema["x-comfy-router-model-id"]) {
+      modalities.set(schema["x-comfy-router-model-id"], schema["x-comfy-router-output-modalities"] ?? []);
+    }
+  }
   const models = new Map<string, CatalogModel>();
   for (const rel of [...new Bun.Glob(MODEL_GLOB).scanSync({ cwd: ROOT })].sort()) {
     const text = readFileSync(join(ROOT, rel), "utf8");
@@ -107,11 +116,27 @@ function loadCatalog(): CatalogModel[] {
         title: modelTitle(text, id),
         page: rel.replace(/\.mdx$/, ""),
         providers: servingProviders(text, id),
+        category: modelCategory(id, modalities.get(id) ?? []),
       });
     }
   }
   if (models.size === 0) throw new Error(`no Router model pages matched ${MODEL_GLOB}`);
   return [...models.values()].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+}
+
+function modelCategory(id: string, outputs: string[]): PricingCategory {
+  if (id.startsWith("gemini-interactions/")) return "text";
+  if (outputs.includes("3d")) return "3d";
+  if (outputs.includes("video")) return "video";
+  if (outputs.includes("image")) return "images";
+  if (outputs.includes("audio") && !outputs.includes("text")) return "audio";
+  if (outputs.includes("text")) return "text";
+  if (id.startsWith("vertexai/")) return /image|imagen/.test(id) ? "images" : "text";
+  if (id.startsWith("wan/")) return /[ti]2i/.test(id) ? "images" : "video";
+  if (id.startsWith("bfl/")) return /video/.test(id) ? "video" : "images";
+  if (id.startsWith("minimax/")) return "video";
+  if (id.startsWith("ideogram/")) return "images";
+  throw new Error(`No pricing category for ${id}`);
 }
 
 function loadMetronomeData(): MetronomeData {
@@ -147,73 +172,121 @@ function validateCreditConversion(rate: MetronomeRate, creditsPerUsd: number): v
   }
 }
 
-function metronomeRateSummary(rate: MetronomeRate): string {
-  if (rate.kind === "usage") {
-    const unit = rate.unit.replace(/^per /, "");
-    const conditions = rate.conditions ?? "The amount depends on reported usage";
-    const end = rate.effective_until ? ` until ${rate.effective_until} (exclusive)` : "";
-    return `Rate shape: Usage-based; Unit: ${unit}; Conditions: ${conditions}; Effective: From ${rate.effective_from}${end}`;
+type DisplayRate = {
+  rates: MetronomeRate[];
+  options: string[];
+};
+
+function groupRates(rates: MetronomeRate[], locale: PricingLocale): DisplayRate[] {
+  const groups = new Map<string, DisplayRate>();
+  for (const rate of rates) {
+    const key = JSON.stringify([rate.kind, rate.price_usd, rate.credits, rate.unit, rate.effective_from, rate.effective_until]);
+    const group = groups.get(key) ?? { rates: [], options: [] };
+    group.rates.push(rate);
+    const option = formatOption(rate.conditions, locale);
+    if (!group.options.includes(option)) group.options.push(option);
+    groups.set(key, group);
   }
-  const unit = rate.unit.replace(/^per /, "");
-  const conditions = rate.conditions ? `; Conditions: ${rate.conditions}` : "";
-  const end = rate.effective_until ? ` until ${rate.effective_until} (exclusive)` : "";
-  return `USD price: $${rate.price_usd}; Credits: ${rate.credits}; Unit: ${unit}${conditions}; Effective: From ${rate.effective_from}${end}`;
+  return [...groups.values()];
 }
 
-function render(): string {
-  const models = loadCatalog();
-  const metronome = loadMetronomeData();
-  const modelIds = new Set(models.map((model) => model.id));
-  const missingModels = [...new Set(metronome.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
-  if (missingModels.length) {
-    throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+function compactOptions(options: string[]): string {
+  if (options.length === 1) return options[0];
+  const groups = new Map<string, string[]>();
+  for (const option of options) {
+    const parts = option.split(" · ");
+    const last = parts.pop()!;
+    const prefix = parts.join(" · ");
+    const values = groups.get(prefix) ?? [];
+    values.push(last);
+    groups.set(prefix, values);
   }
-  const ratesByModel = new Map<string, MetronomeRate[]>();
-  for (const rate of metronome.rates) {
-    const rates = ratesByModel.get(rate.model_id) ?? [];
-    rates.push(rate);
-    ratesByModel.set(rate.model_id, rates);
-  }
-  const grouped = new Map<string, CatalogModel[]>();
-  for (const model of models) {
-    const label = model.providers[0];
-    const models = grouped.get(label) ?? [];
-    models.push(model);
-    grouped.set(label, models);
-  }
-  const sections = [...grouped.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([provider, models]) => {
-      const rows = [...models]
-        .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
-        .flatMap((model) => {
-          const routeRates = ratesByModel.get(model.id) ?? [];
-          return model.providers.map((servingProvider) => {
-            const rates = routeRates.filter((candidate) => candidate.serving_provider.toLowerCase() === servingProvider.toLowerCase());
-            const value = rates.length ? rates.map(metronomeRateSummary).join("<br />") : "Not published";
-            const source = rates.length ? "Metronome snapshot" : "Not published";
-            return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${servingProvider} | ${value} | ${source} |`;
-          });
-        })
-        .join("\n");
-      return `## ${provider}\n\n| Model | Router model ID | Serving provider | Rate | Pricing source |\n| --- | --- | --- | --- | --- |\n${rows}`;
-    })
-    .join("\n\n");
+  return [...groups].map(([prefix, values]) =>
+    [prefix, values.join(" / ")].filter(Boolean).join(" · "),
+  ).join("<br />");
+}
 
+function displayTitle(model: CatalogModel): string {
+  if (model.id === "bfl/flux-pro-1.1") return "FLUX 1.1 Pro";
+  if (model.id === "bfl/flux-pro-1.1-ultra") return "FLUX 1.1 Pro Ultra";
+  if (model.id === "bfl/flux-kontext-max") return `${model.title} Max`;
+  if (model.id === "bfl/flux-kontext-pro") return `${model.title} Pro`;
+  return model.title.replace(/^Image Edit /, "").replace(/^Video Edit /, "").replace(/Gen Fill$/, "Generative Fill")
+    .replace(/ (?:20\d{6}|\d{6})$/, "");
+}
+
+function tableCell(value: string): string {
+  return value.replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function render(locale: PricingLocale = "en"): string {
+  const models = loadCatalog();
+  const data = loadMetronomeData();
+  const copy = pricingCopy[locale];
+  const modelIds = new Set(models.map((model) => model.id));
+  const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
+  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+  const categories: PricingCategory[] = ["images", "video", "text", "audio", "3d"];
+  const tabs = categories.map((category) => {
+    const providers = new Map<string, Array<{ model: CatalogModel; rates: MetronomeRate[] }>>();
+    for (const model of models.filter((candidate) => candidate.category === category)) {
+      for (const provider of model.providers) {
+        const routes = providers.get(provider) ?? [];
+        routes.push({ model, rates: data.rates.filter((rate) => rate.model_id === model.id && rate.serving_provider.toLowerCase() === provider.toLowerCase()) });
+        providers.set(provider, routes);
+      }
+    }
+    let opened = false;
+    const sections = [...providers].sort(([a], [b]) => a.localeCompare(b)).map(([provider, routes]) => {
+      const hasNumeric = routes.some(({ rates }) => rates.some((rate) => rate.kind !== "usage"));
+      const defaultOpen = !opened && hasNumeric;
+      if (defaultOpen) opened = true;
+      const rows = routes.flatMap(({ model, rates }) => {
+        const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
+        if (!rates.length) return [`| ${name} | - | ${copy.unavailable} | - | - |`];
+        return groupRates(rates, locale).map((group) => {
+          const rate = group.rates[0];
+          const usd = rate.kind === "usage" ? copy.variable : `$${formatAmount(rate.price_usd!)}`;
+          const credits = rate.kind === "usage" ? "-" : formatAmount(rate.credits!);
+          return `| ${name} | ${tableCell(compactOptions(group.options))} | ${usd} | ${credits} | ${tableCell(formatUnit(rate.unit, locale))} |`;
+        });
+      }).join("\n");
+      const expiry = new Map<string, Set<string>>();
+      for (const { model, rates } of routes) {
+        for (const rate of rates) {
+          if (!rate.effective_until) continue;
+          const titles = expiry.get(rate.effective_until) ?? new Set<string>();
+          titles.add(displayTitle(model));
+          expiry.set(rate.effective_until, titles);
+        }
+      }
+      const notices = [...expiry].map(([date, titles]) =>
+        `\n${copy.expiry([...titles].join(", "), formatDate(date, locale))}\n`,
+      ).join("");
+      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n| ${copy.model} | ${copy.option} | ${copy.usd} | ${copy.credits} | ${copy.unit} |\n| --- | --- | ---: | ---: | --- |\n${rows}\n${notices}\n</Accordion>`;
+    }).join("\n\n");
+    return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
+  }).join("\n\n");
   return `---
-title: "Comfy Router pricing by model"
-sidebarTitle: "Pricing"
-description: "Compare Comfy Router model rates by serving provider, including billing units, conditions, and snapshot dates."
+title: "${copy.title}"
+sidebarTitle: "${copy.sidebar}"
+description: "${copy.description}"
 mode: "wide"
 ---
 
-{/* GENERATED FILE. Generated from autogenerated Router model pages and router-pricing/metronome-rates.json. */}
+{/* Generated pricing page. */}
 
-<Note>
-Model IDs and serving providers come from the autogenerated Comfy Router model pages. Published rates reflect the Metronome production snapshot from ${metronome.snapshot_at}. Credit amounts use ${metronome.credits_per_usd} credits per USD in this snapshot. Rates are per stated billable unit and conditions apply as listed. Usage-based rates vary by request. The \`X-Comfy-Credits-Used\` response header reports the run amount when available. “Not published” means no public price is currently shown for that model/provider route. An omitted rate or billing component does not mean it is free. See [billing details](/development/comfy-router/billing).
-</Note>
+${copy.conversion(data.credits_per_usd)} ${copy.intro}
 
-${sections}
+<Tabs>
+
+${tabs}
+
+</Tabs>
+
+${copy.status}
+
+${copy.updated}: ${formatDate(data.snapshot_at, locale)}.
 `;
 }
 
@@ -232,4 +305,4 @@ if (import.meta.main) {
   }
 }
 
-export { loadCatalog, loadMetronomeData, render, validateCreditConversion };
+export { compactOptions, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion };
