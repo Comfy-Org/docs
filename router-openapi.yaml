@@ -1,0 +1,1076 @@
+# Comfy Router — public specification.
+#
+# GENERATED ONE-WAY — DO NOT HAND-EDIT.
+# Projected automatically from the canonical Comfy API contract and synced
+# by CI. Change the upstream contract, not this public copy.
+
+openapi: 3.0.2
+info:
+  title: Comfy Router
+  description: 'Comfy Router''s public contract: the model catalog and the model-ID-addressed invocation routes, with the error buckets they return. Projected from the canonical Comfy API contract.'
+  version: '1.0'
+servers:
+- url: https://api.comfy.org
+tags:
+- name: Comfy Router
+  description: Comfy Router's canonical, model-ID-addressed routes.
+paths:
+  /v2/models:
+    get:
+      summary: List the models Comfy Router can run.
+      description: 'Comfy Router''s model catalog - one page of the canonical model IDs that `POST /v2/models/{provider}/{model}` accepts. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry''s `provider` and `model` are the two path segments of the invocation route and reference the same schema components that route''s path parameters do, and `id` is those two segments joined by `/`.'
+      operationId: listRouterModels
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterCatalogCursor'
+      - $ref: '#/components/parameters/RouterCatalogLimit'
+      responses:
+        '200':
+          description: OK - one page of the model catalog.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterModelListResponse'
+        '400':
+          $ref: '#/components/responses/RouterRequestError'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+  /v2/models/{provider}/{model}:
+    get:
+      summary: Read one partner model's catalog entry by canonical model ID.
+      description: Per-model detail for a single Comfy Router model, so a caller can check one model without walking the whole paginated catalog. The SDKs use it to look a model up immediately before invoking it.
+      operationId: getRouterModel
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      responses:
+        '200':
+          description: OK - the model's catalog entry.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterModelDetail'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+    post:
+      summary: Run a partner model synchronously by canonical model ID.
+      description: 'Comfy Router''s canonical, model-ID-addressed entry point. The request body is the partner model''s own native JSON input and the success response is that model''s own native JSON output: Router forwards both unchanged instead of imposing a Comfy-shaped envelope, so a caller can move between the partner''s API and Router by changing the host. This is the synchronous path: the response carries the finished result.'
+      operationId: runRouterModel
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - $ref: '#/components/parameters/RouterIdempotencyKey'
+      - $ref: '#/components/parameters/ModelProvider'
+      - $ref: '#/components/parameters/StrictMode'
+      - $ref: '#/components/parameters/FallbackProvider'
+      - $ref: '#/components/parameters/RejectUnknownFields'
+      requestBody:
+        required: true
+        description: 'The partner model''s native JSON input. Without `model_provider` the request runs native dispatch on the model''s default provider and this body is the model''s own native schema, forwarded unchanged (`strict_mode` is meaningless there and changes nothing). With `model_provider` selecting an alternate provider and `strict_mode=false` (the default), the body is translated into that provider''s real schema before it is sent - any native field that cannot be expressed exactly is dropped and disclosed via the response''s `X-Comfy-Router-Dropped-Params` header, never silently. With `model_provider` selecting an alternate provider and `strict_mode=true` no translation runs: the body must already be that alternate provider''s own real schema, not this model''s native one (see `strict_mode`), and is forwarded unchanged. The body''s own fields also select which operation Router runs on a model that supports more than one: for an editable image model, including an input image switches it from text-to-image to the image-to-image (edit) operation; for a Seedance video model, a first-frame image selects image-to-video and a reference image or clip selects reference-to-video. Each conditioned operation is metered on its own rate, not the base text-to-image or text-to-video rate.'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouterModelInput'
+      responses:
+        '200':
+          description: 'OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model''s native contract when possible, falling back to the alternate provider''s own raw response on a translation failure - logged, never silent), the shape is this model''s own native output; with `strict_mode=true` it is the alternate provider''s response returned unchanged. For most models that is JSON (`RouterModelOutput`); for a model whose partner answers a generation directly as bytes - the ElevenLabs audio models are the first in the catalog - it is those bytes, and the response carries the partner''s own `Content-Type` (`audio/mpeg`, `audio/wav`, ...) rather than `application/json`. A client must branch on the response `Content-Type` and must not assume a JSON document; the per-model contract is published at `GET /v2/models/{provider}/{model}/openapi.json`. This response carries `X-Content-Type-Options: nosniff`, so a partner media type is taken at its word and never sniffed into something else. When this response was replayed from the record held against an `Idempotency-Key` rather than produced by running the model again, it carries `Idempotent-Replayed: true` and is not charged a second time.'
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/RouterNoSniffHeader'
+            X-Comfy-Router-Fallback-Provider:
+              $ref: '#/components/headers/RouterFallbackProviderHeader'
+            X-Comfy-Router-Dropped-Params:
+              $ref: '#/components/headers/RouterDroppedParamsHeader'
+            X-Comfy-Credits-Used:
+              $ref: '#/components/headers/RouterCreditsUsedHeader'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/RouterIdempotentReplayedHeader'
+            X-Committed-Spend-Limit:
+              $ref: '#/components/headers/CommittedSpendLimitHeader'
+            X-Committed-Spend-Current:
+              $ref: '#/components/headers/CommittedSpendCurrentHeader'
+            X-Committed-Spend-Remaining:
+              $ref: '#/components/headers/CommittedSpendRemainingHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterModelOutput'
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/RouterRunRequestError'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '402':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '409':
+          $ref: '#/components/responses/RouterIdempotencyConflict'
+        '413':
+          $ref: '#/components/responses/RouterRequestError'
+        '422':
+          $ref: '#/components/responses/RouterModelValidationError'
+        '429':
+          $ref: '#/components/responses/RouterConcurrencyLimited'
+        '502':
+          $ref: '#/components/responses/RouterProviderError'
+        '503':
+          $ref: '#/components/responses/RouterRequestUnavailable'
+        '504':
+          $ref: '#/components/responses/RouterDeadlineExceeded'
+  /v2/models/{provider}/{model}/openapi.json:
+    get:
+      summary: Read one partner model's input and output schemas as an OpenAPI document.
+      description: The per-model input and output schemas for a single Comfy Router model, served as a standalone OpenAPI document, so a caller - an SDK, a codegen tool, or an agent - can discover a model's arguments, and the shape of what it returns, without reading Comfy's prose docs. It is the discovery mechanism the SDK quickstart depends on.
+      operationId: getRouterModelInputSchema
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - in: header
+        name: If-None-Match
+        required: false
+        description: The `ETag` a caller holds from an earlier `200`. When it matches the current document (RFC 9110 weak comparison; `*` matches any current document) the answer is a bodyless `304` carrying the same `ETag`, otherwise the full document.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK - the model's input and output schemas, as a standalone OpenAPI document.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterSchemaETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterSchemaCacheControlHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterModelInputSchemaDocument'
+        '304':
+          description: Not Modified - the document is unchanged since the `ETag` the caller sent in `If-None-Match`. No body is returned.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterSchemaETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterSchemaCacheControlHeader'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '500':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+  /v2/models/{provider}/{model}/requests:
+    post:
+      summary: Submit a partner model run to the queue and return immediately.
+      description: Comfy Router's queued delivery mode. The request body is the same partner-native JSON input `POST /v2/models/{provider}/{model}` accepts for this model - one body shape, one per-model schema, two delivery modes - but this route does not hold the connection for the result. It admits the run, answers `201` with a handle, and the caller collects the result later through the three reads below.
+      operationId: submitRouterModelRequest
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - $ref: '#/components/parameters/ModelProvider'
+      - $ref: '#/components/parameters/StrictMode'
+      - $ref: '#/components/parameters/RouterIdempotencyKey'
+      - $ref: '#/components/parameters/RejectUnknownFields'
+      requestBody:
+        required: true
+        description: 'The partner model''s native JSON input, identical to the body the synchronous route accepts for this model, and it selects the operation and is metered the same way: the body''s own fields choose which operation Router runs on a model that supports more than one (an input image switches an editable image model to image-to-image; a Seedance first-frame image selects image-to-video and a reference image or clip selects reference-to-video), and each conditioned operation is metered on its own rate, not the base text-to-image or text-to-video rate. The same provider-selection contract applies at dispatch: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default), the body is the model''s native document and is validated against the model''s own input schema before the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later - a non-strict alternate-provider body is additionally translated into that provider''s real schema at dispatch. With `strict_mode=true` the body must already be the alternate provider''s own schema and is forwarded unchanged: native-schema validation is skipped, exactly as on the synchronous route (see `model_provider` and `strict_mode`).'
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouterModelInput'
+      responses:
+        '201':
+          description: 'Created - the run was admitted to the queue. The body is the handle: the `request_id`, `status: IN_QUEUE`, a `queue_position` snapshot, and the `status_url`, `response_url` and `cancel_url` that address the rest of this request''s lifetime. It is deliberately `201` and not `202`: a queued request is a resource this call created and the three URLs address it, whereas the `202` on the result read below means "not ready yet, ask again" and creates nothing.'
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/RouterIdempotentReplayedHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueSubmitResponse'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '400':
+          $ref: '#/components/responses/RouterRequestError'
+        '413':
+          $ref: '#/components/responses/RouterRequestError'
+        '402':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterQueueSubmitForbidden'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '409':
+          $ref: '#/components/responses/RouterIdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/RouterModelValidationError'
+        '503':
+          $ref: '#/components/responses/RouterRequestUnavailable'
+  /v2/models/{provider}/{model}/requests/{request_id}:
+    get:
+      summary: Collect the result of one submitted request.
+      description: The collect endpoint. On a request that has finished successfully it returns the partner model's own native output, byte for byte what the synchronous route's `200` carries for the same model and the same input - so the two delivery modes produce one result shape and a caller can move between them without a second parser.
+      operationId: getRouterModelRequestResult
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - $ref: '#/components/parameters/RouterQueueRequestId'
+      responses:
+        '200':
+          description: 'OK - the result stored for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner''s own media type, exactly as the synchronous route''s `200` returns it, and under the same provider-selection contract the submit accepted: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model''s native contract when possible, falling back to the alternate provider''s own raw response on a translation failure - logged, never silent), the shape is this model''s own native output; with `strict_mode=true` it is the alternate provider''s response returned unchanged. For most models that is JSON (`RouterModelOutput`); for a model whose partner answers a generation directly as bytes it is those bytes under the partner''s own `Content-Type`. Today no such model can be queued (the submit refuses it), so this branch is declared for the SDK contract ahead of the server serving it. A client must branch on the response `Content-Type` and must not assume a JSON document; the per-model contract is published at `GET /v2/models/{provider}/{model}/openapi.json`. This response carries `X-Content-Type-Options: nosniff`, so a partner media type is taken at its word and never sniffed into something else.'
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            X-Content-Type-Options:
+              $ref: '#/components/headers/RouterNoSniffHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterModelOutput'
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '202':
+          description: Accepted - the request has not finished. The body is the same `RouterQueueStatusResponse` the status read returns, so this route can be polled on its own, and `Retry-After` hints when to ask again.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            Retry-After:
+              $ref: '#/components/headers/RouterQueuePollAfterHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueStatusResponse'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '410':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+        '409':
+          $ref: '#/components/responses/RouterRequestError'
+        '504':
+          $ref: '#/components/responses/RouterRequestError'
+        '422':
+          $ref: '#/components/responses/RouterModelValidationError'
+        default:
+          $ref: '#/components/responses/RouterRequestError'
+  /v2/models/{provider}/{model}/requests/{request_id}/cancel:
+    put:
+      summary: Ask for one submitted request to be cancelled.
+      description: 'Asks Comfy to stop a request that has not finished. It is a request, not a guarantee, and the `202` says exactly that: `CANCELLATION_REQUESTED` means the ask was accepted, not that the run has stopped. A run already on the wire at a partner may complete anyway - and a partner generation that completes is charged, whether or not anyone collected it - so a caller who needs to know what actually happened reads the status endpoint afterwards, where a cancellation that took effect is `COMPLETED` carrying an `error_type` like every other terminal outcome.'
+      operationId: cancelRouterModelRequest
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - $ref: '#/components/parameters/RouterQueueRequestId'
+      responses:
+        '202':
+          description: Accepted - `CANCELLATION_REQUESTED`. The ask was accepted for a request that had not yet reached a terminal state. It is not a statement that the run has stopped; read the status endpoint to learn what it did.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueCancelResponse'
+        '409':
+          description: 'Conflict - `ALREADY_COMPLETED`. The request had already reached a terminal state, so there was nothing to cancel. It is terminal for the ask: retrying it will return the same answer. Whether that terminal state was a success, a failure or an earlier cancellation is not carried here - the status endpoint answers that.'
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueCancelResponse'
+        '400':
+          $ref: '#/components/responses/RouterRequestError'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+        default:
+          $ref: '#/components/responses/RouterRequestError'
+  /v2/models/{provider}/{model}/requests/{request_id}/status:
+    get:
+      summary: Read the queue state of one submitted request.
+      description: The poll endpoint. It answers with the request's current state and never with the result, so a client can watch a long generation without transferring its output on every poll - the result is collected once, from the read below, when this says `COMPLETED`.
+      operationId: getRouterModelRequestStatus
+      tags:
+      - Comfy Router
+      security:
+      - BearerAuth: []
+      - ApiKeyAuth: []
+      parameters:
+      - $ref: '#/components/parameters/RouterProvider'
+      - $ref: '#/components/parameters/RouterModel'
+      - $ref: '#/components/parameters/RouterQueueRequestId'
+      responses:
+        '200':
+          description: OK - the request's current queue state. `status` is one of the three states; `queue_position` is present while the request is still `IN_QUEUE`; `error_type` is present only on a `COMPLETED` request that failed or was cancelled.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            Retry-After:
+              $ref: '#/components/headers/RouterQueuePollAfterHeader'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueStatusResponse'
+        '401':
+          $ref: '#/components/responses/RouterRequestError'
+        '403':
+          $ref: '#/components/responses/RouterRequestError'
+        '404':
+          $ref: '#/components/responses/RouterRequestError'
+        '410':
+          $ref: '#/components/responses/RouterRequestError'
+        '503':
+          $ref: '#/components/responses/RouterRequestError'
+        default:
+          $ref: '#/components/responses/RouterRequestError'
+components:
+  schemas:
+    RouterChargesOnPolicyRejection:
+      type: string
+      description: Whether a call this model refuses on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore.
+      example: unknown
+    RouterErrorResponse:
+      type: object
+      description: 'Router''s request-level error body: what is returned when the request never reached the model, or failed for a reason the model itself did not report - auth, quota, an unknown model ID, or provider transport. A model-level validation failure has its own shape, `RouterValidationErrorResponse`, because flattening a FastAPI `detail[]` array into this `detail` string would destroy the per-field granularity an SDK branches on.'
+      properties:
+        detail:
+          type: string
+          description: Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead.
+        error_type:
+          $ref: '#/components/schemas/RouterErrorType'
+        upstream_detail:
+          type: string
+          description: A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - i.e. the provider refused the request as malformed and said why. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
+        refusal_subject:
+          type: string
+          description: 'Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.'
+      required:
+      - detail
+      - error_type
+    RouterErrorType:
+      type: string
+      description: 'Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at nineteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found` and `queue_backlog_full`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.'
+      example: invalid_input
+      x-comfy-error-types:
+      - value: invalid_input
+        tier: request
+        meaning: The request was rejected before it reached the model - a malformed body, a malformed or expired pagination cursor, an input the model's own schema does not accept, or an `Idempotency-Key` that cannot serve this request (already used for a different request - the method, the path and query, or the body differ - or already consumed by a call whose response cannot be replayed). Sent with `409` in the key cases and with `400`/`422` in the others; the status says which, and the key cases are the ones answered by using a new key rather than by editing the request.
+      - value: content_policy_violation
+        tier: request
+        meaning: 'The provider refused the request on content-policy grounds. The refusal is deterministic: re-sending the same input will be refused again.'
+      - value: provider_error
+        tier: request
+        meaning: The partner provider reported a failure of its own, or returned a response Router could not interpret as a result.
+      - value: provider_timeout
+        tier: request
+        meaning: 'The partner provider did not answer within its deadline. This bucket is the provider timing out and never Router''s own server deadline, which is reported as `deadline_exceeded` - the two share `504` and are separated because they name different causes: this one says the partner failed, that one says Comfy stopped holding the connection.'
+      - value: insufficient_credits
+        tier: request
+        meaning: The calling workspace does not have enough credits to run the model.
+      - value: model_not_found
+        tier: request
+        meaning: The `{provider}/{model}` ID names no model Router can run; an unknown provider lands here too. `detail` carries up to three suggestions drawn from the models the caller is entitled to see. This includes a catalogued ID the provider does not currently serve for Comfy; the response then carries no suggestions.
+      - value: unauthorized
+        tier: transport
+        meaning: The request carried no usable credential.
+      - value: forbidden
+        tier: transport
+        meaning: The credential is valid but is not entitled to this model or this operation.
+      - value: concurrency_limit_exceeded
+        tier: transport
+        meaning: 'The workspace already has as many calls in flight as it is allowed; retry once one of them finishes. It carries one further condition on the run route, on a `409` rather than the `429` above: another call is already in flight for the `Idempotency-Key` this request presented. Re-send the same key after `Retry-After` seconds to collect that call''s result.'
+      - value: client_disconnected
+        tier: transport
+        meaning: 'The caller closed the connection before Router could return a result. It is logged rather than delivered - there is no socket left to write it to - and it is an attribution, not a billing outcome: a provider generation that completed is billed regardless of whether the caller received the response.'
+      - value: internal_error
+        tier: transport
+        meaning: Router itself failed. It is also the value a client should treat any unrecognized bucket as, so a later addition to the set does not break a client generated before it.
+      - value: deadline_exceeded
+        tier: transport
+        meaning: 'Comfy stopped holding the connection at its own configured bound before an answer arrived. It shares `504` with `provider_timeout` and the pair says which side ran out of time; this one is Comfy''s own bound, so nothing about the request was rejected and the same request may be retried. It says nothing about the charge: a provider generation that completed is billed regardless of whether the caller received the response. Retry it with the same `Idempotency-Key`: when the provider had already accepted the generation, the retry collects that generation rather than dispatching another, and a `Retry-After` on the `504` says when to ask.'
+      - value: not_enabled
+        tier: transport
+        meaning: 'Comfy Router is not switched on for this caller yet. Nothing about the request is wrong and the model exists, which is why this is not `model_not_found`; it shares `403` with `forbidden` and is not the same thing, because `forbidden` is an entitlement decision about the caller while this is a state of the rollout. It is terminal: do not retry, and do not treat it as an outage. The one exception to "about the caller" is the queued submit, which also answers `not_enabled` for a model whose partner answers a generation directly as bytes: that model cannot yet be queued, so it is the model and not the caller that is refused, nothing is queued or charged, and the synchronous route `POST /v2/models/{provider}/{model}` runs it instead.'
+      - value: service_unavailable
+        tier: transport
+        meaning: 'A service Comfy Router depends on is temporarily unavailable and the caller did nothing wrong. Retry it with backoff: it is the one bucket here whose condition clears on its own, without the caller changing the request and without a concurrency slot freeing, which is what distinguishes it from the other retryable answers (`concurrency_limit_exceeded`, `deadline_exceeded`). It is separate from `internal_error` - which is a `500` and means Router itself failed - so a client can tell "come back shortly" from "this call is not going to work".'
+      - value: rate_limited
+        tier: transport
+        meaning: 'The caller has spent an allowance measured over a window and must wait for that window to roll. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller''s own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window.'
+      - value: cancelled
+        tier: transport
+        meaning: 'A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is terminal, and it is not by itself a statement about the charge. Cancelling stops Comfy waiting and it does not always stop the partner working, so a request cancelled while it was still `IN_QUEUE` was never dispatched and cannot be charged, whereas one cancelled after it was admitted may still be charged — a partner generation that completes is charged whether or not anyone collected it, which is why the cancel route calls the ask a request rather than a guarantee. It is not `client_disconnected`: that one says nobody is listening any more while a generation may still be running and billable, whereas this says the request itself was withdrawn. A caller polling the status read sees `200` with this in the body, because the request ended and so the read succeeded. Collecting the result of such a request answers `409` in Router''s error envelope: that read also worked, and what it found is a request whose terminal state - the caller''s own decision - leaves nothing to return. It is deliberately not `410`, which on that route means the result aged out of its retention window, and not a `5xx`, which would report the caller''s own cancellation as a Router fault and read to a polling client as worth retrying.'
+      - value: queue_timeout
+        tier: transport
+        meaning: 'A queued request waited past its queue timeout without ever being admitted. Terminal, unbilled, and it never took a concurrency slot — the job never reached a provider. Deliberately not `deadline_exceeded`, which is the synchronous route''s connection bound: a `deadline_exceeded` generation may be running and billable, whereas this one provably never started. It is returned under `504`, which it shares with `provider_timeout` and `deadline_exceeded` because a status can only say that a clock ran out; which clock - the partner''s, Comfy''s connection bound, or the queue''s admission bound - is what `error_type` carries. The request itself is terminal, so submit a new one rather than re-reading this one.'
+      - value: request_not_found
+        tier: transport
+        meaning: The `request_id` names no request of the caller's under this model. It is the second of the two conditions the queued reads' `404` covers; the first is the `{provider}/{model}` ID resolving to no partner model, which is `model_not_found` and carries fuzzy model suggestions. It also covers the right-id / wrong-model URL the path shape refuses, and it is deliberately indistinguishable from a request in another workspace, so a probe with a guessed id learns nothing. A request that has merely aged out of its retention window is `410`, not this.
+      - value: queue_backlog_full
+        tier: transport
+        meaning: 'The caller already has too many queued requests waiting to run, so this submit was refused. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one is the synchronous route''s answer for too many calls in flight at once, whereas the queue accepts a submit at that limit and parks it, and this bucket is the separate bound on how many a caller may leave waiting so that parking cannot mean enqueuing without end. It clears as the caller''s own queued requests finish, so retry once some of them complete.'
+    RouterModelBilling:
+      type: object
+      description: Per-model billing facts a caller needs before invoking - not prices. Usage and cost figures never appear here.
+      properties:
+        charges_on_policy_rejection:
+          $ref: '#/components/schemas/RouterChargesOnPolicyRejection'
+      required:
+      - charges_on_policy_rejection
+    RouterModelDetail:
+      type: object
+      description: 'Per-model detail for one Comfy Router model: everything the catalog listing reports for it, plus the per-model fields that only the single-model route carries.'
+      allOf:
+      - $ref: '#/components/schemas/RouterModelListEntry'
+      - $ref: '#/components/schemas/RouterModelDetailFields'
+    RouterModelDetailFields:
+      type: object
+      description: 'The half of `RouterModelDetail` the catalog listing does not carry: per-model fields worth one lookup but not worth repeating on every entry of a paginated catalog page.'
+      properties:
+        input_schema_url:
+          type: string
+          format: uri
+          pattern: ^https://
+          maxLength: 2048
+          description: 'Pointer to this model''s input schema document - the description of the body `POST /v2/models/{provider}/{model}` accepts for this model. Only the pointer is part of this contract: the document it addresses is authored separately. Absent when no schema has been authored for the model.'
+    RouterModelId:
+      type: string
+      description: A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator.
+      pattern: ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$
+      maxLength: 193
+      example: bfl/flux-2-pro
+    RouterModelInput:
+      type: object
+      description: 'A partner model''s native JSON input document, forwarded to the provider as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI''s spec-driven codegen needs a class to generate.'
+      additionalProperties: true
+    RouterModelInputSchemaDocument:
+      type: object
+      description: A standalone OpenAPI document describing one Comfy Router model's input and output - the body `POST /v2/models/{provider}/{model}` accepts for that model, under the operation's `requestBody`, and the body it returns, under that operation's `200` content. It is what `GET /v2/models/{provider}/{model}/openapi.json` returns. The component keeps its historical name, which predates the output half; the shape it describes is the whole document, not the input alone.
+      additionalProperties: true
+    RouterModelListEntry:
+      type: object
+      description: 'One entry in the Router model catalog: the identity of a runnable model, and nothing else. The per-model detail route composes this same entry rather than restating it, which is why the name is `...ListEntry` and not `...Summary` - there must be exactly one definition of what a catalog entry is. Per-model detail and the per-model input/output schemas are their own routes, so this shape stays the minimum a caller needs in order to invoke the model - deliberately, because this is the payload an SDK fetches on cold start. `id` is `provider` and `model` joined by `/`; the two fields are carried separately as well so a caller composes the invocation path without splitting a string.'
+      properties:
+        id:
+          $ref: '#/components/schemas/RouterModelId'
+        provider:
+          $ref: '#/components/schemas/RouterProviderSegment'
+        model:
+          $ref: '#/components/schemas/RouterModelSegment'
+        billing:
+          $ref: '#/components/schemas/RouterModelBilling'
+      required:
+      - id
+      - provider
+      - model
+      - billing
+    RouterModelListResponse:
+      type: object
+      description: One page of the Router model catalog.
+      properties:
+        data:
+          type: array
+          description: The models on this page, at most `limit` of them.
+          items:
+            $ref: '#/components/schemas/RouterModelListEntry'
+        has_more:
+          type: boolean
+          description: Whether another page exists beyond this one. Keep walking while this is true; do not infer the end of the catalog from a short or empty `data`.
+        next_cursor:
+          $ref: '#/components/schemas/RouterPageCursor'
+        limit:
+          type: integer
+          description: The page size actually served. A requested `limit` above the maximum is clamped down to the maximum rather than rejected, so this can be smaller than the value asked for - paginate with this number, not with the one you sent, or you will assume rows you never received.
+          minimum: 1
+          maximum: 100
+          example: 20
+      required:
+      - data
+      - has_more
+      - limit
+    RouterModelOutput:
+      type: object
+      description: 'A partner model''s native JSON output document, returned to the caller as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI''s spec-driven codegen needs a class to generate. For the concrete shape one model returns, read that model''s own document at `GET /v2/models/{provider}/{model}/openapi.json`, whose `200` carries the per-model output schema when Comfy has described it.'
+      additionalProperties: true
+    RouterModelSegment:
+      type: string
+      description: Lowercase `model` segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`.
+      pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+      maxLength: 128
+      example: flux-2-pro
+    RouterPageCursor:
+      type: string
+      description: 'An opaque cursor into a Router list. It is produced by the server and only ever round-tripped: it is not an offset, not a model ID, not ordered, and not stable across catalog rebuilds, so parsing one, incrementing one, or persisting one beyond the walk it came from are all outside the contract. Cursor rather than offset because the catalog is a moving list - an offset walk silently skips or repeats entries when entries are added or removed mid-walk, and a caller cannot tell that it happened.'
+      pattern: ^[A-Za-z0-9._~+/=-]+$
+      minLength: 1
+      maxLength: 512
+      example: q7Fm2xTn9pLd4RsV
+    RouterProviderSegment:
+      type: string
+      description: Lowercase `provider` segment of the canonical `{provider}/{model}` model ID - the partner whose model is being addressed. The invocation route's `provider` path parameter and a catalog entry's `provider` field both reference this one schema, which is what keeps the listed IDs and the accepted IDs from drifting apart.
+      pattern: ^[a-z0-9]+([._-][a-z0-9]+)*$
+      maxLength: 64
+      example: bfl
+    RouterQueueCancelResponse:
+      type: object
+      description: The answer to a cancellation ask on the two statuses that describe a request this route resolved - the `202` and the `400`. One body shape across both rather than a success envelope plus an error envelope, because both are the same statement - what cancelling found - and a client that has to parse a different type per status code gains nothing from the split.
+      properties:
+        request_id:
+          $ref: '#/components/schemas/RouterQueueRequestId'
+        status:
+          $ref: '#/components/schemas/RouterQueueCancelStatus'
+      required:
+      - request_id
+      - status
+    RouterQueueCancelStatus:
+      type: string
+      description: What a cancellation ask found, for the two outcomes that describe a request this route actually resolved. Both are mirrored by the HTTP status, so a client may branch on either.
+      enum:
+      - CANCELLATION_REQUESTED
+      - ALREADY_COMPLETED
+      example: CANCELLATION_REQUESTED
+    RouterQueuePosition:
+      type: integer
+      minimum: 0
+      description: How many requests are ahead of this one in the queue, at the instant the response was composed. Zero means this request is at the front.
+      example: 3
+    RouterQueueRequestId:
+      type: string
+      format: uuid
+      x-go-type: string
+      pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+      maxLength: 36
+      description: Identifier of one queued Router request - the handle a caller polls, cancels and collects a result by.
+      example: 6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21
+    RouterQueueStatus:
+      type: string
+      description: The state of a queued Router request. It has exactly three values, and unlike `RouterErrorType` this one is a closed `enum`, because the two schemas are closed in opposite directions on purpose. `RouterErrorType` classifies failures and its set is expected to grow, so a generated client that hard-rejected an unrecognised bucket would fail hardest exactly when something had already gone wrong. This one is a lifecycle, and a lifecycle with a fourth state added later is a breaking change to every polling loop written against it whether it is declared as an enum or not - so it is declared as one, and the constraint is stated where a client can see it.
+      enum:
+      - IN_QUEUE
+      - IN_PROGRESS
+      - COMPLETED
+      example: IN_QUEUE
+    RouterQueueStatusFields:
+      type: object
+      description: 'The half of `RouterQueueStatusResponse` that is not the URL block: one queued request''s identity, its current state, and - when that state is terminal and the run did not succeed - the coarse bucket saying why.'
+      properties:
+        request_id:
+          $ref: '#/components/schemas/RouterQueueRequestId'
+        status:
+          $ref: '#/components/schemas/RouterQueueStatus'
+        queue_position:
+          $ref: '#/components/schemas/RouterQueuePosition'
+        error_type:
+          allOf:
+          - $ref: '#/components/schemas/RouterErrorType'
+          description: Present only on a `COMPLETED` request that did not succeed, carrying the same coarse bucket the result read puts on `X-Comfy-Error-Type` when it returns that failure. It is what distinguishes a terminal request that succeeded from one that failed or was cancelled - there is no separate terminal status for either - and it is absent on success rather than null, so branch on its presence.
+      required:
+      - request_id
+      - status
+    RouterQueueStatusResponse:
+      type: object
+      description: One queued request's current state, composed with the same three URLs the submission returned.
+      allOf:
+      - $ref: '#/components/schemas/RouterQueueUrls'
+      - $ref: '#/components/schemas/RouterQueueStatusFields'
+    RouterQueueSubmitFields:
+      type: object
+      description: 'The half of `RouterQueueSubmitResponse` that is not the URL block: the new request''s identity and its state at the instant it was admitted.'
+      properties:
+        request_id:
+          $ref: '#/components/schemas/RouterQueueRequestId'
+        status:
+          $ref: '#/components/schemas/RouterQueueStatus'
+        queue_position:
+          $ref: '#/components/schemas/RouterQueuePosition'
+      required:
+      - request_id
+      - status
+    RouterQueueSubmitResponse:
+      type: object
+      description: 'The handle returned when a run is admitted to the queue: the request''s identity and state, composed with the three URLs that address the rest of its lifetime.'
+      allOf:
+      - $ref: '#/components/schemas/RouterQueueUrls'
+      - $ref: '#/components/schemas/RouterQueueSubmitFields'
+    RouterQueueUrls:
+      type: object
+      description: The three URLs that address the rest of one queued request's lifetime, returned on every response that carries a live handle so a client never composes a queue URL itself.
+      properties:
+        status_url:
+          type: string
+          format: uri
+          description: Absolute URL of this request's status read.
+          example: https://api.comfy.org/v2/models/bfl/flux-pro-1.1/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status
+        response_url:
+          type: string
+          format: uri
+          description: Absolute URL this request's result is collected from.
+          example: https://api.comfy.org/v2/models/bfl/flux-pro-1.1/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21
+        cancel_url:
+          type: string
+          format: uri
+          description: Absolute URL a cancellation is asked for at.
+          example: https://api.comfy.org/v2/models/bfl/flux-pro-1.1/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel
+      required:
+      - status_url
+      - response_url
+      - cancel_url
+    RouterValidationErrorContext:
+      type: object
+      description: 'The violated bound for one `RouterValidationErrorDetail`, carried from the provider verbatim - for example `{"limit_value": 8}` alongside `greater_than`, `{"min_width": 512}` alongside `image_too_small`, or `{"max_size_bytes": 10485760}` alongside `file_too_large`. The key set is specific to the provider and the error type, so this is deliberately an open object: narrowing it to a fixed field list, or folding it into the `msg` string, is precisely how a ported integration compiles and then silently loses the branch that read the bound. Absent when the error type carries no bound.'
+      additionalProperties: true
+    RouterValidationErrorDetail:
+      type: object
+      description: 'One model-level validation failure, in the FastAPI form. `type` carries the specific provider reason - `value_error`, `missing`, `image_too_small`, `unsupported_audio_format`, `greater_than`, `file_too_large` and the rest - which is the granularity `RouterErrorType`''s coarse bucket cannot express. It is an open string and not an `enum` for the same reason: the provider vocabulary runs to roughly 48 values across two tiers and grows on the provider''s release cycle, not ours, and an unmodelled value must reach the caller rather than fail deserialization.'
+      properties:
+        loc:
+          type: array
+          description: Path to the offending field, outermost segment first - for example `["body", "image_url"]`, or `["body", "images", 0]` where an integer indexes into an array.
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+        msg:
+          type: string
+          description: Human-readable description of this single failure.
+        type:
+          type: string
+          description: Specific, machine-readable reason for this failure, passed through from the provider unchanged. This is the value a typed SDK exception hierarchy branches on; `error_type` on the response header is only its coarse bucket.
+          example: image_too_small
+        ctx:
+          $ref: '#/components/schemas/RouterValidationErrorContext'
+        input:
+          $ref: '#/components/schemas/RouterValidationErrorInput'
+      required:
+      - loc
+      - msg
+      - type
+    RouterValidationErrorInput:
+      description: The offending input value, echoed back verbatim so a caller can see what was rejected without re-deriving it from `loc`. Any JSON type - string, number, boolean, array, object or null - so this schema is deliberately left untyped rather than narrowed to an object. Absent when the provider does not echo the input back.
+    RouterValidationErrorResponse:
+      type: object
+      description: 'Router''s model-level `422` body, in the FastAPI form: the request was well-formed enough to reach the model and the model rejected its contents. Note it carries no `error_type` of its own - that is what `X-Comfy-Error-Type` on the response is for, so a client can read the coarse bucket off the header without first deciding which of the two Router error bodies it received.'
+      properties:
+        detail:
+          type: array
+          description: Every validation failure found on the request, one entry per offending field.
+          items:
+            $ref: '#/components/schemas/RouterValidationErrorDetail'
+      required:
+      - detail
+  responses:
+    RouterConcurrencyLimited:
+      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in either case and `detail` says which bound was hit: the number of concurrent calls, or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        X-Committed-Spend-Limit:
+          $ref: '#/components/headers/CommittedSpendLimitHeader'
+        X-Committed-Spend-Current:
+          $ref: '#/components/headers/CommittedSpendCurrentHeader'
+        X-Committed-Spend-Remaining:
+          $ref: '#/components/headers/CommittedSpendRemainingHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterDeadlineExceeded:
+      description: 'Comfy stopped holding the connection at its own configured bound (`deadline_exceeded`). The body and the two headers are exactly `RouterRequestError`''s; what this adds is the optional `Retry-After`, present when a retry with the same `Idempotency-Key` will collect the generation that is still running rather than dispatch a new one. See the `504` on `POST /v2/models/{provider}/{model}`. The status is shared with `provider_timeout` - the partner not answering in time, rather than Comfy''s own bound expiring - which is why `X-Comfy-Upstream-Status` is declared here too: present, it carries the partner''s own status and the bound that expired was theirs; absent, the bound was Comfy''s.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        X-Comfy-Upstream-Status:
+          $ref: '#/components/headers/RouterUpstreamStatusHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRetryAfterHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterIdempotencyConflict:
+      description: 'This request cannot be served as sent, and on `POST /v2/models/{provider}/{model}` three unrelated conditions answer this status. The first, which every route declaring this status can raise: the `Idempotency-Key` on this request is already held, and this request cannot be answered from its record. Two buckets share the status there and `X-Comfy-Error-Type` is what separates them, because they are acted on in opposite ways. `concurrency_limit_exceeded` means the original call for this key is still running: wait `Retry-After` seconds and re-send the same key, which collects that call''s result rather than starting a second one. `invalid_input` means the key cannot serve this request at all - it was already used for a different request (the method, the path and query, or the body differ from the original), or the original completed (and, if it succeeded, was charged) and Router holds no copy of its response it can still stand behind - for example it was too large to store, or it names an asset Comfy does not host and so cannot promise still resolves, which on a direct-return model is replayed for a few minutes after the original call and refused after that - or the copy it holds is content-encoded in a way this request did not accept - and the answer for the key is always a new key, never a re-send of this one. There is no `Retry-After` on any of these, because waiting changes nothing. `detail` says which case it is; the different-request case says nothing about how the call that does own the key turned out. The second and third conditions are raised only by `POST /v2/models/{provider}/{model}`, are not about the `Idempotency-Key` at all, and are both reachable on a request that carries no key. Router checks the third before the second, so a request that would trip both is refused for the third: an explicit `model_provider` naming an alternate provider on a request whose body selects a multipart operation (an edit, for example gpt-image''s `image` field), when that provider''s translator for this model cannot itself serve the operation - the swap is refused rather than silently billing a plain generation for the edit the caller actually asked for. A leg whose translator does carry the media is not refused and proceeds normally, so this refusal is per-leg rather than blanket. This one is not raised by the automatic on-failure retry `fallback_provider` controls, which is simply skipped (inert, not refused) on any multipart body, whether or not a leg could have served it - see the `model_provider` parameter. Its `detail` begins "this request''s `image` selects the edit operation". The second: `model_provider` named an alternate provider on a request that had already resolved a bring-your-own-key credential for the provider in the path. The three are mutually exclusive - the multipart case is decided from the request body and the named leg''s own translator, before BYOK is even considered - and the BYOK case is exclusive with the key case because that credential was resolved for the path''s provider while every alternate leg dispatches on Comfy''s own key for its own provider, so the call is refused before anything is dispatched and nothing is charged. Both the second and third carry `invalid_input`, the same bucket as the terminal key case above, so `X-Comfy-Error-Type` does not separate any of the three and `detail` is what a client branches on: the BYOK case begins `this request resolved a BYOK credential`, and a new key does not help - drop `model_provider`, or send the request without the BYOK credential. See the `model_provider` parameter, which also records that `fallback_provider` is inert rather than refused on a BYOK request. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRetryAfterHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterModelValidationError:
+      description: The request's contents were rejected against the model's schema. The body is `RouterValidationErrorResponse`, the FastAPI `detail[]` shape, so each offending field keeps its own specific `type` and `ctx`. `X-Comfy-Error-Type` carries the coarse bucket for the whole response. A JSON request body that is not an object at all (an array, a string, a number, `null`) is refused here too, as `dict_type` at `["body"]`.
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        Idempotent-Replayed:
+          $ref: '#/components/headers/RouterIdempotentReplayedHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterValidationErrorResponse'
+    RouterProviderError:
+      description: The provider's own response could not be turned into a result (`provider_error`). The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. `X-Comfy-Upstream-Status` carries the provider's own status when Router's typed failure carrier held one; absent, either the failure came with no such status (a poll-transport failure, for example) or this 502 did not come from the provider at all.
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        X-Comfy-Upstream-Status:
+          $ref: '#/components/headers/RouterUpstreamStatusHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterQueueSubmitForbidden:
+      description: 'A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. On this route `not_enabled` also answers a model whose partner answers a generation directly as bytes: such a model cannot yet be queued, so the submit refuses it and nothing is queued or charged. For that refusal it is the model and not the account that is refused: run such a model on the synchronous route, `POST /v2/models/{provider}/{model}`, instead. The same redirect is given, in `detail`, to a bring-your-own-key request whose credential resolved but that the queue cannot carry. A credential that carries no Comfy workspace is refused `not_enabled` here too, with a `detail` naming the credential, while the synchronous route accepts it. Any other `not_enabled` or `forbidden` here is refused by the synchronous route the same way, so read `detail` rather than the bucket before re-sending elsewhere.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterRequestError:
+      description: A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterRequestUnavailable:
+      description: A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. A `503` that was refused for capacity - the in-flight request-body budget was full - carries `Retry-After` naming when to re-send the identical request; a `503` raised because a dependency faulted does not, because none of those rails knows when it will recover.
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterCapacityRetryAfterHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterRunRequestError:
+      description: 'A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. On this route the status is also how the partner''s own refusal of a call that really ran is returned - the `content_policy_violation` some models meter - and that answer is recorded against an `Idempotency-Key` and served to a same-key retry, so unlike the catalog reads'' shared error this response can arrive carrying `Idempotent-Replayed: true`.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        X-Comfy-Upstream-Status:
+          $ref: '#/components/headers/RouterUpstreamStatusHeader'
+        X-Comfy-Upstream-Detail:
+          $ref: '#/components/headers/RouterUpstreamDetailHeader'
+        X-Comfy-Refusal-Subject:
+          $ref: '#/components/headers/RouterRefusalSubjectHeader'
+        Idempotent-Replayed:
+          $ref: '#/components/headers/RouterIdempotentReplayedHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+  parameters:
+    FallbackProvider:
+      name: fallback_provider
+      in: query
+      required: false
+      description: 'Controls whether Router retries this call against another of the model''s registered providers when the first attempt fails for a reason attributable to Router''s own side or to the specific provider tried - never for a reason attributable to the request itself (an unretried failure is refused exactly as it always was). Omitted, or any value other than `false`, turns fallback on (the default) and Router scans the model''s registered alternates in a fixed order and retries once against the first eligible one. `false` turns fallback off: a failure is refused, never retried. A successful fallback response carries the `X-Comfy-Router-Fallback-Provider` header, naming the provider that served it; a fallback attempt that itself also fails does not carry the header, and no case retries a generation that may already have been submitted to a provider. Fallback also turns itself off, regardless of this parameter, on a request that resolved a bring-your-own-key credential, on a request whose body selects a multipart operation, and under `strict_mode=true` - each binds the call to one specific provider and cannot be faithfully replayed against another: the alternate leg would dispatch on Comfy''s own key rather than on the caller''s credential, no alternate translator is guaranteed to carry the multipart media field, and a strict body is already shaped for one provider rather than for the native contract. Each of those is inert, not refused - no retry is attempted and the first attempt''s own failure reaches the caller unchanged. Only an explicit `model_provider` is refused, and see that parameter for the `409`s it answers with; note that fallback''s multipart disable is unconditional, while `model_provider`''s multipart `409` applies only to a leg whose translator cannot serve the operation.'
+      schema:
+        type: string
+    ModelProvider:
+      name: model_provider
+      in: query
+      required: false
+      description: 'Selects an alternate provider to serve this model, instead of its current default. Omitting it runs native dispatch on the model''s own default provider; `default`, `comfy`, and `comfyui` are aliases for that same native behavior and name no override, because Comfy Router is never itself a serving backend. The alternate providers Router can retarget a model onto are `fal`, `wavespeed`, `runware`, and `higgsfield`; which of them a given model supports is reported by `GET /v2/models/{provider}/{model}`. When an alternate provider is selected, the native request body is translated into that provider''s real schema unless `strict_mode=true`; see `strict_mode` and `fallback_provider`. Its refusals are checked in a fixed order, and an earlier one answers whether or not a later one would. A value that is not a registered provider at all is refused `400` with `error_type: invalid_input`. Then a request whose body selects a multipart operation (an edit - for example gpt-image''s `image` field) is refused `409`, also with `error_type: invalid_input`, whose `detail` begins "this request''s `image` selects the edit operation" - but only when the named provider''s translator for this model cannot itself serve that operation; a leg whose translator does carry the media is not refused and proceeds normally, so this is a per-leg refusal rather than a blanket one. Then a request that has already resolved a bring-your-own-key credential for the provider in the path is refused `409`, also with `error_type: invalid_input`, whose `detail` begins `this request resolved a BYOK credential` - see the `409` on this route, where that `detail` is the only thing separating this case, and the multipart case above, from the `Idempotency-Key` one. That BYOK check runs whether or not the named provider has a leg for this model. Then the named provider''s own gate refuses `403` with `error_type: not_enabled` when that provider is not turned on for you, and `503` with `error_type: service_unavailable` when the gate cannot be evaluated - a flag-evaluation failure, or a missing or nil gate entry. Only past all of those is a real provider that does not serve this model refused `400` with `error_type: invalid_input`, the same answer as a value that is not a registered provider at all - both mean the `model_provider` value cannot serve this model, and that `400`''s `detail` is human-readable and not a contract, so read `GET /v2/models/{provider}/{model}` to learn which providers a model does support rather than parsing it; past that `400`, this workspace''s partner-provider policy for the named vendor is evaluated too and can refuse `403` or `503` of its own. Neither this parameter nor `fallback_provider` is available on a BYOK request, and the two are unavailable in different ways: the credential was resolved for the provider named in the path while every alternate leg dispatches on Comfy''s own key, so an explicit `model_provider` is refused with that `409`, and `fallback_provider` is inert rather than refused - no retry against an alternate provider is attempted and the first attempt''s own failure is what the caller receives. The same split applies to a multipart body: only an explicit `model_provider` reaches the `409` above, and only for a leg whose translator cannot serve the operation, while the automatic on-failure retry `fallback_provider` controls is simply skipped (inert, not refused) for any multipart body. Router defines no `provider_not_available` or `validation_error` `error_type`: these conditions fold onto `invalid_input`. The `error_type` set can still grow, so treat any value you do not recognize as `internal_error` rather than switching exhaustively.'
+      schema:
+        type: string
+    RejectUnknownFields:
+      name: reject_unknown_fields
+      in: query
+      required: false
+      description: Opt in to refusing a top-level request-body field this model's input schema does not declare, rather than accepting it; nested fields are not checked, and nothing is refused for a model whose schema allows undeclared fields or has no authored schema, or on a queued submit sent with `strict_mode=true`.
+      schema:
+        type: boolean
+        default: false
+    RouterCatalogCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor. Pass a previous page's `next_cursor` to fetch the next page; omit it for the first page. See `RouterPageCursor` for why the value is opaque and why this route paginates by cursor rather than by offset.
+      schema:
+        $ref: '#/components/schemas/RouterPageCursor'
+    RouterCatalogLimit:
+      name: limit
+      in: query
+      required: false
+      description: 'Number of models to return in one page. Values above the declared maximum are outside the contract, but this route does not reject them: it serves the maximum instead, and the page size actually served is echoed back as `limit` on the response, so a clamp is always detectable by the caller. Treat the maximum as the real page stride - a client that asks for more and assumes it received more will miss rows. 0 and negative values are also accepted and select the default, which is why no `minimum` is declared: sub-1 is meaningful here, not invalid.'
+      schema:
+        type: integer
+        maximum: 100
+        default: 20
+    RouterIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 'Caller-generated key that makes retrying one logical call safe. A call that reached the caller with an answer is recorded against its key for 24 hours, and a retry carrying the same key is answered from that record instead of dispatching - and charging - the provider a second time, marked `Idempotent-Replayed: true`. Keys are scoped to the workspace your credential carries, or to your user when it carries none - so the keyspace is shared by every member of a workspace rather than private to one caller. Make a key unique across the whole workspace, not just within your own client: a second member who reuses a key string is answered from the first member''s record, or refused `409` if the request differs. Because the scope follows the credential and not the person, a credential that carries no workspace at all scopes to your user id instead - so retrying one logical call under a different credential can land in a different namespace, where it is dispatched and charged again. Retry with the credential you started with. A keyed request with no authenticated caller is refused `401`. The guarantee is a billing one: a key is charged at most once. It is not a promise that a key is dispatched at most once, and it does not make a lost call resumable. Some answers are recorded but not replayable for the full 24 hours, and the billing guarantee is the half that always holds: the key stays consumed - the retry never re-runs and never re-charges - but it is answered `409 invalid_input` instead of being served the original body. That happens whenever Comfy does not hold a copy of the response it can still stand behind; a response past the replay size cap and a result addressed by an asset URL Comfy does not host are the two you are most likely to meet. The second is the one worth planning for, because it looks like an ordinary success: which models answer with a Comfy-hosted asset link, how long one stays valid, and what a result carries when an individual asset could not be copied are stated in one place, under Result assets in the API reference, and this paragraph does not restate them. On a model that returns its result on the original call, an answer still holding a partner''s own asset link is replayed for a few minutes - which is where a dropped connection puts an SDK''s automatic same-key re-send, and while the partner''s link is certainly still alive - and refused after that rather than replayed dead. So a prompt retry of a partially re-hosted result behaves exactly like any other replay, and only a later one meets the `409`. That short window is deliberately not offered on a model that submits and is polled, because there the partner may have minted the URL long before your call collected it and its remaining life is unknowable - and those models do not need it: a call cut off mid-generation keeps its key holding the generation, so the same-key retry collects the original result rather than a recorded copy of it. A response past the size cap has no window either and is refused from the start. The action on any of these `409 invalid_input` refusals is the same: use a new key. Only an answer a provider actually produced is recorded, though. A refusal Router raises on its own before dispatching anything - not enabled for you yet (`403`), unknown model (`404`), not entitled to the model (`403`), a body the model''s schema rejects or that names a different model than the path (`422`), a malformed request (`400 invalid_input`) - dispatched nothing and charged nothing, so it releases the key: re-send the same key once you are on the rollout ramp or have corrected the request and it runs for real, rather than replaying the refusal or colliding with it as a `409`. That turns on whether a provider was reached, never on the status, so a `400 content_policy_violation` - the partner''s own answer to a call that ran, which some models meter - is recorded and replayed like any other answer. Releasing a refusal that dispatched nothing frees nothing chargeable, so it does not weaken the at-most-once billing guarantee above.'
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        example: 6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21
+    RouterModel:
+      name: model
+      in: path
+      required: true
+      description: Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider.
+      schema:
+        $ref: '#/components/schemas/RouterModelSegment'
+    RouterProvider:
+      name: provider
+      in: path
+      required: true
+      description: Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run.
+      schema:
+        $ref: '#/components/schemas/RouterProviderSegment'
+    RouterQueueRequestId:
+      name: request_id
+      in: path
+      required: true
+      description: 'The queued request to address - the `request_id` the submission returned in its body. It is not the submission''s `X-Comfy-Request-Id`: that header carries the id of one HTTP call and addresses nothing, as the `RouterQueueRequestId` schema spells out.'
+      schema:
+        $ref: '#/components/schemas/RouterQueueRequestId'
+    StrictMode:
+      name: strict_mode
+      in: query
+      required: false
+      description: 'Only meaningful together with `model_provider`. `false` (the default): the request body must be this model''s own native contract, translated to the alternate provider''s real schema - any native field that cannot be expressed exactly is dropped and disclosed via the response''s `X-Comfy-Router-Dropped-Params` header, never silently. `true`: the body must already be the alternate provider''s own real schema, passed through unmodified in both directions - no translation, so `X-Comfy-Router-Dropped-Params` is never sent, and provider fallback is disabled for the call because a body shaped for one provider cannot be replayed against another (see `fallback_provider`).'
+      schema:
+        type: boolean
+        default: false
+  headers:
+    CommittedSpendCurrentHeader:
+      description: The USD cents the caller currently has committed to calls still in flight. On a `429` this excludes the refused call, whose commitment was rolled back before the refusal was sent; on an admitted response it includes the call being answered. Present alongside `X-Committed-Spend-Limit`.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 9600
+    CommittedSpendLimitHeader:
+      description: 'The ceiling, in USD cents, on the partner spend the caller may have committed to calls still in flight - money held from the moment a call is admitted and released when that call finishes. It is not a budget, a balance, or any running total of what the caller has spent to date: settling an invoice frees no room under it, and letting an in-flight call finish does. Contrast `X-Concurrency-Limit`, which bounds those same in-flight calls counted as a number of calls rather than priced. How the ceiling is sized is a separate question from what it measures, and it is not tier-independent: the ceiling moves with the account''s lifetime paid spend, off the same thresholds the concurrent-call tier uses, so paying more raises it - see [partner-node concurrency limits](https://docs.comfy.org/tutorials/partner-nodes/concurrency-limits) for that ladder and for the concurrent-call bound that shares this `429`. Present on both outcomes of an enforcing committed-spend gate - the `429` it raises and the success it admits - and absent while the gate is not enforcing, when it declines to decide and lets the call through, or on a `429` raised by the concurrent-call pool instead (a committed-spend `429` carries this trio and drops `X-Concurrency-*`).'
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 10000
+    CommittedSpendRemainingHeader:
+      description: 'The USD cents of headroom left under the ceiling, floored at zero. It can be positive on a refusal: the refused call cost more than what was left, and a cheaper call would still be admitted. Present alongside `X-Committed-Spend-Limit`.'
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 400
+    RouterCapacityRetryAfterHeader:
+      description: Seconds to wait before re-sending the same request, unchanged. It is present only when Router refused the request body for capacity - the in-flight request-body budget was full - and a capacity refusal submitted nothing and charged nothing, so re-sending the identical call once the interval has passed is the whole remedy. There is no `Idempotency-Key` to collect under and no queued request to poll for; this is the one `Retry-After` on Router that means simply "send it again later". It is absent on the dependency-fault `503`s that share this status - a credential rail, an idempotency store or a policy decision point that could not answer - because none of them knows when it will, and a wrong number is worse than none against a dependency that is already failing.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        example: 4
+    RouterCreditsUsedHeader:
+      description: 'What this run cost, in Comfy credits, priced from the same rate card the charge itself is billed against - so a caller needs no price table of its own, and on a run that reached the provider through more than one billed call it is their sum rather than the last one. It reports a price, not a settled ledger entry. On a model Comfy bills while your request is still open, the value is published only once the usage event was accepted by billing; on a model that submits and then polls, it is the price the asynchronous worker will bill, recorded before that charge settles - so a run whose billing later fails can still have carried this header. Treat it as what you will be charged, not as proof you were, and reconcile against the usage and billing API rather than against this header alone. Absent whenever no cost was reported: a request billed against your own provider key, a partner whose response does not carry every dimension its price is computed from, a usage event that matched no billable metric, or a charge that did not reach billing - so a missing header means "not reported" and must not be read as "free", and a report that sums absent headers as zero will not reconcile. A run that was rated and genuinely cost nothing reads `0`, which is a reported cost rather than a missing one, so branch on whether the header is present rather than on whether its value is non-zero. Coverage is partial today and widening, so do not assume the header is present for every model. On a response that also carries `Idempotent-Replayed: true` this restates what the original run cost, and that run is charged once however many times you retry the key - so do not add the header up across retries of one `Idempotency-Key`. Absent on an error response: it is written only on the path that returns a result, which a refused call never reaches.'
+      required: false
+      schema:
+        type: string
+        example: '12.5'
+    RouterDroppedParamsHeader:
+      description: 'One JSON-encoded string holding an array of strings - decode it with a JSON parser rather than splitting it on commas, because it is a single string on the wire, not a comma-separated OpenAPI array, and each entry is a sentence carrying commas of its own - present whenever a translation produced this call''s request body and could not express one or more native fields exactly on the provider that served it, naming each dropped field and why, whether the caller asked for that translation with `model_provider` (`strict_mode=false`, the default) or an automatic `fallback_provider` retry ran it. Absent when no translation ran, when translation ran but dropped nothing, and on an error response. On a fallback retry it names what that retry''s own translation (into the provider that actually served the call) dropped, never the primary attempt''s. The disclosure is bounded three ways, so that it stays a fixed size rather than one that grows with the request body — some native arrays (`input.media` on the Wan video family) are deliberately uncapped, and entries quote caller-supplied values: at most 64 entries, each at most 300 bytes plus an elision mark, summing to at most 4096 bytes of the encoded header value. Whichever bound binds first wins. Shortening is never silent: an entry cut to the per-entry bound ends in `…`, and when entries are left out entirely a final summarising entry states how many. Treat that count as a lower bound on the fields affected rather than a tally of them: it counts disclosure entries, and a translator may collapse many dropped elements into one entry (the Wan video family''s media groups do exactly that). Entries are also sanitised before publication — a media URL is stripped of its query string, which is what carries its credential — so an entry names the field it dropped rather than reproducing the value verbatim. It is stored with the `Idempotency-Key` record and replayed unchanged on a same-key retry (alongside `Idempotent-Replayed: true`), so a retry carries the same disclosure the original call did rather than reading as a drop-free run. In the one case where the stored headers were too large to keep in full, the record is marked non-replayable and the retry is refused with `409` rather than served without this header - a refusal a caller can act on, where a replay that silently carried no disclosure is the outcome this header exists to prevent.'
+      required: false
+      schema:
+        type: string
+        example: '["moderation (fal applies its own, non-configurable safety filtering)"]'
+    RouterErrorTypeHeader:
+      description: Coarse, machine-readable bucket for the failure, set by Router on every error response. It carries the same value as `RouterErrorResponse.error_type`, and on the `422` it is the only machine-readable bucket, because that body is the FastAPI `detail[]` shape and has no `error_type` field of its own. A client can therefore branch on this header alone, before deciding which of the two Router error bodies it received.
+      required: true
+      schema:
+        $ref: '#/components/schemas/RouterErrorType'
+    RouterFallbackProviderHeader:
+      description: 'Present, naming the provider, only when `fallback_provider` actually retried this call against a second provider and that retry succeeded - the provider that ultimately served the call, never one that was attempted and also failed. Absent when the primary attempt itself succeeded, and absent on an error response. It is stored with the `Idempotency-Key` record and replayed unchanged on a same-key retry (alongside `Idempotent-Replayed: true`), so a retry names the same provider the original call did rather than reading as an unsubstituted run. In the one case where the stored headers were too large to keep in full, the record is marked non-replayable and the retry is refused with `409` rather than served without this header, so a same-key retry never reads as an unsubstituted run either way. See `fallback_provider` for the retry policy this discloses.'
+      required: false
+      schema:
+        type: string
+    RouterIdempotentReplayedHeader:
+      description: Present and `true` when this response was served from an `Idempotency-Key`'s record rather than by running the model again. It carries the original call's status, body and content type, and it is not billed a second time - the charge settled when the original completed. The header is absent on a fresh run rather than sent as `false`, so branch on its presence.
+      required: false
+      schema:
+        type: boolean
+        example: true
+    RouterNoSniffHeader:
+      description: Always `nosniff`, on every successful run of a Router model.
+      required: true
+      schema:
+        type: string
+        enum:
+        - nosniff
+        example: nosniff
+    RouterQueuePollAfterHeader:
+      description: Seconds to wait before polling this queued request again. It is Router's own estimate of when asking again is worth the round trip, and it moves with how far the request has actually got - a request at the back of the queue is told to wait longer than one already running.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        example: 3
+    RouterRefusalSubjectHeader:
+      description: 'Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise - so branch on its presence. Never provider text. Mirrors `RouterErrorResponse.refusal_subject`.'
+      required: false
+      schema:
+        type: string
+        example: output_audio
+    RouterRequestIdHeader:
+      description: Server-generated identifier for this call, present on every Router response - success, 4xx and 5xx alike, because an error response is exactly when a user needs an id to quote in a support request. The same value is written into the call's usage/audit event, which is what lets a complaint about a charge be joined to the charge itself instead of searched for by timestamp.
+      required: true
+      schema:
+        type: string
+        format: uuid
+        example: 6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21
+    RouterRetryAfterHeader:
+      description: 'Seconds to wait before retrying the same request with the same `Idempotency-Key`. It is set on the two answers such a retry can actually collect from: a `409` carrying `error_type: concurrency_limit_exceeded`, where the original call for that key is still running, and a `deadline_exceeded` `504`, where Comfy stopped holding the connection but still holds a handle to a generation the provider is running. In both cases the value is the interval Router itself would wait before asking again, which is the one honest number this route has for "ask again later". Absent when there is nothing to collect: an unkeyed call, a bound that expired before the provider accepted anything, or a `409` that refuses the key outright instead of asking the caller to wait.'
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        example: 2
+    RouterSchemaCacheControlHeader:
+      description: Freshness directives for the served schema document. `private` because the route is authenticated - the document itself is not caller-specific, but a shared cache must not hold a response to an authenticated request - and `must-revalidate` so a stale copy is revalidated against the `ETag` rather than served on.
+      required: false
+      schema:
+        type: string
+        example: private, max-age=300, must-revalidate
+    RouterSchemaETagHeader:
+      description: Strong entity tag over the served document's bytes, for `GET /v2/models/{provider}/{model}/openapi.json`. A per-model schema changes rarely and an SDK re-fetches it often, so a caller should store this value and send it back as `If-None-Match` to get a `304` instead of the document.
+      required: true
+      schema:
+        type: string
+        example: '"6b8c1f2e0a9d4c3b5e7f8a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f"'
+    RouterUpstreamDetailHeader:
+      description: A bounded, sanitized reason the model provider gave for rejecting the request. Present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - usually a `4xx`, and a `2xx` for a provider that reports a rejected generation inside a success envelope; absent otherwise - so branch on its presence. Mirrors `RouterErrorResponse.upstream_detail`.
+      required: false
+      schema:
+        type: string
+        example: expected the height to be at least 300px, but received a 445x283px image instead
+    RouterUpstreamStatusHeader:
+      description: 'The model provider''s own HTTP status for this call. Present only when the failure came from the provider, and absent whenever Comfy Router refused the call itself - so branch on its presence: present means the request left Comfy, reached the provider, and the provider''s answer is what produced this response''s `error_type`.'
+      required: false
+      schema:
+        type: integer
+        minimum: 100
+        maximum: 599
+        example: 400
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 'API key authentication. Send the key in the X-API-Key header; keys are prefixed with ''comfyui-'' and are generated from user account settings. The same ''comfyui-'' key is also accepted in Authorization: Bearer (see BearerAuth), and when both headers carry a key, X-API-Key wins.'
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'Bearer token authentication. Normally a Firebase or Cloud JWT. A ''comfyui-'' prefixed API key is also accepted in this header: the prefix classifies the value as an API key and it is validated exactly as if it had been sent in X-API-Key.'
