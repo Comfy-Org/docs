@@ -247,6 +247,35 @@ export function delocalizeImportPath(importPath, languages) {
   return importPath;
 }
 
+/** JSX-like opening tag: `<Alias` or `<Alias/>`. Closing tags never match. */
+const TAG_RE = /<([^\s/<>]+)(?=[\s/>])/g;
+
+/** @param {string} value */
+function hasNonAscii(value) {
+  return /[^\x00-\x7F]/.test(value);
+}
+
+/**
+ * Rename `localized alias -> English alias` in the import line and in every JSX
+ * usage. Non-ASCII identifiers have no word boundary, so the opening tag anchors
+ * on the space, slash or `>` that follows the name.
+ * @param {string} content
+ * @param {Map<string, string>} renames
+ */
+function applyAliasRenames(content, renames) {
+  let output = content;
+  for (const [localizedAlias, enAlias] of renames) {
+    const escaped = escapeRegex(localizedAlias);
+    output = output.replace(
+      new RegExp(`^([ \\t]*import[ \\t]+)${escaped}([ \\t]+from[ \\t]+["'][^"']+["'])`, "gm"),
+      (_match, head, tail) => `${head}${enAlias}${tail}`
+    );
+    output = output.replace(new RegExp(`<${escaped}(?=[\\s/>])`, "g"), `<${enAlias}`);
+    output = output.replace(new RegExp(`</${escaped}>`, "g"), `</${enAlias}>`);
+  }
+  return output;
+}
+
 /**
  * Restore import identifiers the translation model localized, together with
  * every JSX usage of them.
@@ -260,8 +289,21 @@ export function delocalizeImportPath(importPath, languages) {
  * whose identifiers silently diverge from English, so later English edits no
  * longer line up with the translation and hand-fixes have to guess the name.
  *
+ * Two passes, because the import line and a usage can be restored apart:
+ *   1. an import whose alias differs from the English alias is renamed, and so
+ *      are its usages;
+ *   2. when the import line is already English (a checkpoint or an earlier run
+ *      restored it) but a section still carries a translated tag, that tag is
+ *      paired with the import the page no longer uses. Only non-ASCII tags
+ *      qualify, since every globally available Mintlify component (`<Note>`,
+ *      `<Card>`, `<Tabs>`) is ASCII, and a pairing is only made when it is
+ *      unambiguous: one orphan tag with one import, or as many orphan tags as
+ *      unused imports. Anything else is left for a human, because a wrong guess
+ *      would silently render the wrong snippet.
+ *
  * Only the alias is restored; the localized import path is kept as it is.
- * Callers pass the English source block the translation came from.
+ * Callers pass the English source the translation came from, and the assembled
+ * document rather than a single block.
  *
  * @param {string} content translated block or document
  * @param {string} enContent matching English source
@@ -277,26 +319,39 @@ export function restoreImportIdentifiers(content, enContent, languages) {
   }
   if (enAliasByPath.size === 0) return content;
 
-  /** @type {Map<string, string>} localized alias -> English alias */
-  const renames = new Map();
+  /** Imported aliases of this content that also exist in the English source. */
+  const matched = [];
   for (const match of content.matchAll(IMPORT_LINE_RE)) {
     const enAlias = enAliasByPath.get(delocalizeImportPath(match[4], languages));
-    if (enAlias && enAlias !== match[2]) renames.set(match[2], enAlias);
+    if (enAlias) matched.push({ alias: match[2], enAlias });
   }
-  if (renames.size === 0) return content;
 
-  let output = content;
-  for (const [localizedAlias, enAlias] of renames) {
-    const escaped = escapeRegex(localizedAlias);
-    output = output.replace(
-      new RegExp(`^([ \\t]*import[ \\t]+)${escaped}([ \\t]+from[ \\t]+["'][^"']+["'])`, "gm"),
-      (_match, head, tail) => `${head}${enAlias}${tail}`
-    );
-    // Non-ASCII identifiers have no word boundary, so anchor on the tag close.
-    output = output.replace(new RegExp(`<${escaped}(?=[\\s/>])`, "g"), `<${enAlias}`);
-    output = output.replace(new RegExp(`</${escaped}>`, "g"), `</${enAlias}>`);
+  // Pass 1: the import line itself was translated.
+  const renames = new Map();
+  for (const entry of matched) {
+    if (entry.enAlias !== entry.alias) renames.set(entry.alias, entry.enAlias);
   }
-  return output;
+  let output = renames.size > 0 ? applyAliasRenames(content, renames) : content;
+
+  // Pass 2: translated tags whose import line is already English.
+  const defined = new Set(matched.map((entry) => entry.alias));
+  const tags = [...new Set([...output.matchAll(TAG_RE)].map((match) => match[1]))];
+  const orphanTags = tags.filter((tag) => !defined.has(tag) && hasNonAscii(tag));
+  if (orphanTags.length === 0) return output;
+
+  const used = new Set(tags);
+  const unusedAliases = [...new Set(matched.map((entry) => entry.alias))].filter(
+    (alias) => !used.has(alias)
+  );
+  const pairs =
+    orphanTags.length === 1 && matched.length === 1
+      ? [[orphanTags[0], matched[0].alias]]
+      : orphanTags.length === unusedAliases.length
+        ? orphanTags.map((tag, index) => [tag, unusedAliases[index]])
+        : [];
+  if (pairs.length === 0) return output;
+
+  return applyAliasRenames(output, new Map(pairs));
 }
 
 /**

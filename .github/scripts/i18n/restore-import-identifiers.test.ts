@@ -141,6 +141,66 @@ import GenerateFirstCall from "/snippets/ko/comfy-cli/generate-first-call.mdx";
     ).toBe(blockOnly);
   });
 
+  test("repairs a translated tag whose import line is already English", () => {
+    // A checkpoint or an earlier run can restore the import line first, leaving
+    // a later section with a tag no import defines.
+    const ko = `import Requirements from "/snippets/ko/tutorials/partner-nodes/requirements.mdx";
+
+## 개요
+
+<요구사항/>
+`;
+    const out = restoreImportIdentifiers(ko, EN, LANGUAGES);
+    expect(out).toContain("<Requirements/>");
+    expect(out).not.toContain("요구사항");
+  });
+
+  test("pairs several translated tags with the unused imports in order", () => {
+    const en = `import Requirements from "/snippets/a.mdx";
+import Faq from "/snippets/b.mdx";
+
+<Requirements/>
+
+<Faq/>
+`;
+    const ko = `import Requirements from "/snippets/ko/a.mdx";
+import Faq from "/snippets/ko/b.mdx";
+
+## 개요
+
+<요구사항/>
+
+## FAQ
+
+<자주묻는질문/>
+`;
+    const out = restoreImportIdentifiers(ko, en, LANGUAGES);
+    expect(out).toContain("<Requirements/>");
+    expect(out).toContain("<Faq/>");
+  });
+
+  test("leaves an ambiguous translated tag for a human", () => {
+    // Two orphan tags but only one unused import: pairing them would guess, and
+    // a wrong guess renders the wrong snippet instead of failing loudly.
+    const en = `import Requirements from "/snippets/a.mdx";
+import Faq from "/snippets/b.mdx";
+
+<Requirements/>
+
+<Faq/>
+`;
+    const ko = `import Requirements from "/snippets/ko/a.mdx";
+import Faq from "/snippets/ko/b.mdx";
+
+<Requirements/>
+
+<요구사항/>
+
+<기타/>
+`;
+    expect(restoreImportIdentifiers(ko, en, LANGUAGES)).toBe(ko);
+  });
+
   test("tolerates empty input", () => {
     expect(restoreImportIdentifiers("", EN, LANGUAGES)).toBe("");
     expect(restoreImportIdentifiers("import X from \"/snippets/ko/a.mdx\";", "", LANGUAGES)).toBe(
