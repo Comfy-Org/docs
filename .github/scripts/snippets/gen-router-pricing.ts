@@ -4,47 +4,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../../..");
-const SOURCE_FILE = join(ROOT, "tutorials/partner-nodes/pricing.mdx");
-const DATA_FILE = join(ROOT, "router-pricing/prices.json");
 const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
-const PRICING_URL = "/tutorials/partner-nodes/pricing";
 
 type CatalogModel = {
   id: string;
   title: string;
   page: string;
-};
-
-type SourceRow = {
-  section: string;
-  anchor: string;
-  line: string;
-  cells: string[];
-  headers: string[];
-};
-
-type PricingMatch = { section: string; anchor: string; key: string; rows: SourceRow[] };
-
-type PricingData = {
-  source: {
-    path: string;
-    url: string;
-    credits_url: string;
-    git_blob: string;
-    credits_per_usd: number;
-    synced_at: string;
-  };
-  models: Array<{
-    id: string;
-    title: string;
-    page: string;
-    status: "published" | "not_published";
-    source_section: string | null;
-    source_key: string | null;
-    rates: Array<{ fields: Array<{ label: string; value: string }> }>;
-  }>;
+  providers: string[];
 };
 
 type MetronomeRate = {
@@ -66,16 +34,6 @@ type MetronomeData = {
   source_sha256: string;
   rates: MetronomeRate[];
 };
-
-const normalize = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[`*_()[\],.]/g, "-")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-const anchor = (heading: string) => normalize(heading);
 
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: "Anthropic",
@@ -114,6 +72,19 @@ const PROVIDER_LABEL: Record<string, string> = {
 
 const providerLabel = (modelId: string) => PROVIDER_LABEL[modelId.split("/")[0]] ?? modelId.split("/")[0];
 
+function servingProviders(pageText: string, modelId: string): string[] {
+  const intro = pageText.match(/API Reference for `[^`]+`, served by Comfy Router from ([^.]+)\./)?.[1];
+  const defaultProvider = intro?.trim() ?? providerLabel(modelId);
+  const sectionStart = pageText.indexOf("## Serving providers");
+  if (sectionStart < 0) return [defaultProvider];
+  const nextHeading = pageText.indexOf("\n## ", sectionStart + 4);
+  const section = pageText.slice(sectionStart, nextHeading < 0 ? undefined : nextHeading);
+  const alternatives = [...section.matchAll(/^- \*\*(.+?)\*\*/gm)]
+    .map((match) => match[1].replace(/ \(default\)$/, "").trim())
+    .filter((provider) => provider.toLowerCase() !== "comfy");
+  return [...new Set([defaultProvider, ...alternatives])];
+}
+
 function modelTitle(pageText: string, model: string): string {
   const title = pageText.match(/^title: "([^"]+)"$/m)?.[1];
   if (title) return title.replace(/^Use /, "").replace(/ with Comfy Router$/, "");
@@ -125,134 +96,22 @@ function modelTitle(pageText: string, model: string): string {
     .join(" ");
 }
 
-function modelKeys(model: string): string[] {
-  const [provider] = model.split("/");
-  const segment = model.split("/").at(-1)!;
-  const keys = new Set<string>([
-    segment,
-    segment.replace(/\./g, "-"),
-    segment.replace(/-\d{6}$/, ""),
-  ]);
-
-  if (segment.startsWith("dreamina-")) {
-    keys.add(segment.slice("dreamina-".length));
-    keys.add(segment.slice("dreamina-".length).replace(/-\d{6}$/, ""));
-  }
-  if (segment.startsWith("claude-")) keys.add(segment.slice("claude-".length));
-  if (provider === "bfl") {
-    const bflAliases: Record<string, string[]> = {
-      "flux-kontext-pro": ["flux-1-kontext-pro-image"],
-      "flux-kontext-max": ["flux-1-kontext-max-image"],
-      "flux-pro-1.1-ultra": ["flux-1-1-pro-ultra-image"],
-      "video-edit-v1": ["flux-video-edit"],
-      "video-upscale-v1": ["flux-video-upscale"],
-    };
-    for (const alias of bflAliases[segment] ?? []) keys.add(alias);
-  }
-  if (provider === "wavespeed" && segment === "ultimate-image-upscaler") keys.add("ultimate");
-
-  return [...keys].map(normalize).filter((key) => key.length >= 2).sort((a, b) => b.length - a.length);
-}
-
-function providerSection(model: string): string | undefined {
-  const [provider, segment] = model.split("/");
-  if (provider === "anthropic") return "Anthropic";
-  if (provider === "bfl") return "BFL";
-  if (provider === "bria") return "Bria";
-  if (provider === "byteplus") return "ByteDance";
-  if (provider === "elevenlabs") return "ElevenLabs";
-  if (["gemini-interactions", "google", "vertexai"].includes(provider)) return "Google";
-  if (provider === "heygen") return "HeyGen";
-  if (provider === "ideogram") return "Ideogram";
-  if (provider === "kling") return "Kling";
-  if (provider === "krea") return "Krea";
-  if (provider === "ltx") return "Lightricks";
-  if (["luma", "luma_2"].includes(provider)) return "Luma";
-  if (provider === "meshy") return "Meshy";
-  if (provider === "minimax") return "Minimax";
-  if (provider === "openai") return "OpenAI";
-  if (provider === "openrouter") return "OpenRouter";
-  if (provider === "qwen") return "Qwen";
-  if (provider === "recraft") return "Recraft";
-  if (provider === "runway") return "Runway";
-  if (provider === "tencent") return "Tencent";
-  if (provider === "wan" && segment.startsWith("happyhorse-")) return "HappyHorse";
-  if (provider === "wan") return "Wan";
-  if (provider === "wavespeed") return "WaveSpeed";
-  if (provider === "xai") return "xAI";
-  return undefined;
-}
-
 function loadCatalog(): CatalogModel[] {
   const models = new Map<string, CatalogModel>();
   for (const rel of [...new Bun.Glob(MODEL_GLOB).scanSync({ cwd: ROOT })].sort()) {
     const text = readFileSync(join(ROOT, rel), "utf8");
     for (const match of text.matchAll(/\*\*Model ID:\*\*\s*`([^`]+)`/g)) {
       const id = match[1];
-      models.set(id, { id, title: modelTitle(text, id), page: rel.replace(/\.mdx$/, "") });
+      models.set(id, {
+        id,
+        title: modelTitle(text, id),
+        page: rel.replace(/\.mdx$/, ""),
+        providers: servingProviders(text, id),
+      });
     }
   }
   if (models.size === 0) throw new Error(`no Router model pages matched ${MODEL_GLOB}`);
   return [...models.values()].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
-}
-
-function loadSourceRows(sourceBody: string): SourceRow[] {
-  let section = "Partner Node pricing";
-  let currentAnchor = anchor(section);
-  let headers: string[] = [];
-  const rows: SourceRow[] = [];
-  for (const line of sourceBody.split("\n")) {
-    const heading = line.match(/^## ([^#].*)$/)?.[1];
-    if (heading) {
-      section = heading.trim();
-      currentAnchor = anchor(section);
-      headers = [];
-    }
-    if (!line.trim().startsWith("|")) {
-      headers = [];
-      continue;
-    }
-    const cells = line.trim().split("|").slice(1, -1).map((cell) => cell.trim());
-    if (/^\s*\|?\s*:?-{2,}/.test(line.trim())) continue;
-    if (headers.length === 0) {
-      headers = cells;
-      continue;
-    }
-    rows.push({ section, anchor: currentAnchor, line: line.trim(), cells, headers });
-  }
-  return rows;
-}
-
-function findPricingMatch(model: string, rows: SourceRow[]): PricingMatch | undefined {
-  const section = providerSection(model);
-  const scopedRows = section ? rows.filter((row) => row.section === section) : [];
-  for (const key of modelKeys(model)) {
-    const matches = scopedRows.filter((candidate) =>
-      candidate.cells.some((cell, index) =>
-        /^(?:model(?:\s+(?:id|name))?|node)$/i.test(candidate.headers[index]?.trim() ?? "") &&
-        cell.split(/[(),;]/).some((value) => normalize(value) === key),
-      ),
-    );
-    if (matches.length) return { section: matches[0].section, anchor: matches[0].anchor, key, rows: matches };
-  }
-  return undefined;
-}
-
-function rateSummary(record: PricingData["models"][number]): string {
-  if (record.status !== "published") return "—";
-  return record.rates
-    .map((row) => row.fields.map((field) => `${field.label}: ${field.value}`).join("; "))
-    .join("<br />")
-    .replaceAll("|", "\\|");
-}
-
-function loadPricingData(): PricingData {
-  const data = JSON.parse(readFileSync(DATA_FILE, "utf8")) as PricingData;
-  if (!data.source || data.source.credits_per_usd <= 0 || !Array.isArray(data.models)) {
-    throw new Error(`${DATA_FILE}: invalid pricing data`);
-  }
-  if (data.models.length === 0) throw new Error(`${DATA_FILE}: no model records`);
-  return data;
 }
 
 function loadMetronomeData(): MetronomeData {
@@ -294,9 +153,9 @@ function metronomeRateSummary(rate: MetronomeRate): string {
 }
 
 function render(): string {
-  const data = loadPricingData();
+  const models = loadCatalog();
   const metronome = loadMetronomeData();
-  const modelIds = new Set(data.models.map((model) => model.id));
+  const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(metronome.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
   if (missingModels.length) {
     throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
@@ -307,9 +166,9 @@ function render(): string {
     rates.push(rate);
     ratesByModel.set(rate.model_id, rates);
   }
-  const grouped = new Map<string, PricingData["models"]>();
-  for (const model of data.models) {
-    const label = providerLabel(model.id);
+  const grouped = new Map<string, CatalogModel[]>();
+  for (const model of models) {
+    const label = model.providers[0];
     const models = grouped.get(label) ?? [];
     models.push(model);
     grouped.set(label, models);
@@ -321,23 +180,12 @@ function render(): string {
         .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id))
         .flatMap((model) => {
           const routeRates = ratesByModel.get(model.id) ?? [];
-          const defaultRate = routeRates.find((rate) => rate.serving_provider.toLowerCase() === provider.toLowerCase());
-          const baseRate = defaultRate
-            ? metronomeRateSummary(defaultRate)
-            : rateSummary(model);
-          const reference = model.source_section
-            ? `[${model.source_section}](${PRICING_URL}#${normalize(model.source_section)})`
-            : `[Partner Node pricing](${PRICING_URL})`;
-          const baseReference = defaultRate
-            ? `[Router billing](/development/comfy-router/billing)`
-            : reference;
-          const hideLegacyRate = defaultRate?.replace_existing === true;
-          const base = `| [${model.title}](/${model.page}) | \`${model.id}\` | ${provider} | ${hideLegacyRate ? baseRate : [rateSummary(model), defaultRate ? metronomeRateSummary(defaultRate) : ""].filter(Boolean).join("<br />")} | ${baseReference} |`;
-          const alternates = routeRates
-            .filter((rate) => rate !== defaultRate)
-            .sort((a, b) => a.serving_provider.localeCompare(b.serving_provider) || a.unit.localeCompare(b.unit))
-            .map((rate) => `| [${model.title}](/${model.page}) | \`${model.id}\` | ${rate.serving_provider} | ${metronomeRateSummary(rate)} | [Router billing](/development/comfy-router/billing) |`);
-          return [base, ...alternates];
+          return model.providers.map((servingProvider) => {
+            const rates = routeRates.filter((candidate) => candidate.serving_provider.toLowerCase() === servingProvider.toLowerCase());
+            const value = rates.length ? rates.map(metronomeRateSummary).join("<br />") : "Not published";
+            const source = rates.length ? "Metronome snapshot" : "No matched Metronome rate";
+            return `| [${model.title}](/${model.page}) | \`${model.id}\` | ${servingProvider} | ${value} | ${source} |`;
+          });
         })
         .join("\n");
       return `## ${provider}\n\n| Model | Router model ID | Serving provider | Rate | Pricing source |\n| --- | --- | --- | --- | --- |\n${rows}`;
@@ -347,14 +195,14 @@ function render(): string {
   return `---
 title: "Comfy Router pricing by model"
 sidebarTitle: "Pricing"
-description: "Compare Comfy Router credit pricing by model, with billing units and official pricing source links."
+description: "Compare Comfy Router model rates by serving provider, including billing units, conditions, and snapshot dates."
 mode: "wide"
 ---
 
-{/* GENERATED FILE. Generated from router-pricing/prices.json by \`pnpm router-pricing:gen\`. */}
+{/* GENERATED FILE. Generated from autogenerated Router model pages and router-pricing/metronome-rates.json. */}
 
 <Note>
-Provider-specific rates reflect a Metronome production snapshot from ${metronome.snapshot_at}. Default model rates link to Partner Node pricing. Fixed provider amounts include Comfy credits and their stated units. Usage-based rates vary by request. The \`X-Comfy-Credits-Used\` response header reports the run amount when available. A dash means the linked source has no matching rate row. See [billing details](/development/comfy-router/billing) and [Partner Node pricing](${PRICING_URL}).
+Model IDs and serving providers come from the autogenerated Comfy Router model pages. Published rates reflect the Metronome production snapshot from ${metronome.snapshot_at}. Rates are per stated billable unit and conditions apply as listed. Usage-based rates vary by request. The \`X-Comfy-Credits-Used\` response header reports the run amount when available. “Not published” means no matching Metronome rate is mapped for that model and serving provider. See [billing details](/development/comfy-router/billing).
 </Note>
 
 ${sections}
@@ -376,4 +224,4 @@ if (import.meta.main) {
   }
 }
 
-export { findPricingMatch, loadCatalog, loadSourceRows, render };
+export { loadCatalog, loadMetronomeData, render };
