@@ -43,7 +43,7 @@ describe("public Router pricing", () => {
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
     const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
-    expect(unavailable).toHaveLength(13);
+    expect(unavailable).toHaveLength(7);
     for (const name of ["Images", "Video", "Text & multimodal", "Audio", "3D"]) expect(page).toContain(`<Tab title="${name}">`);
   });
 
@@ -72,6 +72,28 @@ describe("public Router pricing", () => {
     expect(fal25.slice(2)).toEqual([
       "4.5154 / 1K video tokens", "4.5154 / 1K video tokens", "4.9374 / 1K video tokens", "-",
     ]);
+
+    for (const [id, expected] of [
+      ["bria/video-edit-green-screen", "10.55 / second"],
+      ["bria/video-edit-remove-background", "10.55 / second"],
+      ["bria/video-edit-replace-background", "10.55 / second"],
+    ]) {
+      const row = tables.find((table) => table.provider === "Comfy" && table.rows.some((cells) => cells[1] === `\`${id}\``))!
+        .rows.find((cells) => cells[1] === `\`${id}\``)!;
+      expect(row).toContain(expected);
+    }
+
+    const moonvalleyRows = tables.filter((table) => table.provider === "Comfy")
+      .flatMap((table) => table.rows)
+      .filter((row) => ["moonvalley/image-to-video", "moonvalley/text-to-video", "moonvalley/video-to-video"].includes(row[1].slice(1, -1)));
+    expect(moonvalleyRows).toHaveLength(6);
+    expect(moonvalleyRows.map((row) => row.slice(2))).toEqual([
+      ["5s", "316.5 / request"], ["10s", "633 / request"],
+      ["5s", "316.5 / request"], ["10s", "633 / request"],
+      ["5s", "474.75 / request"], ["10s", "844 / request"],
+    ]);
+    expect(tables.some((table) => table.provider === "Comfy" && table.headers.includes("Duration")
+      && table.rows.some((row) => row[1] === "`moonvalley/image-to-video`"))).toBe(true);
   });
 
   test("uses model IDs and credit prices without USD or internal billing metadata", () => {
@@ -88,8 +110,8 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(617);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(577);
+    expect(snapshot.rates).toHaveLength(626);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(586);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);

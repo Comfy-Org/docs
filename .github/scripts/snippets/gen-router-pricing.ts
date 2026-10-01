@@ -37,8 +37,9 @@ type MetronomeData = {
   rates: MetronomeRate[];
   supplemental_sources?: Array<{
     source: string;
-    source_commit: string;
-    source_sha256: string;
+    source_ref: string;
+    source_sha256?: string;
+    file_id?: string;
     checked_at: string;
     rates: MetronomeRate[];
   }>;
@@ -409,7 +410,8 @@ function render(locale: PricingLocale = "en"): string {
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean) => {
         if (!items.length) return "";
         const options = items.map((item) => item.option).filter((option) => option !== "-");
-        const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution : copy.option;
+        const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
+          : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
         const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${copy.credits} |`;
         const separator = `| --- | --- | ${hasOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${item.credits} |`).join("\n");
