@@ -254,14 +254,15 @@ describe("public Router pricing", () => {
     expect(records(preserved)).toEqual(records(snapshot.rates));
   });
 
-  test("keeps price-changing variants inline and expiry information concise", () => {
+  test("keeps price-changing variants inline and labels distinct pricing groups", () => {
     expect(formatOption("resolution=720p; generateAudio=true", "en")).toBe("720p · With audio");
     expect(formatOption("Edit; quality=high; output size=4K", "en")).toBe("Image edit · High · 4K");
     expect(formatOption("Output image; output_tier=qima_output_1k", "en")).toBe("Output image · 1K");
     expect(page).toContain("No audio");
     expect(page).toContain("With audio");
-    expect(page).toContain("listed rates end on Oct 1, 2026 (exclusive)");
-    expect(page.match(/Oct 1, 2026/g)).toHaveLength(1);
+    expect(page).not.toContain("listed rates end on");
+    expect(page).toContain("#### Per second by resolution");
+    expect(page).toContain("#### Token rates");
     expect(page).toContain("Prices updated: Sep 30, 2026.");
   });
 

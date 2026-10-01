@@ -390,12 +390,12 @@ function render(locale: PricingLocale = "en"): string {
         const rates = resolution.remaining;
         const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
         const modelId = `\`${model.id}\``;
-        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable }];
+        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable, kind: "unavailable", unit: "" }];
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${unit}`;
-          return { name, modelId, option: compactOptions(group.options), credits };
+          return { name, modelId, option: compactOptions(group.options), credits, kind: rate.kind, unit: rate.unit };
         });
       });
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean) => {
@@ -407,9 +407,15 @@ function render(locale: PricingLocale = "en"): string {
         const body = items.map((item) => `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${item.credits} |`).join("\n");
         return `${header}\n${separator}\n${body}`;
       };
-      const optionRows = ordinaryRows.filter((row) => row.option !== "-");
-      const optionlessRows = ordinaryRows.filter((row) => row.option === "-");
-      const rows = [renderOrdinaryRows(optionRows, true), renderOrdinaryRows(optionlessRows, false)].filter(Boolean).join("\n\n");
+      const ordinaryGroups = new Map<string, typeof ordinaryRows>();
+      for (const row of ordinaryRows) {
+        const title = row.kind === "usage" ? copy.usageRates
+          : row.kind === "unavailable" ? copy.unavailable
+          : copy.ratesPer(formatUnit(row.unit, locale));
+        const group = ordinaryGroups.get(title) ?? [];
+        group.push(row);
+        ordinaryGroups.set(title, group);
+      }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
         `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");
@@ -477,28 +483,41 @@ function render(locale: PricingLocale = "en"): string {
           });
           return `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
-        return `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}`;
-      }).join("\n\n");
-      const tables = [
-        tokenRows ? `| ${copy.model} | ${copy.modelId} | ${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ---: | ${hasCachedInput ? "---: | " : ""}---: |\n${tokenRows}` : "",
-        resolutionTablesText,
-        rows,
-        imageRows ? `#### ${copy.imageTiers}\n\n| ${copy.model} | ${copy.modelId} | ${copy.option} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | ---: | ---: | ---: |\n${imageRows}` : "",
-      ].filter(Boolean).join("\n\n");
-      const expiry = new Map<string, Set<string>>();
-      for (const { model, rates } of routes) {
-        for (const rate of rates) {
-          if (!rate.effective_until) continue;
-          const titles = expiry.get(rate.effective_until) ?? new Set<string>();
-          titles.add(displayTitle(model));
-          expiry.set(rate.effective_until, titles);
-        }
+        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
+      });
+      const tableSections: Array<{ title: string; body: string }> = [];
+      if (tokenRows) {
+        tableSections.push({
+          title: copy.tokenRates,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ---: | ${hasCachedInput ? "---: | " : ""}---: |\n${tokenRows}`,
+        });
       }
-      const notices = [...expiry].map(([date, titles]) =>
-        `\n${copy.expiry([...titles].join(", "), formatDate(date, locale))}\n`,
-      ).join("");
+      const resolutionGroupsByUnit = new Map<string, string[]>();
+      for (const table of resolutionTablesText) {
+        const group = resolutionGroupsByUnit.get(table.unit) ?? [];
+        group.push(table.table);
+        resolutionGroupsByUnit.set(table.unit, group);
+      }
+      for (const [unit, tables] of resolutionGroupsByUnit) {
+        const title = unit === "per resolution" ? copy.resolution : copy.byResolution(formatUnit(unit, locale));
+        tableSections.push({ title, body: tables.join("\n\n") });
+      }
+      for (const [title, rows] of ordinaryGroups) {
+        const optionRows = rows.filter((row) => row.option !== "-");
+        const optionlessRows = rows.filter((row) => row.option === "-");
+        const body = [renderOrdinaryRows(optionRows, true), renderOrdinaryRows(optionlessRows, false)].filter(Boolean).join("\n\n");
+        tableSections.push({ title, body });
+      }
+      if (imageRows) {
+        tableSections.push({
+          title: copy.imageTiers,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.option} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
+        });
+      }
+      const hasSubgroups = tableSections.length > 1;
+      const tables = tableSections.map(({ title, body }) => `${hasSubgroups ? `#### ${title}\n\n` : ""}${body}`).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
-      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n${notices}\n</Accordion>`;
+      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
