@@ -155,7 +155,7 @@ Run a model and receive its finished result in the same response.
 </ParamField>
 
 <ParamField query="model_provider" type="string">
-  Selects an alternate provider to serve this model, instead of its current default.
+  Selects an alternate provider to serve this model, instead of its current default; `fal`, `wavespeed`, `runware`, and `higgsfield` are the alternates, and `GET /v2/models/{provider}/{model}` reports which of them a given model supports. Its refusals are checked in a fixed order, and the earlier ones answer whether or not the later ones would: an unrecognized value - not a registered provider at all - is refused `400`; then an alternate provider on a request whose body selects a multipart operation (an edit) is refused `409` with `detail` beginning "this request's `image` selects the edit operation", but only when that provider's translator for this model cannot serve the operation - a leg whose translator does carry the media proceeds normally; then any alternate provider on a request that resolved a bring-your-own-key credential is refused `409` with `detail` beginning `this request resolved a BYOK credential` (see that response), whether or not that provider serves this model; then the named provider's own gate, which refuses `403` with `error_type: not_enabled` when that provider is not turned on for you and `503` with `error_type: service_unavailable` when the gate cannot be evaluated; and only past all four is a real provider with no leg for this model refused `400` with `error_type: invalid_input`, the same answer as an unrecognized value. `fallback_provider` is inert rather than refused on a bring-your-own-key request, on a request whose body selects a multipart operation, and under `strict_mode=true`.
 </ParamField>
 
 <ParamField query="strict_mode" type="boolean">
@@ -165,7 +165,13 @@ Run a model and receive its finished result in the same response.
 </ParamField>
 
 <ParamField query="fallback_provider" type="string">
-  Controls whether Router retries this call against the model's other registered provider when the first attempt fails for a reason attributable to Router's own side or to the specific provider tried - never for a reason attributable to the request itself (an unretried failure is refused exactly as it always was).
+  Controls whether Router retries this call against the model's other registered provider when the first attempt fails for a reason attributable to Router or to the provider tried. Omitted, or any value other than `false`, leaves fallback on; `false` turns it off. A successful fallback response carries `X-Comfy-Router-Fallback-Provider`. On a request that resolved a bring-your-own-key credential fallback is unavailable whatever this parameter says - the attempt is simply not made and the first failure reaches you unchanged, which is inert, not refused: no `409` originates here. The same is true, for the same reason, on a request whose body selects a multipart operation and under `strict_mode=true` - each binds the call to one provider that cannot be faithfully replayed against another, so fallback is simply skipped rather than refused. Only an explicit `model_provider` is refused with that `409`, and unlike this unconditional skip its multipart `409` applies only to a leg whose translator cannot serve the operation.
+</ParamField>
+
+<ParamField query="reject_unknown_fields" type="boolean">
+  Opt in to refusing a top-level request-body field this model's input schema does not declare, rather than accepting it; nested fields are not checked, and nothing is refused for a model whose schema allows undeclared fields or has no authored schema, or on a queued submit sent with `strict_mode=true`.
+
+  Default: False
 </ParamField>
 
 **Request body**
@@ -177,15 +183,15 @@ The partner model's native JSON input. Without `model_provider` the request runs
 **Responses**
 
 <ResponseField name="200" type="RouterModelOutput">
-  OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged.
+  OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged. For a model whose partner answers a generation directly as bytes, the body is those bytes under the partner's own `Content-Type` rather than `application/json`; branch on the response `Content-Type` and do not assume a JSON document.
 
-  Body: [`RouterModelOutput`](#routermodeloutput) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
+  Body: [`RouterModelOutput`](#routermodeloutput) or raw bytes (`*/*`) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
 </ResponseField>
 
 <ResponseField name="400" type="RouterErrorResponse">
   Invalid request. Check the error type and request body.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -213,7 +219,7 @@ The partner model's native JSON input. Without `model_provider` the request runs
 </ResponseField>
 
 <ResponseField name="409" type="RouterErrorResponse">
-  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key.
+  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. Two `invalid_input` conflicts on this route are not about the key at all and no new key clears either: `model_provider` naming an alternate provider is refused when the request body selects a multipart operation (an edit) that provider's translator for this model cannot serve, whose `detail` begins "this request's `image` selects the edit operation"; and, checked after that, when the request has already resolved a bring-your-own-key credential for the provider in the path, whose `detail` begins `this request resolved a BYOK credential`. Drop `model_provider`, or send the request without the BYOK credential and (for the multipart case) without the edit.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`)
 </ResponseField>
@@ -245,7 +251,7 @@ The partner model's native JSON input. Without `model_provider` the request runs
 <ResponseField name="503" type="RouterErrorResponse">
   Router is temporarily unavailable. Retry with backoff.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (capacity refusals only)
 </ResponseField>
 
 <ResponseField name="504" type="RouterErrorResponse">
@@ -358,6 +364,12 @@ Comfy Router's queued delivery mode. The request body is the same partner-native
   1–255 characters
 </ParamField>
 
+<ParamField query="reject_unknown_fields" type="boolean">
+  Opt in to refusing a top-level request-body field this model's input schema does not declare, rather than accepting it; nested fields are not checked, and nothing is refused for a model whose schema allows undeclared fields or has no authored schema, or on a queued submit sent with `strict_mode=true`.
+
+  Default: False
+</ParamField>
+
 **Request body**
 
 `application/json` -- [`RouterModelInput`](#routermodelinput) (required)
@@ -397,7 +409,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 </ResponseField>
 
 <ResponseField name="403" type="RouterErrorResponse">
-  The request is not allowed for this caller or model.
+  The request is not allowed for this caller or model. A model whose partner answers a generation directly as bytes cannot yet be queued and is refused with `not_enabled`; run it on the synchronous route instead.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
 </ResponseField>
@@ -409,7 +421,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 </ResponseField>
 
 <ResponseField name="409" type="RouterErrorResponse">
-  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key.
+  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. Two `invalid_input` conflicts on this route are not about the key at all and no new key clears either: `model_provider` naming an alternate provider is refused when the request body selects a multipart operation (an edit) that provider's translator for this model cannot serve, whose `detail` begins "this request's `image` selects the edit operation"; and, checked after that, when the request has already resolved a bring-your-own-key credential for the provider in the path, whose `detail` begins `this request resolved a BYOK credential`. Drop `model_provider`, or send the request without the BYOK credential and (for the multipart case) without the edit.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`)
 </ResponseField>
@@ -423,7 +435,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 <ResponseField name="503" type="RouterErrorResponse">
   Router is temporarily unavailable. Retry with backoff.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (capacity refusals only)
 </ResponseField>
 
 ### `GET /v2/models/{provider}/{model}/requests/{request_id}`
@@ -455,9 +467,9 @@ The collect endpoint. On a request that has finished successfully it returns the
 **Responses**
 
 <ResponseField name="200" type="RouterModelOutput">
-  OK - the partner model's native output for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner's own media type, exactly as the synchronous route's `200` returns it.
+  OK - the result stored for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner's own media type, exactly as the synchronous route's `200` returns it, and under the same provider-selection contract the submit accepted: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged. For a model whose partner answers a generation directly as bytes, the body is those bytes under the partner's own `Content-Type` rather than `application/json`; branch on the response `Content-Type` and do not assume a JSON document.
 
-  Body: [`RouterModelOutput`](#routermodeloutput) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`
+  Body: [`RouterModelOutput`](#routermodeloutput) or raw bytes (`*/*`) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`
 </ResponseField>
 
 <ResponseField name="202" type="RouterQueueStatusResponse">
@@ -703,6 +715,7 @@ Raised by Router itself, before or around the call to the model.
 | `cancelled` | A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is terminal, and it is not by itself a statement about the charge. |
 | `queue_timeout` | A queued request waited past its queue timeout without ever being admitted. |
 | `request_not_found` | The `request_id` names no request of the caller's under this model. |
+| `queue_backlog_full` | The caller already has too many queued requests waiting to run, so this submit was refused. |
 
 ## Response headers
 
@@ -719,7 +732,21 @@ Raised by Router itself, before or around the call to the model.
 </ResponseField>
 
 <ResponseField name="Retry-After" type="integer">
+  Seconds to wait before re-sending the same request, unchanged.
+
+  Sent on: `503`
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Seconds to wait before polling this queued request again.
+
+  Sent on: `200`, `202`
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
   Seconds to wait before retrying the same request with the same `Idempotency-Key`.
+
+  Sent on: `409`, `504`
 </ResponseField>
 
 <ResponseField name="X-Comfy-Credits-Used" type="string">
@@ -730,6 +757,10 @@ Raised by Router itself, before or around the call to the model.
   Coarse, machine-readable bucket for the failure, set by Router on every error response.
 
   Type: [`RouterErrorType`](#routererrortype)
+</ResponseField>
+
+<ResponseField name="X-Comfy-Refusal-Subject" type="string">
+  Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`.
 </ResponseField>
 
 <ResponseField name="X-Comfy-Request-Id" type="string">
@@ -793,7 +824,7 @@ Whether a result is Comfy-hosted also decides whether a completed call can still
 
 ## Per-model input and output schemas
 
-Read each model's fields from `GET /v2/models/{provider}/{model}/openapi.json`. The operation's `requestBody` describes input validation; its `200` response describes the output shape and media type when authored. When `x-comfy-input-schema-authored` is false, Router accepts any JSON object without model-specific prevalidation. Provider requirements still apply. The output schemas describe results; Router does not validate returned provider payloads against them. An unauthored output may use `*/*` rather than `application/json`; inspect the response content type before decoding it.
+Read each model's fields from `GET /v2/models/{provider}/{model}/openapi.json`. That call needs an API key. The same document, for every model with an authored schema, is also published on this site without one, at `/router-schemas/{provider}/{model}.json`. That copy is a snapshot taken at the last docs update, so the endpoint is authoritative when they differ. The operation's `requestBody` describes input validation; its `200` response describes the output shape and media type when authored. When `x-comfy-input-schema-authored` is false, Router accepts any JSON object without model-specific prevalidation. Provider requirements still apply. The output schemas describe results; Router does not validate returned provider payloads against them. An unauthored output may use `*/*` rather than `application/json`; inspect the response content type before decoding it.
 
 ## Schemas
 
@@ -810,17 +841,21 @@ Error body for authentication, access, model lookup, quota, and provider transpo
 **Fields**
 
 <ResponseField name="detail" type="string" required>
-  Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead.
+  Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead. Two documented exceptions: on `POST /v2/models/{provider}/{model}` the `409` is answered for three unrelated conditions that share the `invalid_input` bucket, and only `detail` separates them - a `detail` beginning "this request's `image` selects the edit operation" is the multipart `model_provider` refusal, and a `detail` beginning `this request resolved a BYOK credential` is the BYOK `model_provider` refusal; neither clears with a new `Idempotency-Key`. Any other `invalid_input` `409` on that route is the key conflict. Both prefixes are stable contract terms and may be matched. Nowhere else does branching on `detail` carry a compatibility guarantee.
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at eighteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout` and `request_not_found`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
+  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at nineteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found` and `queue_backlog_full`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
 
   Type: [`RouterErrorType`](#routererrortype)
 </ResponseField>
 
 <ResponseField name="upstream_detail" type="string">
-  A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` - i.e. the provider refused the request as malformed and said why. Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
+  A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - i.e. the provider refused the request as malformed and said why. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
+</ResponseField>
+
+<ResponseField name="refusal_subject" type="string">
+  Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.
 </ResponseField>
 
 ### RouterErrorType
