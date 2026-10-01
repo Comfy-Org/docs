@@ -14,7 +14,7 @@ export const pricingCopy = {
     tokenRates: "Token rates",
     ratesPer: (unit: string) => `Rates per ${unit}`,
     imageOperationRates: "Image generation and edit rates",
-    kreaGenerationRates: "Krea 2 generation rates",
+    kreaGenerationRates: "Krea 2 generation rates (credits / generation)",
     durationRates: "Rates by duration",
     usageRates: "Usage-based rates",
     byResolution: (unit: string) => `Per ${unit} by resolution`,
@@ -34,7 +34,7 @@ export const pricingCopy = {
     tokenRates: "トークン料金",
     ratesPer: (unit: string) => `${unit}あたりの料金`,
     imageOperationRates: "画像生成・編集料金",
-    kreaGenerationRates: "Krea 2 生成料金",
+    kreaGenerationRates: "Krea 2 生成料金（クレジット/生成）",
     durationRates: "時間別の料金",
     usageRates: "使用量ベースの料金",
     byResolution: (unit: string) => `解像度別の${unit}料金`,
@@ -54,7 +54,7 @@ export const pricingCopy = {
     tokenRates: "Token 费率",
     ratesPer: (unit: string) => `每${/^[A-Za-z]/.test(unit) ? " " : ""}${unit}费率`,
     imageOperationRates: "图像生成与编辑价格",
-    kreaGenerationRates: "Krea 2 生成价格",
+    kreaGenerationRates: "Krea 2 价格（积分/次生成）",
     durationRates: "按时长计费",
     usageRates: "按用量计费",
     byResolution: (unit: string) => `按分辨率的${unit}费率`,
@@ -74,7 +74,7 @@ export const pricingCopy = {
     tokenRates: "토큰 요금",
     ratesPer: (unit: string) => `${unit}당 요금`,
     imageOperationRates: "이미지 생성 및 편집 요금",
-    kreaGenerationRates: "Krea 2 생성 요금",
+    kreaGenerationRates: "Krea 2 요금(생성당 크레딧)",
     durationRates: "길이별 요금",
     usageRates: "사용량 기반 요금",
     byResolution: (unit: string) => `해상도별 ${unit} 요금`,
@@ -182,7 +182,7 @@ export function formatOption(conditions: string | undefined, locale: PricingLoca
       return value.replace(/P$/, "p").replace(/k$/, "K").replace(/^(720|1080)$/, "$1p");
     }
     if (["generateAudio", "generate_audio"].includes(key)) return value === "true"
-      ? ["With audio", "音声あり", "包含音频", "오디오 포함"][index]
+      ? ["Audio", "音声", "音频", "오디오"][index]
       : ["No audio", "音声なし", "无音频", "오디오 없음"][index];
     if (key === "draft") return value === "true" ? ["Draft", "ドラフト", "草稿", "초안"][index] : ["Standard", "標準", "标准", "표준"][index];
     if (key === "quality") return ({ low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
