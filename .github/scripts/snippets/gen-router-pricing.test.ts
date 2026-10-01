@@ -219,12 +219,17 @@ describe("public Router pricing", () => {
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "-")).toBe(true);
   });
 
-  test("combines request and generation prices in the same image provider section", () => {
-    expect(page).toContain("#### Rates per request or generation");
+  test("groups one-time image charges and preserves each billable unit", () => {
+    expect(page).toContain("#### Image generation and edit rates");
     const oneShot = tables.find((table) => table.provider === "Comfy"
       && table.rows.some((row) => row[1] === "`bria/fibo`"))!;
     expect(oneShot.rows.some((row) => row[1] === "`bria/fibo`" && row.includes("8.44 / request"))).toBe(true);
     expect(oneShot.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384 / generation"))).toBe(true);
+    expect(oneShot.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519 / output image"))).toBe(true);
+    const falOneTime = tables.find((table) => table.provider === "fal"
+      && table.rows.some((row) => row[1] === "`fal/patina`"))!;
+    expect(falOneTime.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88 / image"))).toBe(true);
+    expect(falOneTime.rows.some((row) => row[1] === "`fal/patina`" && row.includes("3.0173 / generation"))).toBe(true);
   });
 
   test("labels variant axes and pivots Pruna and Seedance resolution bands", () => {

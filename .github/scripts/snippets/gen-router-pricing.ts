@@ -426,19 +426,18 @@ function render(locale: PricingLocale = "en"): string {
         group.push(row);
         ordinaryGroups.set(title, group);
       }
-      const requestTitle = copy.ratesPer(formatUnit("per request", locale));
-      const generationTitle = copy.ratesPer(formatUnit("per generation", locale));
-      if (ordinaryGroups.has(requestTitle) && ordinaryGroups.has(generationTitle)) {
+      const imageOperationTitles = new Set([
+        "per request", "per generation", "per image", "per output image",
+      ].map((unit) => copy.ratesPer(formatUnit(unit, locale))));
+      const imageOperationGroups = [...ordinaryGroups].filter(([title]) => imageOperationTitles.has(title));
+      if (category === "images" && imageOperationGroups.length > 1) {
         const merged = new Map<string, typeof ordinaryRows>();
-        let addedCombinedGroup = false;
+        let addedImageOperationGroup = false;
         for (const [title, rows] of ordinaryGroups) {
-          if (title === requestTitle || title === generationTitle) {
-            if (!addedCombinedGroup) {
-              merged.set(copy.requestGenerationRates, [
-                ...ordinaryGroups.get(generationTitle)!,
-                ...ordinaryGroups.get(requestTitle)!,
-              ]);
-              addedCombinedGroup = true;
+          if (imageOperationTitles.has(title)) {
+            if (!addedImageOperationGroup) {
+              merged.set(copy.imageOperationRates, imageOperationGroups.flatMap(([, groupedRows]) => groupedRows));
+              addedImageOperationGroup = true;
             }
           } else merged.set(title, rows);
         }
