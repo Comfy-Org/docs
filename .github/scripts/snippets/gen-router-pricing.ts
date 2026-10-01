@@ -426,6 +426,25 @@ function render(locale: PricingLocale = "en"): string {
         group.push(row);
         ordinaryGroups.set(title, group);
       }
+      const requestTitle = copy.ratesPer(formatUnit("per request", locale));
+      const generationTitle = copy.ratesPer(formatUnit("per generation", locale));
+      if (ordinaryGroups.has(requestTitle) && ordinaryGroups.has(generationTitle)) {
+        const merged = new Map<string, typeof ordinaryRows>();
+        let addedCombinedGroup = false;
+        for (const [title, rows] of ordinaryGroups) {
+          if (title === requestTitle || title === generationTitle) {
+            if (!addedCombinedGroup) {
+              merged.set(copy.requestGenerationRates, [
+                ...ordinaryGroups.get(generationTitle)!,
+                ...ordinaryGroups.get(requestTitle)!,
+              ]);
+              addedCombinedGroup = true;
+            }
+          } else merged.set(title, rows);
+        }
+        ordinaryGroups.clear();
+        for (const [title, rows] of merged) ordinaryGroups.set(title, rows);
+      }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
         `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");

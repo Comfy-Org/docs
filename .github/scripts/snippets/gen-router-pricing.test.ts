@@ -219,6 +219,14 @@ describe("public Router pricing", () => {
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "-")).toBe(true);
   });
 
+  test("combines request and generation prices in the same image provider section", () => {
+    expect(page).toContain("#### Rates per request or generation");
+    const oneShot = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`bria/fibo`"))!;
+    expect(oneShot.rows.some((row) => row[1] === "`bria/fibo`" && row.includes("8.44 / request"))).toBe(true);
+    expect(oneShot.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384 / generation"))).toBe(true);
+  });
+
   test("labels variant axes and pivots Pruna and Seedance resolution bands", () => {
     const pruna = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`pruna/p-video-2`"))!;
     expect(pruna.headers).toEqual(["Name", "Model ID", "Mode", "720p Credits", "1080p Credits"]);
