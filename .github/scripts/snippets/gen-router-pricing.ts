@@ -306,7 +306,7 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   const primary = baseline ? formatAmount(baseline.credits!) : undefined;
   const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
   const label = (condition: string) => {
-    if (/^Cached input/.test(condition)) return ["Cached input read", "キャッシュ入力の読み取り", "缓存输入读取", "캐시 입력 읽기"][localeIndex];
+    if (/^Cached input/.test(condition)) return ["Read", "読み取り", "读取", "읽기"][localeIndex];
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
       text: ["Text", "テキスト", "文本", "텍스트"],
@@ -315,17 +315,21 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
       video: ["Video", "動画", "视频", "동영상"],
     };
     if (modality) return labels[modality][localeIndex];
-    if (condition.startsWith("5-minute")) return ["Cached input write (5m)", "キャッシュ入力の書き込み（5 分）", "缓存输入写入（5 分钟）", "캐시 입력 쓰기(5분)"][localeIndex];
-    if (condition.startsWith("1-hour")) return ["Cached input write (1h)", "キャッシュ入力の書き込み（1 時間）", "缓存输入写入（1 小时）", "캐시 입력 쓰기(1시간)"][localeIndex];
-    if (condition.startsWith("Cache-write")) return ["Cached input write", "キャッシュ入力の書き込み", "缓存输入写入", "캐시 입력 쓰기"][localeIndex];
+    if (condition.startsWith("5-minute")) return ["Write (5m)", "書き込み（5 分）", "写入（5 分钟）", "쓰기(5분)"][localeIndex];
+    if (condition.startsWith("1-hour")) return ["Write (1h)", "書き込み（1 時間）", "写入（1 小时）", "쓰기(1시간)"][localeIndex];
+    if (condition.startsWith("Cache-write")) return ["Write", "書き込み", "写入", "쓰기"][localeIndex];
     if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론"][localeIndex];
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
   return ordered.map(([amount, group]) => {
-    const labels = [...new Set(group.map((rate) => label(rate.conditions ?? "")))];
-    const isPlainTextBaseline = amount === primary && direction !== "cached" && labels.length === 1 && labels[0] === "Text";
-    const prefix = isPlainTextBaseline ? "" : `${tableCell(labels.join(" / "))}: `;
+    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")))];
+    const labels = direction === "output" || (direction === "input" && amount === primary)
+      ? groupLabels.filter((value) => value !== "Text")
+      : groupLabels;
+    const prefix = amount === primary && direction !== "cached" && labels.length === 0
+      ? ""
+      : labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
     return `${prefix}${amount}`;
   }).join("<br />") || "-";
 }
@@ -450,18 +454,18 @@ function render(locale: PricingLocale = "en"): string {
           return { name, modelId, option: compactOptions(group.options), credits, kind: rate.kind, unit: rate.unit };
         });
       });
-      const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, unitInHeader = false) => {
+      const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, headerUnit?: string) => {
         if (!items.length) return "";
         const options = items.map((item) => item.option).filter((option) => option !== "-");
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
-        const unit = items[0].unit;
-        const creditsHeader = unitInHeader ? `${copy.credits} / ${formatUnit(unit, locale)}` : copy.credits;
+        const creditsHeader = headerUnit ? `${copy.credits} / ${formatUnit(headerUnit, locale)}` : copy.credits;
         const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
         const separator = `| --- | --- | ${hasOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => {
-          const unitSuffix = ` / ${formatUnit(item.unit, locale)}`;
-          const credits = unitInHeader && item.credits.endsWith(unitSuffix)
+          const unitCanBeShortened = headerUnit === item.unit
+            || (headerUnit === "per generation" && item.unit === "per request");
+          const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
           return `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${credits} |`;
@@ -528,7 +532,7 @@ function render(locale: PricingLocale = "en"): string {
       const imageRequestModels = [...imageRequestByModel].filter(([, model]) => model.values.size > 1);
       const imageRequestPivotRows = new Set(imageRequestModels.flatMap(([, model]) => model.rows));
       const imageRequestTable = category === "images" && imageRequestModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits} / ${formatUnit("per request", locale)}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits} / ${formatUnit("per generation", locale)}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
 
       const kreaModes = ["moodboards", "style_references", "text"].map((mode) => formatOption(`feature=${mode}`, locale));
@@ -558,7 +562,7 @@ function render(locale: PricingLocale = "en"): string {
         "per request", "per generation", "per image", "per output image",
       ].map((unit) => copy.ratesPer(formatUnit(unit, locale))));
       const imageOperationGroups = [...ordinaryGroups].filter(([title]) => imageOperationTitles.has(title));
-      if (category === "images" && imageOperationGroups.length > 1) {
+      if (category === "images" && imageOperationGroups.length > 0) {
         const merged = new Map<string, typeof ordinaryRows>();
         let addedImageOperationGroup = false;
         for (const [title, rows] of ordinaryGroups) {
@@ -712,6 +716,7 @@ function render(locale: PricingLocale = "en"): string {
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
         const hasOptions = table.rows.some(({ option }) => option !== "-");
+        const publicUnit = category === "images" && table.unit === "per request" ? "per generation" : table.unit;
         const unitInHeader = ["per request", "per generation"].includes(table.unit);
         let previousModelName = "";
         const matrixRows = table.rows.map(({ model, group, option }) => {
@@ -727,7 +732,7 @@ function render(locale: PricingLocale = "en"): string {
           previousModelName = modelName;
           return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
-        const unitSuffix = unitInHeader ? ` / ${formatUnit(table.unit, locale)}` : "";
+        const unitSuffix = unitInHeader ? ` / ${formatUnit(publicUnit, locale)}` : "";
         return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}${unitSuffix}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
@@ -762,14 +767,21 @@ function render(locale: PricingLocale = "en"): string {
             groups.set(row.unit, group);
             return groups;
           }, new Map<string, typeof ordinaryRows>())]
-            .sort(([a], [b]) => ["per request", "per generation", "per image", "per output image"].indexOf(a)
-              - ["per request", "per generation", "per image", "per output image"].indexOf(b))
-            .map(([unit, unitRows]) => renderOrdinaryRows(unitRows, unitRows.some((row) => row.option !== "-"),
-              ["per request", "per generation"].includes(unit)))
+            .sort(([a], [b]) => {
+              const displayUnit = (unit: string) => category === "images" && unit === "per request" ? "per generation" : unit;
+              return ["per generation", "per image", "per output image"].indexOf(displayUnit(a))
+                - ["per generation", "per image", "per output image"].indexOf(displayUnit(b));
+            })
+            .map(([unit, unitRows]) => {
+              const displayUnit = unit === "per request" ? "per generation" : unit;
+              return renderOrdinaryRows(unitRows, unitRows.some((row) => row.option !== "-"), displayUnit);
+            })
             .join("\n\n")
           : renderOrdinaryRows(rows, hasOptions,
-            rows.length > 0 && ["per request", "per generation"].includes(rows[0].unit)
-            && rows.every((row) => row.unit === rows[0].unit && row.kind !== "usage" && row.kind !== "unavailable"));
+            rows.length > 0 && ["per request", "per generation", ...(category === "images" ? ["per image", "per output image"] : [])].includes(rows[0].unit)
+            && rows.every((row) => row.unit === rows[0].unit && row.kind !== "usage" && row.kind !== "unavailable")
+              ? rows[0].unit === "per request" && category === "images" ? "per generation" : rows[0].unit
+              : undefined);
         const extraTable = title === copy.imageOperationRates ? imageRequestTable
           : title === durationTitle ? durationRequestTable : "";
         const body = extraTable
@@ -785,7 +797,8 @@ function render(locale: PricingLocale = "en"): string {
       }
       if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
       if (imageRows) {
-        const tierUnit = imageTierUnit ? ` / ${formatUnit(imageTierUnit, locale)}` : "";
+        const publicTierUnit = category === "images" && imageTierUnit === "per request" ? "per generation" : imageTierUnit;
+        const tierUnit = publicTierUnit ? ` / ${formatUnit(publicTierUnit, locale)}` : "";
         tableSections.push({
           title: copy.imageTiers,
           body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits}${tierUnit} | 2K ${copy.credits}${tierUnit} | 4K ${copy.credits}${tierUnit} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,

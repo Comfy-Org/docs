@@ -130,7 +130,7 @@ const units: Record<string, Translation> = {
   "1M tokens": ["1M tokens", "1M トークン", "1M 令牌", "1M 토큰"],
   "1K video tokens": ["1K video tokens", "1K 動画トークン", "1K 视频令牌", "1K 동영상 토큰"],
   "second": ["second", "秒", "秒", "초"], "minute": ["minute", "分", "分钟", "분"],
-  "5 seconds": ["5 seconds", "5 秒", "5 秒", "5초"],
+  "5 seconds": ["5 s", "5 秒", "5 秒", "5초"],
   "30 output frames, rounded up": ["30 frames (rounded up)", "30 フレーム（切り上げ）", "30 帧（向上取整）", "30프레임(올림)"],
   "request": ["request", "リクエスト", "请求", "요청"],
   "completed operation": ["operation", "操作", "操作", "작업"],

@@ -139,7 +139,8 @@ describe("public Router pricing", () => {
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
       const amount = formatAmount(rate.credits!);
-      const unit = rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
+      const unit = model.category === "images" && rate.unit === "per request" ? "generation"
+        : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
       expect(matchingPrices.some(({ header, cell, section }) => priceAmounts(cell).includes(amount)
         && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.includes(`credits / ${unit}`)))).toBe(true);
     }
@@ -148,8 +149,9 @@ describe("public Router pricing", () => {
     expect(page).toContain("| 15.0865 |");
     expect(page).toContain("| 7.5432 |");
     expect(page).toContain("| 3.0173 |");
-    expect(page).toContain("| 16.88 / image |");
-    expect(page).toContain("| 31.65 / image |");
+    expect(page).toContain("Credits / image");
+    expect(page).toContain("| 16.88 |");
+    expect(page).toContain("| 31.65 |");
     expect(page).toContain("0.3017 / Recraft credit");
     expect(page).toContain("12.0692 / Meshy credit");
     expect(page).toContain("29.54 / Kling credit");
@@ -159,6 +161,9 @@ describe("public Router pricing", () => {
     expect(wanPricing?.rows.find((row) => row[1] === "`wan/wan3.0-video`")).toContain("42.2 / s");
     expect(page).toContain("| 2.954 / 1K video tokens |");
     expect(page).toContain("| 13.5778 / s |");
+    expect(page).toContain("#### Per 5 s by resolution");
+    expect(page).toContain("12.66 / 5 s");
+    expect(page).not.toContain("/ 5 seconds");
     expect(page).toContain(formatOption("Input duration, capped at 5 seconds per request", "en"));
     expect(page).toContain("| Usage-based<br />request usage |");
   });
@@ -167,13 +172,15 @@ describe("public Router pricing", () => {
     expect(page).toContain("| Name | Model ID | Cached input credits / 1M tokens | Input credits / 1M tokens | Output credits / 1M tokens |");
     expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
     expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
-    expect(page).toContain("| Cached input read: 301.73<br />Cached input write (1h): 6034.6<br />Cached input write (5m): 3771.625 | 3017.3 | 15086.5 |");
-    expect(page).toContain("| Cached input read: 60.346<br />Cached input write: 754.325 | 603.46 | 3017.3 |");
+    expect(page).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | 3017.3 | 15086.5 |");
+    expect(page).toContain("| Read: 60.346<br />Write: 754.325 | 603.46 | 3017.3 |");
     expect(page).not.toContain("Cache creation");
     expect(page).not.toContain("Write 5m");
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
+    expect(page).toContain("Reasoning: 2262.975");
+    expect(page).not.toContain("Text / Reasoning: 2262.975");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
@@ -186,7 +193,7 @@ describe("public Router pricing", () => {
     const geminiRow = geminiImage.rows.find((row) => row[1] === "`vertexai/gemini-2.5-flash-image`")!;
     expect(geminiRow).toHaveLength(4);
     expect(geminiRow[2]).toContain("Audio: 211");
-    expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
+    expect(geminiRow[2]).toContain("Image / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
     expect(geminiRow[3]).toContain("527.5");
     const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
@@ -216,7 +223,7 @@ describe("public Router pricing", () => {
       && table.headers.some((header) => header.startsWith("Text to image Credits"))
       && table.rows.some((row) => row[1] === "`openai/gpt-image-2`") )!;
     expect(operationTable.headers).toEqual([
-      "Name", "Model ID", "Text to image Credits / request", "Image edit Credits / request", "Image edit · 1K / 2K Credits / request", "Image edit · 4K Credits / request",
+      "Name", "Model ID", "Text to image Credits / generation", "Image edit Credits / generation", "Image edit · 1K / 2K Credits / generation", "Image edit · 4K Credits / generation",
     ]);
     const rowFor = (modelId: string) => operationTable.rows.find((row) => row[1] === `\`${modelId}\``)!;
     expect(rowFor("openai/gpt-image-2").slice(2)).toEqual(["12.66", "14.77", "-", "-"]);
@@ -234,7 +241,7 @@ describe("public Router pricing", () => {
     expect(grouped.remaining.length + grouped.groups.flatMap((group) => [...group.tiers.values()]).length).toBe(rates.length);
     expect(page).toContain("#### Image quality and resolution");
     expect(page).not.toContain("#### Image quality and size");
-    expect(page).toContain("| Name | Model ID | Operation | Quality | 1K Credits / request | 2K Credits / request | 4K Credits / request |");
+    expect(page).toContain("| Name | Model ID | Operation | Quality | 1K Credits / generation | 2K Credits / generation | 4K Credits / generation |");
     const qualityTable = tables.find((table) => table.provider === "WaveSpeed"
       && table.headers.includes("Operation")
       && table.rows.some((row) => row[1] === "`openai/gpt-image-2`"))!;
@@ -311,9 +318,9 @@ describe("public Router pricing", () => {
 
   test("combines request-rate rows with and without operation options", () => {
     const wavespeedRequests = tables.find((table) => table.provider === "WaveSpeed"
-      && table.headers.includes("Credits / request")
+      && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`wavespeed/seedvr2`"))!;
-    expect(wavespeedRequests.headers).toEqual(["Name", "Model ID", "Credits / request"]);
+    expect(wavespeedRequests.headers).toEqual(["Name", "Model ID", "Credits / generation"]);
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/seedvr2`" && row[2] === "2.11")).toBe(true);
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "12.66")).toBe(true);
     const seedance = tables.find((table) => table.provider === "WaveSpeed"
@@ -328,22 +335,24 @@ describe("public Router pricing", () => {
   test("groups one-time image charges and preserves each billable unit", () => {
     expect(page).toContain("#### Image generation and edit rates");
     const oneShot = tables.find((table) => table.provider === "Comfy"
-      && table.headers.includes("Credits / request")
+      && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`bria/fibo`"))!;
     expect(oneShot.rows.some((row) => row[1] === "`bria/fibo`" && row.includes("8.44"))).toBe(true);
     const perGeneration = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`runway/gen4_image`"))!;
     expect(perGeneration.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384"))).toBe(true);
     const outputImage = tables.find((table) => table.provider === "Comfy"
+      && table.headers.includes("Credits / output image")
       && table.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`"))!;
-    expect(outputImage.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519 / output image"))).toBe(true);
+    expect(outputImage.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519"))).toBe(true);
     const falOneTime = tables.find((table) => table.provider === "fal"
       && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`fal/patina`"))!;
     expect(falOneTime.rows.some((row) => row[1] === "`fal/patina`" && row.includes("3.0173"))).toBe(true);
     const falImage = tables.find((table) => table.provider === "fal"
+      && table.headers.includes("Credits / image")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
-    expect(falImage.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88 / image"))).toBe(true);
+    expect(falImage.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88"))).toBe(true);
   });
 
   test("labels variant axes while combining compatible resolution bands", () => {
