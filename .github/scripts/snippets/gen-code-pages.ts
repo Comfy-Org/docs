@@ -27,6 +27,7 @@ const MODELS_INDEX_URL = `/${MODELS_DIR}`;
 /** The generated serving-provider index, written only while some model has an alt-provider leg. */
 const PROVIDERS_PAGE = "development/comfy-router/providers";
 const PROVIDERS_URL = `/${PROVIDERS_PAGE}`;
+const PRICING_PAGE = "development/comfy-router/pricing";
 const REFERENCE_URL = "/development/comfy-router/reference";
 /**
  * The three query parameters that select and control an alternate serving provider.
@@ -1366,8 +1367,9 @@ export function modelsNav(pages: { model: string; page: string }[], hasProviders
     group: "Models",
     pages: [
       MODELS_DIR,
+      PRICING_PAGE,
       // Beside the catalog index, not inside a provider sub-group: it is the
-      // second way into the same catalog, not a model page.
+      // pricing and coverage indexes are separate from model pages.
       ...(hasProviders ? [PROVIDERS_PAGE] : []),
       {
         group: "All Models",
@@ -1723,7 +1725,7 @@ if (import.meta.main) {
   let docsJson: string;
   try {
     docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page })), providersText !== null), {
-      live: [...pages.map((p) => p.page), ...(providersText !== null ? [PROVIDERS_PAGE] : [])],
+      live: [...pages.map((p) => p.page), PRICING_PAGE, ...(providersText !== null ? [PROVIDERS_PAGE] : [])],
       pruned,
     });
   } catch (e) {
