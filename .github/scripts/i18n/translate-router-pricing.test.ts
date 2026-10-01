@@ -10,9 +10,35 @@ const LOCALES = ["ja", "zh", "ko"] as const;
 const links = (content: string) => [...content.matchAll(/\]\((\/[^)]+)\)/g)].map((match) => match[1]);
 const technicalKeys = (content: string) => [...content.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 const providers = (content: string) => [...content.matchAll(/<Accordion title="([^"]+)"/g)].map((match) => match[1]);
-const numericRates = (content: string) => content.split("\n")
-  .filter((line) => line.startsWith("|"))
-  .map((line) => line.split("|").slice(3, 5).map((cell) => cell.trim()).filter((cell) => /^\$?\d/.test(cell)));
+const numericRates = (content: string) => {
+  const rows: string[][] = [];
+  let priceColumns: number[] = [];
+  for (const line of content.split("\n")) {
+    if (!line.startsWith("|")) { priceColumns = []; continue; }
+    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+    if (/^(Name|名前|名称|이름)$/.test(cells[0])) {
+      priceColumns = cells.flatMap((cell, index) => /credits|クレジット|积分|크레딧/i.test(cell) ? [index] : []);
+      continue;
+    }
+    if (cells.every((cell) => /^:?-+:?$/.test(cell))) continue;
+    // Parse only price columns. A price can be bare under a token-unit header,
+    // or inline after a media/cache label, with its unit in the cell.
+    rows.push(priceColumns.flatMap((index) => [...cells[index].matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?(\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1])));
+  }
+  return rows;
+};
+
+test("numeric parity includes bare and inline prices without model, option, or unit numbers", () => {
+  const fixture = `| Name | Model ID | Option | Input credits / 1M tokens | Output credits / 1M tokens |
+| --- | --- | --- | ---: | ---: |
+| GPT 5.6 | \`openai/gpt-5.6\` | 1080p | 52.75<br />Audio: 105.5<br />Write 5m: 131.875 | 316.5 |
+
+| Name | Model ID | Credits |
+| --- | --- | ---: |
+| Model 30 | \`provider/model-30\` | 4.25 / 30 frames (rounded up) |`;
+  expect(numericRates(fixture)).toEqual([["52.75", "105.5", "131.875", "316.5"], ["4.25"]]);
+  expect(numericRates(fixture.replace("Audio: 105.5", "音声: 105.6"))).not.toEqual(numericRates(fixture));
+});
 
 for (const locale of LOCALES) {
   test(`${locale} pricing preserves rate numbers, model IDs, and link targets`, () => {

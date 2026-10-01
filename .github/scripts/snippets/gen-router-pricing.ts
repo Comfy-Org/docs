@@ -191,14 +191,14 @@ function groupRates(rates: MetronomeRate[], locale: PricingLocale): DisplayRate[
 }
 
 function compactOptions(options: string[]): string {
-  if (options.length === 1) return options[0];
   const groups = new Map<string, string[]>();
   for (const option of options) {
     const parts = option.split(" · ");
-    const last = parts.pop()!;
+    const value = parts.pop()!;
+    const last = /^\d+\s*[x×]\s*\d+$/i.test(value) ? resolutionLabel(value) : value;
     const prefix = parts.join(" · ");
     const values = groups.get(prefix) ?? [];
-    values.push(last);
+    if (!values.includes(last)) values.push(last);
     groups.set(prefix, values);
   }
   return [...groups].map(([prefix, values]) =>
@@ -207,6 +207,7 @@ function compactOptions(options: string[]): string {
 }
 
 function displayTitle(model: CatalogModel): string {
+  if (model.id === "bfl/video-edit-v1") return "Video Edit V1";
   if (model.id === "bfl/flux-pro-1.1") return "FLUX 1.1 Pro";
   if (model.id === "bfl/flux-pro-1.1-ultra") return "FLUX 1.1 Pro Ultra";
   if (model.id === "bfl/flux-kontext-max") return `${model.title} Max`;
@@ -217,6 +218,121 @@ function displayTitle(model: CatalogModel): string {
 
 function tableCell(value: string): string {
   return value.replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function isTokenRoute(rates: MetronomeRate[]): boolean {
+  const tokenCondition = /^(?:(?:Input|Output) (?:text|audio|image|video) tokens|Cached input(?: (?:text|audio|image|video))? tokens|Cache-write input text tokens|(?:5-minute|1-hour) cache-write input tokens|Reasoning tokens)$/;
+  return rates.length > 0 && rates.every((rate) => rate.kind !== "usage" && rate.unit === "per 1M tokens" && tokenCondition.test(rate.conditions ?? ""));
+}
+
+function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale): string {
+  const selected = rates.filter((rate) => {
+    const condition = rate.conditions ?? "";
+    if (/^Cached input/.test(condition)) return direction === "cached";
+    if (/^(Output|Reasoning)/.test(condition)) return direction === "output";
+    return direction === "input";
+  });
+  // The header supplies the token unit. Equal amounts share one value,
+  // including media and reasoning charges that match the text baseline.
+  const groups = new Map<string, MetronomeRate[]>();
+  for (const rate of selected) {
+    const amount = formatAmount(rate.credits!);
+    const group = groups.get(amount) ?? [];
+    group.push(rate);
+    groups.set(amount, group);
+  }
+  const baseline = selected.find((rate) => rate.conditions === (direction === "input" ? "Input text tokens" : direction === "output" ? "Output text tokens" : "Cached input text tokens"))
+    ?? (direction === "cached" ? selected.find((rate) => rate.conditions === "Cached input tokens") : undefined)
+    ?? (groups.size === 1 ? selected[0] : undefined);
+  const primary = baseline ? formatAmount(baseline.credits!) : undefined;
+  const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
+  const label = (condition: string) => {
+    const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
+    const labels: Record<string, string[]> = {
+      text: ["Text", "テキスト", "文本", "텍스트"],
+      audio: ["Audio", "音声", "音频", "오디오"],
+      image: ["Image", "画像", "图像", "이미지"],
+      video: ["Video", "動画", "视频", "동영상"],
+    };
+    if (modality) return labels[modality][localeIndex];
+    if (condition.startsWith("5-minute")) return ["Write 5m", "書き込み 5分", "写入 5分钟", "쓰기 5분"][localeIndex];
+    if (condition.startsWith("1-hour")) return ["Write 1h", "書き込み 1時間", "写入 1小时", "쓰기 1시간"][localeIndex];
+    if (condition.startsWith("Cache-write")) return ["Write", "書き込み", "写入", "쓰기"][localeIndex];
+    if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론"][localeIndex];
+    return formatOption(condition, locale);
+  };
+  const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
+  return ordered.map(([amount, group]) => {
+    const prefix = amount === primary ? "" : `${tableCell([...new Set(group.map((rate) => label(rate.conditions ?? "")))].join(" / "))}: `;
+    return `${prefix}${amount}`;
+  }).join("<br />") || "-";
+}
+
+function groupImageTiers(rates: MetronomeRate[]) {
+  const remaining: MetronomeRate[] = [];
+  const groups = new Map<string, { operation: string; quality: string; tiers: Map<string, MetronomeRate> }>();
+  for (const rate of rates) {
+    const parts = (rate.conditions ?? "").split(";").map((part) => part.trim());
+    const operation = parts.find((part) => part === "Edit" || part === "Text to image");
+    const quality = parts.find((part) => part.startsWith("quality="))?.slice(8);
+    const size = parts.find((part) => part.startsWith("output size="))?.slice(12);
+    const supportedParts = parts.every((part) => part === operation || part === `quality=${quality}` || part === `output size=${size}` || (rate.kind === "usage" && part === "The amount depends on reported usage"));
+    const supportedUnit = rate.kind === "usage" ? rate.unit === "variable based on reported usage" : rate.unit === "per request";
+    if (!operation || !quality || !size || !["1K", "2K", "4K"].includes(size) || !supportedParts || !supportedUnit) {
+      remaining.push(rate);
+      continue;
+    }
+    const key = JSON.stringify([rate.model_id, rate.serving_provider, operation, quality, rate.effective_from, rate.effective_until]);
+    const group = groups.get(key) ?? { operation, quality, tiers: new Map<string, MetronomeRate>() };
+    // Preserve conflicting records in the ordinary table instead of selecting one.
+    if (group.tiers.has(size)) return { remaining: rates, groups: [] };
+    group.tiers.set(size, rate);
+    groups.set(key, group);
+  }
+  const qualityOrder = ["low", "medium", "high", "xhigh", "max"];
+  return { remaining, groups: [...groups.values()].sort((a, b) =>
+    (a.operation === b.operation ? qualityOrder.indexOf(a.quality) - qualityOrder.indexOf(b.quality) : a.operation === "Text to image" ? -1 : 1),
+  ) };
+}
+
+function resolutionLabel(value: string): string {
+  const sizes: Record<string, string> = {
+    "1280x720": "720p", "720x1280": "720p", "1920x1080": "1080p", "1080x1920": "1080p",
+    "2560x1440": "1440p", "1440x2560": "1440p", "3840x2160": "4K", "2160x3840": "4K",
+  };
+  const normalized = value.trim().replace(/\s*[x×]\s*/gi, "x");
+  return sizes[normalized] ?? normalized.replace(/P$/, "p").replace(/k$/, "K").replace(/^(720|1080)$/, "$1p");
+}
+
+function groupResolutionTiers(rates: MetronomeRate[]) {
+  const remaining: MetronomeRate[] = [];
+  const groups = new Map<string, { conditions: string; tiers: Map<string, { rate: MetronomeRate; sources: MetronomeRate[] }> }>();
+  const resolutions = new Set<string>();
+  for (const rate of rates) {
+    const parts = (rate.conditions ?? "").split(";").map((part) => part.trim());
+    const resolution = parts.find((part) => part.startsWith("resolution="))
+      ?? parts.find((part) => /^(?:\d+(?:\.\d+)?[pK]|\d+\s*[x×]\s*\d+)$/i.test(part));
+    if (!resolution) { remaining.push(rate); continue; }
+    const label = resolutionLabel(resolution.startsWith("resolution=") ? resolution.slice(11) : resolution);
+    resolutions.add(label);
+    const conditions = parts.filter((part) => part !== resolution && !(rate.model_id === "minimax/minimax-h3" && rate.unit === "per second" && ["Output video", "Reference video input"].includes(part))).join("; ");
+    const key = JSON.stringify([rate.model_id, rate.serving_provider, conditions, rate.unit, rate.kind, rate.effective_from, rate.effective_until]);
+    const group = groups.get(key) ?? { conditions, tiers: new Map() };
+    const existing = group.tiers.get(label);
+    if (existing && (existing.rate.price_usd !== rate.price_usd || existing.rate.credits !== rate.credits)) {
+      return { remaining: rates, groups: [] };
+    }
+    if (existing) existing.sources.push(rate);
+    else group.tiers.set(label, { rate, sources: [rate] });
+    groups.set(key, group);
+  }
+  if (resolutions.size < 2 || resolutions.size > 4) return { remaining: rates, groups: [] };
+  return { remaining, groups: [...groups.values()] };
+}
+
+function resolutionOrder(a: string, b: string): number {
+  const pixels = (value: string) => value.toUpperCase().endsWith("K") ? parseFloat(value) * 1000 : parseFloat(value);
+  return pixels(a) - pixels(b) || a.localeCompare(b);
 }
 
 function render(locale: PricingLocale = "en"): string {
@@ -241,16 +357,103 @@ function render(locale: PricingLocale = "en"): string {
       const hasNumeric = routes.some(({ rates }) => rates.some((rate) => rate.kind !== "usage"));
       const defaultOpen = !opened && hasNumeric;
       if (defaultOpen) opened = true;
-      const rows = routes.flatMap(({ model, rates }) => {
+      const tokenRoutes = category === "text" ? routes.filter(({ rates }) => isTokenRoute(rates)) : [];
+      const hasCachedInput = tokenRoutes.some(({ rates }) => rates.some((rate) => /^Cached input/.test(rate.conditions ?? "")));
+      const ordinaryRoutes = routes.filter((route) => !tokenRoutes.includes(route));
+      const imageRoutes = ordinaryRoutes.map((route) => {
+        const image = category === "images" ? groupImageTiers(route.rates) : { remaining: route.rates, groups: [] };
+        return { ...route, image, resolution: groupResolutionTiers(image.remaining) };
+      });
+      const ordinaryOptions = imageRoutes.flatMap(({ resolution }) => resolution.remaining.map((rate) => formatOption(rate.conditions, locale))).filter((option) => option !== "-");
+      const hasOrdinaryOptions = ordinaryOptions.length > 0;
+      const ordinaryOptionHeader = ordinaryOptions.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution : copy.option;
+      const rows = imageRoutes.flatMap(({ model, rates: originalRates, resolution }) => {
+        const rates = resolution.remaining;
         const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
-        if (!rates.length) return [`| ${name} | - | ${copy.unavailable} | - | - |`];
+        const modelId = `\`${model.id}\``;
+        if (!originalRates.length) return [`| ${name} | ${modelId} | ${hasOrdinaryOptions ? "- | " : ""}${copy.unavailable} |`];
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
-          const usd = rate.kind === "usage" ? copy.variable : `$${formatAmount(rate.price_usd!)}`;
-          const credits = rate.kind === "usage" ? "-" : formatAmount(rate.credits!);
-          return `| ${name} | ${tableCell(compactOptions(group.options))} | ${usd} | ${credits} | ${tableCell(formatUnit(rate.unit, locale))} |`;
+          const unit = tableCell(formatUnit(rate.unit, locale));
+          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${unit}`;
+          return `| ${name} | ${modelId} | ${hasOrdinaryOptions ? `${tableCell(compactOptions(group.options))} | ` : ""}${credits} |`;
         });
       }).join("\n");
+      const tokenRows = tokenRoutes.map(({ model, rates }) =>
+        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
+      ).join("\n");
+      const imageRows = imageRoutes.flatMap(({ model, image }) => image.groups.map((group) => {
+        const values = ["1K", "2K", "4K"].map((size) => {
+          const rate = group.tiers.get(size);
+          return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+        });
+        const option = formatOption(`${group.operation}; quality=${group.quality}`, locale);
+        return `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tableCell(option)} | ${values.join(" | ")} |`;
+      })).join("\n");
+      const resolutionGroups = imageRoutes.flatMap(({ model, resolution }) => {
+        const options = [...new Set(resolution.groups.map((group) => formatOption(group.conditions, locale)))];
+        const onlyOperation = options.length === 1 && [formatOption("Text to video", locale), formatOption("Text-to-video", locale), "-"].includes(options[0]);
+        return resolution.groups.map((group) => ({ model, group, option: onlyOperation ? "-" : formatOption(group.conditions, locale) }));
+      });
+      // Different model families can expose unrelated size bands under one provider.
+      // Keep their matrices compact without reverting all of that provider's rows.
+      const resolutionTables: Array<{
+        unit: string;
+        optionHeader: string;
+        columns: Set<string>;
+        rows: typeof resolutionGroups;
+      }> = [];
+      for (const row of resolutionGroups) {
+        const { group } = row;
+        const unit = group.tiers.values().next().value!.rate.unit;
+        const optionHeader = group.conditions.includes("draft=") ? copy.mode
+          : /generate_?Audio=|generate_audio=/.test(group.conditions) ? copy.audio
+          : group.conditions.includes("video_type=") ? copy.inputType
+          : group.conditions.includes("type=") ? copy.type : copy.option;
+        const columns = [...group.tiers.keys()];
+        const table = resolutionTables.find((candidate) =>
+          candidate.unit === unit && candidate.optionHeader === optionHeader
+          && columns.some((column) => candidate.columns.has(column))
+          && new Set([...candidate.columns, ...columns]).size <= 4,
+        );
+        if (table) {
+          columns.forEach((column) => table.columns.add(column));
+          const matchingRow = table.rows.find((candidate) =>
+            candidate.model.id === row.model.id && candidate.group.conditions === group.conditions
+            && [...group.tiers].every(([label, { rate }]) => {
+              const existing = candidate.group.tiers.get(label)?.rate;
+              return !existing || (existing.kind === rate.kind && existing.price_usd === rate.price_usd && existing.credits === rate.credits);
+            }),
+          );
+          if (matchingRow) {
+            for (const [label, tier] of group.tiers) {
+              const existing = matchingRow.group.tiers.get(label);
+              if (existing) existing.sources.push(...tier.sources);
+              else matchingRow.group.tiers.set(label, tier);
+            }
+          } else table.rows.push(row);
+        } else {
+          resolutionTables.push({ unit, optionHeader, columns: new Set(columns), rows: [row] });
+        }
+      }
+      const resolutionTablesText = resolutionTables.map((table) => {
+        const columns = [...table.columns].sort(resolutionOrder);
+        const hasOptions = table.rows.some(({ option }) => option !== "-");
+        const matrixRows = table.rows.map(({ model, group, option }) => {
+          const values = columns.map((label) => {
+            const rate = group.tiers.get(label)?.rate;
+            return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+          });
+          return `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
+        }).join("\n");
+        return `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}`;
+      }).join("\n\n");
+      const tables = [
+        tokenRows ? `| ${copy.model} | ${copy.modelId} | ${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ---: | ${hasCachedInput ? "---: | " : ""}---: |\n${tokenRows}` : "",
+        resolutionTablesText,
+        rows ? `| ${copy.model} | ${copy.modelId} | ${hasOrdinaryOptions ? `${ordinaryOptionHeader} | ` : ""}${copy.credits} |\n| --- | --- | ${hasOrdinaryOptions ? "--- | " : ""}---: |\n${rows}` : "",
+        imageRows ? `#### ${copy.imageTiers}\n\n| ${copy.model} | ${copy.modelId} | ${copy.option} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | ---: | ---: | ---: |\n${imageRows}` : "",
+      ].filter(Boolean).join("\n\n");
       const expiry = new Map<string, Set<string>>();
       for (const { model, rates } of routes) {
         for (const rate of rates) {
@@ -263,7 +466,8 @@ function render(locale: PricingLocale = "en"): string {
       const notices = [...expiry].map(([date, titles]) =>
         `\n${copy.expiry([...titles].join(", "), formatDate(date, locale))}\n`,
       ).join("");
-      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n| ${copy.model} | ${copy.option} | ${copy.usd} | ${copy.credits} | ${copy.unit} |\n| --- | --- | ---: | ---: | --- |\n${rows}\n${notices}\n</Accordion>`;
+      const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
+      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n${notices}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
@@ -276,7 +480,7 @@ mode: "wide"
 
 {/* Generated pricing page. */}
 
-${copy.conversion(data.credits_per_usd)} ${copy.intro}
+${copy.intro}
 
 <Tabs>
 
@@ -305,4 +509,4 @@ if (import.meta.main) {
   }
 }
 
-export { compactOptions, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion };
+export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion };
