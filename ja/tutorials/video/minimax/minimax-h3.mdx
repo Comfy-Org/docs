@@ -2,13 +2,13 @@
 title: "ComfyUI MiniMax H3 動画生成ガイド"
 description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
 sidebarTitle: "概要"
-translationSourceHash: 5ad762b8
+translationSourceHash: de9ef244
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": ca407622
   "Key features": 7bfa7de1
   "Getting started": ed2dace3
-  "Choosing the checkpoint precision": e9f0a50f
+  "Choosing the checkpoint precision": 4a37c89c
   "Workflow index": 4eb0081d
   "Setting the output resolution": 9aac37c9
   "Step count": 96c7fd7f
@@ -60,15 +60,19 @@ LoRA は蒸留元のチェックポイントビルドに合わせて選び、リ
 
 ## チェックポイント精度の選択
 
-VRAM に収まる最小の H3 ビルドをダウンロードしてください。精度違いのビルドの違いは主にファイルサイズとサンプリング速度にあり、フル精度のウェイトからの大きな後退にはなっていません。各 H3 拡散モデルは複数の精度で公開されており、いずれも同じワークフローで動作します。精度を変えるときは `UNETLoader`（**Load Diffusion Model**）ノードに別のファイルを指定して再キューするだけで、量子化形式はチェックポイント自体から読み取られるため、他のノードや設定を変更する必要はありません。ただし LoRA はダウンロードするビルド系列に合わせてください。フルビルドで蒸留された LoRA は pruned ビルドでは adaln 重みを失います。チェックポイントと相互作用する唯一の選択はアテンションバックエンドです（[INT8 アテンションによる品質劣化](#int8-アテンションによる品質劣化)を参照）。
+VRAM に収まる最小のビルドをダウンロードしてください。どの精度も同じワークフローで動作し、切り替えるときは `UNETLoader`（**Load Diffusion Model**）ノードを別のファイルに向けるだけです。量子化形式はチェックポイント自体が持つ情報なので、他のノードや設定を変更する必要はありません。LoRA はビルド系列に合わせる必要があり、フルビルドで蒸留した LoRA は pruned ビルドで adaln 重みを失います。
 
-テンプレートが読み込むのは pruned INT8 ビルドです（Text to Video と Image to Video は `minimax_h3_fl2va_pruned_int8_convrot.safetensors`、Reference to Video とそれを基にしたワークフローは `minimax_h3_ref2va_pruned_int8_convrot.safetensors`）。30 シリーズの NVIDIA GPU では INT8 が高速な経路です。これらの GPU は INT8 の行列積をハードウェアで FP16 のおよそ 2 倍のレートで実行し、FP8 の行列演算経路を持たないため、ビルドが VRAM に常駐している状態では、INT8 ビルドの行列積は同じサイズの FP8 ビルドよりおよそ 2 倍速くなります。
+| ビルド（fl2va / ref2va） | サイズ | 補足 |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | 最小。INT8 行列演算の経路を保ち、ComfyUI 0.38.0 以降が必要 |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | テンプレートが読み込むビルド |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | INT8 と同じサイズ |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 非量子化 |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | 非量子化のフルビルド |
 
-VRAM に収まらないチェックポイントはサンプリングの各ステップでシステムメモリから読み出され、そのコストは精度差で得られる時間よりはるかに大きくなります。ビルドをオフロードさせる前に、ひとつ小さいサイズに下げてください：
+表のリンクは Text to Video と Image to Video が使う `fl2va` のファイルです。`ref2va` の対応ファイル（Reference to Video とそれを基にしたワークフロー）は同じフォルダに同じサイズで置かれています。Comfy Kitchen attention を使う場合は `bf16` ビルドを選んでください。このバックエンドは `int8_convrot` チェックポイントを実行できません。
 
-- `pruned_w6a8`（16 GB）は最小のビルドで、INT8 の行列演算経路を維持します。ComfyUI 0.38.0 以降が必要です。
-- `pruned_int8_convrot`（21 GB）はテンプレートがダウンロードするビルドで、`pruned_fp8_scaled`（21 GB）は同じサイズです。
-- `pruned_bf16`（40 GB）と pruned でない `bf16`（66 GB）は量子化されていないウェイトを保持します。Comfy Kitchen attention を使う場合はこのいずれかを選んでください。このバックエンドは `int8_convrot` チェックポイントを実行できないためです。
+VRAM に収まらないビルドはサンプリングの各ステップでシステムメモリから読み出され、そのコストは精度差よりはるかに大きくなります。オフロードさせるより、1 段小さいサイズに下げてください。30 シリーズの NVIDIA カードでは INT8 が速い経路です。これらの GPU は INT8 の行列積をハードウェアで FP16 の約 2 倍のレートで実行し、FP8 の行列演算経路を持たないため、VRAM に常駐していれば INT8 ビルドは同じサイズの FP8 ビルドより約 2 倍速くサンプリングできます。
 
 ## ワークフローインデックス
 
