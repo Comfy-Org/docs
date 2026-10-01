@@ -513,9 +513,8 @@ function render(locale: PricingLocale = "en"): string {
         tableSections.push({ title, body: tables.join("\n\n") });
       }
       for (const [title, rows] of ordinaryGroups) {
-        const optionRows = rows.filter((row) => row.option !== "-");
-        const optionlessRows = rows.filter((row) => row.option === "-");
-        const body = [renderOrdinaryRows(optionRows, true), renderOrdinaryRows(optionlessRows, false)].filter(Boolean).join("\n\n");
+        const hasOptions = rows.some((row) => row.option !== "-");
+        const body = renderOrdinaryRows(rows, hasOptions);
         tableSections.push({ title, body });
       }
       if (imageRows) {

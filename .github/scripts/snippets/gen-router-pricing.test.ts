@@ -163,6 +163,8 @@ describe("public Router pricing", () => {
     expect(grouped.groups).toHaveLength(10);
     expect(grouped.remaining).toHaveLength(2);
     expect(grouped.remaining.length + grouped.groups.flatMap((group) => [...group.tiers.values()]).length).toBe(rates.length);
+    expect(page).toContain("#### Image quality and resolution");
+    expect(page).not.toContain("#### Image quality and size");
     expect(page).toContain("| Name | Model ID | Option | 1K Credits | 2K Credits | 4K Credits |");
     expect(page).toContain("| Image edit · High | 48.53 / request | 86.51 / request | 154.03 / request |");
     const conflicted = groupImageTiers([...rates, rates[1]]);
@@ -207,6 +209,14 @@ describe("public Router pricing", () => {
     const klingVideo = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`kling/kling-v3`"));
     expect(klingVideo).toBeDefined();
     expect(klingVideo!.headers).not.toContain("Option");
+  });
+
+  test("combines request-rate rows with and without operation options", () => {
+    const wavespeedRequests = tables.find((table) => table.provider === "WaveSpeed"
+      && table.rows.some((row) => row[1] === "`openai/gpt-image-2`"))!;
+    expect(wavespeedRequests.headers).toEqual(["Name", "Model ID", "Option", "Credits"]);
+    expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/seedvr2`" && row[2] === "-")).toBe(true);
+    expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "-")).toBe(true);
   });
 
   test("labels variant axes and pivots Pruna and Seedance resolution bands", () => {
