@@ -258,7 +258,7 @@ function isTokenRoute(rates: MetronomeRate[]): boolean {
 function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale): string {
   const selected = rates.filter((rate) => {
     const condition = rate.conditions ?? "";
-    if (/^Cached input/.test(condition) || /cache-write/.test(condition)) return direction === "cached";
+    if (/^Cached input/.test(condition) || /cache-write/i.test(condition)) return direction === "cached";
     if (/^(Output|Reasoning)/.test(condition)) return direction === "output";
     return direction === "input";
   });
@@ -294,8 +294,9 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
   return ordered.map(([amount, group]) => {
-    const prefix = amount === primary && direction !== "cached" ? ""
-      : `${tableCell([...new Set(group.map((rate) => label(rate.conditions ?? "")))].join(" / "))}: `;
+    const labels = [...new Set(group.map((rate) => label(rate.conditions ?? "")))];
+    const isPlainTextBaseline = amount === primary && direction !== "cached" && labels.length === 1 && labels[0] === "Text";
+    const prefix = isPlainTextBaseline ? "" : `${tableCell(labels.join(" / "))}: `;
     return `${prefix}${amount}`;
   }).join("<br />") || "-";
 }
@@ -398,9 +399,9 @@ function render(locale: PricingLocale = "en"): string {
       const hasNumeric = routes.some(({ rates }) => rates.some((rate) => rate.kind !== "usage"));
       const defaultOpen = !opened && hasNumeric;
       if (defaultOpen) opened = true;
-      const tokenRoutes = category === "text" ? routes.filter(({ rates }) => isTokenRoute(rates)) : [];
+      const tokenRoutes = routes.filter(({ rates }) => isTokenRoute(rates));
       const hasCachedInput = tokenRoutes.some(({ rates }) => rates.some((rate) =>
-        /^Cached input/.test(rate.conditions ?? "") || /cache-write/.test(rate.conditions ?? "")));
+        /^Cached input/.test(rate.conditions ?? "") || /cache-write/i.test(rate.conditions ?? "")));
       const ordinaryRoutes = routes.filter((route) => !tokenRoutes.includes(route));
       const imageRoutes = ordinaryRoutes.map((route) => {
         const image = category === "images" ? groupImageTiers(route.rates) : { remaining: route.rates, groups: [] };
@@ -436,6 +437,59 @@ function render(locale: PricingLocale = "en"): string {
         const group = ordinaryGroups.get(title) ?? [];
         group.push(row);
         ordinaryGroups.set(title, group);
+      }
+      const textToImage = formatOption("Text to image", locale);
+      const imageEdit = formatOption("Edit", locale);
+      const imageRequestSources = ordinaryRows.filter((row) => {
+        if (row.unit !== "per request" || row.kind === "unavailable") return false;
+        const options = row.option.split(/<br\s*\/?\s*>/).map((option) => option.trim());
+        return options.every((option) => option === textToImage || option === imageEdit
+          || (option.startsWith(`${imageEdit} · `)
+            && option.slice(imageEdit.length + 3).split(" / ").every((size) => ["1K", "2K", "4K"].includes(size))));
+      });
+      const imageRequestByModel = new Map<string, { name: string; rows: typeof imageRequestSources; values: Map<string, string> }>();
+      const imageRequestOptions = new Set<string>();
+      for (const row of imageRequestSources) {
+        const modelId = row.modelId.slice(1, -1);
+        const model = imageRequestByModel.get(modelId) ?? { name: row.name, rows: [], values: new Map<string, string>() };
+        const options = row.option.split(/<br\s*\/?\s*>/).map((option) => option.trim());
+        if (options.some((option) => model.values.has(option) && model.values.get(option) !== row.credits)) continue;
+        options.forEach((option) => {
+          model.values.set(option, row.credits);
+          imageRequestOptions.add(option);
+        });
+        model.rows.push(row);
+        imageRequestByModel.set(modelId, model);
+      }
+      const requestOptionOrder = (option: string) => option === textToImage ? 0
+        : option === imageEdit ? 1
+        : option.includes("1K") || option.includes("2K") ? 2 : 3;
+      const requestColumns = [...imageRequestOptions].sort((a, b) => requestOptionOrder(a) - requestOptionOrder(b) || a.localeCompare(b));
+      const imageRequestModels = [...imageRequestByModel].filter(([, model]) => model.values.size > 1);
+      const imageRequestPivotRows = new Set(imageRequestModels.flatMap(([, model]) => model.rows));
+      const imageRequestTable = category === "images" && imageRequestModels.length
+        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => model.values.get(option) ?? "-").join(" | ")} |`).join("\n")}`
+        : "";
+
+      const kreaModes = ["moodboards", "style_references", "text"].map((mode) => formatOption(`feature=${mode}`, locale));
+      const kreaSourceRows = category === "images" ? ordinaryRows.filter((row) =>
+        row.modelId.includes("krea/krea-2") && row.unit === "per generation" && kreaModes.includes(row.option)) : [];
+      const kreaModelIds = [...new Set(kreaSourceRows.map((row) => row.modelId))];
+      const kreaMatrixModels = kreaModelIds.flatMap((modelId) => {
+        const rows = kreaSourceRows.filter((row) => row.modelId === modelId);
+        if (rows.length !== kreaModes.length || new Set(rows.map((row) => row.option)).size !== kreaModes.length) return [];
+        return [{ modelId, name: rows[0].name, rows }];
+      });
+      const kreaPivotRows = new Set(kreaMatrixModels.flatMap((model) => model.rows));
+      const kreaTable = kreaMatrixModels.length
+        ? `| ${copy.model} | ${copy.modelId} | ${kreaModes.map((mode) => `${tableCell(mode)} ${copy.credits}`).join(" | ")} |\n| --- | --- | ---: | ---: | ---: |\n${kreaMatrixModels.map(({ modelId, name, rows }) => `| ${name} | ${modelId} | ${kreaModes.map((mode) => rows.find((row) => row.option === mode)?.credits ?? "-").join(" | ")} |`).join("\n")}`
+        : "";
+
+      const pivotedOrdinaryRows = new Set([...imageRequestPivotRows, ...kreaPivotRows]);
+      for (const [title, rows] of ordinaryGroups) {
+        const remaining = rows.filter((row) => !pivotedOrdinaryRows.has(row));
+        if (remaining.length) ordinaryGroups.set(title, remaining);
+        else ordinaryGroups.delete(title);
       }
       const imageOperationTitles = new Set([
         "per request", "per generation", "per image", "per output image",
@@ -498,16 +552,26 @@ function render(locale: PricingLocale = "en"): string {
         }
       }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
-        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
+        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "input", locale)} | ${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");
-      const imageRows = imageRoutes.flatMap(({ model, image }) => image.groups.map((group) => {
-        const values = ["1K", "2K", "4K"].map((size) => {
-          const rate = group.tiers.get(size);
-          return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+      const imageRows = imageRoutes.flatMap(({ model, image }) => {
+        let firstRow = true;
+        let previousOperation = "";
+        return image.groups.map((group) => {
+          const values = ["1K", "2K", "4K"].map((size) => {
+            const rate = group.tiers.get(size);
+            return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+          });
+          const operation = formatOption(group.operation, locale);
+          const quality = formatOption(`quality=${group.quality}`, locale);
+          const name = firstRow ? `[${tableCell(displayTitle(model))}](/${model.page})` : "";
+          const modelId = firstRow ? `\`${model.id}\`` : "";
+          const operationCell = operation === previousOperation ? "" : tableCell(operation);
+          firstRow = false;
+          previousOperation = operation;
+          return `| ${name} | ${modelId} | ${operationCell} | ${tableCell(quality)} | ${values.join(" | ")} |`;
         });
-        const option = formatOption(`${group.operation}; quality=${group.quality}`, locale);
-        return `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tableCell(option)} | ${values.join(" | ")} |`;
-      })).join("\n");
+      }).flat().join("\n");
       const resolutionGroups = imageRoutes.flatMap(({ model, resolution }) => {
         const options = [...new Set(resolution.groups.map((group) => formatOption(group.conditions, locale)))];
         const onlyOperation = options.length === 1 && [formatOption("Text to video", locale), formatOption("Text-to-video", locale), "-"].includes(options[0]);
@@ -579,13 +643,18 @@ function render(locale: PricingLocale = "en"): string {
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
         const hasOptions = table.rows.some(({ option }) => option !== "-");
+        let previousModelName = "";
         const matrixRows = table.rows.map(({ model, group, option }) => {
           const values = columns.map((label) => {
             const rate = group.tiers.get(label)?.rate;
             return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
-          return `| [${tableCell(`${displayTitle(model)}${modeSuffix}`)}](/${model.page}) | \`${model.id}\` | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
+          const modelName = `${displayTitle(model)}${modeSuffix}`;
+          const name = modelName === previousModelName ? "" : `[${tableCell(modelName)}](/${model.page})`;
+          const modelId = modelName === previousModelName ? "" : `\`${model.id}\``;
+          previousModelName = modelName;
+          return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
         return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
@@ -599,7 +668,7 @@ function render(locale: PricingLocale = "en"): string {
       if (tokenRows) {
         tableSections.push({
           title: copy.tokenRates,
-          body: `| ${copy.model} | ${copy.modelId} | ${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ---: | ${hasCachedInput ? "---: | " : ""}---: |\n${tokenRows}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ${hasCachedInput ? "---: | " : ""}---: | ---: |\n${tokenRows}`,
         });
       }
       const resolutionGroupsByUnit = new Map<string, string[]>();
@@ -614,13 +683,20 @@ function render(locale: PricingLocale = "en"): string {
       }
       for (const [title, rows] of ordinaryGroups) {
         const hasOptions = rows.some((row) => row.option !== "-");
-        const body = renderOrdinaryRows(rows, hasOptions);
+        const ordinaryBody = renderOrdinaryRows(rows, hasOptions);
+        const body = title === copy.imageOperationRates
+          ? [imageRequestTable, ordinaryBody].filter(Boolean).join("\n\n")
+          : ordinaryBody;
         tableSections.push({ title, body });
       }
+      if (imageRequestTable && !ordinaryGroups.has(copy.imageOperationRates)) {
+        tableSections.push({ title: copy.imageOperationRates, body: imageRequestTable });
+      }
+      if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
       if (imageRows) {
         tableSections.push({
           title: copy.imageTiers,
-          body: `| ${copy.model} | ${copy.modelId} | ${copy.option} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
         });
       }
       const hasSubgroups = tableSections.length > 1;
