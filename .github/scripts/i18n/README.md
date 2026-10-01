@@ -256,6 +256,27 @@ pnpm translate:check-truncation -- --lang ko
 pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
 ```
 
+### Router pricing page
+
+`pnpm router-pricing:gen` renders the English, Japanese, Simplified Chinese,
+and Korean Comfy Router pricing pages from one shared renderer. Public labels,
+options, and rate units are localized. Model names, provider names, Router IDs,
+technical keys, and numeric rate amounts stay unchanged.
+Internal links use a localized target when it exists and fall back to the English
+page when that page has no translation yet.
+Translation hashes are synced so `pnpm translate` skips these pages when their
+English source has not changed. This path does not need the translation API key.
+
+`pnpm router-pricing:check` checks the English page against the renderer and all
+three localized pages, including their translation metadata, without writing files. Pricing
+page edits trigger this check on both same-repository and fork pull requests.
+
+The localized files are regular translation outputs under `ja/`, `zh/`, and
+`ko/`. For same-repository pull requests, the Router pricing workflow runs this
+generation automatically and commits the locale files to the PR branch. For
+fork pull requests, run the command locally and commit the locale files with
+the English page.
+
 ### Sync hashes after manual edits
 
 When you edit English and update zh/ja/ko translations by hand (or with Cursor), refresh
