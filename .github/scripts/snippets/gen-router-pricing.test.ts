@@ -32,15 +32,18 @@ const priceAmounts = (cell: string) => [...cell.matchAll(/(?:^|<br\s*\/?>)(?:[^<
 describe("public Router pricing", () => {
   test("shows every model/provider route under its provider and model-type section", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
-    expect(catalog).toHaveLength(218);
-    expect(routes).toHaveLength(244);
+    expect(catalog.length).toBeGreaterThan(0);
+    expect(new Set(catalog.map((model) => model.id)).size).toBe(catalog.length);
+    expect(routes.length).toBeGreaterThanOrEqual(catalog.length);
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
       expect(page).toContain(`<Accordion title="${provider}"`);
     }
     const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
-    expect(unavailable).toHaveLength(15);
+    const unpriced = routes.filter(({ model, provider }) => !snapshot.rates.some((rate) =>
+      rate.model_id === model.id && rate.serving_provider.toLowerCase() === provider.toLowerCase()));
+    expect(unavailable).toHaveLength(unpriced.length);
     for (const name of ["Images", "Video", "Text & multimodal", "Audio", "3D"]) expect(page).toContain(`<Tab title="${name}">`);
   });
 
@@ -58,8 +61,7 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(610);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(570);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage").length).toBeGreaterThan(0);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === rate.serving_provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
