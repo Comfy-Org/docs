@@ -8,6 +8,7 @@ const ROOT = join(import.meta.dir, "../../..");
 const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
+const MAX_RESOLUTION_COLUMNS = 5;
 
 type CatalogModel = {
   id: string;
@@ -28,6 +29,7 @@ type MetronomeRate = {
   effective_from: string;
   effective_until?: string;
   replace_existing?: boolean;
+  entitled?: boolean;
 };
 
 type MetronomeData = {
@@ -164,7 +166,14 @@ function loadMetronomeData(): MetronomeData {
   if (!data.snapshot_at || data.credits_per_usd <= 0 || !Array.isArray(data.rates)) {
     throw new Error(`${METRONOME_FILE}: invalid Metronome pricing data`);
   }
-  data.rates.push(...(data.supplemental_sources ?? []).flatMap(({ rates }) => rates));
+  const supplementalSources = data.supplemental_sources ?? [];
+  for (const source of supplementalSources) {
+    if (source.source.endsWith("services/comfy-api/scripts/metronome/fal/rates/rates.json")
+      && source.rates.some((rate) => rate.entitled !== true)) {
+      throw new Error(`${METRONOME_FILE}: fal rates require an active, entitled rate-card entry`);
+    }
+  }
+  data.rates.push(...supplementalSources.flatMap(({ rates }) => rates));
   for (const rate of data.rates) {
     if (!rate.model_id || !rate.serving_provider || !rate.unit || !rate.effective_from) {
       throw new Error(`${METRONOME_FILE}: every route rate requires a model, serving provider, unit, and start date`);
@@ -268,6 +277,7 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   const primary = baseline ? formatAmount(baseline.credits!) : undefined;
   const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
   const label = (condition: string) => {
+    if (/^Cached input/.test(condition)) return ["Cached input read", "キャッシュ入力の読み取り", "缓存输入读取", "캐시 입력 읽기"][localeIndex];
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
       text: ["Text", "テキスト", "文本", "텍스트"],
@@ -276,15 +286,16 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
       video: ["Video", "動画", "视频", "동영상"],
     };
     if (modality) return labels[modality][localeIndex];
-    if (condition.startsWith("5-minute")) return ["Cache creation 5m", "キャッシュ作成 5 分", "缓存创建 5 分钟", "캐시 생성 5분"][localeIndex];
-    if (condition.startsWith("1-hour")) return ["Cache creation 1h", "キャッシュ作成 1 時間", "缓存创建 1 小时", "캐시 생성 1시간"][localeIndex];
-    if (condition.startsWith("Cache-write")) return ["Cache creation", "キャッシュ作成", "缓存创建", "캐시 생성"][localeIndex];
+    if (condition.startsWith("5-minute")) return ["Cached input write (5m)", "キャッシュ入力の書き込み（5 分）", "缓存输入写入（5 分钟）", "캐시 입력 쓰기(5분)"][localeIndex];
+    if (condition.startsWith("1-hour")) return ["Cached input write (1h)", "キャッシュ入力の書き込み（1 時間）", "缓存输入写入（1 小时）", "캐시 입력 쓰기(1시간)"][localeIndex];
+    if (condition.startsWith("Cache-write")) return ["Cached input write", "キャッシュ入力の書き込み", "缓存输入写入", "캐시 입력 쓰기"][localeIndex];
     if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론"][localeIndex];
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
   return ordered.map(([amount, group]) => {
-    const prefix = amount === primary ? "" : `${tableCell([...new Set(group.map((rate) => label(rate.conditions ?? "")))].join(" / "))}: `;
+    const prefix = amount === primary && direction !== "cached" ? ""
+      : `${tableCell([...new Set(group.map((rate) => label(rate.conditions ?? "")))].join(" / "))}: `;
     return `${prefix}${amount}`;
   }).join("<br />") || "-";
 }
@@ -444,6 +455,48 @@ function render(locale: PricingLocale = "en"): string {
         ordinaryGroups.clear();
         for (const [title, rows] of merged) ordinaryGroups.set(title, rows);
       }
+      const audioDurationTitles = new Set([
+        copy.ratesPer(formatUnit("per minute", locale)),
+        copy.ratesPer(formatUnit("per second", locale)),
+      ]);
+      const audioDurationGroups = [...ordinaryGroups].filter(([title]) => audioDurationTitles.has(title));
+      if (category === "audio" && audioDurationGroups.length > 1) {
+        const merged = new Map<string, typeof ordinaryRows>();
+        let addedDurationGroup = false;
+        for (const [title, rows] of ordinaryGroups) {
+          if (audioDurationTitles.has(title)) {
+            if (!addedDurationGroup) {
+              merged.set(copy.durationRates, audioDurationGroups.flatMap(([, groupedRows]) => groupedRows));
+              addedDurationGroup = true;
+            }
+          } else merged.set(title, rows);
+        }
+        ordinaryGroups.clear();
+        for (const [title, rows] of merged) ordinaryGroups.set(title, rows);
+      }
+      const seedanceIds = new Set([
+        "byteplus/dreamina-seedance-2-0-260128",
+        "byteplus/dreamina-seedance-2-5-260628",
+      ]);
+      const seedanceOperationLabels = [formatOption("Image to video", locale), formatOption("Text to video", locale)];
+      const seedanceRows = category === "video" && provider === "WaveSpeed"
+        ? ordinaryRows.filter((row) => seedanceIds.has(row.modelId.slice(1, -1)) && seedanceOperationLabels.includes(row.option))
+        : [];
+      const seedancePivot = [...seedanceIds].flatMap((id) => {
+        const rows = seedanceRows.filter((row) => row.modelId === `\`${id}\``);
+        const [image, text] = seedanceOperationLabels.map((label) => rows.filter((row) => row.option === label));
+        if (image.length !== 1 || text.length !== 1 || image[0].credits !== text[0].credits
+          || image[0].unit !== "per request" || text[0].unit !== "per request") return [];
+        return [{ modelId: `\`${id}\``, name: image[0].name, image: image[0].credits, text: text[0].credits }];
+      });
+      if (seedancePivot.length === seedanceIds.size) {
+        const pivoted = new Set(seedanceRows);
+        for (const [title, rows] of ordinaryGroups) {
+          const remaining = rows.filter((row) => !pivoted.has(row));
+          if (remaining.length) ordinaryGroups.set(title, remaining);
+          else ordinaryGroups.delete(title);
+        }
+      }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
         `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");
@@ -458,7 +511,12 @@ function render(locale: PricingLocale = "en"): string {
       const resolutionGroups = imageRoutes.flatMap(({ model, resolution }) => {
         const options = [...new Set(resolution.groups.map((group) => formatOption(group.conditions, locale)))];
         const onlyOperation = options.length === 1 && [formatOption("Text to video", locale), formatOption("Text-to-video", locale), "-"].includes(options[0]);
-        return resolution.groups.map((group) => ({ model, group, option: onlyOperation ? "-" : formatOption(group.conditions, locale) }));
+        const putModeInName = model.id === "pruna/p-video-2";
+        return resolution.groups.map((group) => ({
+          model,
+          group,
+          option: onlyOperation || putModeInName ? "-" : formatOption(group.conditions, locale),
+        }));
       });
       // Different model families can expose unrelated size bands under one provider.
       // Keep their matrices compact without reverting all of that provider's rows.
@@ -479,7 +537,7 @@ function render(locale: PricingLocale = "en"): string {
         const table = resolutionTables.find((candidate) =>
           candidate.unit === unit && candidate.optionHeader === optionHeader
           && columns.some((column) => candidate.columns.has(column))
-          && new Set([...candidate.columns, ...columns]).size <= 4,
+          && new Set([...candidate.columns, ...columns]).size <= MAX_RESOLUTION_COLUMNS,
         );
         if (table) {
           columns.forEach((column) => table.columns.add(column));
@@ -501,6 +559,23 @@ function render(locale: PricingLocale = "en"): string {
           resolutionTables.push({ unit, optionHeader, columns: new Set(columns), rows: [row] });
         }
       }
+      // A narrow, disjoint band can share a matrix when the combined table stays
+      // compact. Preserve a specific variant label when the other table has none.
+      for (let left = 0; left < resolutionTables.length; left++) {
+        for (let right = left + 1; right < resolutionTables.length; right++) {
+          const candidate = resolutionTables[left];
+          const other = resolutionTables[right];
+          const columns = new Set([...candidate.columns, ...other.columns]);
+          const overlaps = [...candidate.columns].some((column) => other.columns.has(column));
+          if (candidate.unit !== other.unit || overlaps || columns.size > MAX_RESOLUTION_COLUMNS) continue;
+          candidate.columns = columns;
+          candidate.rows.push(...other.rows);
+          if (candidate.optionHeader === copy.option) candidate.optionHeader = other.optionHeader;
+          else if (other.optionHeader !== copy.option && candidate.optionHeader !== other.optionHeader) candidate.optionHeader = copy.option;
+          resolutionTables.splice(right, 1);
+          right--;
+        }
+      }
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
         const hasOptions = table.rows.some(({ option }) => option !== "-");
@@ -509,11 +584,18 @@ function render(locale: PricingLocale = "en"): string {
             const rate = group.tiers.get(label)?.rate;
             return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
           });
-          return `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
+          const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
+          return `| [${tableCell(`${displayTitle(model)}${modeSuffix}`)}](/${model.page}) | \`${model.id}\` | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
         return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
+      if (seedancePivot.length === seedanceIds.size) {
+        tableSections.push({
+          title: copy.ratesPer(formatUnit("per request", locale)),
+          body: `| ${copy.model} | ${copy.modelId} | ${seedanceOperationLabels[0]} ${copy.credits} | ${seedanceOperationLabels[1]} ${copy.credits} |\n| --- | --- | ---: | ---: |\n${seedancePivot.map((row) => `| ${row.name} | ${row.modelId} | ${row.image} | ${row.text} |`).join("\n")}`,
+        });
+      }
       if (tokenRows) {
         tableSections.push({
           title: copy.tokenRates,

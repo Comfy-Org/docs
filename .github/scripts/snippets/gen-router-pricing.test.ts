@@ -48,6 +48,10 @@ describe("public Router pricing", () => {
   });
 
   test("separates model owners from serving-provider groups", () => {
+    const falSeedanceCard = snapshot.supplemental_sources!.find((source) => source.source.endsWith("services/comfy-api/scripts/metronome/fal/rates/rates.json"))!;
+    expect(falSeedanceCard.source_sha256).toBe("4ff71e55c8ee4432f6bb3312d2e01216b1be0c9691d1444017d6eddaa5d73e5c");
+    expect(falSeedanceCard.rates).toHaveLength(7);
+    expect(falSeedanceCard.rates.every((rate) => rate.entitled === true && rate.effective_from === "2026-09-22")).toBe(true);
     const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
@@ -130,8 +134,12 @@ describe("public Router pricing", () => {
     expect(page).toContain("| 16.88 / image |");
     expect(page).toContain("| 31.65 / image |");
     expect(page).toContain("0.3017 / Recraft credit");
+    expect(page).toContain("12.0692 / Meshy usage credit");
+    expect(page).toContain("29.54 / Kling credit");
     expect(page).toContain("| 211 / request |");
     expect(page).toContain("| 84.4844 / second |");
+    const wanPricing = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`wan/wan3.0-video`"));
+    expect(wanPricing?.rows.find((row) => row[1] === "`wan/wan3.0-video`")).toContain("42.2 / second");
     expect(page).toContain("| [GPT Image 1](/development/comfy-router/models/openai/gpt-image-1/code) | `openai/gpt-image-1` | Image output | 8440 / 1M tokens |");
     expect(page).toContain("| [GPT Image 2.5 Flare](/development/comfy-router/models/openai/gpt-image-2-5-flare/code) | `openai/gpt-image-2.5-flare` | Text output | 3017.3 / 1M tokens |");
     expect(page).toContain("| 2.954 / 1K video tokens |");
@@ -144,7 +152,8 @@ describe("public Router pricing", () => {
     expect(page).toContain("| Name | Model ID | Input credits / 1M tokens | Cached input credits / 1M tokens | Output credits / 1M tokens |");
     expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
     expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
-    expect(page).toContain("| 3017.3 | 301.73<br />Cache creation 1h: 6034.6<br />Cache creation 5m: 3771.625 | 15086.5 |");
+    expect(page).toContain("| 3017.3 | Cached input read: 301.73<br />Cached input write (1h): 6034.6<br />Cached input write (5m): 3771.625 | 15086.5 |");
+    expect(page).not.toContain("Cache creation");
     expect(page).not.toContain("Write 5m");
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
@@ -186,10 +195,25 @@ describe("public Router pricing", () => {
     expect(grouped.remaining).toHaveLength(0);
     expect(grouped.groups.flatMap((group) => [...group.tiers.values()].flatMap((tier) => tier.sources))).toHaveLength(ltx.length);
     expect(page).not.toContain("1080 × 1920 / 1920 × 1080");
-    const minimax = snapshot.rates.filter((rate) => rate.model_id === "minimax/minimax-h3");
-    const minimaxGroups = groupResolutionTiers(minimax);
-    expect(minimaxGroups.groups).toHaveLength(1);
-    expect(page).toContain("| `minimax/minimax-h3` | 27.1557 / second | 39.2249 / second |");
+    const perSecondBands = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
+    expect(perSecondBands.headers).toEqual([
+      "Name", "Model ID", "720p Credits", "768p Credits", "1080p Credits", "2K Credits",
+    ]);
+    expect(perSecondBands.rows.find((row) => row[1] === "`minimax/minimax-h3`")!.slice(2)).toEqual([
+      "-", "27.1557 / second", "-", "39.2249 / second",
+    ]);
+    const pruna = perSecondBands.rows.filter((row) => row[1] === "`pruna/p-video-2`");
+    expect(pruna.map((row) => row[0].match(/P Video 2 (Standard|Draft)/)?.[1])).toEqual(["Standard", "Draft"]);
+    expect(pruna.map((row) => [row[2], row[4]])).toEqual([
+      ["7.5432 / second", "15.0865 / second"],
+      ["4.5259 / second", "9.0519 / second"],
+    ]);
+    const wanMatrix = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`wan/wan2.5-i2v-preview`"))!;
+    expect(wanMatrix.headers).toEqual(["Name", "Model ID", "480p Credits", "720p Credits", "1080p Credits", "1440p Credits", "4K Credits"]);
+    expect(wanMatrix.rows.some((row) => row[1] === "`wan/wan2.5-t2v-preview`")).toBe(true);
+    expect(wanMatrix.rows.some((row) => row[1] === "`wan/wan3.0-video`" && row.includes("42.2 / second"))).toBe(true);
     expect(page).not.toContain("Output video · 2K");
     expect(page).not.toContain("Reference video · 2K");
     expect(page).toContain("Video rates apply to output plus reference-video duration.");
@@ -217,6 +241,13 @@ describe("public Router pricing", () => {
     expect(wavespeedRequests.headers).toEqual(["Name", "Model ID", "Option", "Credits"]);
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/seedvr2`" && row[2] === "-")).toBe(true);
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "-")).toBe(true);
+    const seedance = tables.find((table) => table.provider === "WaveSpeed"
+      && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
+    expect(seedance.headers).toEqual(["Name", "Model ID", "Image to video Credits", "Text to video Credits"]);
+    expect(seedance.rows).toEqual([
+      ["[Dreamina Seedance 2.0](/development/comfy-router/models/byteplus/dreamina-seedance-2-0-260128/code)", "`byteplus/dreamina-seedance-2-0-260128`", "126.6 / request", "126.6 / request"],
+      ["[Dreamina Seedance 2.5](/development/comfy-router/models/byteplus/dreamina-seedance-2-5-260628/code)", "`byteplus/dreamina-seedance-2-5-260628`", "189.9 / request", "189.9 / request"],
+    ]);
   });
 
   test("groups one-time image charges and preserves each billable unit", () => {
@@ -232,11 +263,13 @@ describe("public Router pricing", () => {
     expect(falOneTime.rows.some((row) => row[1] === "`fal/patina`" && row.includes("3.0173 / generation"))).toBe(true);
   });
 
-  test("labels variant axes and pivots Pruna and Seedance resolution bands", () => {
-    const pruna = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`pruna/p-video-2`"))!;
-    expect(pruna.headers).toEqual(["Name", "Model ID", "Mode", "720p Credits", "1080p Credits"]);
-    expect(pruna.rows.map((row) => row[2])).toEqual(["Standard", "Draft"]);
-    expect(pruna.rows.map((row) => row.slice(3))).toEqual([
+  test("labels variant axes while combining compatible resolution bands", () => {
+    const pruna = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`pruna/p-video-2`" && row[0].includes("Standard"))
+      && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
+    expect(pruna.headers).toEqual(["Name", "Model ID", "720p Credits", "768p Credits", "1080p Credits", "2K Credits"]);
+    expect(pruna.rows.filter((row) => row[1] === "`pruna/p-video-2`").map((row) => row[0].match(/P Video 2 (Standard|Draft)/)?.[1])).toEqual(["Standard", "Draft"]);
+    expect(pruna.rows.filter((row) => row[1] === "`pruna/p-video-2`").map((row) => [row[2], row[4]])).toEqual([
       ["7.5432 / second", "15.0865 / second"],
       ["4.5259 / second", "9.0519 / second"],
     ]);
@@ -247,6 +280,15 @@ describe("public Router pricing", () => {
     expect(seedance.headers).toContain("480p Credits");
     expect(seedance.headers).toContain("720p Credits");
     expect(seedance.rows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`")!.join(" | ")).toContain("2.954 / 1K video tokens");
+  });
+
+  test("groups audio duration pricing and names provider-specific credit units", () => {
+    const audio = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`elevenlabs/eleven_sfx_v2`"))!;
+    expect(page).toContain("#### Rates by duration");
+    expect(audio.rows.some((row) => row.includes("29.54 / minute"))).toBe(true);
+    expect(audio.rows.some((row) => row.includes("0.7543 / second"))).toBe(true);
+    expect(page).toContain("#### Rates per Meshy usage credit");
+    expect(page).toContain("#### Rates per Kling credit");
   });
 
   test("orientation grouping keeps all source records and avoids merging unequal prices or date windows", () => {
