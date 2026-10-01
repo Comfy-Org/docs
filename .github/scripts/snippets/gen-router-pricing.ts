@@ -228,7 +228,7 @@ function isTokenRoute(rates: MetronomeRate[]): boolean {
 function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale): string {
   const selected = rates.filter((rate) => {
     const condition = rate.conditions ?? "";
-    if (/^Cached input/.test(condition)) return direction === "cached";
+    if (/^Cached input/.test(condition) || /cache-write/.test(condition)) return direction === "cached";
     if (/^(Output|Reasoning)/.test(condition)) return direction === "output";
     return direction === "input";
   });
@@ -255,9 +255,9 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
       video: ["Video", "動画", "视频", "동영상"],
     };
     if (modality) return labels[modality][localeIndex];
-    if (condition.startsWith("5-minute")) return ["Write 5m", "書き込み 5分", "写入 5分钟", "쓰기 5분"][localeIndex];
-    if (condition.startsWith("1-hour")) return ["Write 1h", "書き込み 1時間", "写入 1小时", "쓰기 1시간"][localeIndex];
-    if (condition.startsWith("Cache-write")) return ["Write", "書き込み", "写入", "쓰기"][localeIndex];
+    if (condition.startsWith("5-minute")) return ["Cache creation 5m", "キャッシュ作成 5 分", "缓存创建 5 分钟", "캐시 생성 5분"][localeIndex];
+    if (condition.startsWith("1-hour")) return ["Cache creation 1h", "キャッシュ作成 1 時間", "缓存创建 1 小时", "캐시 생성 1시간"][localeIndex];
+    if (condition.startsWith("Cache-write")) return ["Cache creation", "キャッシュ作成", "缓存创建", "캐시 생성"][localeIndex];
     if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론"][localeIndex];
     return formatOption(condition, locale);
   };
@@ -358,7 +358,8 @@ function render(locale: PricingLocale = "en"): string {
       const defaultOpen = !opened && hasNumeric;
       if (defaultOpen) opened = true;
       const tokenRoutes = category === "text" ? routes.filter(({ rates }) => isTokenRoute(rates)) : [];
-      const hasCachedInput = tokenRoutes.some(({ rates }) => rates.some((rate) => /^Cached input/.test(rate.conditions ?? "")));
+      const hasCachedInput = tokenRoutes.some(({ rates }) => rates.some((rate) =>
+        /^Cached input/.test(rate.conditions ?? "") || /cache-write/.test(rate.conditions ?? "")));
       const ordinaryRoutes = routes.filter((route) => !tokenRoutes.includes(route));
       const imageRoutes = ordinaryRoutes.map((route) => {
         const image = category === "images" ? groupImageTiers(route.rates) : { remaining: route.rates, groups: [] };

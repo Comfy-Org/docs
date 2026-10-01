@@ -91,7 +91,8 @@ describe("public Router pricing", () => {
     expect(page).toContain("| Name | Model ID | Input credits / 1M tokens | Output credits / 1M tokens |");
     expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
     expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
-    expect(page).toContain("| 3017.3<br />Write 1h: 6034.6<br />Write 5m: 3771.625 | 301.73 | 15086.5 |");
+    expect(page).toContain("| 3017.3 | 301.73<br />Cache creation 1h: 6034.6<br />Cache creation 5m: 3771.625 | 15086.5 |");
+    expect(page).not.toContain("Write 5m");
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
