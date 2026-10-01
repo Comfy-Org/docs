@@ -220,6 +220,26 @@ function groupRates(rates: MetronomeRate[], locale: PricingLocale): DisplayRate[
   return [...groups.values()];
 }
 
+function compareModelVersions(left: CatalogModel, right: CatalogModel): number {
+  const parse = (model: CatalogModel) => {
+    const title = displayTitle(model);
+    const match = title.match(/^(.*?)(\d+(?:\.\d+)*)(.*)$/);
+    return match
+      ? { family: match[1].trim(), version: match[2].split(".").map(Number), suffix: match[3].trim() }
+      : { family: title, version: [], suffix: "" };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+  const familyOrder = collator.compare(a.family, b.family);
+  if (familyOrder) return familyOrder;
+  for (let index = 0; index < Math.max(a.version.length, b.version.length); index++) {
+    const versionOrder = (b.version[index] ?? 0) - (a.version[index] ?? 0);
+    if (versionOrder) return versionOrder;
+  }
+  return collator.compare(a.suffix, b.suffix);
+}
+
 function compactOptions(options: string[]): string {
   const groups = new Map<string, string[]>();
   for (const option of options) {
@@ -248,6 +268,15 @@ function displayTitle(model: CatalogModel): string {
 
 function tableCell(value: string): string {
   return value.replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function formatPriceUnit(unit: string, locale: PricingLocale): string {
+  return unit === "per second" ? "s" : formatUnit(unit, locale);
+}
+
+function priceWithoutUnit(value: string, unit: string, locale: PricingLocale): string {
+  const suffix = ` / ${formatUnit(unit, locale)}`;
+  return value.endsWith(suffix) ? value.slice(0, -suffix.length) : value;
 }
 
 function isTokenRoute(rates: MetronomeRate[]): boolean {
@@ -399,7 +428,8 @@ function render(locale: PricingLocale = "en"): string {
       const hasNumeric = routes.some(({ rates }) => rates.some((rate) => rate.kind !== "usage"));
       const defaultOpen = !opened && hasNumeric;
       if (defaultOpen) opened = true;
-      const tokenRoutes = routes.filter(({ rates }) => isTokenRoute(rates));
+      const tokenRoutes = routes.filter(({ rates }) => isTokenRoute(rates))
+        .sort((left, right) => compareModelVersions(left.model, right.model));
       const hasCachedInput = tokenRoutes.some(({ rates }) => rates.some((rate) =>
         /^Cached input/.test(rate.conditions ?? "") || /cache-write/i.test(rate.conditions ?? "")));
       const ordinaryRoutes = routes.filter((route) => !tokenRoutes.includes(route));
@@ -415,18 +445,27 @@ function render(locale: PricingLocale = "en"): string {
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${unit}`;
+          const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
+          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${priceUnit}`;
           return { name, modelId, option: compactOptions(group.options), credits, kind: rate.kind, unit: rate.unit };
         });
       });
-      const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean) => {
+      const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, unitInHeader = false) => {
         if (!items.length) return "";
         const options = items.map((item) => item.option).filter((option) => option !== "-");
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
-        const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${copy.credits} |`;
+        const unit = items[0].unit;
+        const creditsHeader = unitInHeader ? `${copy.credits} / ${formatUnit(unit, locale)}` : copy.credits;
+        const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
         const separator = `| --- | --- | ${hasOptions ? "--- | " : ""}---: |`;
-        const body = items.map((item) => `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${item.credits} |`).join("\n");
+        const body = items.map((item) => {
+          const unitSuffix = ` / ${formatUnit(item.unit, locale)}`;
+          const credits = unitInHeader && item.credits.endsWith(unitSuffix)
+            ? priceWithoutUnit(item.credits, item.unit, locale)
+            : item.credits;
+          return `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${credits} |`;
+        }).join("\n");
         return `${header}\n${separator}\n${body}`;
       };
       const ordinaryGroups = new Map<string, typeof ordinaryRows>();
@@ -438,6 +477,27 @@ function render(locale: PricingLocale = "en"): string {
         group.push(row);
         ordinaryGroups.set(title, group);
       }
+      const durationSourceRows = category === "video" ? ordinaryRows.filter((row) =>
+        row.unit === "per request" && row.kind !== "unavailable" && /^\d+(?:\.\d+)?s$/.test(row.option)) : [];
+      const durationByModel = new Map<string, { name: string; rows: typeof durationSourceRows; values: Map<string, string> }>();
+      const durationOptions = new Set<string>();
+      for (const row of durationSourceRows) {
+        const modelId = row.modelId.slice(1, -1);
+        const model = durationByModel.get(modelId) ?? { name: row.name, rows: [], values: new Map<string, string>() };
+        if (model.values.has(row.option) && model.values.get(row.option) !== row.credits) continue;
+        model.values.set(row.option, row.credits);
+        model.rows.push(row);
+        durationOptions.add(row.option);
+        durationByModel.set(modelId, model);
+      }
+      const durationColumns = [...durationOptions].sort((a, b) =>
+        Number(a.slice(0, -1)) - Number(b.slice(0, -1)));
+      const durationModels = [...durationByModel].filter(([, model]) => model.values.size > 1);
+      const durationPivotRows = new Set(durationModels.flatMap(([, model]) => model.rows));
+      const durationTitle = copy.ratesPer(formatUnit("per request", locale));
+      const durationRequestTable = durationModels.length
+        ? `| ${copy.model} | ${copy.modelId} | ${durationColumns.map((duration) => `${duration} ${copy.credits} / ${formatUnit("per request", locale)}`).join(" | ")} |\n| --- | --- | ${durationColumns.map(() => "---:").join(" | ")} |\n${durationModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${durationColumns.map((duration) => priceWithoutUnit(model.values.get(duration) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        : "";
       const textToImage = formatOption("Text to image", locale);
       const imageEdit = formatOption("Edit", locale);
       const imageRequestSources = ordinaryRows.filter((row) => {
@@ -468,7 +528,7 @@ function render(locale: PricingLocale = "en"): string {
       const imageRequestModels = [...imageRequestByModel].filter(([, model]) => model.values.size > 1);
       const imageRequestPivotRows = new Set(imageRequestModels.flatMap(([, model]) => model.rows));
       const imageRequestTable = category === "images" && imageRequestModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => model.values.get(option) ?? "-").join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits} / ${formatUnit("per request", locale)}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
 
       const kreaModes = ["moodboards", "style_references", "text"].map((mode) => formatOption(`feature=${mode}`, locale));
@@ -482,10 +542,13 @@ function render(locale: PricingLocale = "en"): string {
       });
       const kreaPivotRows = new Set(kreaMatrixModels.flatMap((model) => model.rows));
       const kreaTable = kreaMatrixModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${kreaModes.map((mode) => `${tableCell(mode)} ${copy.credits}`).join(" | ")} |\n| --- | --- | ---: | ---: | ---: |\n${kreaMatrixModels.map(({ modelId, name, rows }) => `| ${name} | ${modelId} | ${kreaModes.map((mode) => rows.find((row) => row.option === mode)?.credits ?? "-").join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${kreaModes.map((mode) => `${tableCell(mode)} ${copy.credits}`).join(" | ")} |\n| --- | --- | ---: | ---: | ---: |\n${kreaMatrixModels.map(({ modelId, name, rows }) => `| ${name} | ${modelId} | ${kreaModes.map((mode) => {
+          const credits = rows.find((row) => row.option === mode)?.credits;
+          return credits ? priceWithoutUnit(credits, "per generation", locale) : "-";
+        }).join(" | ")} |`).join("\n")}`
         : "";
 
-      const pivotedOrdinaryRows = new Set([...imageRequestPivotRows, ...kreaPivotRows]);
+      const pivotedOrdinaryRows = new Set([...durationPivotRows, ...imageRequestPivotRows, ...kreaPivotRows]);
       for (const [title, rows] of ordinaryGroups) {
         const remaining = rows.filter((row) => !pivotedOrdinaryRows.has(row));
         if (remaining.length) ordinaryGroups.set(title, remaining);
@@ -554,13 +617,19 @@ function render(locale: PricingLocale = "en"): string {
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
         `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "input", locale)} | ${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");
+      const imageTierRates = imageRoutes.flatMap(({ image }) => image.groups.flatMap((group) => [...group.tiers.values()]));
+      const imageTierUnit = imageTierRates.length > 0
+        && imageTierRates.every((rate) => rate.kind !== "usage" && rate.unit === imageTierRates[0].unit)
+        && ["per request", "per generation"].includes(imageTierRates[0].unit)
+        ? imageTierRates[0].unit : undefined;
       const imageRows = imageRoutes.flatMap(({ model, image }) => {
         let firstRow = true;
         let previousOperation = "";
         return image.groups.map((group) => {
           const values = ["1K", "2K", "4K"].map((size) => {
             const rate = group.tiers.get(size);
-            return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+            return !rate ? "-" : rate.kind === "usage" ? copy.variable
+              : imageTierUnit === rate.unit ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const operation = formatOption(group.operation, locale);
           const quality = formatOption(`quality=${group.quality}`, locale);
@@ -643,11 +712,13 @@ function render(locale: PricingLocale = "en"): string {
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
         const hasOptions = table.rows.some(({ option }) => option !== "-");
+        const unitInHeader = ["per request", "per generation"].includes(table.unit);
         let previousModelName = "";
         const matrixRows = table.rows.map(({ model, group, option }) => {
           const values = columns.map((label) => {
             const rate = group.tiers.get(label)?.rate;
-            return !rate ? "-" : rate.kind === "usage" ? copy.variable : `${formatAmount(rate.credits!)} / ${formatUnit(rate.unit, locale)}`;
+            return !rate ? "-" : rate.kind === "usage" ? copy.variable
+              : unitInHeader ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
           const modelName = `${displayTitle(model)}${modeSuffix}`;
@@ -656,13 +727,14 @@ function render(locale: PricingLocale = "en"): string {
           previousModelName = modelName;
           return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
-        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
+        const unitSuffix = unitInHeader ? ` / ${formatUnit(table.unit, locale)}` : "";
+        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}${unitSuffix}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
       if (seedancePivot.length === seedanceIds.size) {
         tableSections.push({
           title: copy.ratesPer(formatUnit("per request", locale)),
-          body: `| ${copy.model} | ${copy.modelId} | ${seedanceOperationLabels[0]} ${copy.credits} | ${seedanceOperationLabels[1]} ${copy.credits} |\n| --- | --- | ---: | ---: |\n${seedancePivot.map((row) => `| ${row.name} | ${row.modelId} | ${row.image} | ${row.text} |`).join("\n")}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${seedanceOperationLabels[0]} ${copy.credits} / ${formatUnit("per request", locale)} | ${seedanceOperationLabels[1]} ${copy.credits} / ${formatUnit("per request", locale)} |\n| --- | --- | ---: | ---: |\n${seedancePivot.map((row) => `| ${row.name} | ${row.modelId} | ${priceWithoutUnit(row.image, "per request", locale)} | ${priceWithoutUnit(row.text, "per request", locale)} |`).join("\n")}`,
         });
       }
       if (tokenRows) {
@@ -683,20 +755,40 @@ function render(locale: PricingLocale = "en"): string {
       }
       for (const [title, rows] of ordinaryGroups) {
         const hasOptions = rows.some((row) => row.option !== "-");
-        const ordinaryBody = renderOrdinaryRows(rows, hasOptions);
-        const body = title === copy.imageOperationRates
-          ? [imageRequestTable, ordinaryBody].filter(Boolean).join("\n\n")
+        const ordinaryBody = title === copy.imageOperationRates
+          ? [...rows.reduce((groups, row) => {
+            const group = groups.get(row.unit) ?? [];
+            group.push(row);
+            groups.set(row.unit, group);
+            return groups;
+          }, new Map<string, typeof ordinaryRows>())]
+            .sort(([a], [b]) => ["per request", "per generation", "per image", "per output image"].indexOf(a)
+              - ["per request", "per generation", "per image", "per output image"].indexOf(b))
+            .map(([unit, unitRows]) => renderOrdinaryRows(unitRows, unitRows.some((row) => row.option !== "-"),
+              ["per request", "per generation"].includes(unit)))
+            .join("\n\n")
+          : renderOrdinaryRows(rows, hasOptions,
+            rows.length > 0 && ["per request", "per generation"].includes(rows[0].unit)
+            && rows.every((row) => row.unit === rows[0].unit && row.kind !== "usage" && row.kind !== "unavailable"));
+        const extraTable = title === copy.imageOperationRates ? imageRequestTable
+          : title === durationTitle ? durationRequestTable : "";
+        const body = extraTable
+          ? [extraTable, ordinaryBody].filter(Boolean).join("\n\n")
           : ordinaryBody;
         tableSections.push({ title, body });
       }
       if (imageRequestTable && !ordinaryGroups.has(copy.imageOperationRates)) {
         tableSections.push({ title: copy.imageOperationRates, body: imageRequestTable });
       }
+      if (durationRequestTable && !ordinaryGroups.has(durationTitle)) {
+        tableSections.push({ title: durationTitle, body: durationRequestTable });
+      }
       if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
       if (imageRows) {
+        const tierUnit = imageTierUnit ? ` / ${formatUnit(imageTierUnit, locale)}` : "";
         tableSections.push({
           title: copy.imageTiers,
-          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits}${tierUnit} | 2K ${copy.credits}${tierUnit} | 4K ${copy.credits}${tierUnit} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
         });
       }
       const hasSubgroups = tableSections.length > 1;
