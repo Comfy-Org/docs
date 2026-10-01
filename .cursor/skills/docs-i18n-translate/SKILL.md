@@ -93,7 +93,7 @@ Other rules that the reviews keep flagging:
 translation. Localized titles keep the official product name untranslated;
 descriptions convey the same scope as EN within 40-160 chars. When an EN page's
 title/description changes in this repo, the zh/ja/ko values are updated in the
-same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../.cursor/rules/docs-frontmatter.mdc).
+same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../rules/docs-frontmatter.mdc).
 
 ## Environment (`.env.local`)
 
