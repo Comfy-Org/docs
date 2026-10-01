@@ -59,7 +59,7 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.rates).toHaveLength(599);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(552);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(555);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === rate.serving_provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
@@ -76,6 +76,8 @@ describe("public Router pricing", () => {
     expect(page).toContain("| 16.88 / image |");
     expect(page).toContain("| 31.65 / image |");
     expect(page).toContain("0.3017 / Recraft credit");
+    expect(page).toContain("| 211 / request |");
+    expect(page).toContain("| 84.4844 / second |");
     expect(page).toContain("| 2.954 / 1K video tokens |");
     expect(page).toContain("| 13.5778 / second |");
     expect(page).toContain(formatOption("Input duration, capped at 5 seconds per request", "en"));
