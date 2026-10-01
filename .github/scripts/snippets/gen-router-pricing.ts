@@ -72,19 +72,31 @@ const PROVIDER_LABEL: Record<string, string> = {
   xai: "xAI",
 };
 
+const PRICING_PROVIDER_ORDER = ["Comfy", "fal", "Higgsfield", "Runware", "WaveSpeed"];
+
 const providerLabel = (modelId: string) => PROVIDER_LABEL[modelId.split("/")[0]] ?? modelId.split("/")[0];
 
 function servingProviders(pageText: string, modelId: string): string[] {
-  const intro = pageText.match(/API Reference for `[^`]+`, served by Comfy Router from ([^.]+)\./)?.[1];
-  const defaultProvider = intro?.trim() ?? providerLabel(modelId);
   const sectionStart = pageText.indexOf("## Serving providers");
-  if (sectionStart < 0) return [defaultProvider];
+  if (sectionStart < 0) {
+    const ownerProvider = providerLabel(modelId);
+    const provider = PRICING_PROVIDER_ORDER.slice(1).find((candidate) => candidate.toLowerCase() === ownerProvider.toLowerCase());
+    return [provider ?? "Comfy"];
+  }
   const nextHeading = pageText.indexOf("\n## ", sectionStart + 4);
   const section = pageText.slice(sectionStart, nextHeading < 0 ? undefined : nextHeading);
   const alternatives = [...section.matchAll(/^- \*\*(.+?)\*\*/gm)]
     .map((match) => match[1].replace(/ \(default\)$/, "").trim())
     .filter((provider) => provider.toLowerCase() !== "comfy");
-  return [...new Set([defaultProvider, ...alternatives])];
+  return ["Comfy", ...new Set(alternatives)];
+}
+
+export function displayProvider(modelId: string, providers: string[], metronomeProvider: string): string {
+  const owner = providerLabel(modelId).toLowerCase();
+  const alternate = providers.find((provider) => provider.toLowerCase() === metronomeProvider.toLowerCase());
+  if (alternate) return alternate;
+  if (metronomeProvider.toLowerCase() === owner) return "Comfy";
+  throw new Error(`Pricing provider ${metronomeProvider} for ${modelId} is neither its owner provider nor a declared Router alternate`);
 }
 
 function modelTitle(pageText: string, model: string): string {
@@ -342,18 +354,27 @@ function render(locale: PricingLocale = "en"): string {
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  for (const rate of data.rates) {
+    const model = modelsById.get(rate.model_id)!;
+    displayProvider(model.id, model.providers, rate.serving_provider);
+  }
   const categories: PricingCategory[] = ["images", "video", "text", "audio", "3d"];
   const tabs = categories.map((category) => {
     const providers = new Map<string, Array<{ model: CatalogModel; rates: MetronomeRate[] }>>();
     for (const model of models.filter((candidate) => candidate.category === category)) {
       for (const provider of model.providers) {
         const routes = providers.get(provider) ?? [];
-        routes.push({ model, rates: data.rates.filter((rate) => rate.model_id === model.id && rate.serving_provider.toLowerCase() === provider.toLowerCase()) });
+        routes.push({ model, rates: data.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider) });
         providers.set(provider, routes);
       }
     }
     let opened = false;
-    const sections = [...providers].sort(([a], [b]) => a.localeCompare(b)).map(([provider, routes]) => {
+    const sections = [...providers].sort(([a], [b]) => {
+      const ai = PRICING_PROVIDER_ORDER.indexOf(a);
+      const bi = PRICING_PROVIDER_ORDER.indexOf(b);
+      return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) - (bi < 0 ? Number.MAX_SAFE_INTEGER : bi) || a.localeCompare(b);
+    }).map(([provider, routes]) => {
       const hasNumeric = routes.some(({ rates }) => rates.some((rate) => rate.kind !== "usage"));
       const defaultOpen = !opened && hasNumeric;
       if (defaultOpen) opened = true;
@@ -365,21 +386,30 @@ function render(locale: PricingLocale = "en"): string {
         const image = category === "images" ? groupImageTiers(route.rates) : { remaining: route.rates, groups: [] };
         return { ...route, image, resolution: groupResolutionTiers(image.remaining) };
       });
-      const ordinaryOptions = imageRoutes.flatMap(({ resolution }) => resolution.remaining.map((rate) => formatOption(rate.conditions, locale))).filter((option) => option !== "-");
-      const hasOrdinaryOptions = ordinaryOptions.length > 0;
-      const ordinaryOptionHeader = ordinaryOptions.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution : copy.option;
-      const rows = imageRoutes.flatMap(({ model, rates: originalRates, resolution }) => {
+      const ordinaryRows = imageRoutes.flatMap(({ model, rates: originalRates, resolution }) => {
         const rates = resolution.remaining;
         const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
         const modelId = `\`${model.id}\``;
-        if (!originalRates.length) return [`| ${name} | ${modelId} | ${hasOrdinaryOptions ? "- | " : ""}${copy.unavailable} |`];
+        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable }];
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${unit}`;
-          return `| ${name} | ${modelId} | ${hasOrdinaryOptions ? `${tableCell(compactOptions(group.options))} | ` : ""}${credits} |`;
+          return { name, modelId, option: compactOptions(group.options), credits };
         });
-      }).join("\n");
+      });
+      const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean) => {
+        if (!items.length) return "";
+        const options = items.map((item) => item.option).filter((option) => option !== "-");
+        const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution : copy.option;
+        const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${copy.credits} |`;
+        const separator = `| --- | --- | ${hasOptions ? "--- | " : ""}---: |`;
+        const body = items.map((item) => `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${item.credits} |`).join("\n");
+        return `${header}\n${separator}\n${body}`;
+      };
+      const optionRows = ordinaryRows.filter((row) => row.option !== "-");
+      const optionlessRows = ordinaryRows.filter((row) => row.option === "-");
+      const rows = [renderOrdinaryRows(optionRows, true), renderOrdinaryRows(optionlessRows, false)].filter(Boolean).join("\n\n");
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
         `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${tokenPriceCell(rates, "input", locale)} | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "output", locale)} |`,
       ).join("\n");
@@ -452,7 +482,7 @@ function render(locale: PricingLocale = "en"): string {
       const tables = [
         tokenRows ? `| ${copy.model} | ${copy.modelId} | ${copy.input} / ${formatUnit("per 1M tokens", locale)} | ${hasCachedInput ? `${copy.cached} / ${formatUnit("per 1M tokens", locale)} | ` : ""}${copy.output} / ${formatUnit("per 1M tokens", locale)} |\n| --- | --- | ---: | ${hasCachedInput ? "---: | " : ""}---: |\n${tokenRows}` : "",
         resolutionTablesText,
-        rows ? `| ${copy.model} | ${copy.modelId} | ${hasOrdinaryOptions ? `${ordinaryOptionHeader} | ` : ""}${copy.credits} |\n| --- | --- | ${hasOrdinaryOptions ? "--- | " : ""}---: |\n${rows}` : "",
+        rows,
         imageRows ? `#### ${copy.imageTiers}\n\n| ${copy.model} | ${copy.modelId} | ${copy.option} | 1K ${copy.credits} | 2K ${copy.credits} | 4K ${copy.credits} |\n| --- | --- | --- | ---: | ---: | ---: |\n${imageRows}` : "",
       ].filter(Boolean).join("\n\n");
       const expiry = new Map<string, Set<string>>();

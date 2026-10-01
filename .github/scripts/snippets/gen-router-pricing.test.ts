@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion } from "./gen-router-pricing.ts";
+import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -34,14 +34,37 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog).toHaveLength(218);
     expect(routes).toHaveLength(244);
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
       expect(page).toContain(`<Accordion title="${provider}"`);
+      expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
     const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
     expect(unavailable).toHaveLength(15);
     for (const name of ["Images", "Video", "Text & multimodal", "Audio", "3D"]) expect(page).toContain(`<Tab title="${name}">`);
+  });
+
+  test("separates model owners from serving-provider groups", () => {
+    const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
+    expect(providersFor("fal/patina")).toEqual(["fal"]);
+    expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
+    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Runware", "WaveSpeed"]);
+    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
+    expect(page).toContain("Model ID prefixes identify model owners.");
+    expect(page).toContain("[See provider coverage](/development/comfy-router/providers)");
+    expect(page).not.toContain('<Accordion title="OpenAI"');
+    expect(page).not.toContain('<Accordion title="Kling"');
+    expect(page).not.toContain('<Accordion title="Black Forest Labs"');
+    expect(tables.some((table) => table.provider === "fal" && table.rows.some((row) => row[1] === "`fal/patina`"))).toBe(true);
+    expect(tables.some((table) => table.provider === "WaveSpeed" && table.rows.some((row) => row[1] === "`wavespeed/seedvr2`"))).toBe(true);
+    const falSeedanceRows = tables.filter((table) => table.provider === "fal")
+      .flatMap((table) => table.rows)
+      .filter((row) => ["`byteplus/dreamina-seedance-2-0-260128`", "`byteplus/dreamina-seedance-2-5-260628`"].includes(row[1]));
+    expect(falSeedanceRows).toHaveLength(2);
+    expect(falSeedanceRows.every((row) => row[row.length - 1] === "Not published")).toBe(true);
   });
 
   test("uses model IDs and credit prices without USD or internal billing metadata", () => {
@@ -61,7 +84,9 @@ describe("public Router pricing", () => {
     expect(snapshot.rates).toHaveLength(610);
     expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(570);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
-      const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === rate.serving_provider.toLowerCase())
+      const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
+      const provider = displayProvider(model.id, model.providers, rate.serving_provider);
+      const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
           .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index] }] : [])));
       const amount = formatAmount(rate.credits!);
@@ -88,7 +113,6 @@ describe("public Router pricing", () => {
 
   test("LLMs have one model row with separate input and output credit columns", () => {
     expect(page).toContain("| Name | Model ID | Input credits / 1M tokens | Cached input credits / 1M tokens | Output credits / 1M tokens |");
-    expect(page).toContain("| Name | Model ID | Input credits / 1M tokens | Output credits / 1M tokens |");
     expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
     expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
     expect(page).toContain("| 3017.3 | 301.73<br />Cache creation 1h: 6034.6<br />Cache creation 5m: 3771.625 | 15086.5 |");
@@ -151,20 +175,20 @@ describe("public Router pricing", () => {
         expect(row[1]).toMatch(/^`[^`]+\/[^`]+`$/);
       }
     }
-    const klingVideo = tables.filter((table) => table.provider === "Kling" && table.rows.some((row) => row[1] === "`kling/kling-v3`"));
-    expect(klingVideo).toHaveLength(1);
-    expect(klingVideo[0].headers).not.toContain("Option");
+    const klingVideo = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`kling/kling-v3`"));
+    expect(klingVideo).toBeDefined();
+    expect(klingVideo!.headers).not.toContain("Option");
   });
 
   test("labels variant axes and pivots Pruna and Seedance resolution bands", () => {
-    const pruna = tables.find((table) => table.provider === "Pruna")!;
+    const pruna = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`pruna/p-video-2`"))!;
     expect(pruna.headers).toEqual(["Name", "Model ID", "Mode", "720p Credits", "1080p Credits"]);
     expect(pruna.rows.map((row) => row[2])).toEqual(["Standard", "Draft"]);
     expect(pruna.rows.map((row) => row.slice(3))).toEqual([
       ["7.5432 / second", "15.0865 / second"],
       ["4.5259 / second", "9.0519 / second"],
     ]);
-    const veo = tables.find((table) => table.provider === "Veo" && table.headers.includes("Audio"))!;
+    const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
     expect(veo.headers).not.toContain("Option");
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
@@ -207,7 +231,7 @@ describe("public Router pricing", () => {
     let preserved = 0;
     for (const model of catalog) {
       for (const provider of model.providers) {
-        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && rate.serving_provider.toLowerCase() === provider.toLowerCase());
+        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
         preserved += groupRates(rates, "en").flatMap((group) => group.rates).length;
       }
     }
@@ -218,7 +242,7 @@ describe("public Router pricing", () => {
     const preserved = [];
     for (const model of catalog) {
       for (const provider of model.providers) {
-        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && rate.serving_provider.toLowerCase() === provider.toLowerCase());
+        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
         const image = model.category === "images" ? groupImageTiers(rates) : { groups: [], remaining: rates };
         const resolution = groupResolutionTiers(image.remaining);
         preserved.push(...image.groups.flatMap((group) => [...group.tiers.values()]),

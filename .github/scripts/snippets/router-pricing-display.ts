@@ -7,8 +7,8 @@ type Translation = readonly [string, string, string, string];
 export const pricingCopy = {
   en: {
     title: "Comfy Router pricing", sidebar: "Pricing",
-    description: "Image, video, text, audio, and 3D model prices in Comfy credits.",
-    intro: "Prices are in Comfy credits. Each rate includes its unit.",
+    description: "Compare Comfy Router model prices in credits by serving provider across image, video, text, audio, and 3D.",
+    intro: "Prices are in Comfy credits. Each rate includes its unit. Tables group serving providers; Model ID prefixes identify model owners. [See provider coverage](/development/comfy-router/providers).",
     updated: "Prices updated",
     imageTiers: "Image quality and size",
     videoDuration: "Video rates apply to output plus reference-video duration.",
@@ -21,8 +21,8 @@ export const pricingCopy = {
   },
   ja: {
     title: "Comfy Router の料金", sidebar: "料金",
-    description: "Comfy Router の画像、動画、テキスト、音声、3D モデルの料金を Comfy クレジットで確認できます。モデル ID と請求単位も掲載しています。",
-    intro: "料金は Comfy クレジットです。各料金に請求単位を記載しています。",
+    description: "Comfy Router の画像、動画、テキスト、音声、3D モデルの料金を、提供プロバイダー別に比較できます。",
+    intro: "料金は Comfy クレジットです。各料金に請求単位を記載しています。表は提供プロバイダー別で、Model ID の接頭辞はモデルの所有元を示します。[プロバイダーの対応状況](/development/comfy-router/providers)。",
     updated: "料金の更新日",
     imageTiers: "画像の品質とサイズ",
     videoDuration: "動画料金は出力動画と参照動画の合計時間に適用されます。",
@@ -35,8 +35,8 @@ export const pricingCopy = {
   },
   zh: {
     title: "Comfy Router 定价", sidebar: "定价",
-    description: "查看 Comfy Router 图像、视频、文本、音频和 3D 模型的积分价格、模型 ID 和计费单位。",
-    intro: "价格以 Comfy 积分计价，每项费率均标明计费单位。",
+    description: "按服务提供方比较 Comfy Router 图像、视频、文本、音频和 3D 模型的积分价格。",
+    intro: "价格以 Comfy 积分计价，每项费率均标明计费单位。表格按服务提供方分组，Model ID 前缀表示模型所属方。[查看提供方覆盖情况](/development/comfy-router/providers)。",
     updated: "价格更新日期",
     imageTiers: "图像质量和尺寸",
     videoDuration: "视频费率按输出视频与参考视频的总时长计算。",
@@ -49,8 +49,8 @@ export const pricingCopy = {
   },
   ko: {
     title: "Comfy Router 요금", sidebar: "요금",
-    description: "Comfy Router의 이미지, 동영상, 텍스트, 오디오 및 3D 모델 요금을 Comfy 크레딧으로 확인하세요. 모델 ID와 청구 단위도 표시합니다.",
-    intro: "가격은 Comfy 크레딧으로 표시하며 각 요금에 청구 단위를 명시합니다.",
+    description: "Comfy Router의 이미지, 동영상, 텍스트, 오디오 및 3D 모델 요금을 제공자별로 비교하세요.",
+    intro: "가격은 Comfy 크레딧으로 표시하며 각 요금에 청구 단위를 명시합니다. 표는 제공자별로 그룹화하고 Model ID 접두사는 모델 소유자를 나타냅니다. [제공 범위 보기](/development/comfy-router/providers).",
     updated: "요금 업데이트",
     imageTiers: "이미지 품질 및 크기",
     videoDuration: "동영상 요금은 출력 동영상과 참조 동영상의 총 길이에 적용됩니다.",
