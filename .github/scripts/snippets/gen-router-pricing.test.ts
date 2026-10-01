@@ -197,21 +197,20 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("1080 × 1920 / 1920 × 1080");
     const perSecondBands = tables.find((table) => table.provider === "Comfy"
       && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
-    expect(perSecondBands.headers).toEqual([
-      "Name", "Model ID", "720p Credits", "768p Credits", "1080p Credits", "2K Credits",
-    ]);
+    expect(perSecondBands.headers).toEqual(["Name", "Model ID", "768p Credits", "2K Credits"]);
     expect(perSecondBands.rows.find((row) => row[1] === "`minimax/minimax-h3`")!.slice(2)).toEqual([
-      "-", "27.1557 / second", "-", "39.2249 / second",
+      "27.1557 / second", "39.2249 / second",
     ]);
-    const pruna = perSecondBands.rows.filter((row) => row[1] === "`pruna/p-video-2`");
+    expect(perSecondBands.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
+    const wanMatrix = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`wan/wan2.5-i2v-preview`"))!;
+    const pruna = wanMatrix.rows.filter((row) => row[1] === "`pruna/p-video-2`");
+    expect(wanMatrix.headers).toEqual(["Name", "Model ID", "480p Credits", "720p Credits", "1080p Credits", "1440p Credits", "4K Credits"]);
     expect(pruna.map((row) => row[0].match(/P Video 2 (Standard|Draft)/)?.[1])).toEqual(["Standard", "Draft"]);
-    expect(pruna.map((row) => [row[2], row[4]])).toEqual([
+    expect(pruna.map((row) => [row[3], row[4]])).toEqual([
       ["7.5432 / second", "15.0865 / second"],
       ["4.5259 / second", "9.0519 / second"],
     ]);
-    const wanMatrix = tables.find((table) => table.provider === "Comfy"
-      && table.rows.some((row) => row[1] === "`wan/wan2.5-i2v-preview`"))!;
-    expect(wanMatrix.headers).toEqual(["Name", "Model ID", "480p Credits", "720p Credits", "1080p Credits", "1440p Credits", "4K Credits"]);
     expect(wanMatrix.rows.some((row) => row[1] === "`wan/wan2.5-t2v-preview`")).toBe(true);
     expect(wanMatrix.rows.some((row) => row[1] === "`wan/wan3.0-video`" && row.includes("42.2 / second"))).toBe(true);
     expect(page).not.toContain("Output video · 2K");
@@ -266,13 +265,16 @@ describe("public Router pricing", () => {
   test("labels variant axes while combining compatible resolution bands", () => {
     const pruna = tables.find((table) => table.provider === "Comfy"
       && table.rows.some((row) => row[1] === "`pruna/p-video-2`" && row[0].includes("Standard"))
-      && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
-    expect(pruna.headers).toEqual(["Name", "Model ID", "720p Credits", "768p Credits", "1080p Credits", "2K Credits"]);
+      && table.rows.some((row) => row[1] === "`wan/wan2.5-i2v-preview`"))!;
+    expect(pruna.headers).toEqual(["Name", "Model ID", "480p Credits", "720p Credits", "1080p Credits", "1440p Credits", "4K Credits"]);
     expect(pruna.rows.filter((row) => row[1] === "`pruna/p-video-2`").map((row) => row[0].match(/P Video 2 (Standard|Draft)/)?.[1])).toEqual(["Standard", "Draft"]);
-    expect(pruna.rows.filter((row) => row[1] === "`pruna/p-video-2`").map((row) => [row[2], row[4]])).toEqual([
+    expect(pruna.rows.filter((row) => row[1] === "`pruna/p-video-2`").map((row) => [row[3], row[4]])).toEqual([
       ["7.5432 / second", "15.0865 / second"],
       ["4.5259 / second", "9.0519 / second"],
     ]);
+    const minimax = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
+    expect(minimax.headers).toEqual(["Name", "Model ID", "768p Credits", "2K Credits"]);
+    expect(minimax.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
     const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
     expect(veo.headers).not.toContain("Option");

@@ -529,7 +529,8 @@ function render(locale: PricingLocale = "en"): string {
       for (const row of resolutionGroups) {
         const { group } = row;
         const unit = group.tiers.values().next().value!.rate.unit;
-        const optionHeader = group.conditions.includes("draft=") ? copy.mode
+        const optionHeader = row.option === "-" ? copy.option
+          : group.conditions.includes("draft=") ? copy.mode
           : /generate_?Audio=|generate_audio=/.test(group.conditions) ? copy.audio
           : group.conditions.includes("video_type=") ? copy.inputType
           : group.conditions.includes("type=") ? copy.type : copy.option;
@@ -567,11 +568,10 @@ function render(locale: PricingLocale = "en"): string {
           const other = resolutionTables[right];
           const columns = new Set([...candidate.columns, ...other.columns]);
           const overlaps = [...candidate.columns].some((column) => other.columns.has(column));
-          if (candidate.unit !== other.unit || overlaps || columns.size > MAX_RESOLUTION_COLUMNS) continue;
+          if (candidate.unit !== other.unit || candidate.optionHeader !== other.optionHeader
+            || overlaps || columns.size > MAX_RESOLUTION_COLUMNS) continue;
           candidate.columns = columns;
           candidate.rows.push(...other.rows);
-          if (candidate.optionHeader === copy.option) candidate.optionHeader = other.optionHeader;
-          else if (other.optionHeader !== copy.option && candidate.optionHeader !== other.optionHeader) candidate.optionHeader = copy.option;
           resolutionTables.splice(right, 1);
           right--;
         }
