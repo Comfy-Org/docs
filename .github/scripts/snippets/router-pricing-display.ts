@@ -52,7 +52,7 @@ export const pricingCopy = {
     updated: "价格更新日期",
     imageTiers: "图像质量和分辨率",
     tokenRates: "Token 费率",
-    ratesPer: (unit: string) => `每${unit}费率`,
+    ratesPer: (unit: string) => `每${/^[A-Za-z]/.test(unit) ? " " : ""}${unit}费率`,
     imageOperationRates: "图像生成与编辑价格",
     kreaGenerationRates: "Krea 2 生成价格",
     durationRates: "按时长计费",

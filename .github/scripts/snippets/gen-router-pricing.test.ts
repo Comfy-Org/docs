@@ -351,6 +351,9 @@ describe("public Router pricing", () => {
     expect(audio.rows.some((row) => row.includes("0.7543 / second"))).toBe(true);
     expect(page).toContain("#### Rates per Meshy credit");
     expect(page).toContain("#### Rates per Kling credit");
+    const zhPage = readFileSync("zh/development/comfy-router/pricing.mdx", "utf8");
+    expect(zhPage).toContain("#### 每 Kling 积分费率");
+    expect(zhPage).toContain("#### 每 Meshy 积分费率");
     const eleven = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`elevenlabs/eleven_v3`"))!;
     const elevenRow = eleven.rows.find((row) => row[1] === "`elevenlabs/eleven_v3`")!;
     expect(eleven.headers).toEqual(["Name", "Model ID", "Option", "Credits"]);
