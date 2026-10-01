@@ -35,6 +35,13 @@ type MetronomeData = {
   credits_per_usd: number;
   source_sha256: string;
   rates: MetronomeRate[];
+  supplemental_sources?: Array<{
+    source: string;
+    source_commit: string;
+    source_sha256: string;
+    checked_at: string;
+    rates: MetronomeRate[];
+  }>;
 };
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -156,6 +163,7 @@ function loadMetronomeData(): MetronomeData {
   if (!data.snapshot_at || data.credits_per_usd <= 0 || !Array.isArray(data.rates)) {
     throw new Error(`${METRONOME_FILE}: invalid Metronome pricing data`);
   }
+  data.rates.push(...(data.supplemental_sources ?? []).flatMap(({ rates }) => rates));
   for (const rate of data.rates) {
     if (!rate.model_id || !rate.serving_provider || !rate.unit || !rate.effective_from) {
       throw new Error(`${METRONOME_FILE}: every route rate requires a model, serving provider, unit, and start date`);

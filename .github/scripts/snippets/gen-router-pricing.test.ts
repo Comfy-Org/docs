@@ -43,7 +43,7 @@ describe("public Router pricing", () => {
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
     const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
-    expect(unavailable).toHaveLength(15);
+    expect(unavailable).toHaveLength(13);
     for (const name of ["Images", "Video", "Text & multimodal", "Audio", "3D"]) expect(page).toContain(`<Tab title="${name}">`);
   });
 
@@ -64,7 +64,14 @@ describe("public Router pricing", () => {
       .flatMap((table) => table.rows)
       .filter((row) => ["`byteplus/dreamina-seedance-2-0-260128`", "`byteplus/dreamina-seedance-2-5-260628`"].includes(row[1]));
     expect(falSeedanceRows).toHaveLength(2);
-    expect(falSeedanceRows.every((row) => row[row.length - 1] === "Not published")).toBe(true);
+    const fal20 = falSeedanceRows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`")!;
+    const fal25 = falSeedanceRows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-5-260628`")!;
+    expect(fal20.slice(2)).toEqual([
+      "2.954 / 1K video tokens", "2.954 / 1K video tokens", "2.954 / 1K video tokens", "1.688 / 1K video tokens",
+    ]);
+    expect(fal25.slice(2)).toEqual([
+      "4.5154 / 1K video tokens", "4.5154 / 1K video tokens", "4.9374 / 1K video tokens", "-",
+    ]);
   });
 
   test("uses model IDs and credit prices without USD or internal billing metadata", () => {
@@ -81,8 +88,8 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(610);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(570);
+    expect(snapshot.rates).toHaveLength(617);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(577);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -263,7 +270,7 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("listed rates end on");
     expect(page).toContain("#### Per second by resolution");
     expect(page).toContain("#### Token rates");
-    expect(page).toContain("Prices updated: Sep 30, 2026.");
+    expect(page).toContain("Prices updated: Oct 1, 2026.");
   });
 
   test("retains source validation without exposing the private source", () => {
