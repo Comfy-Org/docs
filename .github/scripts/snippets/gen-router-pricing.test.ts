@@ -142,8 +142,8 @@ describe("public Router pricing", () => {
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
       const amount = formatAmount(rate.credits!);
-      const wanImageGeneration = ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(rate.model_id);
-      const unit = model.category === "images" && (rate.unit === "per request" || (wanImageGeneration && rate.unit === "per image")) ? "generation"
+      const imageGeneration = model.category === "images" && ["per request", "per image", "per output image"].includes(rate.unit);
+      const unit = imageGeneration ? "generation"
         : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
       expect(matchingPrices.some(({ header, cell, section }) => priceAmounts(cell).includes(amount)
         && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.toLowerCase().includes(`credits / ${unit}`)
@@ -155,7 +155,7 @@ describe("public Router pricing", () => {
     expect(page).toContain("| 15.0865 |");
     expect(page).toContain("| 7.5432 |");
     expect(page).toContain("| 3.0173 |");
-    expect(page).toContain("Credits / image");
+    expect(page).not.toContain("Credits / image");
     expect(page).toContain("| 16.88 |");
     expect(page).toContain("| 31.65 |");
     expect(page).toContain("0.3017 / Recraft credit");
@@ -275,12 +275,15 @@ describe("public Router pricing", () => {
     expect(page).toContain("No audio");
     expect(page).toContain("Audio");
     expect(page).not.toContain("With audio");
-    const veoRows = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
+    const veoRows = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`"))!;
+    expect(veoRows.headers).not.toContain("Audio");
     const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.0-fast-generate-001`");
     expect(fastVeoRows.map((row) => row[0])).toEqual([
-      "[Veo 3.0 Fast Generate 001](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)", "",
+      "[Veo 3.0 Fast Generate 001 No audio](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)",
+      "[Veo 3.0 Fast Generate 001 Audio](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)",
     ]);
-    expect(fastVeoRows.map((row) => row[2])).toEqual(["No audio", "Audio"]);
+    expect(fastVeoRows.map((row) => row[2])).toEqual(["16.88 / s", "21.1 / s"]);
     const ltx = snapshot.rates.filter((rate) => rate.model_id === "ltx/ltx-2-5-pro");
     const grouped = groupResolutionTiers(ltx);
     expect(grouped.remaining).toHaveLength(0);
@@ -341,7 +344,7 @@ describe("public Router pricing", () => {
     ]);
   });
 
-  test("groups one-time image charges and preserves each billable unit", () => {
+  test("groups image output charges as generations", () => {
     expect(page).toContain("#### Image generation and edit rates");
     const oneShot = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Credits / generation")
@@ -353,32 +356,26 @@ describe("public Router pricing", () => {
     expect(perGeneration.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384"))).toBe(true);
     const combinedUnitTable = tables.find((table) => table.provider === "fal"
       && table.headers.includes("Credits / generation")
-      && table.headers.includes("Credits / image")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
-    expect(combinedUnitTable.headers).toEqual(["Name", "Model ID", "Credits / generation", "Credits / image"]);
+    expect(combinedUnitTable.headers).toEqual(["Name", "Model ID", "Credits / generation"]);
     const nanoBanana = combinedUnitTable.rows.find((row) => row[1] === "`vertexai/gemini-3.1-flash-image`")!;
-    expect(nanoBanana[2]).toBe("-");
-    expect(nanoBanana[3]).toBe("16.88");
+    expect(nanoBanana[2]).toBe("16.88");
     const outputImage = tables.find((table) => table.section === "Qwen Image 3.0 output image rates")!;
     expect(outputImage.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519"))).toBe(true);
     const falOneTime = tables.find((table) => table.provider === "fal"
       && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`fal/patina`"))!;
     expect(falOneTime.rows.some((row) => row[1] === "`fal/patina`" && row.includes("3.0173"))).toBe(true);
-    const falImage = tables.find((table) => table.provider === "fal"
-      && table.headers.includes("Credits / image")
-      && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
-    expect(falImage.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88"))).toBe(true);
+    expect(combinedUnitTable.rows.some((row) => row[1] === "`fal/patina`" && row[2] === "3.0173")).toBe(true);
     const wanPreviews = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`wan/wan2.5-i2i-preview`"))!;
     expect(wanPreviews.rows.find((row) => row[1] === "`wan/wan2.5-i2i-preview`")?.[2]).toBe("6.33");
     const generationColumn = wanPreviews.headers.indexOf("Credits / generation");
-    const imageColumn = wanPreviews.headers.indexOf("Credits / image");
+    expect(wanPreviews.headers).toEqual(["Name", "Model ID", "Credits / generation"]);
     for (const modelId of ["`wan/wan2.5-i2i-preview`", "`wan/wan2.5-t2i-preview`"]) {
       const row = wanPreviews.rows.find((candidate) => candidate[1] === modelId)!;
       expect(row[generationColumn]).toBe("6.33");
-      expect(row[imageColumn]).toBe("-");
     }
     const switchx = tables.find((table) => table.section === "SwitchX image and video rates")!;
     expect(switchx.headers).toEqual(["Name", "Model ID", "720p Credits", "1080p Credits"]);
@@ -389,10 +386,10 @@ describe("public Router pricing", () => {
     expect(page).toContain("Images are billed per output image. Videos are billed per 30 output frames, rounded up.");
   });
 
-  test("shows Qwen and Seedream output-image rates as compact size matrices", () => {
+  test("shows Qwen and Seedream output-image rates as compact generation matrices", () => {
     const qwen = tables.find((table) => table.section === "Qwen Image 3.0 output image rates")!;
     expect(qwen.headers).toEqual([
-      "Name", "Model ID", "1K Credits / output image", "2K Credits / output image",
+      "Name", "Model ID", "1K Credits / generation", "2K Credits / generation",
     ]);
     expect(qwen.rows).toEqual([
       ["[Qwen Image 3.0](/development/comfy-router/models/qwen/qwen-image-3-0/code)", "`qwen/qwen-image-3.0`", "9.0519", "9.0519"],
@@ -401,19 +398,19 @@ describe("public Router pricing", () => {
 
     const seedream = tables.find((table) => table.section === "Seedream 5.0 Pro output image rates")!;
     expect(seedream.headers).toEqual([
-      "Name", "Model ID", "Layer separation · Standard Credits / output image",
-      "Layer separation · Large Credits / output image", "Output image · Standard Credits / output image",
-      "Output image · Large Credits / output image",
+      "Name", "Model ID", "Layer separation · Standard Credits / generation",
+      "Layer separation · Large Credits / generation", "Output image · Standard Credits / generation",
+      "Output image · Large Credits / generation",
     ]);
     expect(seedream.rows).toEqual([[
       "[Seedream 5.0 Pro](/development/comfy-router/models/byteplus/seedream-5-0-pro-260628/code)",
       "`byteplus/seedream-5-0-pro-260628`", "6.7889", "13.5778", "9.495", "18.99",
     ]]);
 
-    const perImage = tables.find((table) => table.headers.includes("Credits / image")
+    const falGenerationRates = tables.find((table) => table.provider === "fal"
+      && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3-pro-image`"))!;
-    const perImageIndex = perImage.headers.indexOf("Credits / image");
-    expect(perImage.rows.find((row) => row[1] === "`vertexai/gemini-3-pro-image`")?.[perImageIndex]).toBe("31.65");
+    expect(falGenerationRates.rows.some((row) => row[1] === "`vertexai/gemini-3-pro-image`" && row[2] === "31.65")).toBe(true);
   });
 
   test("coalesces Luma Uni generation and edit rates into one model matrix", () => {
@@ -433,18 +430,18 @@ describe("public Router pricing", () => {
     ]);
   });
 
-  test("groups Ideogram versions while keeping their different price units explicit", () => {
+  test("groups Ideogram versions under generation pricing", () => {
     const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
     expect(ideogram.headers).toEqual([
-      "Name", "Model ID", "Quality", "Credits / generation", "Credits / image",
+      "Name", "Model ID", "Quality", "Credits / generation",
     ]);
     expect(ideogram.displayRows).toEqual([
-      ["[Ideogram 4.0](/development/comfy-router/models/ideogram/ideogram-v4/code)", "`ideogram/ideogram-v4`", "Standard", "18.1038", "-"],
-      ["", "", "Quality", "30.173", "-"],
-      ["", "", "Turbo", "9.0519", "-"],
-      ["[Ideogram V3](/development/comfy-router/models/ideogram/ideogram-v3/code)", "`ideogram/ideogram-v3`", "Standard", "-", "18.1038"],
-      ["", "", "Quality", "-", "27.1557"],
-      ["", "", "Turbo", "-", "9.0519"],
+      ["[Ideogram 4.0](/development/comfy-router/models/ideogram/ideogram-v4/code)", "`ideogram/ideogram-v4`", "Standard", "18.1038"],
+      ["", "", "Quality", "30.173"],
+      ["", "", "Turbo", "9.0519"],
+      ["[Ideogram V3](/development/comfy-router/models/ideogram/ideogram-v3/code)", "`ideogram/ideogram-v3`", "Standard", "18.1038"],
+      ["", "", "Quality", "27.1557"],
+      ["", "", "Turbo", "9.0519"],
     ]);
   });
 
@@ -490,10 +487,11 @@ describe("public Router pricing", () => {
     const minimax = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
     expect(minimax.headers).toEqual(["Name", "Model ID", "768p Credits", "2K Credits"]);
     expect(minimax.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
-    const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
+    const veo = tables.find((table) => table.provider === "Comfy"
+      && table.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`"))!;
     expect(veo).toBeDefined();
-    expect(veo.headers).not.toContain("Option");
-    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
+    expect(veo.headers).not.toContain("Audio");
+    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[0].includes("No audio") && row[2] === "42.2 / s")).toBe(true);
     const standaloneVeo = tables.find((table) => table.provider === "Comfy" && table.section === "Rates per second");
     expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" )).toBe(false);
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;

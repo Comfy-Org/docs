@@ -490,10 +490,12 @@ function render(locale: PricingLocale = "en"): string {
         return `${header}\n${separator}\n${body}`;
       };
       const renderImageOperationMatrix = (items: typeof ordinaryRows) => {
-        const unitForRow = (row: (typeof ordinaryRows)[number]) => row.unit === "per request"
-          || (row.unit === "per image" && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(row.modelId.slice(1, -1)))
-          ? "per generation" : row.unit;
-        const supportedUnits = ["per generation", "per image", "per output image"];
+        // Image outputs are generations for pricing display. Keep reference/input-image
+        // units separate; they are not generated outputs.
+        const unitForRow = (row: (typeof ordinaryRows)[number]) =>
+          ["per request", "per generation", "per image", "per output image"].includes(row.unit)
+            ? "per generation" : row.unit;
+        const supportedUnits = ["per generation"];
         const columns = supportedUnits.filter((unit) => items.some((row) => unitForRow(row) === unit));
         const byModel = new Map<string, { name: string; values: Map<string, string>; rows: typeof ordinaryRows; conflicted: boolean }>();
         for (const row of items) {
@@ -630,7 +632,7 @@ function render(locale: PricingLocale = "en"): string {
         : [];
       const qwenOutputMatrix = renderRateOptionMatrix(qwenOutputRows, copy.qwenImageRates,
         ["1K", "2K"].map((size) => ({ key: size, label: size })),
-        "per output image", formatUnit("per output image", locale),
+        "per output image", formatUnit("per generation", locale),
         (option) => option.split(" · ").at(-1)?.split(" / ").filter((size) => ["1K", "2K"].includes(size)) ?? []);
 
       const seedreamId = "byteplus/seedream-5-0-pro-260628";
@@ -644,7 +646,7 @@ function render(locale: PricingLocale = "en"): string {
         label: `${operation} · ${size}`,
       })));
       const seedreamOutputMatrix = renderRateOptionMatrix(seedreamOutputRows, copy.seedreamProRates, seedreamColumns,
-        "per output image", formatUnit("per output image", locale),
+        "per output image", formatUnit("per generation", locale),
         (option) => seedreamColumns.some(({ key }) => key === option) ? [option] : []);
 
       const lumaUniIds = new Set(["luma_2/uni-1", "luma_2/uni-1-max"]);
@@ -673,19 +675,17 @@ function render(locale: PricingLocale = "en"): string {
         }
       }
       const ideogramGenerationUnit = formatUnit("per generation", locale);
-      const ideogramImageUnit = formatUnit("per image", locale);
       const ideogramRowsForMatrix = ideogramRows.length ? [...ideogramModels].flatMap(([modelId, model]) => {
         const unit = modelId.endsWith("-v4") ? "per request" : "per image";
         return ideogramQualities.map((quality, index) => {
-          const generation = unit === "per request" ? model.rates.get(`${quality}|per request`) ?? "-" : "-";
-          const image = unit === "per image" ? model.rates.get(`${quality}|per image`) ?? "-" : "-";
-          return `| ${index === 0 ? model.name : ""} | ${index === 0 ? `\`${modelId}\`` : ""} | ${quality} | ${generation} | ${image} |`;
+          const credits = model.rates.get(`${quality}|${unit}`) ?? "-";
+          return `| ${index === 0 ? model.name : ""} | ${index === 0 ? `\`${modelId}\`` : ""} | ${quality} | ${credits} |`;
         });
       }) : [];
       const ideogramImageMatrix = ideogramRowsForMatrix.length
         ? {
           title: copy.ideogramImageRates,
-          table: `| ${copy.model} | ${copy.modelId} | ${copy.quality} | ${copy.credits} / ${ideogramGenerationUnit} | ${copy.credits} / ${ideogramImageUnit} |\n| --- | --- | --- | ---: | ---: |\n${ideogramRowsForMatrix.join("\n")}`,
+          table: `| ${copy.model} | ${copy.modelId} | ${copy.quality} | ${copy.credits} / ${ideogramGenerationUnit} |\n| --- | --- | --- | ---: |\n${ideogramRowsForMatrix.join("\n")}`,
           consumedRows: new Set(ideogramRows),
         }
         : { title: copy.ideogramImageRates, table: "", consumedRows: new Set<typeof ordinaryRows[number]>() };
@@ -943,7 +943,9 @@ function render(locale: PricingLocale = "en"): string {
       }
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
-        const hasOptions = table.rows.some(({ option }) => option !== "-");
+        const putVeoAudioInName = table.optionHeader === copy.audio
+          && table.rows.some(({ model }) => model.id.startsWith("veo/"));
+        const hasOptions = !putVeoAudioInName && table.rows.some(({ option }) => option !== "-");
         const publicUnit = category === "images" && table.unit === "per request" ? "per generation" : table.unit;
         const unitInHeader = ["per request", "per generation", "per 1K video tokens"].includes(table.unit);
         const unitRepeatedInColumn = ["per request", "per generation"].includes(table.unit);
@@ -955,7 +957,9 @@ function render(locale: PricingLocale = "en"): string {
               : unitInHeader ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
-          const modelName = `${displayTitle(model)}${modeSuffix}`;
+          const audioSuffix = putVeoAudioInName && model.id.startsWith("veo/")
+            ? ` ${option === "-" ? formatOption("No audio", locale) : option}` : "";
+          const modelName = `${displayTitle(model)}${modeSuffix}${audioSuffix}`;
           const name = modelName === previousModelName ? "" : `[${tableCell(modelName)}](/${model.page})`;
           const modelId = modelName === previousModelName ? "" : `\`${model.id}\``;
           previousModelName = modelName;
