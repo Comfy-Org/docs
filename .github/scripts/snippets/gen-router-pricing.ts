@@ -453,7 +453,11 @@ function render(locale: PricingLocale = "en"): string {
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
           const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${priceUnit}`;
-          return { name, modelId, option: compactOptions(group.options), credits, kind: rate.kind, unit: rate.unit };
+          const omitNonPricingOption = model.id === "bria/video-edit-erase"
+            && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
+            || model.id === "bria/fibo";
+          const option = omitNonPricingOption ? "-" : compactOptions(group.options);
+          return { name, modelId, option, credits, kind: rate.kind, unit: rate.unit };
         });
       });
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, headerUnit?: string) => {
@@ -462,15 +466,20 @@ function render(locale: PricingLocale = "en"): string {
         const klingV3OptionRows = items.filter((item) => item.modelId === "`kling/kling-v3`" && item.option !== "-");
         const moveKlingOptionIntoName = klingV3OptionRows.length === 1
           && items.every((item) => item.option === "-" || item.modelId === "`kling/kling-v3`");
-        const showOptions = hasOptions && !moveKlingOptionIntoName;
+        const omitLumaReferenceOption = items.length > 0 && items.every((item) =>
+          item.modelId.startsWith("`luma_2/") && item.unit === "per reference image"
+          && item.option === formatOption("Each supplied reference image", locale));
+        const showOptions = hasOptions && !moveKlingOptionIntoName && !omitLumaReferenceOption;
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
         const creditsHeader = headerUnit ? `${copy.credits} / ${formatUnit(headerUnit, locale)}` : copy.credits;
         const header = `| ${copy.model} | ${copy.modelId} | ${showOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
         const separator = `| --- | --- | ${showOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => {
+          const oneImagePerGeneration = item.unit === "per image"
+            && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(item.modelId.slice(1, -1));
           const unitCanBeShortened = headerUnit === item.unit
-            || (headerUnit === "per generation" && item.unit === "per request");
+            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration));
           const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
@@ -479,6 +488,32 @@ function render(locale: PricingLocale = "en"): string {
           return `| ${name} | ${item.modelId} | ${showOptions ? `${tableCell(item.option)} | ` : ""}${credits} |`;
         }).join("\n");
         return `${header}\n${separator}\n${body}`;
+      };
+      const renderImageOperationMatrix = (items: typeof ordinaryRows) => {
+        const unitForRow = (row: (typeof ordinaryRows)[number]) => row.unit === "per request"
+          || (row.unit === "per image" && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(row.modelId.slice(1, -1)))
+          ? "per generation" : row.unit;
+        const supportedUnits = ["per generation", "per image", "per output image"];
+        const columns = supportedUnits.filter((unit) => items.some((row) => unitForRow(row) === unit));
+        const byModel = new Map<string, { name: string; values: Map<string, string>; rows: typeof ordinaryRows; conflicted: boolean }>();
+        for (const row of items) {
+          const unit = unitForRow(row);
+          if (!columns.includes(unit)) continue;
+          const model = byModel.get(row.modelId) ?? { name: row.name, values: new Map<string, string>(), rows: [], conflicted: false };
+          const amount = row.kind === "usage" ? row.credits : priceWithoutUnit(row.credits, row.unit, locale);
+          const previous = model.values.get(unit);
+          if (previous && previous !== amount) model.conflicted = true;
+          else model.values.set(unit, amount);
+          model.rows.push(row);
+          byModel.set(row.modelId, model);
+        }
+        const matrixModels = [...byModel].filter(([, model]) => !model.conflicted);
+        const fallbackIds = new Set([...byModel].filter(([, model]) => model.conflicted).map(([modelId]) => modelId));
+        const table = matrixModels.length
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => `${copy.credits} / ${formatUnit(unit, locale)}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
+          : "";
+        const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
+        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
       };
       const ordinaryGroups = new Map<string, typeof ordinaryRows>();
       for (const row of ordinaryRows) {
@@ -621,6 +656,40 @@ function render(locale: PricingLocale = "en"): string {
         lumaUniOperations.map((label) => ({ key: label, label })),
         "per generation", formatUnit("per generation", locale), (option) => lumaUniOperations.includes(option) ? [option] : []);
 
+      const ideogramIds = ["ideogram/ideogram-v4", "ideogram/ideogram-v3"];
+      const ideogramRows = category === "images" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => ideogramIds.includes(row.modelId.slice(1, -1))
+          && ["per request", "per image"].includes(row.unit))
+        : [];
+      const ideogramQualities = ["quality=DEFAULT", "quality=QUALITY", "quality=TURBO"].map((condition) => formatOption(condition, locale));
+      const ideogramModels = new Map(ideogramIds.map((modelId) => [modelId, {
+        name: ideogramRows.find((row) => row.modelId === `\`${modelId}\``)?.name ?? "",
+        rates: new Map<string, string>(),
+      }]));
+      for (const row of ideogramRows) {
+        const model = ideogramModels.get(row.modelId.slice(1, -1));
+        if (model && ideogramQualities.includes(row.option)) {
+          model.rates.set(`${row.option}|${row.unit}`, priceWithoutUnit(row.credits, row.unit, locale));
+        }
+      }
+      const ideogramGenerationUnit = formatUnit("per generation", locale);
+      const ideogramImageUnit = formatUnit("per image", locale);
+      const ideogramRowsForMatrix = ideogramRows.length ? [...ideogramModels].flatMap(([modelId, model]) => {
+        const unit = modelId.endsWith("-v4") ? "per request" : "per image";
+        return ideogramQualities.map((quality, index) => {
+          const generation = unit === "per request" ? model.rates.get(`${quality}|per request`) ?? "-" : "-";
+          const image = unit === "per image" ? model.rates.get(`${quality}|per image`) ?? "-" : "-";
+          return `| ${index === 0 ? model.name : ""} | ${index === 0 ? `\`${modelId}\`` : ""} | ${quality} | ${generation} | ${image} |`;
+        });
+      }) : [];
+      const ideogramImageMatrix = ideogramRowsForMatrix.length
+        ? {
+          title: copy.ideogramImageRates,
+          table: `| ${copy.model} | ${copy.modelId} | ${copy.quality} | ${copy.credits} / ${ideogramGenerationUnit} | ${copy.credits} / ${ideogramImageUnit} |\n| --- | --- | --- | ---: | ---: |\n${ideogramRowsForMatrix.join("\n")}`,
+          consumedRows: new Set(ideogramRows),
+        }
+        : { title: copy.ideogramImageRates, table: "", consumedRows: new Set<typeof ordinaryRows[number]>() };
+
       const seedanceVideoIds = new Set([
         "byteplus/dreamina-seedance-2-0-fast-260128", "byteplus/dreamina-seedance-2-0-mini",
         "byteplus/seedance-1-0-pro-250528", "byteplus/seedance-1-0-pro-fast-251015",
@@ -654,7 +723,7 @@ function render(locale: PricingLocale = "en"): string {
       const pivotedOrdinaryRows = new Set([
         ...durationPivotRows, ...imageRequestPivotRows, ...kreaPivotRows,
         ...qwenOutputMatrix.consumedRows, ...seedreamOutputMatrix.consumedRows,
-        ...lumaUniMatrix.consumedRows,
+        ...lumaUniMatrix.consumedRows, ...ideogramImageMatrix.consumedRows,
         ...seedanceVideoMatrix.consumedRows, ...seedanceAudioMatrix.consumedRows,
       ]);
       for (const [title, rows] of ordinaryGroups) {
@@ -759,6 +828,41 @@ function render(locale: PricingLocale = "en"): string {
           option: onlyOperation || putModeInName ? "-" : formatOption(group.conditions, locale),
         }));
       });
+      const higgsfieldKling4kRoute = category === "video" && provider === "Higgsfield"
+        ? imageRoutes.find(({ model }) => model.id === "higgsfield/higgsfield-kling-3-4k")
+        : undefined;
+      const higgsfieldKling4kRate = higgsfieldKling4kRoute?.resolution.remaining.find((rate) => rate.unit === "per second");
+      if (higgsfieldKling4kRoute && higgsfieldKling4kRate) {
+        const tiers = new Map([[
+          "4K", { rate: higgsfieldKling4kRate, sources: [higgsfieldKling4kRate] },
+        ]]);
+        const group = { conditions: higgsfieldKling4kRate.conditions ?? "", tiers } as typeof resolutionGroups[number]["group"];
+        resolutionGroups.push({ model: higgsfieldKling4kRoute.model, group, option: "-" });
+        const pivotedRows = new Set(ordinaryRows.filter((row) =>
+          row.modelId === "`higgsfield/higgsfield-kling-3-4k`" && row.unit === "per second"));
+        for (const [title, rows] of ordinaryGroups) {
+          const remaining = rows.filter((row) => !pivotedRows.has(row));
+          if (remaining.length) ordinaryGroups.set(title, remaining);
+          else ordinaryGroups.delete(title);
+        }
+      }
+      const switchxResolutionGroups = resolutionGroups.filter(({ model }) => model.id === "beeble/switchx");
+      const switchxResolutions = [...new Set(switchxResolutionGroups.flatMap(({ group }) => [...group.tiers.keys()]))].sort(resolutionOrder);
+      const switchxRatesByUnit = new Map<string, Map<string, string>>();
+      for (const { group } of switchxResolutionGroups) {
+        for (const [resolution, { rate }] of group.tiers) {
+          const rates = switchxRatesByUnit.get(rate.unit) ?? new Map<string, string>();
+          rates.set(resolution, formatAmount(rate.credits!));
+          switchxRatesByUnit.set(rate.unit, rates);
+        }
+      }
+      const switchxImageRates = switchxRatesByUnit.get("per generated image");
+      const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
+      const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
+      const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
+        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => `${resolution} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
+        : "";
+      const switchxResolutionRows = new Set(switchxResolutionGroups);
       // Different model families can expose unrelated size bands under one provider.
       // Keep their matrices compact without reverting all of that provider's rows.
       const resolutionTables: Array<{
@@ -767,7 +871,7 @@ function render(locale: PricingLocale = "en"): string {
         columns: Set<string>;
         rows: typeof resolutionGroups;
       }> = [];
-      for (const row of resolutionGroups) {
+      for (const row of resolutionGroups.filter((candidate) => !switchxResolutionRows.has(candidate))) {
         const { group } = row;
         const unit = group.tiers.values().next().value!.rate.unit;
         const optionHeader = row.option === "-" ? copy.option
@@ -817,11 +921,32 @@ function render(locale: PricingLocale = "en"): string {
           right--;
         }
       }
+      const veo2Route = imageRoutes.find(({ model }) => model.id === "veo/veo-2.0-generate-001");
+      const veo2Rate = veo2Route?.resolution.remaining.find((rate) => rate.unit === "per second");
+      const veoTable = resolutionTables.find((table) => table.unit === "per second" && table.optionHeader === copy.audio
+        && table.rows.some(({ model }) => model.id.startsWith("veo/")));
+      if (category === "video" && veo2Route && veo2Rate && veoTable) {
+        const otherConditions = (veo2Rate.conditions ?? "").split(";").map((part) => part.trim())
+          .filter((part) => !part.startsWith("resolution=")).join("; ");
+        const tiers = new Map([[
+          "720p", { rate: veo2Rate, sources: [veo2Rate] },
+        ]]);
+        const group = { conditions: otherConditions, tiers } as typeof resolutionGroups[number]["group"];
+        veoTable.columns.add("720p");
+        veoTable.rows.unshift({ model: veo2Route.model, group, option: formatOption(otherConditions, locale) });
+        const pivotedRows = new Set(ordinaryRows.filter((row) => row.modelId === "`veo/veo-2.0-generate-001`" && row.unit === "per second"));
+        for (const [title, rows] of ordinaryGroups) {
+          const remaining = rows.filter((row) => !pivotedRows.has(row));
+          if (remaining.length) ordinaryGroups.set(title, remaining);
+          else ordinaryGroups.delete(title);
+        }
+      }
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
         const hasOptions = table.rows.some(({ option }) => option !== "-");
         const publicUnit = category === "images" && table.unit === "per request" ? "per generation" : table.unit;
-        const unitInHeader = ["per request", "per generation"].includes(table.unit);
+        const unitInHeader = ["per request", "per generation", "per 1K video tokens"].includes(table.unit);
+        const unitRepeatedInColumn = ["per request", "per generation"].includes(table.unit);
         let previousModelName = "";
         const matrixRows = table.rows.map(({ model, group, option }) => {
           const values = columns.map((label) => {
@@ -836,14 +961,14 @@ function render(locale: PricingLocale = "en"): string {
           previousModelName = modelName;
           return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
-        const unitSuffix = unitInHeader ? ` / ${formatUnit(publicUnit, locale)}` : "";
+        const unitSuffix = unitRepeatedInColumn ? ` / ${formatUnit(publicUnit, locale)}` : "";
         return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}${unitSuffix}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
       if (seedancePivot.length === seedanceIds.size) {
         tableSections.push({
           title: copy.ratesPer(formatUnit("per request", locale)),
-          body: `| ${copy.model} | ${copy.modelId} | ${seedanceOperationLabels[0]} ${copy.credits} / ${formatUnit("per request", locale)} | ${seedanceOperationLabels[1]} ${copy.credits} / ${formatUnit("per request", locale)} |\n| --- | --- | ---: | ---: |\n${seedancePivot.map((row) => `| ${row.name} | ${row.modelId} | ${priceWithoutUnit(row.image, "per request", locale)} | ${priceWithoutUnit(row.text, "per request", locale)} |`).join("\n")}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.credits} / ${formatUnit("per request", locale)} |\n| --- | --- | ---: |\n${seedancePivot.map((row) => `| ${row.name} | ${row.modelId} | ${priceWithoutUnit(row.image, "per request", locale)} |`).join("\n")}`,
         });
       }
       if (tokenRows) {
@@ -862,25 +987,16 @@ function render(locale: PricingLocale = "en"): string {
         const title = unit === "per resolution" ? copy.resolution : copy.byResolution(formatUnit(unit, locale));
         tableSections.push({ title, body: tables.join("\n\n") });
       }
+      if (switchxRateTable) {
+        tableSections.push({
+          title: copy.switchxRates,
+          body: `${copy.switchxBillingNote}\n\n${switchxRateTable}`,
+        });
+      }
       for (const [title, rows] of ordinaryGroups) {
         const hasOptions = rows.some((row) => row.option !== "-");
         const ordinaryBody = title === copy.imageOperationRates
-          ? [...rows.reduce((groups, row) => {
-            const group = groups.get(row.unit) ?? [];
-            group.push(row);
-            groups.set(row.unit, group);
-            return groups;
-          }, new Map<string, typeof ordinaryRows>())]
-            .sort(([a], [b]) => {
-              const displayUnit = (unit: string) => category === "images" && unit === "per request" ? "per generation" : unit;
-              return ["per generation", "per image", "per output image"].indexOf(displayUnit(a))
-                - ["per generation", "per image", "per output image"].indexOf(displayUnit(b));
-            })
-            .map(([unit, unitRows]) => {
-              const displayUnit = unit === "per request" ? "per generation" : unit;
-              return renderOrdinaryRows(unitRows, unitRows.some((row) => row.option !== "-"), displayUnit);
-            })
-            .join("\n\n")
+          ? renderImageOperationMatrix(rows)
           : renderOrdinaryRows(rows, hasOptions,
             rows.length > 0 && ["per request", "per generation", ...(category === "images" ? ["per image", "per output image"] : [])].includes(rows[0].unit)
             && rows.every((row) => row.unit === rows[0].unit && row.kind !== "usage" && row.kind !== "unavailable")
@@ -900,7 +1016,7 @@ function render(locale: PricingLocale = "en"): string {
         tableSections.push({ title: durationTitle, body: durationRequestTable });
       }
       if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
-      for (const matrix of [qwenOutputMatrix, seedreamOutputMatrix, lumaUniMatrix, seedanceVideoMatrix, seedanceAudioMatrix]) {
+      for (const matrix of [qwenOutputMatrix, seedreamOutputMatrix, lumaUniMatrix, ideogramImageMatrix, seedanceVideoMatrix, seedanceAudioMatrix]) {
         if (matrix.table) tableSections.push({ title: matrix.title, body: matrix.table });
       }
       if (imageRows) {

@@ -91,11 +91,12 @@ describe("public Router pricing", () => {
     const fal20 = falSeedanceRows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`")!;
     const fal25 = falSeedanceRows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-5-260628`")!;
     expect(fal20.slice(2)).toEqual([
-      "2.954 / 1K video tokens", "2.954 / 1K video tokens", "2.954 / 1K video tokens", "1.688 / 1K video tokens",
+      "2.954", "2.954", "2.954", "1.688",
     ]);
     expect(fal25.slice(2)).toEqual([
-      "4.5154 / 1K video tokens", "4.5154 / 1K video tokens", "4.9374 / 1K video tokens", "-",
+      "4.5154", "4.5154", "4.9374", "-",
     ]);
+    expect(page).not.toContain(" / 1K video tokens");
 
     for (const [id, expected] of [
       ["bria/video-edit-green-screen", "10.55 / s"],
@@ -141,10 +142,13 @@ describe("public Router pricing", () => {
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
       const amount = formatAmount(rate.credits!);
-      const unit = model.category === "images" && rate.unit === "per request" ? "generation"
+      const wanImageGeneration = ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(rate.model_id);
+      const unit = model.category === "images" && (rate.unit === "per request" || (wanImageGeneration && rate.unit === "per image")) ? "generation"
         : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
       expect(matchingPrices.some(({ header, cell, section }) => priceAmounts(cell).includes(amount)
-        && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.includes(`credits / ${unit}`)))).toBe(true);
+        && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.toLowerCase().includes(`credits / ${unit}`)
+          || (rate.model_id === "beeble/switchx" && page.includes("Images are billed per output image. Videos are billed per 30 output frames, rounded up."))
+          || (unit === "1K video tokens" && section.toLowerCase().startsWith("per 1k video tokens"))))).toBe(true);
     }
     expect(page).toContain("| 15.0865 / s |");
     expect(page).toContain("Credits / generation");
@@ -161,12 +165,12 @@ describe("public Router pricing", () => {
     expect(page).toContain("| 84.4844 / s |");
     const wanPricing = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`wan/wan3.0-video`"));
     expect(wanPricing?.rows.find((row) => row[1] === "`wan/wan3.0-video`")).toContain("42.2 / s");
-    expect(page).toContain("| 2.954 / 1K video tokens |");
+    expect(page).toContain("| 2.954 |");
     expect(page).toContain("| 13.5778 / s |");
     expect(page).toContain("#### Per 5 s by resolution");
     expect(page).toContain("12.66 / 5 s");
     expect(page).not.toContain("/ 5 seconds");
-    expect(page).toContain(formatOption("Input duration, capped at 5 seconds per request", "en"));
+    expect(page).not.toContain(formatOption("Input duration, capped at 5 seconds per request", "en"));
     expect(page).toContain("| Usage-based<br />request usage |");
   });
 
@@ -330,10 +334,10 @@ describe("public Router pricing", () => {
     expect(wavespeedRequests.rows.some((row) => row[1] === "`wavespeed/ultimate-image-upscaler`" && row[2] === "12.66")).toBe(true);
     const seedance = tables.find((table) => table.provider === "WaveSpeed"
       && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
-    expect(seedance.headers).toEqual(["Name", "Model ID", "Image to video Credits / request", "Text to video Credits / request"]);
+    expect(seedance.headers).toEqual(["Name", "Model ID", "Credits / request"]);
     expect(seedance.rows).toEqual([
-      ["[Dreamina Seedance 2.0](/development/comfy-router/models/byteplus/dreamina-seedance-2-0-260128/code)", "`byteplus/dreamina-seedance-2-0-260128`", "126.6", "126.6"],
-      ["[Dreamina Seedance 2.5](/development/comfy-router/models/byteplus/dreamina-seedance-2-5-260628/code)", "`byteplus/dreamina-seedance-2-5-260628`", "189.9", "189.9"],
+      ["[Dreamina Seedance 2.0](/development/comfy-router/models/byteplus/dreamina-seedance-2-0-260128/code)", "`byteplus/dreamina-seedance-2-0-260128`", "126.6"],
+      ["[Dreamina Seedance 2.5](/development/comfy-router/models/byteplus/dreamina-seedance-2-5-260628/code)", "`byteplus/dreamina-seedance-2-5-260628`", "189.9"],
     ]);
   });
 
@@ -342,10 +346,19 @@ describe("public Router pricing", () => {
     const oneShot = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`bria/fibo`"))!;
+    expect(oneShot.headers).not.toContain("Option");
     expect(oneShot.rows.some((row) => row[1] === "`bria/fibo`" && row.includes("8.44"))).toBe(true);
     const perGeneration = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`runway/gen4_image`"))!;
     expect(perGeneration.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384"))).toBe(true);
+    const combinedUnitTable = tables.find((table) => table.provider === "fal"
+      && table.headers.includes("Credits / generation")
+      && table.headers.includes("Credits / image")
+      && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
+    expect(combinedUnitTable.headers).toEqual(["Name", "Model ID", "Credits / generation", "Credits / image"]);
+    const nanoBanana = combinedUnitTable.rows.find((row) => row[1] === "`vertexai/gemini-3.1-flash-image`")!;
+    expect(nanoBanana[2]).toBe("-");
+    expect(nanoBanana[3]).toBe("16.88");
     const outputImage = tables.find((table) => table.section === "Qwen Image 3.0 output image rates")!;
     expect(outputImage.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519"))).toBe(true);
     const falOneTime = tables.find((table) => table.provider === "fal"
@@ -356,6 +369,24 @@ describe("public Router pricing", () => {
       && table.headers.includes("Credits / image")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
     expect(falImage.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88"))).toBe(true);
+    const wanPreviews = tables.find((table) => table.provider === "Comfy"
+      && table.headers.includes("Credits / generation")
+      && table.rows.some((row) => row[1] === "`wan/wan2.5-i2i-preview`"))!;
+    expect(wanPreviews.rows.find((row) => row[1] === "`wan/wan2.5-i2i-preview`")?.[2]).toBe("6.33");
+    const generationColumn = wanPreviews.headers.indexOf("Credits / generation");
+    const imageColumn = wanPreviews.headers.indexOf("Credits / image");
+    for (const modelId of ["`wan/wan2.5-i2i-preview`", "`wan/wan2.5-t2i-preview`"]) {
+      const row = wanPreviews.rows.find((candidate) => candidate[1] === modelId)!;
+      expect(row[generationColumn]).toBe("6.33");
+      expect(row[imageColumn]).toBe("-");
+    }
+    const switchx = tables.find((table) => table.section === "SwitchX image and video rates")!;
+    expect(switchx.headers).toEqual(["Name", "Model ID", "720p Credits", "1080p Credits"]);
+    expect(switchx.rows).toEqual([[
+      "[SwitchX](/development/comfy-router/models/beeble/switchx/code)", "`beeble/switchx`",
+      "Image: 30.173<br />Video: 30.173", "Image: 90.519<br />Video: 90.519",
+    ]]);
+    expect(page).toContain("Images are billed per output image. Videos are billed per 30 output frames, rounded up.");
   });
 
   test("shows Qwen and Seedream output-image rates as compact size matrices", () => {
@@ -381,17 +412,39 @@ describe("public Router pricing", () => {
 
     const perImage = tables.find((table) => table.headers.includes("Credits / image")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3-pro-image`"))!;
-    expect(perImage.rows.find((row) => row[1] === "`vertexai/gemini-3-pro-image`")?.[2]).toBe("31.65");
+    const perImageIndex = perImage.headers.indexOf("Credits / image");
+    expect(perImage.rows.find((row) => row[1] === "`vertexai/gemini-3-pro-image`")?.[perImageIndex]).toBe("31.65");
   });
 
   test("coalesces Luma Uni generation and edit rates into one model matrix", () => {
-    const luma = tables.find((table) => table.section === "Luma Uni image rates")!;
+    const luma = tables.find((table) => table.section === "Image generation and then image edit")!;
     expect(luma.headers).toEqual([
       "Name", "Model ID", "Image generation Credits / generation", "Image edit Credits / generation",
     ]);
     expect(luma.rows).toEqual([
       ["[Uni 1](/development/comfy-router/models/luma_2/uni-1/code)", "`luma_2/uni-1`", "8.5244", "9.1574"],
       ["[Uni 1 Max](/development/comfy-router/models/luma_2/uni-1-max/code)", "`luma_2/uni-1-max`", "21.1", "21.733"],
+    ]);
+    const references = tables.find((table) => table.section === "Rates per reference image"
+      && table.rows.some((row) => row[1] === "`luma_2/uni-1`"))!;
+    expect(references.headers).toEqual(["Name", "Model ID", "Credits"]);
+    expect(references.rows.map((row) => row[2])).toEqual([
+      "0.633 / reference image", "0.633 / reference image",
+    ]);
+  });
+
+  test("groups Ideogram versions while keeping their different price units explicit", () => {
+    const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
+    expect(ideogram.headers).toEqual([
+      "Name", "Model ID", "Quality", "Credits / generation", "Credits / image",
+    ]);
+    expect(ideogram.displayRows).toEqual([
+      ["[Ideogram 4.0](/development/comfy-router/models/ideogram/ideogram-v4/code)", "`ideogram/ideogram-v4`", "Standard", "18.1038", "-"],
+      ["", "", "Quality", "30.173", "-"],
+      ["", "", "Turbo", "9.0519", "-"],
+      ["[Ideogram V3](/development/comfy-router/models/ideogram/ideogram-v3/code)", "`ideogram/ideogram-v3`", "Standard", "-", "18.1038"],
+      ["", "", "Quality", "-", "27.1557"],
+      ["", "", "Turbo", "-", "9.0519"],
     ]);
   });
 
@@ -440,10 +493,13 @@ describe("public Router pricing", () => {
     const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
     expect(veo.headers).not.toContain("Option");
+    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
+    const standaloneVeo = tables.find((table) => table.provider === "Comfy" && table.section === "Rates per second");
+    expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" )).toBe(false);
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
     expect(seedance.headers).toContain("480p Credits");
     expect(seedance.headers).toContain("720p Credits");
-    expect(seedance.rows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`")!.join(" | ")).toContain("2.954 / 1K video tokens");
+    expect(seedance.rows.find((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`")!.join(" | ")).toContain("2.954");
     const comfySeedance = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Input type")
       && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
