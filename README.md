@@ -80,16 +80,20 @@ Some files in this repository are written by the Comfy API v2 specification sync
 | File | Where the edit belongs |
 |------|------------------------|
 | `openapi-v2.yaml` | The API contract upstream. This file is a vendored projection of it. |
+| `router-openapi.yaml` | The API contract upstream. This file is a vendored Router-only projection of it. |
 | `development/comfy-router/reference.mdx` | The API contract upstream. This page is generated from it. |
 | `development/comfy-router/quickstart.mdx` | The upstream `quickstart.mdx`, which is published here verbatim. |
 | `development/comfy-router/limitations.mdx` | The upstream `limitations.mdx`, which is published here verbatim. |
+| `development/comfy-router/higgsfield-byok.mdx` | The upstream `higgsfield-byok.mdx`, which is published here verbatim. |
+| `development/comfy-router/pricing.mdx` | The upstream `pricing.mdx`, which is published here verbatim. |
 | `router-schemas/**` | The API contract upstream. The whole directory is re-mirrored on every sync. |
 | `development/comfy-router/models.mdx` | A model's `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+| `development/comfy-router/providers.mdx` | The upstream alt-provider contract. Regenerate with `bun run code-pages:gen`. |
 | `development/comfy-router/models/**/code.mdx` | The sibling `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
 
 Two things inside that tree stay editable: `docs.json` (the sync rewrites only the `Models` nav group and the model-page redirects) and the hand-curated `development/comfy-router/models/**/code.yaml` generator inputs, which are where a change to a generated model page belongs.
 
-The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last two rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
+The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last three rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
 
 ### i18n Contributions
 
