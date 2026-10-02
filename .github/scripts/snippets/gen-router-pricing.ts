@@ -47,8 +47,6 @@ type MetronomeData = {
   }>;
 };
 
-type PricingCurrency = "credits" | "usd";
-
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: "Anthropic",
   beeble: "Beeble",
@@ -284,10 +282,10 @@ function priceWithoutUnit(value: string, unit: string, locale: PricingLocale): s
 function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
-  }).format(value);
+  }).format(value).replace("$", "&#36;");
 }
 
-function formatRateAmount(rate: MetronomeRate, currency: PricingCurrency, creditsPerUsd: number): string {
+function formatRateAmount(rate: MetronomeRate, currency: "credits" | "usd", creditsPerUsd: number): string {
   if (currency === "credits") return formatAmount(rate.credits!);
   return formatUsd(Number(rate.price_usd ?? Number(rate.credits!) / creditsPerUsd));
 }
@@ -297,7 +295,7 @@ function isTokenRoute(rates: MetronomeRate[]): boolean {
   return rates.length > 0 && rates.every((rate) => rate.kind !== "usage" && rate.unit === "per 1M tokens" && tokenCondition.test(rate.conditions ?? ""));
 }
 
-function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale, currency: PricingCurrency, creditsPerUsd: number): string {
+function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale, currency: "credits" | "usd", creditsPerUsd: number): string {
   const selected = rates.filter((rate) => {
     const condition = rate.conditions ?? "";
     if (/^Cached input/.test(condition) || /cache-write/i.test(condition)) return direction === "cached";
@@ -338,12 +336,12 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
-  return ordered.map(([amount, group]) => {
+  return ordered.map(([, group]) => {
     const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
     const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
       ? groupLabels.filter((value) => value !== "Text") : groupLabels;
     const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
-    return `${prefix}${amount}`;
+    return `${prefix}${formatRateAmount(group[0], currency, creditsPerUsd)}`;
   }).join("<br />") || "-";
 }
 
@@ -414,12 +412,12 @@ function resolutionOrder(a: string, b: string): number {
   return pixels(a) - pixels(b) || a.localeCompare(b);
 }
 
-function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): string {
+function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"): string {
   const models = loadCatalog();
   const data = loadMetronomeData();
   const baseCopy = pricingCopy[locale];
   const replaceCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), "USD");
-  const replaceTokenCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), (match, offset: number, source: string) =>
+  const replaceTokenCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), (_match, offset: number, source: string) =>
     offset > 0 && /\s/.test(source[offset - 1]) ? "USD" : " USD");
   const copy = currency === "usd" ? {
     ...baseCopy,
@@ -430,6 +428,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
     kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
   } : baseCopy;
   const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
+  const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
@@ -495,7 +494,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
         const showOptions = hasOptions && !moveKlingOptionIntoName && !omitLumaReferenceOption;
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
-        const creditsHeader = headerUnit ? `${copy.credits} / ${formatUnit(headerUnit, locale)}` : copy.credits;
+        const creditsHeader = headerUnit ? rateHeader("", ` / ${formatUnit(headerUnit, locale)}`) : copy.credits;
         const header = `| ${copy.model} | ${copy.modelId} | ${showOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
         const separator = `| --- | --- | ${showOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => {
@@ -535,7 +534,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
         const matrixModels = [...byModel].filter(([, model]) => !model.conflicted);
         const fallbackIds = new Set([...byModel].filter(([, model]) => model.conflicted).map(([modelId]) => modelId));
         const table = matrixModels.length
-          ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => `${copy.credits} / ${formatUnit(unit, locale)}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => rateHeader("", ` / ${formatUnit(unit, locale)}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
         return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
@@ -568,7 +567,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
       const durationPivotRows = new Set(durationModels.flatMap(([, model]) => model.rows));
       const durationTitle = copy.ratesPer(formatUnit("per request", locale));
       const durationRequestTable = durationModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${durationColumns.map((duration) => `${duration} ${copy.credits} / ${formatUnit("per request", locale)}`).join(" | ")} |\n| --- | --- | ${durationColumns.map(() => "---:").join(" | ")} |\n${durationModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${durationColumns.map((duration) => priceWithoutUnit(model.values.get(duration) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${durationColumns.map((duration) => rateHeader(`${duration} `, ` / ${formatUnit("per request", locale)}`)).join(" | ")} |\n| --- | --- | ${durationColumns.map(() => "---:").join(" | ")} |\n${durationModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${durationColumns.map((duration) => priceWithoutUnit(model.values.get(duration) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
       const textToImage = formatOption("Text to image", locale);
       const imageEdit = formatOption("Edit", locale);
@@ -600,7 +599,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
       const imageRequestModels = [...imageRequestByModel].filter(([, model]) => model.values.size > 1);
       const imageRequestPivotRows = new Set(imageRequestModels.flatMap(([, model]) => model.rows));
       const imageRequestTable = category === "images" && imageRequestModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits} / ${formatUnit("per generation", locale)}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => rateHeader(`${tableCell(option)} `, ` / ${formatUnit("per generation", locale)}`)).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
 
       const kreaModes = ["moodboards", "style_references", "text"].map((mode) => formatOption(`feature=${mode}`, locale));
@@ -645,7 +644,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
         const available = [...byModel].filter(([, model]) => !model.hasConflict && model.cells.size > 0);
         const consumedRows = new Set(available.flatMap(([, model]) => model.rows));
         const table = available.length
-          ? `| ${copy.model} | ${copy.modelId} | ${columns.map(({ label }) => `${tableCell(label)} ${copy.credits} / ${unitLabel}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${available.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map(({ key }) => model.cells.get(key) ?? "-").join(" | ")} |`).join("\n")}`
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map(({ label }) => rateHeader(`${tableCell(label)} `, ` / ${unitLabel}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${available.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map(({ key }) => model.cells.get(key) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         return { title, table, consumedRows };
       };
@@ -706,7 +705,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
       const ideogramImageMatrix = ideogramRowsForMatrix.length
         ? {
           title: copy.ideogramImageRates,
-          table: `| ${copy.model} | ${copy.modelId} | ${ideogramQualities.map((quality) => `${quality} ${copy.credits} / ${ideogramGenerationUnit}`).join(" | ")} |\n| --- | --- | ${ideogramQualities.map(() => "---:").join(" | ")} |\n${ideogramRowsForMatrix.join("\n")}`,
+          table: `| ${copy.model} | ${copy.modelId} | ${ideogramQualities.map((quality) => rateHeader(`${quality} `, ` / ${ideogramGenerationUnit}`)).join(" | ")} |\n| --- | --- | ${ideogramQualities.map(() => "---:").join(" | ")} |\n${ideogramRowsForMatrix.join("\n")}`,
           consumedRows: new Set(ideogramRows),
         }
         : { title: copy.ideogramImageRates, table: "", consumedRows: new Set<typeof ordinaryRows[number]>() };
@@ -881,7 +880,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
       const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
       const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
       const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
-        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => `${resolution} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
+        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
         : "";
       const switchxResolutionRows = new Set(switchxResolutionGroups);
       // Different model families can expose unrelated size bands under one provider.
@@ -983,7 +982,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
           return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
         const unitSuffix = unitRepeatedInColumn ? ` / ${formatUnit(publicUnit, locale)}` : "";
-        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}${unitSuffix}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
+        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => rateHeader(`${label} `, unitSuffix)).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
       if (seedancePivot.length === seedanceIds.size) {
@@ -1036,7 +1035,10 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
       if (durationRequestTable && !ordinaryGroups.has(durationTitle)) {
         tableSections.push({ title: durationTitle, body: durationRequestTable });
       }
-      if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
+      if (kreaTable) tableSections.push({
+        title: copy.kreaGenerationRates,
+        body: kreaTable,
+      });
       for (const matrix of [qwenOutputMatrix, seedreamOutputMatrix, lumaUniMatrix, ideogramImageMatrix, seedanceVideoMatrix, seedanceAudioMatrix]) {
         if (matrix.table) tableSections.push({ title: matrix.title, body: matrix.table });
       }
@@ -1045,7 +1047,7 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
         const tierUnit = publicTierUnit ? ` / ${formatUnit(publicTierUnit, locale)}` : "";
         tableSections.push({
           title: copy.imageTiers,
-          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits}${tierUnit} | 2K ${copy.credits}${tierUnit} | 4K ${copy.credits}${tierUnit} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | ${rateHeader(`1K `, tierUnit)} | ${rateHeader(`2K `, tierUnit)} | ${rateHeader(`4K `, tierUnit)} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
         });
       }
       const hasSubgroups = tableSections.length > 1;
@@ -1055,12 +1057,15 @@ function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): s
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
-  return tabs;
+  return `<Tabs>\n${tabs}\n</Tabs>`;
 }
 
 function render(locale: PricingLocale = "en"): string {
   const copy = pricingCopy[locale];
   const data = loadMetronomeData();
+  const currencyToggleImport = locale === "en"
+    ? "../../snippets/router-pricing-currency.jsx"
+    : "../../../snippets/router-pricing-currency.jsx";
   return `---
 title: "${copy.title}"
 sidebarTitle: "${copy.sidebar}"
@@ -1068,22 +1073,16 @@ description: "${copy.description}"
 mode: "wide"
 ---
 
+import { PricingCurrencyToggle } from "${currencyToggleImport}";
+
 {/* Generated pricing page. */}
 
 ${copy.intro(data.credits_per_usd)}
 
-<Tabs>
-<Tab title="${copy.credits}">
-
+<PricingCurrencyToggle label="${copy.currencyLabel}" creditsLabel="${copy.credits}" usdLabel="USD">
 ${renderCurrencyView(locale, "credits")}
-
-</Tab>
-<Tab title="USD">
-
 ${renderCurrencyView(locale, "usd")}
-
-</Tab>
-</Tabs>
+</PricingCurrencyToggle>
 
 ${copy.status}
 

@@ -11,9 +11,13 @@ const links = (content: string) => [...content.matchAll(/\]\((\/[^)]+)\)/g)].map
 const technicalKeys = (content: string) => [...content.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 const providers = (content: string) => [...content.matchAll(/<Accordion title="([^"]+)"/g)].map((match) => match[1]);
 const numericRates = (content: string) => {
+  const bothCurrencies = content.replace(
+    /<PricingValue credits="([^"]*)" usd="([^"]*)" \/>/g,
+    "$1<br />$2",
+  );
   const rows: string[][] = [];
   let priceColumns: number[] = [];
-  for (const line of content.split("\n")) {
+  for (const line of bothCurrencies.split("\n")) {
     if (!line.startsWith("|")) { priceColumns = []; continue; }
     const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
     if (/^(Name|名前|名称|이름)$/.test(cells[0])) {

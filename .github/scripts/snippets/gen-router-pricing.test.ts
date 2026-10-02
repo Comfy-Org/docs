@@ -5,20 +5,22 @@ import { formatAmount, formatOption, formatUnit } from "./router-pricing-display
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
-const page = render();
+const sourcePage = render();
+const currencyToggleStart = sourcePage.indexOf("<PricingCurrencyToggle");
+const creditsTabsStart = sourcePage.indexOf("<Tabs>", currencyToggleStart);
+const usdTabsStart = sourcePage.indexOf("<Tabs>", creditsTabsStart + 1);
+const currencyToggleEnd = sourcePage.indexOf("</PricingCurrencyToggle>", usdTabsStart);
+const creditsPage = sourcePage.slice(creditsTabsStart, usdTabsStart);
+const usdPage = sourcePage.slice(usdTabsStart, currencyToggleEnd);
 
 function pricingTables(content: string) {
-  const tables: { provider: string; section: string; currency: "credits" | "usd"; headers: string[]; rows: string[][]; displayRows: string[][] }[] = [];
+  const tables: { provider: string; section: string; headers: string[]; rows: string[][]; displayRows: string[][] }[] = [];
   let provider = "";
   let section = "";
-  let currency: "credits" | "usd" = "credits";
   let table: (typeof tables)[number] | undefined;
   let previousName = "";
   let previousModelId = "";
   for (const line of content.split("\n")) {
-    const tab = line.match(/<Tab title="([^"]+)"/);
-    if (tab?.[1] === "Credits") currency = "credits";
-    else if (tab?.[1] === "USD") currency = "usd";
     const accordion = line.match(/<Accordion title="([^"]+)"/);
     if (accordion) { provider = accordion[1]; section = ""; }
     if (!line.startsWith("|")) {
@@ -31,7 +33,7 @@ function pricingTables(content: string) {
     }
     const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
     if (cells[0] === "Name") {
-      table = { provider, section, currency, headers: cells, rows: [], displayRows: [] };
+      table = { provider, section, headers: cells, rows: [], displayRows: [] };
       tables.push(table);
       previousName = "";
       previousModelId = "";
@@ -48,8 +50,10 @@ function pricingTables(content: string) {
   return tables;
 }
 
-const tables = pricingTables(page);
-const priceAmounts = (cell: string) => [...cell.matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1].replaceAll(",", ""));
+const page = sourcePage;
+const tables = pricingTables(creditsPage);
+const usdTables = pricingTables(usdPage);
+const priceAmounts = (cell: string) => [...cell.replaceAll("&#36;", "$").matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1].replaceAll(",", ""));
 
 describe("public Router pricing", () => {
   test("shows every model/provider route under its provider and model-type section", () => {
@@ -64,8 +68,7 @@ describe("public Router pricing", () => {
       expect(page).toContain(`<Accordion title="${provider}"`);
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
-    const unavailable = tables.filter((table) => table.currency === "credits")
-      .flatMap((table) => table.rows.filter((row) => row.includes("Not published")));
+    const unavailable = tables.flatMap((table) => table.rows.filter((row) => row.includes("Not published")));
     const unpricedRoutes = routes.filter(({ model, provider }) => !snapshot.rates.some((rate) =>
       rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider));
     expect(unavailable).toHaveLength(unpricedRoutes.length);
@@ -89,7 +92,7 @@ describe("public Router pricing", () => {
     expect(page).not.toContain('<Accordion title="Black Forest Labs"');
     expect(tables.some((table) => table.provider === "fal" && table.rows.some((row) => row[1] === "`fal/patina`"))).toBe(true);
     expect(tables.some((table) => table.provider === "WaveSpeed" && table.rows.some((row) => row[1] === "`wavespeed/seedvr2`"))).toBe(true);
-    const falSeedanceRows = tables.filter((table) => table.currency === "credits" && table.provider === "fal")
+    const falSeedanceRows = tables.filter((table) => table.provider === "fal")
       .flatMap((table) => table.rows)
       .filter((row) => ["`byteplus/dreamina-seedance-2-0-260128`", "`byteplus/dreamina-seedance-2-5-260628`"].includes(row[1]));
     expect(falSeedanceRows).toHaveLength(2);
@@ -126,11 +129,14 @@ describe("public Router pricing", () => {
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
-    expect(page).toContain("211 credits = $1 USD");
-    expect(page).toContain('<Tab title="Credits">');
-    expect(page).toContain('<Tab title="USD">');
-    expect(page).toContain("Input USD / 1M tokens");
-    expect(page).toContain("Text: $7.15");
+    expect(sourcePage).toContain("211 credits = $1 USD");
+    expect(sourcePage).toContain('import { PricingCurrencyToggle } from "../../snippets/router-pricing-currency.jsx";');
+    expect(sourcePage).toContain('<PricingCurrencyToggle label="Currency" creditsLabel="Credits" usdLabel="USD">');
+    const toggle = readFileSync("snippets/router-pricing-currency.jsx", "utf8");
+    expect(toggle).toContain('role="switch"');
+    expect(toggle).toContain("setShowUsd");
+    expect(usdTables.some((table) => table.headers.includes("Input USD / 1M tokens"))).toBe(true);
+    expect(usdPage).toContain("Text: &#36;7.15");
     for (const clutter of ["Metronome", "Pricing source", "Serving provider", "Router model ID", "USD price:", "Credits:", "Conditions:", "Effective: From", "effective_from", "source_sha256"]) {
       expect(page).not.toContain(clutter);
     }
@@ -146,10 +152,10 @@ describe("public Router pricing", () => {
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
-      const matchingPrices = tables.filter((table) => table.currency === "credits" && table.provider.toLowerCase() === provider.toLowerCase())
+      const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
-      const matchingUsdPrices = tables.filter((table) => table.currency === "usd" && table.provider.toLowerCase() === provider.toLowerCase())
+      const matchingUsdPrices = usdTables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /usd/i.test(header) ? [row[index]] : [])));
       const amount = formatAmount(rate.credits!);
@@ -159,11 +165,11 @@ describe("public Router pricing", () => {
       const imageGeneration = model.category === "images" && ["per request", "per image", "per output image"].includes(rate.unit);
       const unit = imageGeneration ? "generation"
         : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
+      expect(matchingUsdPrices.some((cell) => priceAmounts(cell).includes(usdAmount))).toBe(true);
       expect(matchingPrices.some(({ header, cell, section }) => priceAmounts(cell).includes(amount)
         && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.toLowerCase().includes(`credits / ${unit}`)
           || (rate.model_id === "beeble/switchx" && page.includes("Images are billed per output image. Videos are billed per 30 output frames, rounded up."))
           || (unit === "1K video tokens" && section.toLowerCase().startsWith("per 1k video tokens"))))).toBe(true);
-      expect(matchingUsdPrices.some((cell) => priceAmounts(cell).includes(usdAmount))).toBe(true);
     }
     expect(page).toContain("| 15.0865 / s |");
     expect(page).toContain("Credits / generation");
@@ -191,12 +197,12 @@ describe("public Router pricing", () => {
 
   test("token-priced models have one row with cached, input, and output columns", () => {
     expect(page).toContain("| Name | Model ID | Cached input credits / 1M tokens | Input credits / 1M tokens | Output credits / 1M tokens |");
-    const creditsPanel = page.slice(page.indexOf('<Tab title="Credits">'), page.indexOf('<Tab title="USD">'));
+    const creditsPanel = creditsPage;
     expect(creditsPanel.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
     expect(creditsPanel.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
     expect(creditsPanel).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | Text: 3017.3 | Text: 15086.5 |");
     expect(creditsPanel).toContain("| Read: 60.346<br />Write: 754.325 | Text: 603.46 | Text: 3017.3 |");
-    const gpt4o = tables.find((table) => table.currency === "credits" && table.headers.includes("Cached input credits / 1M tokens")
+    const gpt4o = tables.find((table) => table.headers.includes("Cached input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-4o`"))!;
     expect(gpt4o.rows.find((row) => row[1] === "`openai/gpt-4o`")?.[2]).toBe("263.75");
     expect(page).not.toContain("Cache creation");
@@ -206,13 +212,13 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Text output / Reasoning:");
     expect(creditsPanel).toContain("Reasoning: 2262.975");
     expect(creditsPanel).not.toContain("Text / Reasoning: 2262.975");
-    for (const table of tables.filter((table) => table.currency === "credits" && table.headers.some((header) => header.startsWith("Input credits")))) {
+    for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
       }
     }
     expect(creditsPanel).toContain("Cached input credits");
-    const geminiImage = tables.find((table) => table.currency === "credits" && table.provider === "Comfy"
+    const geminiImage = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-2.5-flash-image`"))!;
     const geminiRow = geminiImage.rows.find((row) => row[1] === "`vertexai/gemini-2.5-flash-image`")!;
