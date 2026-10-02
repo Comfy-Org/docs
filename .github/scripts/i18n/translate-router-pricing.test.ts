@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "../snippets/gen-router-pricing.ts";
 import { REPO_ROOT } from "./i18n-config.mjs";
-import { localizedPageContent } from "./translate-router-pricing.ts";
+import { keepLinksInsideLocale, localizedPageContent } from "./translate-router-pricing.ts";
 
 const PAGE = "development/comfy-router/pricing.mdx";
 const LOCALES = ["ja", "zh", "ko"] as const;
@@ -47,20 +47,37 @@ for (const locale of LOCALES) {
     expect(numericRates(localized)).toEqual(numericRates(english));
     expect(technicalKeys(localized)).toEqual(technicalKeys(english));
     expect(providers(localized)).toEqual(providers(english));
-    expect(links(localized).map((link) => link.replace(/^\/(ja|zh|ko)\//, "/"))).toEqual(links(english));
+
+    // The same links in the same order: a translated target keeps its exact
+    // path, an untranslated one stays inside the locale (nearest localized
+    // page) instead of falling back to the English page.
+    const localizedLinks = links(localized);
+    const englishLinks = links(english);
+    expect(localizedLinks.length).toEqual(englishLinks.length);
+    localizedLinks.forEach((link, index) => {
+      if (link.replace(/^\/(ja|zh|ko)\//, "/") === englishLinks[index]) return;
+      expect(link.startsWith(`/${locale}/`)).toBe(true);
+    });
+
     expect(localized).not.toMatch(/Metronome|Pricing source|Extra conditions|Serving provider/);
     expect(localized).toContain("translationSourceHash:");
     expect(localizedPageContent(english, locale)).toBe(localized);
   });
 
-  test(`${locale} pricing uses localized links only where a target exists`, () => {
+  test(`${locale} pricing keeps every link inside the locale and points at an existing page`, () => {
     for (const link of links(localizedPageContent(render(), locale))) {
-      if (!link.startsWith(`/${locale}/`)) continue;
-      const path = link.split(/[?#]/)[0].slice(1);
+      const path = link.split(/[?#]/)[0];
+      if (!path.startsWith("/") || path.startsWith("/images/") || path.startsWith("/snippets/")) continue;
+
+      // A localized page must not send readers to the English page just because
+      // the exact target has not been translated yet.
+      expect(path.startsWith(`/${locale}/`)).toBe(true);
+
+      // Only real pages count, same contract as nearestExistingLocaleTarget.
+      const localized = path.slice(`/${locale}/`.length);
       expect([
-        join(REPO_ROOT, `${path}.mdx`),
-        join(REPO_ROOT, path, "index.mdx"),
-        join(REPO_ROOT, path),
+        join(REPO_ROOT, locale, `${localized}.mdx`),
+        join(REPO_ROOT, locale, localized, "index.mdx"),
       ].some(existsSync)).toBe(true);
     }
   });
@@ -87,4 +104,31 @@ test("pricing check validates all locales without writing them", () => {
   expect(result.stderr.toString()).toBe("");
   expect(result.exitCode).toBe(0);
   expect(files.map((path) => ({ content: readFileSync(path, "utf8"), modified: statSync(path).mtimeMs }))).toEqual(before);
+});
+
+test("keepLinksInsideLocale keeps an untranslated target inside the locale", () => {
+  const untranslated =
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code).";
+  const kept = keepLinksInsideLocale(untranslated, "ja");
+  expect(kept).toContain("](/ja/development/comfy-router/models)");
+  expect(kept).not.toContain("/development/comfy-router/models/ideogram");
+});
+
+test("keepLinksInsideLocale keeps the exact target and fragment when it exists", () => {
+  const translated =
+    "See [Ideogram V4](/ja/development/comfy-router/models/ideogram/ideogram-v4/code#examples).";
+  expect(keepLinksInsideLocale(translated, "ja")).toBe(translated);
+});
+
+test("keepLinksInsideLocale drops the fragment when it falls back to an ancestor page", () => {
+  const fallback =
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code#examples).";
+  const kept = keepLinksInsideLocale(fallback, "ja");
+  expect(kept).toContain("](/ja/development/comfy-router/models)");
+  expect(kept).not.toContain("#examples");
+});
+
+test("keepLinksInsideLocale falls back to English only when the locale has no page on that path", () => {
+  const nowhere = "See [Nowhere](/ja/no-such-area/deeper/code).";
+  expect(keepLinksInsideLocale(nowhere, "ja")).toContain("](/no-such-area/deeper/code)");
 });
