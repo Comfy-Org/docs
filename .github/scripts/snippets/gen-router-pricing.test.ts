@@ -176,6 +176,9 @@ describe("public Router pricing", () => {
     expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
     expect(page).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | 3017.3 | 15086.5 |");
     expect(page).toContain("| Read: 60.346<br />Write: 754.325 | 603.46 | 3017.3 |");
+    const gpt4o = tables.find((table) => table.headers.includes("Cached input credits / 1M tokens")
+      && table.rows.some((row) => row[1] === "`openai/gpt-4o`"))!;
+    expect(gpt4o.rows.find((row) => row[1] === "`openai/gpt-4o`")?.[2]).toBe("263.75");
     expect(page).not.toContain("Cache creation");
     expect(page).not.toContain("Write 5m");
     expect(page).not.toContain("Audio input:");

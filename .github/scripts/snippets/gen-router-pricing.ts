@@ -305,8 +305,10 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     ?? (groups.size === 1 ? selected[0] : undefined);
   const primary = baseline ? formatAmount(baseline.credits!) : undefined;
   const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
+  const hasCachedWrite = direction === "cached" && selected.some((rate) =>
+    /cache-write|^(?:5-minute|1-hour)/i.test(rate.conditions ?? ""));
   const label = (condition: string) => {
-    if (/^Cached input/.test(condition)) return ["Read", "読み取り", "读取", "읽기"][localeIndex];
+    if (/^Cached input/.test(condition)) return hasCachedWrite ? ["Read", "読み取り", "读取", "읽기"][localeIndex] : "";
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
       text: ["Text", "テキスト", "文本", "텍스트"],
@@ -323,7 +325,7 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
   return ordered.map(([amount, group]) => {
-    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")))];
+    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
     const labels = direction === "output" || (direction === "input" && amount === primary)
       ? groupLabels.filter((value) => value !== "Text")
       : groupLabels;
