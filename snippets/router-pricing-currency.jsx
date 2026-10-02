@@ -1,4 +1,4 @@
-export const PricingCurrencyToggle = ({ children, label, creditsLabel, usdLabel }) => {
+export const PricingCurrencyToggle = ({ children, creditsLabel, usdLabel }) => {
   const [showUsd, setShowUsd] = useState(false);
   const toggleCurrency = () => setShowUsd((current) => !current);
 
@@ -22,12 +22,11 @@ export const PricingCurrencyToggle = ({ children, label, creditsLabel, usdLabel 
         }
       `}</style>
       <div className="router-pricing-currency-control-row">
-        <span>{label}</span>
         <button
           type="button"
           role="switch"
           aria-checked={showUsd}
-          aria-label={`${label}: ${showUsd ? usdLabel : creditsLabel}`}
+          aria-label={showUsd ? `Show prices in ${creditsLabel}` : `Show prices in ${usdLabel}`}
           className="router-pricing-currency-control"
           onClick={toggleCurrency}
         >

@@ -1079,7 +1079,7 @@ import { PricingCurrencyToggle } from "${currencyToggleImport}";
 
 ${copy.intro(data.credits_per_usd)}
 
-<PricingCurrencyToggle label="${copy.currencyLabel}" creditsLabel="${copy.credits}" usdLabel="USD">
+<PricingCurrencyToggle creditsLabel="${copy.credits}" usdLabel="USD">
 ${renderCurrencyView(locale, "credits")}
 ${renderCurrencyView(locale, "usd")}
 </PricingCurrencyToggle>

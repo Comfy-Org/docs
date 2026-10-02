@@ -8,8 +8,7 @@ export const pricingCopy = {
   en: {
     title: "Comfy Router pricing", sidebar: "Pricing",
     description: "Compare Comfy Router model prices in credits or USD by serving provider across image, video, text, audio, and 3D.",
-    intro: (creditsPerUsd: number) => `Prices are in Comfy credits. ${creditsPerUsd} credits = $1 USD. Use the currency switch to view prices in USD. Each rate includes its unit. Tables group serving providers; Model ID prefixes identify model owners. [See provider coverage](/development/comfy-router/providers).`,
-    currencyLabel: "Currency",
+    intro: (creditsPerUsd: number) => `${creditsPerUsd} credits = $1 USD.`,
     updated: "Prices updated",
     imageTiers: "Image quality and resolution",
     tokenRates: "Token rates",
@@ -37,8 +36,7 @@ export const pricingCopy = {
   ja: {
     title: "Comfy Router の料金", sidebar: "料金",
     description: "Comfy Router の画像、動画、テキスト、音声、3D モデルの料金を、クレジットまたは USD で提供プロバイダー別に比較できます。",
-    intro: (creditsPerUsd: number) => `料金は Comfy クレジットです。${creditsPerUsd} クレジット = $1 USD です。通貨スイッチで USD 表示に切り替えられます。各料金に請求単位を記載しています。表は提供プロバイダー別で、Model ID の接頭辞はモデルの所有元を示します。[プロバイダーの対応状況](/development/comfy-router/providers)。`,
-    currencyLabel: "通貨",
+    intro: (creditsPerUsd: number) => `${creditsPerUsd} クレジット = $1 USD です。`,
     updated: "料金の更新日",
     imageTiers: "画像の品質と解像度",
     tokenRates: "トークン料金",
@@ -66,8 +64,7 @@ export const pricingCopy = {
   zh: {
     title: "Comfy Router 定价", sidebar: "定价",
     description: "按服务提供方比较 Comfy Router 图像、视频、文本、音频和 3D 模型的积分或 USD 价格。",
-    intro: (creditsPerUsd: number) => `价格以 Comfy 积分显示。${creditsPerUsd} 积分 = $1 USD。使用货币开关可切换为 USD。每项费率均标明计费单位。表格按服务提供方分组，Model ID 前缀表示模型所属方。[查看提供方覆盖情况](/development/comfy-router/providers)。`,
-    currencyLabel: "货币",
+    intro: (creditsPerUsd: number) => `${creditsPerUsd} 积分 = $1 USD。`,
     updated: "价格更新日期",
     imageTiers: "图像质量和分辨率",
     tokenRates: "Token 费率",
@@ -95,8 +92,7 @@ export const pricingCopy = {
   ko: {
     title: "Comfy Router 요금", sidebar: "요금",
     description: "Comfy Router의 이미지, 동영상, 텍스트, 오디오 및 3D 모델 요금을 제공자별로 크레딧 또는 USD로 비교하세요.",
-    intro: (creditsPerUsd: number) => `가격은 Comfy 크레딧으로 표시합니다. ${creditsPerUsd} 크레딧 = $1 USD입니다. 통화 스위치로 USD 표시를 선택할 수 있습니다. 각 요금에 청구 단위를 명시합니다. 표는 제공자별로 그룹화하고 Model ID 접두사는 모델 소유자를 나타냅니다. [제공 범위 보기](/development/comfy-router/providers).`,
-    currencyLabel: "통화",
+    intro: (creditsPerUsd: number) => `${creditsPerUsd} 크레딧 = $1 USD입니다.`,
     updated: "요금 업데이트",
     imageTiers: "이미지 품질 및 해상도",
     tokenRates: "토큰 요금",

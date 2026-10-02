@@ -85,8 +85,8 @@ describe("public Router pricing", () => {
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
     expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Runware", "WaveSpeed"]);
     expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
-    expect(page).toContain("Model ID prefixes identify model owners.");
-    expect(page).toContain("[See provider coverage](/development/comfy-router/providers)");
+    expect(page).not.toContain("Model ID prefixes identify model owners.");
+    expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
     expect(page).not.toContain('<Accordion title="Kling"');
     expect(page).not.toContain('<Accordion title="Black Forest Labs"');
@@ -129,12 +129,15 @@ describe("public Router pricing", () => {
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
-    expect(sourcePage).toContain("211 credits = $1 USD");
+    expect(sourcePage).toContain("\n\n211 credits = $1 USD.\n\n<PricingCurrencyToggle");
     expect(sourcePage).toContain('import { PricingCurrencyToggle } from "../../snippets/router-pricing-currency.jsx";');
-    expect(sourcePage).toContain('<PricingCurrencyToggle label="Currency" creditsLabel="Credits" usdLabel="USD">');
+    expect(sourcePage).toContain('<PricingCurrencyToggle creditsLabel="Credits" usdLabel="USD">');
+    expect(sourcePage).not.toContain("Use the currency switch");
+    expect(sourcePage).not.toContain('label="Currency"');
     const toggle = readFileSync("snippets/router-pricing-currency.jsx", "utf8");
     expect(toggle).toContain('role="switch"');
     expect(toggle).toContain("setShowUsd");
+    expect(toggle).not.toContain("{label}");
     expect(usdTables.some((table) => table.headers.includes("Input USD / 1M tokens"))).toBe(true);
     expect(usdPage).toContain("Text: &#36;7.15");
     for (const clutter of ["Metronome", "Pricing source", "Serving provider", "Router model ID", "USD price:", "Credits:", "Conditions:", "Effective: From", "effective_from", "source_sha256"]) {
