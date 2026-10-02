@@ -47,20 +47,37 @@ for (const locale of LOCALES) {
     expect(numericRates(localized)).toEqual(numericRates(english));
     expect(technicalKeys(localized)).toEqual(technicalKeys(english));
     expect(providers(localized)).toEqual(providers(english));
-    expect(links(localized).map((link) => link.replace(/^\/(ja|zh|ko)\//, "/"))).toEqual(links(english));
+
+    // The same links in the same order: a translated target keeps its exact
+    // path, an untranslated one stays inside the locale (nearest localized
+    // page) instead of falling back to the English page.
+    const localizedLinks = links(localized);
+    const englishLinks = links(english);
+    expect(localizedLinks.length).toEqual(englishLinks.length);
+    localizedLinks.forEach((link, index) => {
+      if (link.replace(/^\/(ja|zh|ko)\//, "/") === englishLinks[index]) return;
+      expect(link.startsWith(`/${locale}/`)).toBe(true);
+    });
+
     expect(localized).not.toMatch(/Metronome|Pricing source|Extra conditions|Serving provider/);
     expect(localized).toContain("translationSourceHash:");
     expect(localizedPageContent(english, locale)).toBe(localized);
   });
 
-  test(`${locale} pricing uses localized links only where a target exists`, () => {
+  test(`${locale} pricing keeps every link inside the locale and points at an existing page`, () => {
     for (const link of links(localizedPageContent(render(), locale))) {
-      if (!link.startsWith(`/${locale}/`)) continue;
-      const path = link.split(/[?#]/)[0].slice(1);
+      const path = link.split(/[?#]/)[0];
+      if (!path.startsWith("/") || path.startsWith("/images/") || path.startsWith("/snippets/")) continue;
+
+      // A localized page must not send readers to the English page just because
+      // the exact target has not been translated yet.
+      expect(path.startsWith(`/${locale}/`)).toBe(true);
+
+      const localized = path.slice(`/${locale}/`.length);
       expect([
-        join(REPO_ROOT, `${path}.mdx`),
-        join(REPO_ROOT, path, "index.mdx"),
-        join(REPO_ROOT, path),
+        join(REPO_ROOT, locale, `${localized}.mdx`),
+        join(REPO_ROOT, locale, localized, "index.mdx"),
+        join(REPO_ROOT, locale, localized),
       ].some(existsSync)).toBe(true);
     }
   });
