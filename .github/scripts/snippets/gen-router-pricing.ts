@@ -47,6 +47,8 @@ type MetronomeData = {
   }>;
 };
 
+type PricingCurrency = "credits" | "usd";
+
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: "Anthropic",
   beeble: "Beeble",
@@ -279,12 +281,23 @@ function priceWithoutUnit(value: string, unit: string, locale: PricingLocale): s
   return value.endsWith(suffix) ? value.slice(0, -suffix.length) : value;
 }
 
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
+  }).format(value);
+}
+
+function formatRateAmount(rate: MetronomeRate, currency: PricingCurrency, creditsPerUsd: number): string {
+  if (currency === "credits") return formatAmount(rate.credits!);
+  return formatUsd(Number(rate.price_usd ?? Number(rate.credits!) / creditsPerUsd));
+}
+
 function isTokenRoute(rates: MetronomeRate[]): boolean {
   const tokenCondition = /^(?:(?:Input|Output) (?:text|audio|image|video) tokens|Cached input(?: (?:text|audio|image|video))? tokens|Cache-write input text tokens|(?:5-minute|1-hour) cache-write input tokens|Reasoning tokens)$/;
   return rates.length > 0 && rates.every((rate) => rate.kind !== "usage" && rate.unit === "per 1M tokens" && tokenCondition.test(rate.conditions ?? ""));
 }
 
-function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale): string {
+function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale, currency: PricingCurrency, creditsPerUsd: number): string {
   const selected = rates.filter((rate) => {
     const condition = rate.conditions ?? "";
     if (/^Cached input/.test(condition) || /cache-write/i.test(condition)) return direction === "cached";
@@ -295,7 +308,7 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   // including media and reasoning charges that match the text baseline.
   const groups = new Map<string, MetronomeRate[]>();
   for (const rate of selected) {
-    const amount = formatAmount(rate.credits!);
+    const amount = formatRateAmount(rate, currency, creditsPerUsd);
     const group = groups.get(amount) ?? [];
     group.push(rate);
     groups.set(amount, group);
@@ -303,12 +316,13 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   const baseline = selected.find((rate) => rate.conditions === (direction === "input" ? "Input text tokens" : direction === "output" ? "Output text tokens" : "Cached input text tokens"))
     ?? (direction === "cached" ? selected.find((rate) => rate.conditions === "Cached input tokens") : undefined)
     ?? (groups.size === 1 ? selected[0] : undefined);
-  const primary = baseline ? formatAmount(baseline.credits!) : undefined;
+  const primary = baseline ? formatRateAmount(baseline, currency, creditsPerUsd) : undefined;
   const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
   const hasCachedWrite = direction === "cached" && selected.some((rate) =>
     /cache-write|^(?:5-minute|1-hour)/i.test(rate.conditions ?? ""));
   const label = (condition: string) => {
     if (/^Cached input/.test(condition)) return hasCachedWrite ? ["Read", "読み取り", "读取", "읽기"][localeIndex] : "";
+    if (condition === "Input text tokens" || condition === "Output text tokens") return ["Text", "テキスト", "文本", "텍스트"][localeIndex];
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
       text: ["Text", "テキスト", "文本", "텍스트"],
@@ -326,12 +340,9 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
   return ordered.map(([amount, group]) => {
     const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
-    const labels = direction === "output" || (direction === "input" && amount === primary)
-      ? groupLabels.filter((value) => value !== "Text")
-      : groupLabels;
-    const prefix = amount === primary && direction !== "cached" && labels.length === 0
-      ? ""
-      : labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
+    const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
+      ? groupLabels.filter((value) => value !== "Text") : groupLabels;
+    const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
     return `${prefix}${amount}`;
   }).join("<br />") || "-";
 }
@@ -403,10 +414,22 @@ function resolutionOrder(a: string, b: string): number {
   return pixels(a) - pixels(b) || a.localeCompare(b);
 }
 
-function render(locale: PricingLocale = "en"): string {
+function renderCurrencyView(locale: PricingLocale, currency: PricingCurrency): string {
   const models = loadCatalog();
   const data = loadMetronomeData();
-  const copy = pricingCopy[locale];
+  const baseCopy = pricingCopy[locale];
+  const replaceCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), "USD");
+  const replaceTokenCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), (match, offset: number, source: string) =>
+    offset > 0 && /\s/.test(source[offset - 1]) ? "USD" : " USD");
+  const copy = currency === "usd" ? {
+    ...baseCopy,
+    credits: "USD",
+    input: replaceTokenCreditLabel(baseCopy.input),
+    cached: replaceTokenCreditLabel(baseCopy.cached),
+    output: replaceTokenCreditLabel(baseCopy.output),
+    kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
+  } : baseCopy;
+  const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
@@ -452,7 +475,7 @@ function render(locale: PricingLocale = "en"): string {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${priceUnit}`;
+          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
@@ -790,7 +813,7 @@ function render(locale: PricingLocale = "en"): string {
         }
       }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
-        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "input", locale)} | ${tokenPriceCell(rates, "output", locale)} |`,
+        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale, currency, data.credits_per_usd)} | ` : ""}${tokenPriceCell(rates, "input", locale, currency, data.credits_per_usd)} | ${tokenPriceCell(rates, "output", locale, currency, data.credits_per_usd)} |`,
       ).join("\n");
       const imageTierRates = imageRoutes.flatMap(({ image }) => image.groups.flatMap((group) => [...group.tiers.values()]));
       const imageTierUnit = imageTierRates.length > 0
@@ -804,7 +827,7 @@ function render(locale: PricingLocale = "en"): string {
           const values = ["1K", "2K", "4K"].map((size) => {
             const rate = group.tiers.get(size);
             return !rate ? "-" : rate.kind === "usage" ? copy.variable
-              : imageTierUnit === rate.unit ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
+              : imageTierUnit === rate.unit ? amount(rate) : `${amount(rate)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const operation = formatOption(group.operation, locale);
           const quality = formatOption(`quality=${group.quality}`, locale);
@@ -850,7 +873,7 @@ function render(locale: PricingLocale = "en"): string {
       for (const { group } of switchxResolutionGroups) {
         for (const [resolution, { rate }] of group.tiers) {
           const rates = switchxRatesByUnit.get(rate.unit) ?? new Map<string, string>();
-          rates.set(resolution, formatAmount(rate.credits!));
+          rates.set(resolution, amount(rate));
           switchxRatesByUnit.set(rate.unit, rates);
         }
       }
@@ -950,7 +973,7 @@ function render(locale: PricingLocale = "en"): string {
           const values = columns.map((label) => {
             const rate = group.tiers.get(label)?.rate;
             return !rate ? "-" : rate.kind === "usage" ? copy.variable
-              : unitInHeader ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
+              : unitInHeader ? amount(rate) : `${amount(rate)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
           const modelName = `${displayTitle(model)}${modeSuffix}`;
@@ -1032,6 +1055,12 @@ function render(locale: PricingLocale = "en"): string {
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
+  return tabs;
+}
+
+function render(locale: PricingLocale = "en"): string {
+  const copy = pricingCopy[locale];
+  const data = loadMetronomeData();
   return `---
 title: "${copy.title}"
 sidebarTitle: "${copy.sidebar}"
@@ -1041,12 +1070,19 @@ mode: "wide"
 
 {/* Generated pricing page. */}
 
-${copy.intro}
+${copy.intro(data.credits_per_usd)}
 
 <Tabs>
+<Tab title="${copy.credits}">
 
-${tabs}
+${renderCurrencyView(locale, "credits")}
 
+</Tab>
+<Tab title="USD">
+
+${renderCurrencyView(locale, "usd")}
+
+</Tab>
 </Tabs>
 
 ${copy.status}

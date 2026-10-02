@@ -8,13 +8,17 @@ const snapshot = loadMetronomeData();
 const page = render();
 
 function pricingTables(content: string) {
-  const tables: { provider: string; section: string; headers: string[]; rows: string[][]; displayRows: string[][] }[] = [];
+  const tables: { provider: string; section: string; currency: "credits" | "usd"; headers: string[]; rows: string[][]; displayRows: string[][] }[] = [];
   let provider = "";
   let section = "";
+  let currency: "credits" | "usd" = "credits";
   let table: (typeof tables)[number] | undefined;
   let previousName = "";
   let previousModelId = "";
   for (const line of content.split("\n")) {
+    const tab = line.match(/<Tab title="([^"]+)"/);
+    if (tab?.[1] === "Credits") currency = "credits";
+    else if (tab?.[1] === "USD") currency = "usd";
     const accordion = line.match(/<Accordion title="([^"]+)"/);
     if (accordion) { provider = accordion[1]; section = ""; }
     if (!line.startsWith("|")) {
@@ -27,7 +31,7 @@ function pricingTables(content: string) {
     }
     const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
     if (cells[0] === "Name") {
-      table = { provider, section, headers: cells, rows: [], displayRows: [] };
+      table = { provider, section, currency, headers: cells, rows: [], displayRows: [] };
       tables.push(table);
       previousName = "";
       previousModelId = "";
@@ -45,7 +49,7 @@ function pricingTables(content: string) {
 }
 
 const tables = pricingTables(page);
-const priceAmounts = (cell: string) => [...cell.matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?(\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1]);
+const priceAmounts = (cell: string) => [...cell.matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1].replaceAll(",", ""));
 
 describe("public Router pricing", () => {
   test("shows every model/provider route under its provider and model-type section", () => {
@@ -60,7 +64,8 @@ describe("public Router pricing", () => {
       expect(page).toContain(`<Accordion title="${provider}"`);
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
-    const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
+    const unavailable = tables.filter((table) => table.currency === "credits")
+      .flatMap((table) => table.rows.filter((row) => row.includes("Not published")));
     const unpricedRoutes = routes.filter(({ model, provider }) => !snapshot.rates.some((rate) =>
       rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider));
     expect(unavailable).toHaveLength(unpricedRoutes.length);
@@ -84,7 +89,7 @@ describe("public Router pricing", () => {
     expect(page).not.toContain('<Accordion title="Black Forest Labs"');
     expect(tables.some((table) => table.provider === "fal" && table.rows.some((row) => row[1] === "`fal/patina`"))).toBe(true);
     expect(tables.some((table) => table.provider === "WaveSpeed" && table.rows.some((row) => row[1] === "`wavespeed/seedvr2`"))).toBe(true);
-    const falSeedanceRows = tables.filter((table) => table.provider === "fal")
+    const falSeedanceRows = tables.filter((table) => table.currency === "credits" && table.provider === "fal")
       .flatMap((table) => table.rows)
       .filter((row) => ["`byteplus/dreamina-seedance-2-0-260128`", "`byteplus/dreamina-seedance-2-5-260628`"].includes(row[1]));
     expect(falSeedanceRows).toHaveLength(2);
@@ -119,29 +124,38 @@ describe("public Router pricing", () => {
     ]);
   });
 
-  test("uses model IDs and credit prices without USD or internal billing metadata", () => {
+  test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
-    expect(page).toContain("Prices are in Comfy credits.");
+    expect(page).toContain("211 credits = $1 USD");
+    expect(page).toContain('<Tab title="Credits">');
+    expect(page).toContain('<Tab title="USD">');
+    expect(page).toContain("Input USD / 1M tokens");
+    expect(page).toContain("Text: $7.15");
     for (const clutter of ["Metronome", "Pricing source", "Serving provider", "Router model ID", "USD price:", "Credits:", "Conditions:", "Effective: From", "effective_from", "source_sha256"]) {
       expect(page).not.toContain(clutter);
     }
     expect(page).not.toContain("Extra conditions");
-    expect(page).not.toContain("USD");
-    expect(page).not.toContain("$");
     expect(page).not.toContain("How billing works");
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
+    expect(snapshot.credits_per_usd).toBe(211);
     expect(snapshot.rates).toHaveLength(626);
     expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(588);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
-      const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
+      const matchingPrices = tables.filter((table) => table.currency === "credits" && table.provider.toLowerCase() === provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
+      const matchingUsdPrices = tables.filter((table) => table.currency === "usd" && table.provider.toLowerCase() === provider.toLowerCase())
+        .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
+        .flatMap((row) => table.headers.flatMap((header, index) => /usd/i.test(header) ? [row[index]] : [])));
       const amount = formatAmount(rate.credits!);
+      const usdAmount = new Intl.NumberFormat("en-US", {
+        style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
+      }).format(Number(rate.price_usd)).replace(/[,$]/g, "");
       const imageGeneration = model.category === "images" && ["per request", "per image", "per output image"].includes(rate.unit);
       const unit = imageGeneration ? "generation"
         : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
@@ -149,6 +163,7 @@ describe("public Router pricing", () => {
         && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.toLowerCase().includes(`credits / ${unit}`)
           || (rate.model_id === "beeble/switchx" && page.includes("Images are billed per output image. Videos are billed per 30 output frames, rounded up."))
           || (unit === "1K video tokens" && section.toLowerCase().startsWith("per 1k video tokens"))))).toBe(true);
+      expect(matchingUsdPrices.some((cell) => priceAmounts(cell).includes(usdAmount))).toBe(true);
     }
     expect(page).toContain("| 15.0865 / s |");
     expect(page).toContain("Credits / generation");
@@ -176,11 +191,12 @@ describe("public Router pricing", () => {
 
   test("token-priced models have one row with cached, input, and output columns", () => {
     expect(page).toContain("| Name | Model ID | Cached input credits / 1M tokens | Input credits / 1M tokens | Output credits / 1M tokens |");
-    expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
-    expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
-    expect(page).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | 3017.3 | 15086.5 |");
-    expect(page).toContain("| Read: 60.346<br />Write: 754.325 | 603.46 | 3017.3 |");
-    const gpt4o = tables.find((table) => table.headers.includes("Cached input credits / 1M tokens")
+    const creditsPanel = page.slice(page.indexOf('<Tab title="Credits">'), page.indexOf('<Tab title="USD">'));
+    expect(creditsPanel.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
+    expect(creditsPanel.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
+    expect(creditsPanel).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | Text: 3017.3 | Text: 15086.5 |");
+    expect(creditsPanel).toContain("| Read: 60.346<br />Write: 754.325 | Text: 603.46 | Text: 3017.3 |");
+    const gpt4o = tables.find((table) => table.currency === "credits" && table.headers.includes("Cached input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-4o`"))!;
     expect(gpt4o.rows.find((row) => row[1] === "`openai/gpt-4o`")?.[2]).toBe("263.75");
     expect(page).not.toContain("Cache creation");
@@ -188,26 +204,26 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
-    expect(page).toContain("Reasoning: 2262.975");
-    expect(page).not.toContain("Text / Reasoning: 2262.975");
-    for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
+    expect(creditsPanel).toContain("Reasoning: 2262.975");
+    expect(creditsPanel).not.toContain("Text / Reasoning: 2262.975");
+    for (const table of tables.filter((table) => table.currency === "credits" && table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
       }
     }
-    expect(page).toContain("Cached input credits");
-    const geminiImage = tables.find((table) => table.provider === "Comfy"
+    expect(creditsPanel).toContain("Cached input credits");
+    const geminiImage = tables.find((table) => table.currency === "credits" && table.provider === "Comfy"
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-2.5-flash-image`"))!;
     const geminiRow = geminiImage.rows.find((row) => row[1] === "`vertexai/gemini-2.5-flash-image`")!;
     expect(geminiRow).toHaveLength(4);
     expect(geminiRow[2]).toContain("Audio: 211");
-    expect(geminiRow[2]).toContain("Image / Video: 63.3");
+    expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
-    expect(geminiRow[3]).toContain("527.5");
+    expect(geminiRow[3]).toContain("Text: 527.5");
     const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
     expect(gptImage).toHaveLength(4);
-    expect(gptImage[2]).toBe("1055<br />Image: 2110");
+    expect(gptImage[2]).toBe("Text: 1055<br />Image: 2110");
     expect(gptImage[3]).toBe("Image: 8440");
   });
 
