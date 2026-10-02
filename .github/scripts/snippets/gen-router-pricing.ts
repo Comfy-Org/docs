@@ -457,18 +457,24 @@ function render(locale: PricingLocale = "en"): string {
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, headerUnit?: string) => {
         if (!items.length) return "";
         const options = items.map((item) => item.option).filter((option) => option !== "-");
+        const klingV3OptionRows = items.filter((item) => item.modelId === "`kling/kling-v3`" && item.option !== "-");
+        const moveKlingOptionIntoName = klingV3OptionRows.length === 1
+          && items.every((item) => item.option === "-" || item.modelId === "`kling/kling-v3`");
+        const showOptions = hasOptions && !moveKlingOptionIntoName;
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
         const creditsHeader = headerUnit ? `${copy.credits} / ${formatUnit(headerUnit, locale)}` : copy.credits;
-        const header = `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
-        const separator = `| --- | --- | ${hasOptions ? "--- | " : ""}---: |`;
+        const header = `| ${copy.model} | ${copy.modelId} | ${showOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
+        const separator = `| --- | --- | ${showOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => {
           const unitCanBeShortened = headerUnit === item.unit
             || (headerUnit === "per generation" && item.unit === "per request");
           const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
-          return `| ${item.name} | ${item.modelId} | ${hasOptions ? `${tableCell(item.option)} | ` : ""}${credits} |`;
+          const name = moveKlingOptionIntoName && item.modelId === "`kling/kling-v3`"
+            ? item.name.replace("](", ` ${tableCell(item.option)}](`) : item.name;
+          return `| ${name} | ${item.modelId} | ${showOptions ? `${tableCell(item.option)} | ` : ""}${credits} |`;
         }).join("\n");
         return `${header}\n${separator}\n${body}`;
       };
@@ -552,7 +558,103 @@ function render(locale: PricingLocale = "en"): string {
         }).join(" | ")} |`).join("\n")}`
         : "";
 
-      const pivotedOrdinaryRows = new Set([...durationPivotRows, ...imageRequestPivotRows, ...kreaPivotRows]);
+      const renderRateOptionMatrix = (
+        sourceRows: typeof ordinaryRows,
+        title: string,
+        columns: Array<{ key: string; label: string }>,
+        unit: string,
+        unitLabel: string,
+        columnKeys: (option: string) => string[],
+      ) => {
+        const byModel = new Map<string, { name: string; cells: Map<string, string>; rows: typeof ordinaryRows; hasConflict: boolean }>();
+        for (const row of sourceRows) {
+          const keys = columnKeys(row.option);
+          if (!keys.length) continue;
+          const model = byModel.get(row.modelId) ?? { name: row.name, cells: new Map<string, string>(), rows: [], hasConflict: false };
+          const amount = priceWithoutUnit(row.credits, unit, locale);
+          for (const key of keys) {
+            const existing = model.cells.get(key);
+            if (existing && existing !== amount) model.hasConflict = true;
+            else model.cells.set(key, amount);
+          }
+          model.rows.push(row);
+          byModel.set(row.modelId, model);
+        }
+        const available = [...byModel].filter(([, model]) => !model.hasConflict && model.cells.size > 0);
+        const consumedRows = new Set(available.flatMap(([, model]) => model.rows));
+        const table = available.length
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map(({ label }) => `${tableCell(label)} ${copy.credits} / ${unitLabel}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${available.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map(({ key }) => model.cells.get(key) ?? "-").join(" | ")} |`).join("\n")}`
+          : "";
+        return { title, table, consumedRows };
+      };
+      const qwenImageIds = new Set(["qwen/qwen-image-3.0", "qwen/qwen-image-3.0-pro"]);
+      const qwenOutputRows = category === "images" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => qwenImageIds.has(row.modelId.slice(1, -1)) && row.unit === "per output image")
+        : [];
+      const qwenOutputMatrix = renderRateOptionMatrix(qwenOutputRows, copy.qwenImageRates,
+        ["1K", "2K"].map((size) => ({ key: size, label: size })),
+        "per output image", formatUnit("per output image", locale),
+        (option) => option.split(" · ").at(-1)?.split(" / ").filter((size) => ["1K", "2K"].includes(size)) ?? []);
+
+      const seedreamId = "byteplus/seedream-5-0-pro-260628";
+      const seedreamOutputRows = category === "images" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => row.modelId === `\`${seedreamId}\`` && row.unit === "per output image")
+        : [];
+      const seedreamOperations = [formatOption("Layer decomposition", locale), formatOption("Output image", locale)];
+      const seedreamSizes = [formatOption("output_tier=standard", locale), formatOption("output_tier=large", locale)];
+      const seedreamColumns = seedreamOperations.flatMap((operation) => seedreamSizes.map((size) => ({
+        key: `${operation} · ${size}`,
+        label: `${operation} · ${size}`,
+      })));
+      const seedreamOutputMatrix = renderRateOptionMatrix(seedreamOutputRows, copy.seedreamProRates, seedreamColumns,
+        "per output image", formatUnit("per output image", locale),
+        (option) => seedreamColumns.some(({ key }) => key === option) ? [option] : []);
+
+      const lumaUniIds = new Set(["luma_2/uni-1", "luma_2/uni-1-max"]);
+      const lumaUniRows = category === "images" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => lumaUniIds.has(row.modelId.slice(1, -1)) && row.unit === "per generation")
+        : [];
+      const lumaUniOperations = [formatOption("type=image", locale), formatOption("type=image_edit", locale)];
+      const lumaUniMatrix = renderRateOptionMatrix(lumaUniRows, copy.lumaUniRates,
+        lumaUniOperations.map((label) => ({ key: label, label })),
+        "per generation", formatUnit("per generation", locale), (option) => lumaUniOperations.includes(option) ? [option] : []);
+
+      const seedanceVideoIds = new Set([
+        "byteplus/dreamina-seedance-2-0-fast-260128", "byteplus/dreamina-seedance-2-0-mini",
+        "byteplus/seedance-1-0-pro-250528", "byteplus/seedance-1-0-pro-fast-251015",
+      ]);
+      const seedanceVideoRows = category === "video" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => seedanceVideoIds.has(row.modelId.slice(1, -1)) && row.unit === "per 1M tokens")
+        : [];
+      const imageToVideo = formatOption("video_type=image-to-video", locale);
+      const textToVideo = formatOption("video_type=text-to-video", locale);
+      const videoToVideo = formatOption("video_type=video-to-video", locale);
+      const seedanceVideoMatrix = renderRateOptionMatrix(seedanceVideoRows, copy.seedanceVideoTokenRates, [
+        { key: "image-text-to-video", label: `${imageToVideo} / ${textToVideo}` },
+        { key: "video-to-video", label: videoToVideo },
+      ], "per 1M tokens", formatUnit("per 1M tokens", locale), (option) => {
+        const options = option.split(" / ").map((value) => value.trim());
+        const keys: string[] = [];
+        if (options.includes(imageToVideo) || options.includes(textToVideo)) keys.push("image-text-to-video");
+        if (options.includes(videoToVideo)) keys.push("video-to-video");
+        return keys;
+      });
+
+      const seedanceAudioId = "byteplus/seedance-1-5-pro-251215";
+      const seedanceAudioRows = category === "video" && provider === "Comfy"
+        ? ordinaryRows.filter((row) => row.modelId === `\`${seedanceAudioId}\`` && row.unit === "per 1M tokens")
+        : [];
+      const seedanceAudioOptions = [formatOption("generate_audio=false", locale), formatOption("generate_audio=true", locale)];
+      const seedanceAudioMatrix = renderRateOptionMatrix(seedanceAudioRows, copy.seedanceAudioTokenRates,
+        seedanceAudioOptions.map((label) => ({ key: label, label })),
+        "per 1M tokens", formatUnit("per 1M tokens", locale), (option) => seedanceAudioOptions.includes(option) ? [option] : []);
+
+      const pivotedOrdinaryRows = new Set([
+        ...durationPivotRows, ...imageRequestPivotRows, ...kreaPivotRows,
+        ...qwenOutputMatrix.consumedRows, ...seedreamOutputMatrix.consumedRows,
+        ...lumaUniMatrix.consumedRows,
+        ...seedanceVideoMatrix.consumedRows, ...seedanceAudioMatrix.consumedRows,
+      ]);
       for (const [title, rows] of ordinaryGroups) {
         const remaining = rows.filter((row) => !pivotedOrdinaryRows.has(row));
         if (remaining.length) ordinaryGroups.set(title, remaining);
@@ -796,6 +898,9 @@ function render(locale: PricingLocale = "en"): string {
         tableSections.push({ title: durationTitle, body: durationRequestTable });
       }
       if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
+      for (const matrix of [qwenOutputMatrix, seedreamOutputMatrix, lumaUniMatrix, seedanceVideoMatrix, seedanceAudioMatrix]) {
+        if (matrix.table) tableSections.push({ title: matrix.title, body: matrix.table });
+      }
       if (imageRows) {
         const publicTierUnit = category === "images" && imageTierUnit === "per request" ? "per generation" : imageTierUnit;
         const tierUnit = publicTierUnit ? ` / ${formatUnit(publicTierUnit, locale)}` : "";

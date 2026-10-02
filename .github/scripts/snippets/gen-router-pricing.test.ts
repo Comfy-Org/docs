@@ -341,9 +341,7 @@ describe("public Router pricing", () => {
     const perGeneration = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Credits / generation")
       && table.rows.some((row) => row[1] === "`runway/gen4_image`"))!;
     expect(perGeneration.rows.some((row) => row[1] === "`runway/gen4_image`" && row.includes("24.1384"))).toBe(true);
-    const outputImage = tables.find((table) => table.provider === "Comfy"
-      && table.headers.includes("Credits / output image")
-      && table.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`"))!;
+    const outputImage = tables.find((table) => table.section === "Qwen Image 3.0 output image rates")!;
     expect(outputImage.rows.some((row) => row[1] === "`qwen/qwen-image-3.0`" && row.includes("9.0519"))).toBe(true);
     const falOneTime = tables.find((table) => table.provider === "fal"
       && table.headers.includes("Credits / generation")
@@ -353,6 +351,72 @@ describe("public Router pricing", () => {
       && table.headers.includes("Credits / image")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`"))!;
     expect(falImage.rows.some((row) => row[1] === "`vertexai/gemini-3.1-flash-image`" && row.includes("16.88"))).toBe(true);
+  });
+
+  test("shows Qwen and Seedream output-image rates as compact size matrices", () => {
+    const qwen = tables.find((table) => table.section === "Qwen Image 3.0 output image rates")!;
+    expect(qwen.headers).toEqual([
+      "Name", "Model ID", "1K Credits / output image", "2K Credits / output image",
+    ]);
+    expect(qwen.rows).toEqual([
+      ["[Qwen Image 3.0](/development/comfy-router/models/qwen/qwen-image-3-0/code)", "`qwen/qwen-image-3.0`", "9.0519", "9.0519"],
+      ["[Qwen Image 3.0 Pro](/development/comfy-router/models/qwen/qwen-image-3-0-pro/code)", "`qwen/qwen-image-3.0-pro`", "12.0692", "22.6297"],
+    ]);
+
+    const seedream = tables.find((table) => table.section === "Seedream 5.0 Pro output image rates")!;
+    expect(seedream.headers).toEqual([
+      "Name", "Model ID", "Layer separation · Standard Credits / output image",
+      "Layer separation · Large Credits / output image", "Output image · Standard Credits / output image",
+      "Output image · Large Credits / output image",
+    ]);
+    expect(seedream.rows).toEqual([[
+      "[Seedream 5.0 Pro](/development/comfy-router/models/byteplus/seedream-5-0-pro-260628/code)",
+      "`byteplus/seedream-5-0-pro-260628`", "6.7889", "13.5778", "9.495", "18.99",
+    ]]);
+
+    const perImage = tables.find((table) => table.headers.includes("Credits / image")
+      && table.rows.some((row) => row[1] === "`vertexai/gemini-3-pro-image`"))!;
+    expect(perImage.rows.find((row) => row[1] === "`vertexai/gemini-3-pro-image`")?.[2]).toBe("31.65");
+  });
+
+  test("coalesces Luma Uni generation and edit rates into one model matrix", () => {
+    const luma = tables.find((table) => table.section === "Luma Uni image rates")!;
+    expect(luma.headers).toEqual([
+      "Name", "Model ID", "Image generation Credits / generation", "Image edit Credits / generation",
+    ]);
+    expect(luma.rows).toEqual([
+      ["[Uni 1](/development/comfy-router/models/luma_2/uni-1/code)", "`luma_2/uni-1`", "8.5244", "9.1574"],
+      ["[Uni 1 Max](/development/comfy-router/models/luma_2/uni-1-max/code)", "`luma_2/uni-1-max`", "21.1", "21.733"],
+    ]);
+  });
+
+  test("coalesces Seedance video billing axes into type and audio columns", () => {
+    const videoTypes = tables.find((table) => table.section === "Seedance video token rates")!;
+    expect(videoTypes.headers).toEqual([
+      "Name", "Model ID", "Image to video / Text to video Credits / 1M tokens", "Video to video Credits / 1M tokens",
+    ]);
+    expect(videoTypes.rows).toEqual([
+      ["[Dreamina Seedance 2.0 Fast](/development/comfy-router/models/byteplus/dreamina-seedance-2-0-fast-260128/code)", "`byteplus/dreamina-seedance-2-0-fast-260128`", "1689.688", "995.709"],
+      ["[Dreamina Seedance 2.0 Mini](/development/comfy-router/models/byteplus/dreamina-seedance-2-0-mini/code)", "`byteplus/dreamina-seedance-2-0-mini`", "1056.055", "633.633"],
+      ["[Seedance 1.0 Pro](/development/comfy-router/models/byteplus/seedance-1-0-pro-250528/code)", "`byteplus/seedance-1-0-pro-250528`", "527.5", "-"],
+      ["[Seedance 1.0 Pro Fast](/development/comfy-router/models/byteplus/seedance-1-0-pro-fast-251015/code)", "`byteplus/seedance-1-0-pro-fast-251015`", "211", "-"],
+    ]);
+
+    const audio = tables.find((table) => table.section === "Seedance 1.5 Pro audio rates")!;
+    expect(audio.headers).toEqual(["Name", "Model ID", "No audio Credits / 1M tokens", "Audio Credits / 1M tokens"]);
+    expect(audio.rows).toEqual([[
+      "[Seedance 1.5 Pro](/development/comfy-router/models/byteplus/seedance-1-5-pro-251215/code)",
+      "`byteplus/seedance-1-5-pro-251215`", "253.2", "506.4",
+    ]]);
+  });
+
+  test("moves Kling V3 Standard into the name and removes its otherwise-empty option column", () => {
+    const rates = tables.find((table) => table.provider === "Higgsfield"
+      && table.section === "Rates per second"
+      && table.rows.some((row) => row[1] === "`kling/kling-v3`"))!;
+    expect(rates.headers).toEqual(["Name", "Model ID", "Credits"]);
+    expect(rates.rows.find((row) => row[1] === "`kling/kling-v3`")?.[0]).toContain("Kling V3 Standard");
+    expect(rates.rows.some((row) => row[1] === "`higgsfield/higgsfield-kling-3-pro`" && row[2] === "35.448 / s")).toBe(true);
   });
 
   test("labels variant axes while combining compatible resolution bands", () => {
