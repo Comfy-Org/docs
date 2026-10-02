@@ -675,17 +675,15 @@ function render(locale: PricingLocale = "en"): string {
         }
       }
       const ideogramGenerationUnit = formatUnit("per generation", locale);
-      const ideogramRowsForMatrix = ideogramRows.length ? [...ideogramModels].flatMap(([modelId, model]) => {
+      const ideogramRowsForMatrix = ideogramRows.length ? [...ideogramModels].map(([modelId, model]) => {
         const unit = modelId.endsWith("-v4") ? "per request" : "per image";
-        return ideogramQualities.map((quality, index) => {
-          const credits = model.rates.get(`${quality}|${unit}`) ?? "-";
-          return `| ${index === 0 ? model.name : ""} | ${index === 0 ? `\`${modelId}\`` : ""} | ${quality} | ${credits} |`;
-        });
+        const values = ideogramQualities.map((quality) => model.rates.get(`${quality}|${unit}`) ?? "-");
+        return `| ${model.name} | \`${modelId}\` | ${values.join(" | ")} |`;
       }) : [];
       const ideogramImageMatrix = ideogramRowsForMatrix.length
         ? {
           title: copy.ideogramImageRates,
-          table: `| ${copy.model} | ${copy.modelId} | ${copy.quality} | ${copy.credits} / ${ideogramGenerationUnit} |\n| --- | --- | --- | ---: |\n${ideogramRowsForMatrix.join("\n")}`,
+          table: `| ${copy.model} | ${copy.modelId} | ${ideogramQualities.map((quality) => `${quality} ${copy.credits} / ${ideogramGenerationUnit}`).join(" | ")} |\n| --- | --- | ${ideogramQualities.map(() => "---:").join(" | ")} |\n${ideogramRowsForMatrix.join("\n")}`,
           consumedRows: new Set(ideogramRows),
         }
         : { title: copy.ideogramImageRates, table: "", consumedRows: new Set<typeof ordinaryRows[number]>() };

@@ -430,18 +430,14 @@ describe("public Router pricing", () => {
     ]);
   });
 
-  test("groups Ideogram versions under generation pricing", () => {
+  test("groups Ideogram versions and pivots quality prices into columns", () => {
     const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
     expect(ideogram.headers).toEqual([
-      "Name", "Model ID", "Quality", "Credits / generation",
+      "Name", "Model ID", "Standard Credits / generation", "Quality Credits / generation", "Turbo Credits / generation",
     ]);
-    expect(ideogram.displayRows).toEqual([
-      ["[Ideogram 4.0](/development/comfy-router/models/ideogram/ideogram-v4/code)", "`ideogram/ideogram-v4`", "Standard", "18.1038"],
-      ["", "", "Quality", "30.173"],
-      ["", "", "Turbo", "9.0519"],
-      ["[Ideogram V3](/development/comfy-router/models/ideogram/ideogram-v3/code)", "`ideogram/ideogram-v3`", "Standard", "18.1038"],
-      ["", "", "Quality", "27.1557"],
-      ["", "", "Turbo", "9.0519"],
+    expect(ideogram.rows).toEqual([
+      ["[Ideogram 4.0](/development/comfy-router/models/ideogram/ideogram-v4/code)", "`ideogram/ideogram-v4`", "18.1038", "30.173", "9.0519"],
+      ["[Ideogram V3](/development/comfy-router/models/ideogram/ideogram-v3/code)", "`ideogram/ideogram-v3`", "18.1038", "27.1557", "9.0519"],
     ]);
   });
 
