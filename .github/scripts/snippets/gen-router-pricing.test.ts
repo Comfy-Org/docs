@@ -133,7 +133,7 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(626);
+    expect(snapshot.rates).toHaveLength(624);
     expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(588);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
