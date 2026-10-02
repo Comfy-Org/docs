@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "../snippets/gen-router-pricing.ts";
 import { REPO_ROOT } from "./i18n-config.mjs";
-import { localizedPageContent } from "./translate-router-pricing.ts";
+import { keepLinksInsideLocale, localizedPageContent } from "./translate-router-pricing.ts";
 
 const PAGE = "development/comfy-router/pricing.mdx";
 const LOCALES = ["ja", "zh", "ko"] as const;
@@ -73,11 +73,11 @@ for (const locale of LOCALES) {
       // the exact target has not been translated yet.
       expect(path.startsWith(`/${locale}/`)).toBe(true);
 
+      // Only real pages count, same contract as nearestExistingLocaleTarget.
       const localized = path.slice(`/${locale}/`.length);
       expect([
         join(REPO_ROOT, locale, `${localized}.mdx`),
         join(REPO_ROOT, locale, localized, "index.mdx"),
-        join(REPO_ROOT, locale, localized),
       ].some(existsSync)).toBe(true);
     }
   });
@@ -104,4 +104,31 @@ test("pricing check validates all locales without writing them", () => {
   expect(result.stderr.toString()).toBe("");
   expect(result.exitCode).toBe(0);
   expect(files.map((path) => ({ content: readFileSync(path, "utf8"), modified: statSync(path).mtimeMs }))).toEqual(before);
+});
+
+test("keepLinksInsideLocale keeps an untranslated target inside the locale", () => {
+  const untranslated =
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code).";
+  const kept = keepLinksInsideLocale(untranslated, "ja");
+  expect(kept).toContain("](/ja/development/comfy-router/models)");
+  expect(kept).not.toContain("/development/comfy-router/models/ideogram");
+});
+
+test("keepLinksInsideLocale keeps the exact target and fragment when it exists", () => {
+  const translated =
+    "See [Ideogram V4](/ja/development/comfy-router/models/ideogram/ideogram-v4/code#examples).";
+  expect(keepLinksInsideLocale(translated, "ja")).toBe(translated);
+});
+
+test("keepLinksInsideLocale drops the fragment when it falls back to an ancestor page", () => {
+  const fallback =
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code#examples).";
+  const kept = keepLinksInsideLocale(fallback, "ja");
+  expect(kept).toContain("](/ja/development/comfy-router/models)");
+  expect(kept).not.toContain("#examples");
+});
+
+test("keepLinksInsideLocale falls back to English only when the locale has no page on that path", () => {
+  const nowhere = "See [Nowhere](/ja/no-such-area/deeper/code).";
+  expect(keepLinksInsideLocale(nowhere, "ja")).toContain("](/no-such-area/deeper/code)");
 });

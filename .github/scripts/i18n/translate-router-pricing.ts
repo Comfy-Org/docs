@@ -24,7 +24,7 @@ type PricingLocale = (typeof LOCALES)[number];
  */
 function nearestExistingLocaleTarget(localizedPath: string, locale: PricingLocale): string | null {
   const isPage = (candidate: string) =>
-    [`${candidate}.mdx`, join(candidate, "index.mdx")].some((path) =>
+    [`${candidate}.mdx`, `${candidate}/index.mdx`].some((path) =>
       existsSync(join(REPO_ROOT, locale, path)),
     );
 
@@ -41,7 +41,7 @@ function nearestExistingLocaleTarget(localizedPath: string, locale: PricingLocal
   }
 }
 
-function keepLinksInsideLocale(content: string, locale: PricingLocale): string {
+export function keepLinksInsideLocale(content: string, locale: PricingLocale): string {
   const prefix = `/${locale}/`;
   return content.replace(/\]\((\/[^)]+)\)/g, (link, url: string) => {
     const match = url.match(/^(\/[^?#]*)([?#].*)?$/);
