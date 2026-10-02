@@ -275,15 +275,12 @@ describe("public Router pricing", () => {
     expect(page).toContain("No audio");
     expect(page).toContain("Audio");
     expect(page).not.toContain("With audio");
-    const veoRows = tables.find((table) => table.provider === "Comfy"
-      && table.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`"))!;
-    expect(veoRows.headers).not.toContain("Audio");
+    const veoRows = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.0-fast-generate-001`");
     expect(fastVeoRows.map((row) => row[0])).toEqual([
-      "[Veo 3.0 Fast Generate 001 No audio](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)",
-      "[Veo 3.0 Fast Generate 001 Audio](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)",
+      "[Veo 3.0 Fast Generate 001](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)", "",
     ]);
-    expect(fastVeoRows.map((row) => row[2])).toEqual(["16.88 / s", "21.1 / s"]);
+    expect(fastVeoRows.map((row) => row[2])).toEqual(["No audio", "Audio"]);
     const ltx = snapshot.rates.filter((rate) => rate.model_id === "ltx/ltx-2-5-pro");
     const grouped = groupResolutionTiers(ltx);
     expect(grouped.remaining).toHaveLength(0);
@@ -483,11 +480,9 @@ describe("public Router pricing", () => {
     const minimax = tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === "`minimax/minimax-h3`"))!;
     expect(minimax.headers).toEqual(["Name", "Model ID", "768p Credits", "2K Credits"]);
     expect(minimax.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
-    const veo = tables.find((table) => table.provider === "Comfy"
-      && table.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`"))!;
+    const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
-    expect(veo.headers).not.toContain("Audio");
-    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[0].includes("No audio") && row[2] === "42.2 / s")).toBe(true);
+    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
     const standaloneVeo = tables.find((table) => table.provider === "Comfy" && table.section === "Rates per second");
     expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" )).toBe(false);
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;

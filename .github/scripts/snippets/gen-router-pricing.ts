@@ -941,9 +941,7 @@ function render(locale: PricingLocale = "en"): string {
       }
       const resolutionTablesText = resolutionTables.map((table) => {
         const columns = [...table.columns].sort(resolutionOrder);
-        const putVeoAudioInName = table.optionHeader === copy.audio
-          && table.rows.some(({ model }) => model.id.startsWith("veo/"));
-        const hasOptions = !putVeoAudioInName && table.rows.some(({ option }) => option !== "-");
+        const hasOptions = table.rows.some(({ option }) => option !== "-");
         const publicUnit = category === "images" && table.unit === "per request" ? "per generation" : table.unit;
         const unitInHeader = ["per request", "per generation", "per 1K video tokens"].includes(table.unit);
         const unitRepeatedInColumn = ["per request", "per generation"].includes(table.unit);
@@ -955,9 +953,7 @@ function render(locale: PricingLocale = "en"): string {
               : unitInHeader ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
-          const audioSuffix = putVeoAudioInName && model.id.startsWith("veo/")
-            ? ` ${option === "-" ? formatOption("No audio", locale) : option}` : "";
-          const modelName = `${displayTitle(model)}${modeSuffix}${audioSuffix}`;
+          const modelName = `${displayTitle(model)}${modeSuffix}`;
           const name = modelName === previousModelName ? "" : `[${tableCell(modelName)}](/${model.page})`;
           const modelId = modelName === previousModelName ? "" : `\`${model.id}\``;
           previousModelName = modelName;
