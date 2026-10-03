@@ -1,0 +1,118 @@
+---
+title: "Using Comfy Router with LiteLLM"
+sidebarTitle: "LiteLLM"
+description: "Put Comfy Router behind LiteLLM Proxy as a pass-through endpoint and record each run's exact USD cost from the x-litellm-response-cost header, with no pricing table to maintain."
+---
+
+If you already track spend with [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through), you can add Comfy Router as one more pass-through endpoint. Your callers keep their LiteLLM keys, and your Comfy API key stays on the proxy.
+
+Router reports what a synchronous run cost, in US dollars, in the `x-litellm-response-cost` response header, for the models that report a Comfy credit price per run (see [Runs that don't report a cost](#runs-that-dont-report-a-cost)). LiteLLM reads that header on every pass-through response and records it as the request's spend, so you don't maintain a price table for those models.
+
+<Note>
+  LiteLLM's built-in `fal_ai/` provider covers image generation only. To route a general workload through LiteLLM, use a pass-through endpoint as shown here, not a native provider.
+</Note>
+
+## Configure the pass-through
+
+<Steps>
+  <Step title="Create a Comfy API key">
+    Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and make it available to the LiteLLM Proxy process:
+
+    ```bash
+    export COMFY_API_KEY="comfyui-..."
+    ```
+  </Step>
+
+  <Step title="Add Router to config.yaml">
+    ```yaml config.yaml
+    general_settings:
+      pass_through_endpoints:
+        # Runs and queue submits. Synchronous runs report their exact cost,
+        # which replaces cost_per_request for that row.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["POST"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+            content-type: application/json
+          cost_per_request: 0.10   # your fallback estimate, in USD
+          timeout: 660             # above Router's run deadline (10 minutes by default)
+
+        # Model catalog, queue status polls, and result collection.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["GET"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+          cost_per_request: 0
+    ```
+
+    - `include_subpath: true` forwards `/comfy/v2/models/{provider}/{model}` to `https://api.comfy.org/v2/models/{provider}/{model}`, so one pair of entries covers every Router model.
+    - Keep `path` and `target` scoped to `/v2/models`. Pointing the pass-through at the API root would let any caller with a LiteLLM key use your Comfy key on every other Comfy API route, outside LiteLLM's spend tracking.
+    - `methods` splits the two entries on the same path. It needs a LiteLLM Proxy release whose pass-through endpoints support `methods`; this page was checked against v1.103.0.
+    - `X-API-Key` carries your `comfyui-` key. Router also accepts the same key as `Authorization: Bearer comfyui-...`.
+    - Leave `forward_headers` off. When it's on, LiteLLM forwards every incoming header to Router, including the caller's LiteLLM key. With it off, callers pass an `Idempotency-Key` as `x-pass-Idempotency-Key`: LiteLLM strips the `x-pass-` prefix and forwards it. A plain `Idempotency-Key` header doesn't reach Router, so a retry would run and bill a second generation.
+    - Set `timeout` above Router's [run deadline](/development/comfy-router/limitations), so Router can return its own `504` and request ID before LiteLLM gives up. The deadline is 10 minutes by default, the same as LiteLLM's default pass-through timeout of 600 seconds.
+  </Step>
+
+  <Step title="Call Router through the proxy">
+    Callers authenticate with their LiteLLM key. The body is the model's own input, exactly as in the [Comfy Router reference](/development/comfy-router/reference):
+
+    ```bash
+    curl --max-time 660 \
+      http://localhost:4000/comfy/v2/models/byteplus/dreamina-seedance-2-5-260628 \
+      -H "Authorization: Bearer $LITELLM_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+    ```
+  </Step>
+</Steps>
+
+## How spend is recorded
+
+A synchronous run that reports a cost carries these response headers:
+
+```http
+X-Comfy-Credits-Used: 12.5
+X-Litellm-Response-Cost: 0.0592417062
+X-Litellm-Total-Tokens: 0
+```
+
+`X-Comfy-Credits-Used` is the run's price in Comfy credits, rounded to two decimal places. `X-Litellm-Response-Cost` is the same price converted to USD from the unrounded credit amount, so dividing the displayed credits by the conversion rate can differ from it in the last digits. Header names are case-insensitive, so LiteLLM reads it as `x-litellm-response-cost`. LiteLLM records it exactly as sent and uses it instead of your `cost_per_request`. `x-litellm-total-tokens` is always `0`, because media runs aren't metered in tokens.
+
+As with `X-Comfy-Credits-Used`, the header reports a price rather than a settled charge. Reconcile against [workspace billing](https://platform.comfy.org), not against LiteLLM's totals.
+
+### Runs that don't report a cost
+
+Some runs don't carry `x-litellm-response-cost`. It's absent in the same cases as `X-Comfy-Credits-Used`:
+
+- a run billed to your own provider key rather than to your Comfy credits
+- a model that isn't yet on Router's list of models that report a per-run credit price. That list is conservative, and some providers aren't on it at all
+- a charge that didn't reach Comfy billing
+- an error response
+
+It's also absent when Router replays a stored result for a retry with the same `Idempotency-Key` (sent through the proxy as `x-pass-Idempotency-Key`). That retry isn't charged again, so the replay doesn't report the run's exact cost a second time.
+
+When the header is absent, LiteLLM falls back to the endpoint's `cost_per_request`. That applies to every case above. Error responses, runs billed to your own provider key, and idempotent replays are therefore recorded at your estimate even though Comfy didn't charge your credits for them. Set it to a sensible estimate of your typical run rather than `0`, so a run that doesn't report a cost doesn't appear free in your spend reports, and expect those rows to push LiteLLM's totals above your Comfy bill. A run that was priced and genuinely cost nothing reports `x-litellm-response-cost: 0`, which LiteLLM records as zero.
+
+## Queued delivery
+
+With [queued delivery](/development/comfy-router/queue), one generation reaches LiteLLM as several requests, and each is its own spend row:
+
+| Request | Method | Row cost with the config above |
+| --- | --- | --- |
+| Submit — `/v2/models/{provider}/{model}/requests` | `POST` | your `cost_per_request` estimate |
+| Each status poll — `.../requests/{request_id}/status` | `GET` | `0` |
+| Result collection — `.../requests/{request_id}` | `GET` | `0` |
+| Cancel — `.../requests/{request_id}/cancel` | `POST` | your `cost_per_request` estimate |
+
+The submit response's `status_url`, `response_url` and `cancel_url` are absolute `https://api.comfy.org/...` URLs, and LiteLLM doesn't rewrite response bodies. Call them through the proxy by replacing `https://api.comfy.org` with your proxy's `/comfy` prefix, for example `http://localhost:4000/comfy/v2/models/...`. Sent straight to Comfy, your LiteLLM key is rejected.
+
+Queue responses don't carry `x-litellm-response-cost` yet, so a queued generation is recorded at your estimate, not at its exact price. Splitting the endpoint by method books that estimate once, on the submit, instead of once per poll. For exact per-run spend in LiteLLM, use the synchronous route.
+
+## Notes
+
+- LiteLLM records spend but doesn't change billing. Comfy bills your workspace exactly as it would without the proxy.
+- Full request and response schemas for every model are in the [Comfy Router reference](/development/comfy-router/reference). Deadlines, retries, and other limits are in [Capabilities and limits](/development/comfy-router/limitations).
