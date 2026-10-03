@@ -135,8 +135,6 @@ describe("public Router pricing", () => {
       ["bfl/flux-kontext-max", "16.88"],
       ["bfl/flux-pro-1.1", "8.44"],
       ["bfl/flux-pro-1.1-ultra", "12.66"],
-      ["bfl/flux-pro-1.0-canny", "10.55"],
-      ["bfl/flux-pro-1.0-depth", "10.55"],
       ["bfl/flux-pro-1.0-expand", "10.55"],
       ["bfl/flux-pro-1.0-fill", "10.55"],
       ["freepik/ai-skin-enhancer-creative", "61.19"],
@@ -165,8 +163,8 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(627);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(596);
+    expect(snapshot.rates).toHaveLength(625);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(594);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
