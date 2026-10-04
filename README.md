@@ -93,7 +93,7 @@ Some files in this repository are written by the Comfy API v2 specification sync
 
 Two things inside that tree stay editable: `docs.json` (the sync rewrites only the `Models` nav group and the model-page redirects) and the hand-curated `development/comfy-router/models/**/code.yaml` generator inputs, which are where a change to a generated model page belongs.
 
-The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last three rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
+The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last three rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check. When an English change introduces or increases a gap on these pages, Structure Parity reports a warning naming the i18n sync. The changed-file report omits unchanged missing-only gaps; use `--all` to see the backlog. A localized-direction gap still fails.
 
 ### i18n Contributions
 

@@ -686,7 +686,9 @@ paths:
 
         `progress`, and the most recent `preview` if any), then future
 
-        updates. The stream ends after the terminal `status` event.
+        updates. The stream ends after either the terminal `status` event
+
+        or a terminal `error` event (see the `error` event below).
 
 
         Live push only — NOT a replayable log: events carry no `id`, there
@@ -717,6 +719,12 @@ paths:
           description: 'Selected execution log lines, carried while the run is still going. Best-effort diagnostics, and lossy by the same rule as the rest of this stream: lines emitted while a client was disconnected are gone and no `Last-Event-ID` replays them. The authoritative, complete log is the snapshot at `GET /api/v2/jobs/{id}/logs`, which a client re-reads after a terminal status to reconcile whatever it missed — on a surface that captures logs at all. Comfy Cloud does not, and answers `204` there for every job, so this event has nothing to be the live view of; see that operation for what a self-hosted deployment answers. NOT YET EMITTED by the server in the first iteration — reserved in the catalog so the wire contract is stable. Clients must not depend on receiving this event yet: to get a log today, stream to a terminal status and read the snapshot.'
           x-sse-not-yet-emitted: true
           schema: '#/components/schemas/LogEvent'
+        error:
+          description: 'Terminal event sent when the stream ends for a reason OTHER than the job reaching a terminal state — the credential the stream was opened with stopped being accepted (`credential_expired`, the common case for a short-lived Cloud JWT or OAuth access token that expires while a long job is still running), or the job stopped being accessible (`job_not_found`, `forbidden`). Transient upstream failures (5xx, network errors) do NOT end the stream — they are retried on the next poll. No `status` event follows it. Its whole purpose is to make an aborted stream distinguishable from a completed one: without it both simply close, and a client cannot tell "your job finished" from "you were cut off". On `credential_expired` the job itself is unaffected — refresh the credential and reopen the stream, or fall back to `GET /api/v2/jobs/{id}`. A serverless deployment sends only `job_not_found`.
+
+
+            Browser note: a browser `EventSource` also fires a BUILT-IN `error` event on any transport failure, and a server-sent `event: error` frame is delivered to the same listener. The two are told apart by the payload — this event always carries a JSON `ErrorEnvelope` in `data`, the built-in one carries none — so a handler should check for `data` before treating an `error` as an explained, terminal end-of-stream rather than a retryable connection drop.'
+          schema: '#/components/schemas/ErrorEnvelope'
       parameters:
       - $ref: '#/components/parameters/JobId'
       responses:
@@ -794,7 +802,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: '`Authorization: Bearer <api-key>` — account-scoped API keys on Cloud and serverless. Self-hosted accepts unauthenticated requests by default and can be configured with a static bearer token.'
+      description: '`Authorization: Bearer <credential>`. The credential is one of: an account-scoped API key (`comfyui-…`), accepted on Cloud and serverless; a Comfy Cloud session JWT; or an OAuth access token issued for the Comfy Cloud resource. Which kinds a given deployment accepts is deployment configuration — an API key always works on Cloud and serverless, and a deployment that does not accept JWT bearers answers `401` with a message saying so. Self-hosted accepts unauthenticated requests by default and can be configured with a static bearer token.'
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -981,6 +989,14 @@ components:
             execution_ms: 42000
         urls:
           $ref: '#/components/schemas/JobUrls'
+        deployment_id:
+          type: string
+          description: 'The deployment the job was sent to: the id in the address it was posted at, which stays the same when the deployment moves to another release. Absent on a surface that runs jobs on no deployment.'
+          example: dep-0f19a2b3c4d5
+        release_id:
+          type: string
+          description: The release of the deployment's build that ran the job, which can differ from the release the deployment runs now. Absent where the serving surface does not report it.
+          example: 7c1e9a40-3b2d-4f6a-9e81-0c5d2a7b4f13
     JobLogs:
       type: object
       description: 'A job''s captured execution log — the body of `GET /api/v2/jobs/{id}/logs`. Diagnostics, not a contract on content: this is whatever the workflow''s own code and nodes wrote to standard output, in the order they wrote it, so nothing about its shape is stable between runs or between releases of a build. It is **untrusted text** — a workflow chooses what goes in it — and must be rendered as plain text rather than interpreted.'
@@ -1173,6 +1189,7 @@ components:
           example: node_execution_error
         message:
           type: string
+          description: Why the job failed, written for a person to read. On a serverless deployment, where ComfyUI refused the workflow, it names the rejected nodes it has room for and their reasons, which `node_errors` carries in full. Its wording may change; read `code` and `node_errors` rather than matching this text.
         node_id:
           type: string
           nullable: true
@@ -1208,7 +1225,7 @@ components:
             $ref: '#/components/schemas/JobNodeErrorReason'
     JobNodeErrorReason:
       type: object
-      description: 'One problem found with a node. `type` is the code for it: ComfyUI''s (for example `value_not_in_list`, `value_bigger_than_max`, `dependency_cycle`), or the gateway''s `unknown_node_class` (a node class the deployment''s build does not contain). `details` usually starts with the input it is about.'
+      description: 'One problem found with a node. `type` is the code for it: ComfyUI''s (for example `value_not_in_list`, `value_bigger_than_max`, `dependency_cycle`), or the gateway''s `unknown_node_class` (a node class the deployment''s build does not contain). ComfyUI''s `missing_node_type` means the same as `unknown_node_class`, found after dispatch rather than at submit. For either, `message` ends naming the node pack that provides the class where the Comfy node registry knows one. `details` usually starts with the input it is about.'
       required:
       - type
       - message
