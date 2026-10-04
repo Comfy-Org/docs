@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion } from "./gen-router-pricing.ts";
+import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -127,6 +127,36 @@ describe("public Router pricing", () => {
     ]);
   });
 
+  test("resolves keyed prices per model before a provider-wide usage rail", () => {
+    const usage = snapshot.rates.find((rate) => rate.kind === "usage")!;
+    const keyed = { ...snapshot.rates.find((rate) => rate.kind !== "usage")!, model_id: usage.model_id, serving_provider: usage.serving_provider };
+    const otherModel = { ...usage, model_id: `${usage.model_id}-other` };
+    const otherProvider = { ...usage, serving_provider: `${usage.serving_provider} alternate` };
+    expect(resolveKeyedRates([usage, keyed, otherModel, otherProvider])).toEqual([keyed, otherModel, otherProvider]);
+
+    const bflSource = snapshot.supplemental_sources!.find((source) => source.source.endsWith("services/comfy-api/scripts/metronome/bfl/rates/rates.json"))!;
+    expect(bflSource.rates.every((rate) => rate.entitled === true)).toBe(true);
+    const cell = (id: string) => tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === `\`${id}\``))!
+      .rows.find((row) => row[1] === `\`${id}\``)!.at(-1);
+    for (const [id, credits] of [
+      ["bfl/flux-kontext-pro", "8.44"],
+      ["bfl/flux-kontext-max", "16.88"],
+      ["bfl/flux-pro-1.1", "8.44"],
+      ["bfl/flux-pro-1.1-ultra", "12.66"],
+      ["bfl/flux-pro-1.0-expand", "10.55"],
+      ["bfl/flux-pro-1.0-fill", "10.55"],
+      ["freepik/ai-skin-enhancer-creative", "61.19"],
+    ]) {
+      expect(cell(id)).toBe(credits);
+    }
+    for (const id of [
+      "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
+      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
+    ]) {
+      expect(cell(id)).toStartWith("Usage-based");
+    }
+  });
+
   test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
     expect(sourcePage).toContain("\n\n211 credits = $1 USD.\n\n<PricingCurrencyToggle");
@@ -150,8 +180,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(626);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(588);
+    expect(snapshot.rates).toHaveLength(625);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(594);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);

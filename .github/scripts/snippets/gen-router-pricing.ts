@@ -191,7 +191,17 @@ function loadMetronomeData(): MetronomeData {
       throw new Error(`${METRONOME_FILE}: rate end must follow its start for ${rate.model_id}`);
     }
   }
+  data.rates = resolveKeyedRates(data.rates);
   return data;
+}
+
+// A provider can bill through a model-keyed product and a provider-wide usage
+// product at once (bfl, freepik). The keyed price wins per model and route; the
+// usage rail only covers models that have no keyed price.
+function resolveKeyedRates(rates: MetronomeRate[]): MetronomeRate[] {
+  const routeKey = (rate: MetronomeRate) => JSON.stringify([rate.model_id, rate.serving_provider]);
+  const keyed = new Set(rates.filter((rate) => rate.kind !== "usage").map(routeKey));
+  return rates.filter((rate) => rate.kind !== "usage" || !keyed.has(routeKey(rate)));
 }
 
 function validateCreditConversion(rate: MetronomeRate, creditsPerUsd: number): void {
@@ -1105,4 +1115,4 @@ if (import.meta.main) {
   }
 }
 
-export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion };
+export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion };
