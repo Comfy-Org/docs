@@ -21,7 +21,6 @@ const ALWAYS_GUARDED = [
   "development/comfy-router/quickstart.mdx",
   "development/comfy-router/limitations.mdx",
   "development/comfy-router/higgsfield-byok.mdx",
-  "development/comfy-router/pricing.mdx",
   "router-schemas/openai/gpt-image-1.json",
 ];
 
@@ -44,6 +43,8 @@ const EDITABLE = [
   "development/comfy-router/queue.mdx",
   "development/comfy-router/headers.mdx",
   "development/comfy-router/billing.mdx",
+  // Generated here by `bun run router-pricing:gen`; `router-pricing:check` guards its freshness.
+  "development/comfy-router/pricing.mdx",
   "zh/development/comfy-router/pricing.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.yaml",
   "snippets/comfy-router/model-code-footer.mdx",
@@ -191,13 +192,24 @@ describe("formatFailure", () => {
   });
 
   test("says per file where the edit belongs instead", () => {
-    expect(message).toContain("Edit the contract upstream");
-    expect(message).toContain("Edit the upstream quickstart.mdx");
-    expect(message).toContain("Edit the upstream limitations.mdx");
-    expect(message).toContain("Edit the upstream higgsfield-byok.mdx");
-    expect(message).toContain("Edit the upstream pricing.mdx");
-    expect(message).toContain("Edit the sibling code.yaml");
-    expect(message).toContain("code-pages:gen");
+    // Each path's guidance is the line printed directly under it, so a swapped
+    // rule cannot pass by having the phrase somewhere else in the message.
+    const lines = message.split("\n");
+    const guidanceFor = (path: string) => lines[lines.indexOf(`  ${path}`) + 1] ?? "";
+    const expected: Record<string, string> = {
+      "openapi-v2.yaml": "Edit the API contract upstream",
+      "router-openapi.yaml": "Vendored Router-only projection",
+      "development/comfy-router/reference.mdx": "Edit the contract upstream",
+      "development/comfy-router/quickstart.mdx": "Edit the upstream quickstart.mdx",
+      "development/comfy-router/limitations.mdx": "Edit the upstream limitations.mdx",
+      "development/comfy-router/higgsfield-byok.mdx": "Edit the upstream higgsfield-byok.mdx",
+      "router-schemas/openai/gpt-image-1.json": "Edit the upstream contract",
+      "development/comfy-router/models.mdx": "code-pages:gen",
+      "development/comfy-router/models/openai/gpt-image-1/code.mdx": "Edit the sibling code.yaml",
+    };
+    for (const [path, phrase] of Object.entries(expected)) {
+      expect(guidanceFor(path)).toContain(phrase);
+    }
   });
 
   test("covers the router-schemas mirror too", () => {
@@ -239,7 +251,6 @@ describe("the guarded paths exist in this repository", () => {
     "development/comfy-router/quickstart.mdx",
     "development/comfy-router/limitations.mdx",
     "development/comfy-router/higgsfield-byok.mdx",
-    "development/comfy-router/pricing.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",
   ];

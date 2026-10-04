@@ -23,8 +23,8 @@
  *
  * `router-openapi.yaml` IS guarded: it is the Router-only projection of the same
  * contract as `openapi-v2.yaml`, its own header says not to hand-edit it, and
- * nothing in it is this repository's to change. Two of the sync's paths are
- * deliberately NOT guarded here, because the sync only owns part of them:
+ * nothing in it is this repository's to change. Three of the sync's paths are
+ * deliberately NOT guarded here, because the sync does not own all of them:
  *
  *   - `docs.json` is co-owned. The sync rewrites the `Models` nav group and the
  *     model-page redirects; everything else in it is this repository's to edit.
@@ -32,6 +32,11 @@
  *     inputs that live inside the generated tree. Only the sibling `code.mdx`
  *     pages are generated, so `code.yaml` stays editable and is in fact where an
  *     edit to a generated model page belongs.
+ *   - `development/comfy-router/pricing.mdx` is GENERATED in this repository by
+ *     `bun run router-pricing:gen` from `router-pricing/metronome-rates.json` and
+ *     the model pages, so a change to the generator or the rate snapshot has to
+ *     commit it. `bun run router-pricing:check` in `code-pages-check.yml` fails a
+ *     hand-edit that does not match the generator's output.
  *
  * The three GENERATED page kinds (`development/comfy-router/models.mdx`, the
  * per-model `code.mdx`, and `development/comfy-router/providers.mdx`) are guarded
@@ -116,12 +121,6 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === "development/comfy-router/higgsfield-byok.mdx",
     guidance:
       "Hand-written upstream and published here verbatim. Edit the upstream higgsfield-byok.mdx.",
-  },
-  {
-    id: "pricing",
-    test: (p) => p === "development/comfy-router/pricing.mdx",
-    guidance:
-      "Hand-written upstream and published here verbatim. Edit the upstream pricing.mdx.",
   },
   {
     id: "router-schemas",
