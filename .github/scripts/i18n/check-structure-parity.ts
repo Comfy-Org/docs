@@ -283,6 +283,19 @@ export function classifyFinding(finding: Finding, failed: boolean): "failure" | 
   return failed && !finding.note ? "failure" : "warning";
 }
 
+/**
+ * Detail for a warning line. Missing links are listed because a downgraded
+ * finding (external or sync-owned page) can be a link-only gap.
+ */
+export function warningDetail(f: Finding): string {
+  return [
+    ...f.missingComponents.map((c) => `${c.label} short by ${c.en - c.localized}`),
+    ...f.missingLinks.map((link) => `missing link ${link}`),
+    ...f.extraComponents.map((c) => `${c.label} +${c.localized - c.en}`),
+    ...f.extraLinks,
+  ].join(", ");
+}
+
 export function isExempt(relativePath: string): boolean {
   const parts = relativePath.split("/");
   const rest = LOCALES.includes(parts[0]) ? parts.slice(1).join("/") : relativePath;
@@ -488,11 +501,7 @@ function main(): void {
       if (f.missingLinks.length > 8) console.log(`    ... and ${f.missingLinks.length - 8} more missing links`);
     }
     for (const f of warnings) {
-      const extra = [
-        ...f.missingComponents.map((c) => `${c.label} short by ${c.en - c.localized}`),
-        ...f.extraComponents.map((c) => `${c.label} +${c.localized - c.en}`),
-        ...f.extraLinks,
-      ].join(", ");
+      const extra = warningDetail(f);
       const kind = f.source === "english" ? "pre-existing drift, not caused by this change" : "extra content";
       console.log(`\n⚠ ${f.file}: ${f.note ?? kind} (${extra})`);
     }

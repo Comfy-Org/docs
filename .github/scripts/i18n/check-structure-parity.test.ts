@@ -13,6 +13,7 @@ import {
   normalizeAssetUrl,
   strippedBody,
   syncOwnedNote,
+  warningDetail,
   type Finding,
 } from "./check-structure-parity.ts";
 
@@ -298,5 +299,11 @@ describe("sync-owned Router pages", () => {
 
   test("externally generated pages warn in both directions, as before", () => {
     expect(classifyFinding(gap("ja/built-in-nodes/APG.mdx", "localized"), true)).toBe("warning");
+  });
+
+  test("warningDetail lists missing links so a link-only gap names the link to restore", () => {
+    const finding: Finding = { ...gap(routerPage, "english"), missingComponents: [], missingLinks: ["/images/a.png"] };
+    expect(classifyFinding(finding, true)).toBe("warning");
+    expect(warningDetail(finding)).toBe("missing link /images/a.png");
   });
 });
