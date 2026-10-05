@@ -3,7 +3,7 @@ title: "Comfy SDKs"
 description: "用 Python 或 TypeScript 对 Comfy Cloud、自建部署或自有 ComfyUI 运行 ComfyUI 工作流，并处理资产、任务、实时事件和幂等重试。"
 sidebarTitle: "SDK 概述"
 icon: "code"
-translationSourceHash: fea11dc9
+translationSourceHash: 7b932825
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": 04d89053
@@ -13,6 +13,7 @@ translationBlockHashes:
   "Retrying a submit: the idempotency key": 7c83d78f
   "Watching a job run": 34d74bcc
   "Tracing an output back to its workflow": b01886a3
+  "Label jobs and find them later": 11cb9cf2
   "What the SDKs cover today": 69ebfcc7
   "Reference": 71489703
   "Feedback": 14dd521e
@@ -342,6 +343,98 @@ if (wf.format === "save") {
 | `api` | 已执行的图。仅编辑器可见的结构已消失，Get/Set 节点已展开 | 其他所有情况，包括目前通过这些 SDK 提交的每个任务 |
 
 您通过 SDK 提交的任务始终返回 `api`，因为 v2 提交目前还没有版本固定字段。这种情况将来会改变；判别字段的存在就是为了让您的代码无需随之改变。
+
+## 为任务添加标签并在之后查找
+
+标签是提交任务时附加的一组键和值，例如 `client: acme` 或 `project: spring`。用标签记录任务是为哪个客户或项目运行的。这样无需自己维护任务 ID 对照表，也能列出某个客户的任务。
+
+标签适用于发送到 [Comfy API 部署](#comfy-api-部署)的任务，因此请按照[选择基础 URL](#选择基础-url) 中的说明，将 `COMFY_BASE_URL` 设为该部署的地址。Comfy Cloud 目前会拒绝标签。
+
+限制：
+
+- 每个任务最多 16 个标签。
+- 键为 1 到 40 个字符，只能使用字母、数字、`_`、`-` 和 `.`。
+- 值是最多 256 字节（UTF-8）的字符串。
+- 标签在提交任务时设置，之后不能更改。
+
+违反限制的提交会以 `422` 和代码 `metadata_invalid` 失败，且不会创建任务。错误消息会指出违反规则的键；标签超过 16 个时，会给出标签数量。SDK 本身不检查这些限制，而是抛出一个带有服务器代码和消息的错误。
+
+<Warning>
+  工作区中能看到某个任务的任何人，也能看到它的标签。请勿在标签中放入密钥或个人数据。
+</Warning>
+
+提交时传入 `metadata`。读回任务时，任务会带有这些标签：
+
+<CodeGroup>
+```python Python
+job = client.submit(wf, metadata={"client": "acme", "project": "spring"})
+job.metadata  # {"client": "acme", "project": "spring"}
+```
+
+```typescript TypeScript
+const job = await client.submit(wf, {
+  metadata: { client: "acme", project: "spring" },
+});
+job.metadata; // { client: "acme", project: "spring" }
+```
+</CodeGroup>
+
+未带标签提交的任务，其 `metadata` 为空。
+
+要查找某个客户的任务，请按标签筛选并列出任务。结果按从新到旧排列，迭代时 SDK 会自动获取下一页：
+
+<CodeGroup>
+```python Python
+for job in client.list_jobs(metadata={"client": "acme"}):
+    print(job.id, job.status)
+```
+
+```typescript TypeScript
+for await (const job of client.listJobs({ metadata: { client: "acme" } })) {
+  console.log(job.id, job.status);
+}
+```
+</CodeGroup>
+
+一次最多可按 3 个标签筛选，任务必须与所有标签完全匹配。列表项不包含输出。要获取任务的输出，请用 `client.jobs.get(job.id)` 按 ID 读取该任务。
+
+### 通过 HTTP
+
+在 `POST /api/v2/jobs` 的请求体中发送 `metadata`：
+
+```bash
+curl -X POST "https://<deployment>.run.comfy.app/api/v2/jobs" \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow": { ... },
+    "metadata": { "client": "acme", "project": "spring" }
+  }'
+```
+
+筛选 `GET /api/v2/jobs` 时，每个标签对应一个 `metadata[<key>]=<value>` 查询参数。`-g` 参数可防止 curl 把方括号解析为匹配模式：
+
+```bash
+curl -g "https://<deployment>.run.comfy.app/api/v2/jobs?metadata[client]=acme" \
+  -H "Authorization: Bearer $COMFY_API_KEY"
+```
+
+响应包含一页任务；如果还有更多页，还会包含 `next_cursor`。将它作为 `cursor` 传回即可获取下一页。用 `limit` 设置每页大小（最多 500）。
+
+```json
+{
+  "jobs": [
+    {
+      "id": "6f1c2b9e-...",
+      "status": "succeeded",
+      "metadata": { "client": "acme", "project": "spring" }
+    }
+  ],
+  "next_cursor": "eyJ..."
+}
+```
+
+标签筛选超过 3 个，或键不符合键规则时，会以 `400` 和代码 `invalid_metadata_filter` 失败。任务和列表的全部字段请参阅 [Comfy API v2 参考](/zh/api-reference/v2/overview)。
 
 ## SDK 目前涵盖的内容
 
