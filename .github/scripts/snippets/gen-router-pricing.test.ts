@@ -163,8 +163,8 @@ describe("public Router pricing", () => {
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(625);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(594);
+    expect(snapshot.rates).toHaveLength(616);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(585);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -306,9 +306,9 @@ describe("public Router pricing", () => {
     expect(page).toContain("Audio");
     expect(page).not.toContain("With audio");
     const veoRows = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
-    const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.0-fast-generate-001`");
+    const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.1-fast-generate-001`");
     expect(fastVeoRows.map((row) => row[0])).toEqual([
-      "[Veo 3.0 Fast Generate 001](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)", "",
+      "[Veo 3.1 Fast Generate 001](/development/comfy-router/models/veo/veo-3-1-fast-generate-001/code)", "",
     ]);
     expect(fastVeoRows.map((row) => row[2])).toEqual(["No audio", "Audio"]);
     const ltx = snapshot.rates.filter((rate) => rate.model_id === "ltx/ltx-2-5-pro");
@@ -512,9 +512,9 @@ describe("public Router pricing", () => {
     expect(minimax.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
     const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
-    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
+    expect(veo.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
     const standaloneVeo = tables.find((table) => table.provider === "Comfy" && table.section === "Rates per second");
-    expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" )).toBe(false);
+    expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`" )).toBe(false);
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
     expect(seedance.headers).toContain("480p Credits");
     expect(seedance.headers).toContain("720p Credits");
