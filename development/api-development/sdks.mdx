@@ -328,6 +328,98 @@ if (wf.format === "save") {
 
 Jobs you submit through the SDK always return `api`, because v2 submission has no version-pinning fields yet. That will change; the discriminator is there so your code does not have to.
 
+## Label jobs and find them later
+
+A label is a key and a value you attach to a job when you submit it, such as `client: acme` or `project: spring`. Use labels to record which of your clients or projects a job ran for. You can then list the jobs for one client without keeping your own table of job ids.
+
+Labels apply to jobs sent to a [Comfy API deployment](#comfy-api-deployment).
+
+The limits:
+
+- Up to 16 labels on a job.
+- A key is 1 to 40 characters: letters, digits, `_`, `-` and `.`.
+- A value is a string of up to 256 bytes (UTF-8).
+- Labels are set when you submit the job and cannot be changed later.
+
+A submit that breaks a limit fails with `422` and code `metadata_invalid`, and no job is created. The error message names the key that broke the rule, or gives the count when there are more than 16 labels. The SDKs do not check the limits themselves. They raise an error that carries the server's code and message.
+
+<Warning>
+  Anyone in your workspace who can see a job can see its labels. Do not put secrets or personal data in them.
+</Warning>
+
+Pass `metadata` when you submit. The job carries the labels when you read it back:
+
+<CodeGroup>
+```python Python
+job = client.submit(wf, metadata={"client": "acme", "project": "spring"})
+job.metadata  # {"client": "acme", "project": "spring"}
+```
+
+```typescript TypeScript
+const job = await client.submit(wf, {
+  metadata: { client: "acme", project: "spring" },
+});
+job.metadata; // { client: "acme", project: "spring" }
+```
+</CodeGroup>
+
+A job submitted without labels has an empty `metadata`.
+
+To find the jobs for one client, list jobs filtered by label. Results come newest first, and the SDK fetches the next page for you as you iterate:
+
+<CodeGroup>
+```python Python
+for job in client.list_jobs(metadata={"client": "acme"}):
+    print(job.id, job.status)
+```
+
+```typescript TypeScript
+for await (const job of client.listJobs({ metadata: { client: "acme" } })) {
+  console.log(job.id, job.status);
+}
+```
+</CodeGroup>
+
+You can filter on up to 3 labels at once, and a job must match all of them exactly. List items do not include outputs. To get a job's outputs, read the job by its id with `client.jobs.get(job.id)`.
+
+### Over HTTP
+
+Send `metadata` in the body of `POST /api/v2/jobs`:
+
+```bash
+curl -X POST "https://<deployment>.run.comfy.app/api/v2/jobs" \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow": { ... },
+    "metadata": { "client": "acme", "project": "spring" }
+  }'
+```
+
+Filter `GET /api/v2/jobs` with one `metadata[<key>]=<value>` query parameter per label. The `-g` flag stops curl from reading the square brackets as a pattern:
+
+```bash
+curl -g "https://<deployment>.run.comfy.app/api/v2/jobs?metadata[client]=acme" \
+  -H "Authorization: Bearer $COMFY_API_KEY"
+```
+
+The response holds a page of jobs and, when more pages exist, a `next_cursor`. Pass it back as `cursor` to get the next page. Use `limit` to set the page size (at most 500).
+
+```json
+{
+  "jobs": [
+    {
+      "id": "6f1c2b9e-...",
+      "status": "succeeded",
+      "metadata": { "client": "acme", "project": "spring" }
+    }
+  ],
+  "next_cursor": "eyJ..."
+}
+```
+
+More than 3 label filters, or a key that breaks the key rule, fails with `400` and code `invalid_metadata_filter`. See the [Comfy API v2 reference](/api-reference/v2/overview) for every field on the job and the list.
+
 ## What the SDKs cover today
 
 The first version does one thing properly: run a workflow and get the results back.
