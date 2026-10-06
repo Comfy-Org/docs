@@ -10,7 +10,7 @@ const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
 // Comfy Cloud runs on a fixed RTX PRO 6000; no GPU choice is exposed to users.
-const COMFY_CLOUD_GPU_CREDITS_PER_SECOND = 0.266;
+const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
 
 type CatalogModel = {
   id: string;
@@ -440,6 +440,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
   } : baseCopy;
   const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
+  const gpuRuntimeValue = currency === "credits"
+    ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
+    : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
@@ -486,7 +489,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${amount(rate)} / ${priceUnit}`;
+          const credits = rate.kind === "usage"
+            ? provider === "Comfy" ? `${gpuRuntimeValue} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
@@ -1063,19 +1068,17 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         });
       }
       const hasSubgroups = tableSections.length > 1;
-      const tables = tableSections.map(({ title, body }) => `${hasSubgroups ? `#### ${title}\n\n` : ""}${body}`).join("\n\n");
+      const tables = tableSections.map(({ title, body }) => {
+        const isComfyUsageTable = provider === "Comfy" && title === copy.usageRates;
+        const explanation = isComfyUsageTable ? `${copy.gpuRuntimeNote}\n\n` : "";
+        return `${hasSubgroups ? `#### ${title}\n\n` : ""}${explanation}${body}`;
+      }).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
       return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
-  const gpuRate = currency === "credits"
-    ? formatAmount(String(COMFY_CLOUD_GPU_CREDITS_PER_SECOND))
-    : formatUsd(COMFY_CLOUD_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
-  const gpuTitle = currency === "credits" ? copy.gpuRuntimeRates : copy.gpuRuntimeUsdRates;
-  const gpuAnchor = currency === "credits" ? "comfy-cloud-gpu-runtime" : "comfy-cloud-gpu-runtime-usd";
-  const gpuRates = `## ${gpuTitle} {#${gpuAnchor}}\n\n${copy.gpuRuntimeNote}\n\n| ${copy.gpuType} | ${copy.vram} | ${currency === "credits" ? copy.creditsPerGpuSecond : copy.usdPerGpuSecond} |\n| --- | --- | ---: |\n| RTX PRO 6000 | 96 GB | ${gpuRate} |`;
-  return `<div>\n\n<Tabs>\n${tabs}\n</Tabs>\n\n${gpuRates}\n\n</div>`;
+  return `<Tabs>\n${tabs}\n</Tabs>`;
 }
 
 function render(locale: PricingLocale = "en"): string {
