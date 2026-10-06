@@ -178,6 +178,17 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
+  test("shows the fixed Comfy Cloud GPU-second rate separately from model prices", () => {
+    expect(creditsPage).toContain("## Comfy Cloud GPU runtime");
+    expect(creditsPage).toContain("| GPU | VRAM | Credits / GPU-second |");
+    expect(creditsPage).toContain("| RTX PRO 6000 | 96 GB | 0.266 |");
+    expect(usdPage).toContain("## Comfy Cloud GPU runtime (USD)");
+    expect(usdPage).toContain("| GPU | VRAM | USD cents / GPU-second |");
+    expect(usdPage).toContain("| RTX PRO 6000 | 96 GB | 0.1261¢ |");
+    expect(creditsPage).toContain("Total GPU charges depend on billed runtime.");
+    expect(tables.every((table) => table.headers[0] !== "GPU")).toBe(true);
+  });
+
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     expect(snapshot.rates).toHaveLength(616);

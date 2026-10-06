@@ -9,6 +9,8 @@ const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
+// Comfy Cloud runs on a fixed RTX PRO 6000; no GPU choice is exposed to users.
+const COMFY_CLOUD_GPU_CREDITS_PER_SECOND = 0.266;
 
 type CatalogModel = {
   id: string;
@@ -1067,7 +1069,13 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
-  return `<Tabs>\n${tabs}\n</Tabs>`;
+  const gpuRate = currency === "credits"
+    ? formatAmount(String(COMFY_CLOUD_GPU_CREDITS_PER_SECOND))
+    : `${formatAmount(((COMFY_CLOUD_GPU_CREDITS_PER_SECOND / data.credits_per_usd) * 100).toFixed(4))}¢`;
+  const gpuTitle = currency === "credits" ? copy.gpuRuntimeRates : copy.gpuRuntimeUsdRates;
+  const gpuAnchor = currency === "credits" ? "comfy-cloud-gpu-runtime" : "comfy-cloud-gpu-runtime-usd";
+  const gpuRates = `## ${gpuTitle} {#${gpuAnchor}}\n\n${copy.gpuRuntimeNote}\n\n| ${copy.gpuType} | ${copy.vram} | ${currency === "credits" ? copy.creditsPerGpuSecond : copy.usdCentsPerGpuSecond} |\n| --- | --- | ---: |\n| RTX PRO 6000 | 96 GB | ${gpuRate} |`;
+  return `<div>\n\n<Tabs>\n${tabs}\n</Tabs>\n\n${gpuRates}\n\n</div>`;
 }
 
 function render(locale: PricingLocale = "en"): string {
