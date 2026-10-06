@@ -243,8 +243,9 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
-    expect(creditsPanel).toContain("Reasoning: 2262.975");
-    expect(creditsPanel).not.toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).not.toMatch(/\| Reasoning: 2262\.975/);
+    expect(render("ja")).toContain("テキスト / 推論: 2262.975");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");

@@ -346,10 +346,9 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
+  // Every modality sharing an amount is named, including text next to reasoning, in all locales.
   return ordered.map(([, group]) => {
-    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
-    const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
-      ? groupLabels.filter((value) => value !== "Text") : groupLabels;
+    const labels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
     const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
     return `${prefix}${formatRateAmount(group[0], currency, creditsPerUsd)}`;
   }).join("<br />") || "-";
