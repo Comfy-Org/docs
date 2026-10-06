@@ -11,19 +11,23 @@ const links = (content: string) => [...content.matchAll(/\]\((\/[^)]+)\)/g)].map
 const technicalKeys = (content: string) => [...content.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 const providers = (content: string) => [...content.matchAll(/<Accordion title="([^"]+)"/g)].map((match) => match[1]);
 const numericRates = (content: string) => {
+  const bothCurrencies = content.replace(
+    /<PricingValue credits="([^"]*)" usd="([^"]*)" \/>/g,
+    "$1<br />$2",
+  );
   const rows: string[][] = [];
   let priceColumns: number[] = [];
-  for (const line of content.split("\n")) {
+  for (const line of bothCurrencies.split("\n")) {
     if (!line.startsWith("|")) { priceColumns = []; continue; }
     const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
     if (/^(Name|名前|名称|이름)$/.test(cells[0])) {
-      priceColumns = cells.flatMap((cell, index) => /credits|クレジット|积分|크레딧/i.test(cell) ? [index] : []);
+      priceColumns = cells.flatMap((cell, index) => /credits|usd|クレジット|积分|크레딧/i.test(cell) ? [index] : []);
       continue;
     }
     if (cells.every((cell) => /^:?-+:?$/.test(cell))) continue;
     // Parse only price columns. A price can be bare under a token-unit header,
     // or inline after a media/cache label, with its unit in the cell.
-    rows.push(priceColumns.flatMap((index) => [...cells[index].matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?(\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1])));
+    rows.push(priceColumns.flatMap((index) => [...cells[index].matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1].replaceAll(",", ""))));
   }
   return rows;
 };
