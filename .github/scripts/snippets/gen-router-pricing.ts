@@ -1071,10 +1071,10 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
   }).join("\n\n");
   const gpuRate = currency === "credits"
     ? formatAmount(String(COMFY_CLOUD_GPU_CREDITS_PER_SECOND))
-    : `${formatAmount(((COMFY_CLOUD_GPU_CREDITS_PER_SECOND / data.credits_per_usd) * 100).toFixed(4))}¢`;
+    : formatUsd(COMFY_CLOUD_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const gpuTitle = currency === "credits" ? copy.gpuRuntimeRates : copy.gpuRuntimeUsdRates;
   const gpuAnchor = currency === "credits" ? "comfy-cloud-gpu-runtime" : "comfy-cloud-gpu-runtime-usd";
-  const gpuRates = `## ${gpuTitle} {#${gpuAnchor}}\n\n${copy.gpuRuntimeNote}\n\n| ${copy.gpuType} | ${copy.vram} | ${currency === "credits" ? copy.creditsPerGpuSecond : copy.usdCentsPerGpuSecond} |\n| --- | --- | ---: |\n| RTX PRO 6000 | 96 GB | ${gpuRate} |`;
+  const gpuRates = `## ${gpuTitle} {#${gpuAnchor}}\n\n${copy.gpuRuntimeNote}\n\n| ${copy.gpuType} | ${copy.vram} | ${currency === "credits" ? copy.creditsPerGpuSecond : copy.usdPerGpuSecond} |\n| --- | --- | ---: |\n| RTX PRO 6000 | 96 GB | ${gpuRate} |`;
   return `<div>\n\n<Tabs>\n${tabs}\n</Tabs>\n\n${gpuRates}\n\n</div>`;
 }
 
