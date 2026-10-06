@@ -153,7 +153,7 @@ describe("public Router pricing", () => {
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
       "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
     ]) {
-      expect(cell(id)).toBe("0.266 / GPU-second");
+      expect(cell(id)).toStartWith("Usage-based");
     }
   });
 
@@ -178,18 +178,15 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
-  test("shows Comfy usage-based rows in GPU-seconds without changing other providers", () => {
-    const creditUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+  test("keeps provider-reported usage meters distinct from GPU-second pricing", () => {
+    const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
-    const usdUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
-      .flatMap((table) => table.rows);
-    expect(creditUsageRows.length).toBeGreaterThan(0);
-    expect(creditUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
-    expect(usdUsageRows.length).toBe(creditUsageRows.length);
-    expect(usdUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
-    expect(creditsPage).toContain("Comfy usage-based rates are billed per GPU-second at the rate shown.");
-    expect(tables.filter((table) => table.provider !== "Comfy")
-      .flatMap((table) => table.rows).some((row) => row.at(-1)?.startsWith("Usage-based"))).toBe(true);
+    expect(comfyUsageRows.length).toBeGreaterThan(0);
+    expect(comfyUsageRows.every((row) => row.at(-1)?.startsWith("Usage-based"))).toBe(true);
+    expect(comfyUsageRows.some((row) => row.at(-1)?.includes("GPU-second"))).toBe(false);
+    expect(creditsPage).not.toContain("Comfy usage-based rates are billed per GPU-second");
+    expect(snapshot.rates.filter((rate) => rate.kind === "usage")
+      .every((rate) => rate.serving_provider !== "Comfy")).toBe(true);
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
