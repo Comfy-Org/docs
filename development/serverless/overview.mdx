@@ -1,124 +1,37 @@
 ---
-title: "Comfy API: Serverless deployments"
-sidebarTitle: "Comfy API"
-description: "Build a versioned ComfyUI environment, deploy it as a managed endpoint, and run workflows through the API."
+title: "Comfy API Deployment Guide"
+sidebarTitle: "Deployment Guide"
+description: "Manage Comfy API Builds, releases, deployments, scaling, billing, and troubleshooting."
 icon: "cloud-arrow-up"
 ---
 
-<Warning>
-  The serverless deployment service in Comfy API is in beta. Sign up for access at [platform.comfy.org](https://platform.comfy.org).
-</Warning>
+Comfy API runs workflows on managed, autoscaling GPU endpoints. A **Build** describes the ComfyUI environment, including its models, custom nodes, and settings. The CLI creates releases from a Build and deploys them as endpoints.
 
-Comfy API lets you deploy a ComfyUI workflow as a managed, autoscaling endpoint with on-demand GPU capacity. A **Build** is the versioned definition of a ComfyUI environment: the models, custom nodes, and settings captured from a local install. The Build and Deploy CLI keeps the Build definition in your project, creates releases from it, and deploys a release when it is ready to serve traffic.
+<Card title="Comfy API Quickstart" icon="play" href="/development/serverless/quickstart">
+  Start with an agent or choose another way to provide your environment or workflow.
+</Card>
 
-<CardGroup cols={2}>
-  <Card title="1. Build" icon="box">
-    Create a local Build definition from your ComfyUI install.
-  </Card>
-  <Card title="2. Release" icon="tag">
-    Cut an immutable Linux/NVIDIA release from the Build.
-  </Card>
-  <Card title="3. Deploy" icon="cloud-arrow-up">
-    Give the release a URL and managed GPU capacity.
-  </Card>
-  <Card title="4. Run" icon="code">
-    Submit an API-format workflow to the active deployment.
-  </Card>
-</CardGroup>
-
-## Quick start
-
-Use these commands when the local install and API-format workflow are ready:
-
-Use the compute output to choose a valid region and GPU. Replace `<region>` and `l4` if needed; copy the deployment ID that `deploy up` prints into the final command.
-
-```bash
-comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
-
-comfy build push --release --target linux/nvidia
-comfy deploy refs compute # get available regions and GPU classes
-comfy deploy up --gpu l4 --region <region> --min 1 --max 4 --watch # prints the deployment ID
-comfy deploy run --workflow workflow_api.json --deployment <deployment-id> --output-dir ./results
-```
-
-<Steps>
-  <Step title="Initialize">
-    ```bash
-    comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
-    ```
-  </Step>
-  <Step title="Create a release">
-    ```bash
-    comfy build push --release --target linux/nvidia
-    ```
-    This syncs the Build and creates a release for the target.
-  </Step>
-  <Step title="Start a deployment">
-    If you do not already know which regions and GPU classes are available, check first:
-
-    ```bash
-    comfy deploy refs compute
-    ```
-
-    Then create or reconcile the deployment:
-
-    ```bash
-    comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
-    ```
-    `deploy up` prints the new deployment ID. If you need to retrieve it later, list this Build's ready deployments:
-
-    ```bash
-    comfy deploy ls --status ready
-    ```
-
-    Use the returned `dep_...` value with `--deployment`.
-  </Step>
-  <Step title="Run the workflow">
-    ```bash
-    comfy deploy run \
-      --workflow workflow_api.json \
-      --deployment <deployment-id> \
-      --output-dir ./results
-    ```
-    The CLI submits the API-format workflow and downloads its outputs into `./results`.
-  </Step>
-</Steps>
+For Desktop snapshots and workflow JSON imports, see [Build Sources](/development/serverless/build-sources).
 
 ## The Build file
 
-`comfy-build.yaml` is the local source of truth for a Build. It stores the Build definition and the last known remote state, so the CLI can choose the right Build automatically and warn before local changes overwrite a newer remote definition.
+`comfy-build.yaml` stores the Build definition and last known remote state. The CLI uses that state to detect when the remote Build has changed. Keep the file with the project. It describes the environment but does not contain model files.
 
-Keep this file with the project. It describes the Build; it does not contain the model bytes themselves.
-
-## 1. Initialize a Build
-
-Start from a local ComfyUI install. This scans the models and custom nodes, then writes `comfy-build.yaml`.
-
-```bash
-comfy build init --name "my-comfy-build" --models-dir ./models --custom-nodes-dir ./custom_nodes
-```
-
-Before pushing, check how the local spec compares with the install and the remote Build:
+Check how the local Build compares with the install and remote version before pushing changes:
 
 ```bash
 comfy build status
 ```
 
-## 2. Update and release
+## Update and release
 
-After changing the local ComfyUI install, refresh the local Build definition:
+After changing the local install, refresh the Build definition:
 
 ```bash
 comfy build update --yes
 ```
 
-For the quick path, push the definition and release it for a target in one command:
-
-```bash
-comfy build push --release --target linux/nvidia
-```
-
-When you need to create another release from an existing Build, inspect the supported targets and cut one explicitly:
+To create another release from an existing Build, check the supported targets and select one:
 
 ```bash
 comfy build refs build-targets
@@ -133,55 +46,23 @@ comfy build release logs rel_123456 --target linux/nvidia --follow
 
 ## Regions and GPU availability
 
-Region capacity changes, so do not copy a static list into a script. Query the platform catalog when you choose a deployment target:
-
-```bash
-comfy deploy refs compute
-```
-
-Use `--region <region>` to filter the results:
+Region capacity changes, so check the platform catalog when choosing a deployment target. Filter the results with `--region <region>`:
 
 ```bash
 comfy deploy refs compute --region <region>
 ```
 
-Copy a returned `region` and `gpu` pair into `comfy deploy up`:
-
-```bash
-comfy deploy up --gpu <gpu> --region <region> --min 1 --max 4 --watch
-```
-
 The catalog is the source of truth for which GPU classes are available in each region at deployment time.
 
-## 3. Deploy a release
+## Workspace limits
 
-Discover the available compute in a region, then create or reconcile a deployment for the selected release:
+See [Limits](https://platform.comfy.org/profile/limits) for your workspace's usage and plan limits. Keep `--max` within the worker limit per deployment.
 
-```bash
-comfy deploy refs compute --region US-MO-2
+## Monitor and call a deployment
 
-comfy deploy up \
-  --gpu l4 \
-  --region US-MO-2 \
-  --min 1 \
-  --max 4 \
-  --watch
-```
+The `--min` and `--max` options set the worker bounds. Run `comfy deploy status --watch` to follow deployment health, release freshness, and serving activity.
 
-`--min` and `--max` set the worker bounds. Use `comfy deploy status --watch` to follow deployment health, release freshness, and serving activity.
-
-## 4. Run a workflow
-
-Submit an [API-format workflow](/development/api-development/workflow-api-format) to a ready deployment:
-
-```bash
-comfy deploy run \
-  --workflow workflow_api.json \
-  --deployment dep_123456 \
-  --output-dir ./results
-```
-
-The endpoint can also be called from the [Comfy SDKs](/development/api-development/sdks) by setting `COMFY_BASE_URL` to the deployment URL. The SDK request still needs an API key: see [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
+You can also call the endpoint with the [Comfy SDKs](/development/api-development/sdks). Set `COMFY_BASE_URL` to the deployment URL and provide an API key. See [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
 
 ## Operate a deployment
 
@@ -216,16 +97,22 @@ comfy deploy events --deployment dep_123456
 ## FAQ
 
 <AccordionGroup>
+  <Accordion title="Can one Build come from multiple workflows?">
+    Yes. In the Builder, upload one or more workflows to preselect their models and custom nodes. Include the dependencies needed by all the workflows you plan to run, then submit each API-format workflow to the deployed endpoint.
+
+    Each deployment uses one GPU type. To run workflows on different GPU types, create separate deployments of the same Build.
+  </Accordion>
+
   <Accordion title="Am I charged for storing Builds that are not deployed?">
     No. Builds and their releases are stored on your account at no charge. You are not billed for the storage footprint of a Build until you deploy it.
 
     Storage billing starts with a deployment:
 
-    - When you deploy a release, its models are staged onto network storage in the deployment's region. That storage is billed per GB-month for as long as any deployment of the Build exists in that region, including while a deployment is paused with `comfy deploy stop`.
+    - When you deploy a release, its models are staged onto network storage shared by the deployment's workers. The storage is read-only after deployment and billed per GB-month for as long as any deployment of the Build exists in that region, including while a deployment is paused with `comfy deploy stop`.
     - Each worker also gets a fixed 50 GB container disk. It is ephemeral and is only billed while the worker is running, as part of the worker's compute cost.
     - Deleting a deployment releases its compute. Staged network storage is cleaned up shortly after the last deployment using it in that region is deleted, and billing for it ends.
 
-    For current storage rates, see [comfy.org/pricing](https://www.comfy.org/pricing). The compute catalog (`comfy deploy refs compute`) and the deploy dialog also show the rates that apply to a deployment.
+    For current storage rates, see the [Comfy pricing page](https://www.comfy.org/pricing). The compute catalog (`comfy deploy refs compute`) and the deploy dialog also show the rates that apply to a deployment.
   </Accordion>
 
   <Accordion title="How are active workers billed, and at what hourly rates?">
@@ -235,13 +122,45 @@ comfy deploy events --deployment dep_123456
 
     Billing meters actual per-second worker usage, multiplied by the number of workers running. If your workspace runs out of credits, deployments are stopped automatically.
 
-    For current per-worker GPU rates, see [comfy.org/pricing](https://www.comfy.org/pricing). Rates are quoted per worker-hour and billed per second. GPU availability per region comes from the compute catalog: run `comfy deploy refs compute` for the current list.
+    For current per-worker GPU rates, see the [Comfy pricing page](https://www.comfy.org/pricing). Rates are quoted per worker-hour and billed per second. GPU availability per region comes from the compute catalog: run `comfy deploy refs compute` for the current list.
+  </Accordion>
+
+  <Accordion title="How does a deployment handle multiple requests?">
+    A deployment automatically distributes requests across its workers and scales within the configured `--min` and `--max` bounds. Requests that cannot run immediately are queued and processed as worker capacity becomes available.
+  </Accordion>
+
+  <Accordion title="What should I do if provisioning takes a long time?">
+    Follow the deployment state, then inspect its logs and events for the cause:
+
+    ```bash
+    comfy deploy status --deployment <deployment-id> --watch
+    comfy deploy logs --deployment <deployment-id>
+    comfy deploy events --deployment <deployment-id>
+    ```
+
+    If the selected GPU or region has no capacity, retry later or run `comfy deploy refs compute` and choose an available region and GPU pair. Include the Build, release, and deployment IDs when asking for help.
+  </Accordion>
+
+  <Accordion title="What happens when I delete a deployment?">
+    Deleting a deployment removes its endpoint and releases its compute. It does not delete the Build or its releases. After you delete the last deployment using that Build in a region, its staged network storage is cleaned up and storage billing ends shortly afterward.
+
+    Deleting the Build is a separate operation: `comfy build delete --id <build-id> --yes`.
   </Accordion>
 </AccordionGroup>
 
 ## Next steps
 
-- [Comfy SDKs](/development/api-development/sdks)
-- [Comfy API v2 Overview](/api-reference/v2/overview)
-- [Workflow API Format](/development/api-development/workflow-api-format)
-- [Comfy CLI Reference](/comfy-cli/reference)
+<CardGroup cols={2}>
+  <Card title="Comfy SDKs" icon="code" href="/development/api-development/sdks">
+    Use from a Python or TypeScript app to submit workflows and handle inputs, progress, and outputs.
+  </Card>
+  <Card title="Comfy API v2" icon="cloud" href="/api-reference/v2/overview">
+    Use from any language when calling the HTTP API directly or checking its request and response formats.
+  </Card>
+  <Card title="Workflow API Format" icon="file-code" href="/development/api-development/workflow-api-format">
+    Use when preparing a workflow JSON for an API request or troubleshooting its inputs and outputs.
+  </Card>
+  <Card title="Comfy CLI Reference" icon="terminal" href="/comfy-cli/reference">
+    Use to automate Build, release, deployment, and workflow commands from a terminal.
+  </Card>
+</CardGroup>

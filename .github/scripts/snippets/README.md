@@ -2,7 +2,7 @@
 
 Every Router-addressable partner model has a `code.mdx` page under
 `development/comfy-router/models/<provider>/<model>/`, showing how to call the
-model through Comfy Router from Python, TypeScript and cURL.
+model through Comfy Router from Python, TypeScript, Swift and cURL.
 
 Pages come in two kinds, and both are generated:
 
@@ -13,13 +13,12 @@ Pages come in two kinds, and both are generated:
   `router-schemas/<provider>/<model>.json` alone, the document the spec-sync bot
   commits from `GET /v2/models/<provider>/<model>/openapi.json`.
 
-A derived page says only what Router has authored. The OUTPUT schema is authored
-for every model, so the response is documented in full. The INPUT schema usually
-is not (`x-comfy-input-schema-authored: false` means Router forwards the body to
-the provider unvalidated and cannot state its fields), so the page says exactly
-that and points at the provider instead of inventing a request shape, and it
-carries no example unless the served document has one. Writing a `code.yaml`
-upgrades a derived page to a curated one; nothing else has to change.
+A derived page uses the synced Router schema. When
+`x-comfy-input-schema-authored` is false, Router forwards the open input object
+without model-specific validation, so the page links to the provider's input
+documentation. Provider validation still applies. Output schemas and examples
+remain available when published. Without a non-empty request example, the page
+shows **Request setup** instead of runnable snippets with an empty body.
 
 These pages live in the **developer** section, not under `tutorials/`: the
 tutorials tree is for end users driving the nodes in the app, and mixing API
@@ -42,7 +41,7 @@ tutorials/partner-nodes/black-forest-labs/flux-1-kontext.mdx   Overview (hand-wr
 ```bash
 pnpm code-pages:gen             # regenerate every code.mdx, and the Models nav in docs.json
 pnpm code-pages:check           # CI: fail if any page is stale OR MISSING, and syntax-check the snippets
-pnpm code-pages:gen --prune     # also delete pages whose model has left the catalog
+pnpm code-pages:gen --prune     # also delete pages whose model has left the catalog or is now an alias, redirecting their URLs
 ```
 
 `code-pages-check.yml` runs the check on any PR touching a spec, a generated
@@ -61,12 +60,57 @@ The gate can only see models whose schema has been synced. `GET /v2/models` is
 the full catalog and is ahead of `router-schemas/` (202 vs 162 on 2026-09-04);
 closing that gap is the sync bot's job upstream, not this generator's. A page
 whose model leaves the catalog is reported as an orphan and deleted by `--prune`
-— a dead page in the sidebar documents a model that now answers 404.
+— a dead page in the sidebar documents a model that now answers 404. The URL the
+page answered on is already in the wild, so `--prune` also writes a `docs.json`
+redirect from it to the catalog landing page (`/development/comfy-router/models`);
+that is what the repo's redirect check requires of any PR that deletes a page. A
+redirect someone already wrote for that URL is kept as written, and a model that
+comes back has its redirect removed again so it does not shadow the live page.
 
 The `Models` group in `docs.json` is generated too, one sub-group per provider,
 so a new page is in the sidebar the moment it is generated. Provider labels come
 from `PROVIDER_LABEL` in the generator; an unlisted slug is title-cased, so a new
 provider renders sanely without a code change.
+
+## Serving providers
+
+Some models can be served by more than one provider. Router publishes the
+relationship on the schema documents themselves: a **native** document lists its
+legs in `x-comfy-router-alt-providers` (`[{provider, model_id}]`), and each leg
+also has an **alias** document of its own carrying `x-comfy-router-alias-of` (the
+native model id) and `x-comfy-router-alias-provider` (the provider serving it).
+
+The generator reads both and organises the docs by model rather than by route:
+
+- An **alias document renders no page once its native model is documented
+  here**: no `code.mdx`, no sidebar entry, no row on the catalog index. An alias
+  page that already exists at that point is an orphan, so `--prune` deletes it
+  and writes a `docs.json` redirect from its URL to the page that documents the
+  **native** model, not to the catalog index. Only the page goes; the alias JSON
+  under `router-schemas/` stays published, which is what keeps model discovery
+  working for an agent that reads the alias id. If the native document has not
+  synced yet, the alias keeps its page instead, rather than leaving a live model
+  with no page at all, and the generator says so on stderr.
+- A **native page gains a `## Serving providers` section** after its request
+  setup: Comfy first (the default when the call names no provider), then one row
+  per leg with the provider's label, the leg's alias model id, and the same call
+  on the same endpoint with `?model_provider=<provider>` added. A native model
+  with no leg renders no section.
+- A **`development/comfy-router/providers.mdx`** index is generated listing each
+  serving provider and the native models it covers, and is added to the `Models`
+  nav group beside the catalog index. Comfy is described rather than enumerated:
+  it serves the whole catalog, and the catalog index one link away already is
+  that list. The page exists only while some model publishes a leg, so a catalog
+  with no alternate routing gains no page, no nav entry and no diff.
+
+The redirect destination is resolved through the page the native model is
+actually documented on, which is not always `models/<provider>/<model>/code`: a
+curated spec can cover a model under a different name, so
+`vertexai/gemini-3-pro-image` lives at `models/google/nano-banana-pro/code`.
+
+`bun test ./.github/scripts/snippets/` covers all four cases against inline
+fixtures. `router-schemas/` is sync-owned, so a fixture document cannot be
+committed there.
 
 ## The preview banner
 
@@ -76,18 +120,34 @@ is deleted. The banner is a rollout artifact, so retiring it is one `rm` plus a
 regen rather than an edit to the template and every generated page in the same
 commit.
 
+## The two delivery tabs
+
+Every runnable Quick start is a tab pair: **Wait for the result** is the
+`models.run` call, **Queue and collect later** is the same body through
+`models.submit`, polled to completion and collected. Both tabs are emitted from
+the one `example`, so they cannot disagree about the request. During the
+gated preview the queued tab opened with
+`snippets/comfy-router/queue-preview-notice.mdx`, on the same existence rule as
+the preview banner; the file was removed once the queue was on for every
+workspace, and recreating it brings the note back on every page after a regen.
+
 ## Schema sections
 
-Every Code page ends with a Schema section (Input, Output) and an Examples
-section (Input, Output). They render from `router-schemas/<provider>/<model>.json`,
+Every Code page includes a Schema section and the examples available for it.
+Schema fields render from `router-schemas/<provider>/<model>.json`,
 which is the exact body of `GET https://api.comfy.org/v2/models/<provider>/<model>/openapi.json`
 (a standalone OpenAPI document; the spec-sync bot drops these in, do not hand
 write them). When the file is absent, or reports
 `x-comfy-input-schema-authored: false`, the page falls back to the spec's
 `input` / `output` JSON Schema blocks (rendered as the same ParamField /
-ResponseField list) and `example` / `result.example`, with a note that Router
+ResponseField list), with a note that Router
 has not published the schema yet. Variants that resolve to the same
 schema share one block; variants with different schemas get tabs.
+
+Curated pages pair their `example` with `result.example`.
+Derived pages use the synced examples with provider model identifiers adjusted for the page.
+Fix other incorrect fixture data in the source contract rather than
+editing synced JSON snapshots.
 
 ## Provider drift check
 
@@ -144,8 +204,11 @@ a provider's host is down.
 6. Run `pnpm code-pages:gen` (it writes the page and the `docs.json` nav entry)
    and link it from the overview's "Use it" cards.
 
-Python, TypeScript and cURL are all emitted from the same `example`, so the
-three snippets cannot disagree about the body. `--validate` compiles each
-emitted snippet (`py_compile`, `bun build`, `bash -n`); nothing is executed and
-nothing is billed. Live verification against Router is a separate, nightly,
+Python, TypeScript, Swift and cURL are all emitted from the same `example`, so
+the four snippets cannot disagree about the body. `--validate` syntax-checks each
+emitted snippet (`py_compile`, `bun build`, `swiftc -parse`, `bash -n`); nothing
+is executed and nothing is billed, so no `ComfySwiftSDK` package resolution is
+needed. `swiftc -parse` needs a Swift toolchain, so the `code-pages` CI job (and
+only that job) installs one; `pnpm code-pages:gen` on its own runs on `bun` alone
+and installs nothing. Live verification against Router is a separate, nightly,
 credentialed job.

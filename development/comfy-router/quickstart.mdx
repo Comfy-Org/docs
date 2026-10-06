@@ -1,115 +1,145 @@
 ---
 title: "Comfy Router quickstart"
 sidebarTitle: "Quickstart"
-description: "From nothing to a generated image in about five minutes, in Python and TypeScript, against the Comfy Router."
+description: "Generate images and videos using the latest frontier media models in minutes."
 ---
 
 <div className="router-quickstart-marker" />
 
-Comfy Router lets you call partner models through `https://api.comfy.org` with one Comfy API key. Send the model's input to `POST /v2/models/{provider}/{model}` and wait for the finished result. This example generates an image with `bfl/flux-2-pro`.
+Comfy Router gives you one API for hosted image and video models at `https://api.comfy.org`. Create an API key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router), then call any model with the official [Python and TypeScript SDKs](/development/api-development/sdks) or over plain HTTP. Billing is pay per use: each request draws credits from your workspace balance, with no subscription.
 
-<Steps>
+<Note>
+  **Using Higgsfield?** Save your own Higgsfield key and those generations bill to your Higgsfield account instead of your Comfy credits — same endpoint, same request body. See [Higgsfield with your own key](/development/comfy-router/higgsfield-byok).
+</Note>
+
+<Note>
+  **Tracking spend with LiteLLM?** Router reports a synchronous run's USD cost in the header LiteLLM reads, so you don't maintain a price table. See [Using Comfy Router with LiteLLM](/development/comfy-router/litellm).
+</Note>
+
+<Steps titleSize="h2">
   <Step title="Create an API key">
-    Create a key in the [Developer Platform](https://platform.comfy.org/profile/api-keys). In a Bash-compatible terminal, set:
+    Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router). In a Bash-compatible terminal, set:
 
     ```bash
     export COMFY_API_KEY="comfyui-..."
     ```
 
     Keep API keys on your server or in your local environment. These examples are for a terminal or server, not browser JavaScript.
+
+    Router charges credits per request. If your workspace has no credit balance, the first live call returns `402` with `error_type: insufficient_credits`. This check runs before body validation, so an unfunded workspace can return `402` even for an invalid request. Add credits at [workspace billing](https://platform.comfy.org) before debugging the request body.
   </Step>
 
-  <Step title="Save a key for this request">
-    Generate this value once for this image. If you retry the same request, reuse it.
-
-    ```bash
-    export COMFY_REQUEST_KEY="$(uuidgen)"
-    ```
-
-    If `uuidgen` is unavailable, use another UUID generator. Use a new key when you start a new image.
-  </Step>
-
-  <Step title="Generate an image">
-    Choose your language and run the example. Image generation can take a few minutes.
+  <Step title="Queue a request">
+    Choose your language and run the example. Generation can take a few minutes.
 
     <CodeGroup>
 
-    ```bash cURL
-    curl --max-time 660 \
-      https://api.comfy.org/v2/models/bfl/flux-2-pro \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Idempotency-Key: $COMFY_REQUEST_KEY" \
-      -H "Content-Type: application/json" \
-      -d '{"prompt": "a red teapot on a windowsill, morning light"}'
-    ```
-
     ```python Python
     # Python 3.10+
-    # Install: python -m pip install "comfy-sdk>=0.1.9"
+    # Install: python -m pip install "comfy-sdk>=0.3.0"
     # Save as quickstart.py, then run: python quickstart.py
 
-    import os
+    import asyncio
 
-    from comfy_sdk import Comfy
+    from comfy_sdk import AsyncComfy
 
-    # Comfy reads COMFY_API_KEY from the environment.
-    with Comfy() as client:
-        result = client.models.run(
-            "bfl/flux-2-pro",
-            {"prompt": "a red teapot on a windowsill, morning light"},
-            idempotency_key=os.environ["COMFY_REQUEST_KEY"],
-            timeout=660.0,
-        )
+    # AsyncComfy reads COMFY_API_KEY from the environment.
+    async def main():
+        async with AsyncComfy() as client:
+            handle = await client.models.submit(
+                "byteplus/dreamina-seedance-2-5-260628",
+                {
+                    "content": [
+                        {
+                            "text": "A red fox trotting through a snowy pine forest",
+                            "type": "text",
+                        },
+                    ],
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                },
+            )
+            print("request_id:", handle.request_id)
 
-    print("image:", result["result"]["sample"])
+            # Poll until the request completes, waiting the Retry-After the server names.
+            async for update in handle.iter_events():
+                print(update.status, update.queue_position)
+
+            result = await handle.get()
+
+        print("result:", result)
+
+    asyncio.run(main())
+    ```
+
+    ```bash cURL
+    # 1. Submit the request. Save the request_id from the 201 response.
+    curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+
+    # 2. Poll until the status is COMPLETED, waiting the Retry-After value each time.
+    REQUEST_ID="paste-request-id-from-201-response"
+    curl -i "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID/status" \
+      -H "X-API-Key: $COMFY_API_KEY"
+
+    # 3. Collect the model result.
+    curl "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID" \
+      -H "X-API-Key: $COMFY_API_KEY"
     ```
 
     ```typescript TypeScript
     // Node.js 22+
-    // Install: npm install @comfyorg/sdk@^0.1.9 --save-dev tsx
+    // Install: npm install "@comfyorg/sdk@>=0.4.0" --save-dev tsx
     // Save as quickstart.mts, then run: npx tsx quickstart.mts
 
     import { comfy } from "@comfyorg/sdk";
 
     // Comfy reads COMFY_API_KEY from the environment.
-    type FluxResult = { result: { sample: string } };
-    const idempotencyKey = process.env.COMFY_REQUEST_KEY;
-    if (!idempotencyKey) throw new Error("Set COMFY_REQUEST_KEY first.");
-
-    const { data } = await comfy.models.run<FluxResult>(
-      "bfl/flux-2-pro",
-      { prompt: "a red teapot on a windowsill, morning light" },
-      { idempotencyKey, timeoutMs: 660_000 },
+    const handle = await comfy.models.submit(
+      "byteplus/dreamina-seedance-2-5-260628",
+      {
+        content: [
+          {
+            text: "A red fox trotting through a snowy pine forest",
+            type: "text",
+          },
+        ],
+        duration: 5,
+        ratio: "16:9",
+        resolution: "720p",
+      },
     );
+    console.log("requestId:", handle.requestId);
 
-    console.log("image:", data.result.sample);
+    // Poll until the request completes, waiting the Retry-After the server names.
+    for await (const update of handle.events()) {
+      console.log(update.status, update.queuePosition);
+    }
+
+    const result = await handle.get();
+
+    console.log("result:", result.data);
     ```
 
     </CodeGroup>
 
-    Both SDKs read `COMFY_API_KEY` from the environment.
-  </Step>
-
-  <Step title="Read and save the result">
-    For this model, the image URL is at `result.sample` in the response body. An abbreviated response looks like this; the URL below is illustrative:
-
-    ```json
-    {
-      "status": "Ready",
-      "result": { "sample": "https://example.com/generated-image.jpeg" }
-    }
-    ```
-
-    Open the returned URL or download it:
-
-    ```bash
-    curl --fail --location "PASTE_IMAGE_URL_HERE" --output teapot.jpg
-    ```
-
-    Download promptly. Router can rehost BFL assets on Comfy storage, but URLs expire and a replay does not renew them. A failed rehost can leave a shorter-lived provider URL. See [result assets](/development/comfy-router/reference#result-assets).
+    Each SDK submit call creates an idempotency key and reuses it for automatic retries.
+    The cURL example creates one with `uuidgen`. If it is unavailable, use another UUID generator.
+    For status, cancellation, and collection details, see [Queued delivery](/development/comfy-router/queue).
   </Step>
 </Steps>
 
-## Choose a model
+## Next steps
 
-[Browse the models available through Comfy Router](/development/comfy-router/models), inspect their inputs, then replace the model ID in this example.
+<CardGroup cols={2}>
+  <Card title="Browse models" icon="grid-2" href="/development/comfy-router/models">
+    Explore available models and find model-specific request examples.
+  </Card>
+  <Card title="Using the Router API" icon="code" href="/development/comfy-router/api">
+    Learn about model discovery, schemas, queued requests, errors, and billing.
+  </Card>
+</CardGroup>
