@@ -9,6 +9,7 @@ const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
+const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
 
 type CatalogModel = {
   id: string;
@@ -289,12 +290,23 @@ function priceWithoutUnit(value: string, unit: string, locale: PricingLocale): s
   return value.endsWith(suffix) ? value.slice(0, -suffix.length) : value;
 }
 
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
+  }).format(value).replace("$", "&#36;");
+}
+
+function formatRateAmount(rate: MetronomeRate, currency: "credits" | "usd", creditsPerUsd: number): string {
+  if (currency === "credits") return formatAmount(rate.credits!);
+  return formatUsd(Number(rate.price_usd ?? Number(rate.credits!) / creditsPerUsd));
+}
+
 function isTokenRoute(rates: MetronomeRate[]): boolean {
   const tokenCondition = /^(?:(?:Input|Output) (?:text|audio|image|video) tokens|Cached input(?: (?:text|audio|image|video))? tokens|Cache-write input text tokens|(?:5-minute|1-hour) cache-write input tokens|Reasoning tokens)$/;
   return rates.length > 0 && rates.every((rate) => rate.kind !== "usage" && rate.unit === "per 1M tokens" && tokenCondition.test(rate.conditions ?? ""));
 }
 
-function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale): string {
+function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | "cached", locale: PricingLocale, currency: "credits" | "usd", creditsPerUsd: number): string {
   const selected = rates.filter((rate) => {
     const condition = rate.conditions ?? "";
     if (/^Cached input/.test(condition) || /cache-write/i.test(condition)) return direction === "cached";
@@ -305,7 +317,7 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   // including media and reasoning charges that match the text baseline.
   const groups = new Map<string, MetronomeRate[]>();
   for (const rate of selected) {
-    const amount = formatAmount(rate.credits!);
+    const amount = formatRateAmount(rate, currency, creditsPerUsd);
     const group = groups.get(amount) ?? [];
     group.push(rate);
     groups.set(amount, group);
@@ -313,12 +325,13 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
   const baseline = selected.find((rate) => rate.conditions === (direction === "input" ? "Input text tokens" : direction === "output" ? "Output text tokens" : "Cached input text tokens"))
     ?? (direction === "cached" ? selected.find((rate) => rate.conditions === "Cached input tokens") : undefined)
     ?? (groups.size === 1 ? selected[0] : undefined);
-  const primary = baseline ? formatAmount(baseline.credits!) : undefined;
+  const primary = baseline ? formatRateAmount(baseline, currency, creditsPerUsd) : undefined;
   const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
   const hasCachedWrite = direction === "cached" && selected.some((rate) =>
     /cache-write|^(?:5-minute|1-hour)/i.test(rate.conditions ?? ""));
   const label = (condition: string) => {
     if (/^Cached input/.test(condition)) return hasCachedWrite ? ["Read", "読み取り", "读取", "읽기"][localeIndex] : "";
+    if (condition === "Input text tokens" || condition === "Output text tokens") return ["Text", "テキスト", "文本", "텍스트"][localeIndex];
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
       text: ["Text", "テキスト", "文本", "텍스트"],
@@ -334,15 +347,12 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
-  return ordered.map(([amount, group]) => {
+  return ordered.map(([, group]) => {
     const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
-    const labels = direction === "output" || (direction === "input" && amount === primary)
-      ? groupLabels.filter((value) => value !== "Text")
-      : groupLabels;
-    const prefix = amount === primary && direction !== "cached" && labels.length === 0
-      ? ""
-      : labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
-    return `${prefix}${amount}`;
+    const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
+      ? groupLabels.filter((value) => value !== "Text") : groupLabels;
+    const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
+    return `${prefix}${formatRateAmount(group[0], currency, creditsPerUsd)}`;
   }).join("<br />") || "-";
 }
 
@@ -413,10 +423,26 @@ function resolutionOrder(a: string, b: string): number {
   return pixels(a) - pixels(b) || a.localeCompare(b);
 }
 
-function render(locale: PricingLocale = "en"): string {
+function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"): string {
   const models = loadCatalog();
   const data = loadMetronomeData();
-  const copy = pricingCopy[locale];
+  const baseCopy = pricingCopy[locale];
+  const replaceCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), "USD");
+  const replaceTokenCreditLabel = (value: string) => value.replace(new RegExp(baseCopy.credits, "gi"), (_match, offset: number, source: string) =>
+    offset > 0 && /\s/.test(source[offset - 1]) ? "USD" : " USD");
+  const copy = currency === "usd" ? {
+    ...baseCopy,
+    credits: "USD",
+    input: replaceTokenCreditLabel(baseCopy.input),
+    cached: replaceTokenCreditLabel(baseCopy.cached),
+    output: replaceTokenCreditLabel(baseCopy.output),
+    kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
+  } : baseCopy;
+  const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
+  const comfyGpuRate = currency === "credits"
+    ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
+    : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
+  const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
@@ -462,7 +488,9 @@ function render(locale: PricingLocale = "en"): string {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${formatAmount(rate.credits!)} / ${priceUnit}`;
+          const credits = rate.kind === "usage"
+            ? provider === "Comfy" ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
@@ -482,7 +510,7 @@ function render(locale: PricingLocale = "en"): string {
         const showOptions = hasOptions && !moveKlingOptionIntoName && !omitLumaReferenceOption;
         const optionHeader = options.every((option) => /^(\d+(?:p|K)|\d+ × \d+)$/.test(option)) ? copy.resolution
           : options.every((option) => /^\d+s$/.test(option)) ? copy.duration : copy.option;
-        const creditsHeader = headerUnit ? `${copy.credits} / ${formatUnit(headerUnit, locale)}` : copy.credits;
+        const creditsHeader = headerUnit ? rateHeader("", ` / ${formatUnit(headerUnit, locale)}`) : copy.credits;
         const header = `| ${copy.model} | ${copy.modelId} | ${showOptions ? `${optionHeader} | ` : ""}${creditsHeader} |`;
         const separator = `| --- | --- | ${showOptions ? "--- | " : ""}---: |`;
         const body = items.map((item) => {
@@ -522,7 +550,7 @@ function render(locale: PricingLocale = "en"): string {
         const matrixModels = [...byModel].filter(([, model]) => !model.conflicted);
         const fallbackIds = new Set([...byModel].filter(([, model]) => model.conflicted).map(([modelId]) => modelId));
         const table = matrixModels.length
-          ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => `${copy.credits} / ${formatUnit(unit, locale)}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => rateHeader("", ` / ${formatUnit(unit, locale)}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
         return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
@@ -555,7 +583,7 @@ function render(locale: PricingLocale = "en"): string {
       const durationPivotRows = new Set(durationModels.flatMap(([, model]) => model.rows));
       const durationTitle = copy.ratesPer(formatUnit("per request", locale));
       const durationRequestTable = durationModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${durationColumns.map((duration) => `${duration} ${copy.credits} / ${formatUnit("per request", locale)}`).join(" | ")} |\n| --- | --- | ${durationColumns.map(() => "---:").join(" | ")} |\n${durationModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${durationColumns.map((duration) => priceWithoutUnit(model.values.get(duration) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${durationColumns.map((duration) => rateHeader(`${duration} `, ` / ${formatUnit("per request", locale)}`)).join(" | ")} |\n| --- | --- | ${durationColumns.map(() => "---:").join(" | ")} |\n${durationModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${durationColumns.map((duration) => priceWithoutUnit(model.values.get(duration) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
       const textToImage = formatOption("Text to image", locale);
       const imageEdit = formatOption("Edit", locale);
@@ -587,7 +615,7 @@ function render(locale: PricingLocale = "en"): string {
       const imageRequestModels = [...imageRequestByModel].filter(([, model]) => model.values.size > 1);
       const imageRequestPivotRows = new Set(imageRequestModels.flatMap(([, model]) => model.rows));
       const imageRequestTable = category === "images" && imageRequestModels.length
-        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => `${tableCell(option)} ${copy.credits} / ${formatUnit("per generation", locale)}`).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
+        ? `| ${copy.model} | ${copy.modelId} | ${requestColumns.map((option) => rateHeader(`${tableCell(option)} `, ` / ${formatUnit("per generation", locale)}`)).join(" | ")} |\n| --- | --- | ${requestColumns.map(() => "---:").join(" | ")} |\n${imageRequestModels.map(([modelId, model]) => `| ${model.name} | \`${modelId}\` | ${requestColumns.map((option) => priceWithoutUnit(model.values.get(option) ?? "-", "per request", locale)).join(" | ")} |`).join("\n")}`
         : "";
 
       const kreaModes = ["moodboards", "style_references", "text"].map((mode) => formatOption(`feature=${mode}`, locale));
@@ -632,7 +660,7 @@ function render(locale: PricingLocale = "en"): string {
         const available = [...byModel].filter(([, model]) => !model.hasConflict && model.cells.size > 0);
         const consumedRows = new Set(available.flatMap(([, model]) => model.rows));
         const table = available.length
-          ? `| ${copy.model} | ${copy.modelId} | ${columns.map(({ label }) => `${tableCell(label)} ${copy.credits} / ${unitLabel}`).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${available.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map(({ key }) => model.cells.get(key) ?? "-").join(" | ")} |`).join("\n")}`
+          ? `| ${copy.model} | ${copy.modelId} | ${columns.map(({ label }) => rateHeader(`${tableCell(label)} `, ` / ${unitLabel}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${available.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map(({ key }) => model.cells.get(key) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         return { title, table, consumedRows };
       };
@@ -693,7 +721,7 @@ function render(locale: PricingLocale = "en"): string {
       const ideogramImageMatrix = ideogramRowsForMatrix.length
         ? {
           title: copy.ideogramImageRates,
-          table: `| ${copy.model} | ${copy.modelId} | ${ideogramQualities.map((quality) => `${quality} ${copy.credits} / ${ideogramGenerationUnit}`).join(" | ")} |\n| --- | --- | ${ideogramQualities.map(() => "---:").join(" | ")} |\n${ideogramRowsForMatrix.join("\n")}`,
+          table: `| ${copy.model} | ${copy.modelId} | ${ideogramQualities.map((quality) => rateHeader(`${quality} `, ` / ${ideogramGenerationUnit}`)).join(" | ")} |\n| --- | --- | ${ideogramQualities.map(() => "---:").join(" | ")} |\n${ideogramRowsForMatrix.join("\n")}`,
           consumedRows: new Set(ideogramRows),
         }
         : { title: copy.ideogramImageRates, table: "", consumedRows: new Set<typeof ordinaryRows[number]>() };
@@ -800,7 +828,7 @@ function render(locale: PricingLocale = "en"): string {
         }
       }
       const tokenRows = tokenRoutes.map(({ model, rates }) =>
-        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale)} | ` : ""}${tokenPriceCell(rates, "input", locale)} | ${tokenPriceCell(rates, "output", locale)} |`,
+        `| [${tableCell(displayTitle(model))}](/${model.page}) | \`${model.id}\` | ${hasCachedInput ? `${tokenPriceCell(rates, "cached", locale, currency, data.credits_per_usd)} | ` : ""}${tokenPriceCell(rates, "input", locale, currency, data.credits_per_usd)} | ${tokenPriceCell(rates, "output", locale, currency, data.credits_per_usd)} |`,
       ).join("\n");
       const imageTierRates = imageRoutes.flatMap(({ image }) => image.groups.flatMap((group) => [...group.tiers.values()]));
       const imageTierUnit = imageTierRates.length > 0
@@ -814,7 +842,7 @@ function render(locale: PricingLocale = "en"): string {
           const values = ["1K", "2K", "4K"].map((size) => {
             const rate = group.tiers.get(size);
             return !rate ? "-" : rate.kind === "usage" ? copy.variable
-              : imageTierUnit === rate.unit ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
+              : imageTierUnit === rate.unit ? amount(rate) : `${amount(rate)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const operation = formatOption(group.operation, locale);
           const quality = formatOption(`quality=${group.quality}`, locale);
@@ -860,7 +888,7 @@ function render(locale: PricingLocale = "en"): string {
       for (const { group } of switchxResolutionGroups) {
         for (const [resolution, { rate }] of group.tiers) {
           const rates = switchxRatesByUnit.get(rate.unit) ?? new Map<string, string>();
-          rates.set(resolution, formatAmount(rate.credits!));
+          rates.set(resolution, amount(rate));
           switchxRatesByUnit.set(rate.unit, rates);
         }
       }
@@ -868,7 +896,7 @@ function render(locale: PricingLocale = "en"): string {
       const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
       const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
       const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
-        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => `${resolution} ${copy.credits}`).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
+        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
         : "";
       const switchxResolutionRows = new Set(switchxResolutionGroups);
       // Different model families can expose unrelated size bands under one provider.
@@ -960,7 +988,7 @@ function render(locale: PricingLocale = "en"): string {
           const values = columns.map((label) => {
             const rate = group.tiers.get(label)?.rate;
             return !rate ? "-" : rate.kind === "usage" ? copy.variable
-              : unitInHeader ? formatAmount(rate.credits!) : `${formatAmount(rate.credits!)} / ${formatPriceUnit(rate.unit, locale)}`;
+              : unitInHeader ? amount(rate) : `${amount(rate)} / ${formatPriceUnit(rate.unit, locale)}`;
           });
           const modeSuffix = model.id === "pruna/p-video-2" ? ` ${formatOption(group.conditions, locale)}` : "";
           const modelName = `${displayTitle(model)}${modeSuffix}`;
@@ -970,7 +998,7 @@ function render(locale: PricingLocale = "en"): string {
           return `| ${name} | ${modelId} | ${hasOptions ? `${tableCell(option)} | ` : ""}${values.join(" | ")} |`;
         }).join("\n");
         const unitSuffix = unitRepeatedInColumn ? ` / ${formatUnit(publicUnit, locale)}` : "";
-        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => `${label} ${copy.credits}${unitSuffix}`).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
+        return { unit: table.unit, table: `| ${copy.model} | ${copy.modelId} | ${hasOptions ? `${table.optionHeader} | ` : ""}${columns.map((label) => rateHeader(`${label} `, unitSuffix)).join(" | ")} |\n| --- | --- | ${hasOptions ? "--- | " : ""}${columns.map(() => "---:").join(" | ")} |\n${matrixRows}` };
       });
       const tableSections: Array<{ title: string; body: string }> = [];
       if (seedancePivot.length === seedanceIds.size) {
@@ -1023,7 +1051,10 @@ function render(locale: PricingLocale = "en"): string {
       if (durationRequestTable && !ordinaryGroups.has(durationTitle)) {
         tableSections.push({ title: durationTitle, body: durationRequestTable });
       }
-      if (kreaTable) tableSections.push({ title: copy.kreaGenerationRates, body: kreaTable });
+      if (kreaTable) tableSections.push({
+        title: copy.kreaGenerationRates,
+        body: kreaTable,
+      });
       for (const matrix of [qwenOutputMatrix, seedreamOutputMatrix, lumaUniMatrix, ideogramImageMatrix, seedanceVideoMatrix, seedanceAudioMatrix]) {
         if (matrix.table) tableSections.push({ title: matrix.title, body: matrix.table });
       }
@@ -1032,16 +1063,29 @@ function render(locale: PricingLocale = "en"): string {
         const tierUnit = publicTierUnit ? ` / ${formatUnit(publicTierUnit, locale)}` : "";
         tableSections.push({
           title: copy.imageTiers,
-          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | 1K ${copy.credits}${tierUnit} | 2K ${copy.credits}${tierUnit} | 4K ${copy.credits}${tierUnit} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
+          body: `| ${copy.model} | ${copy.modelId} | ${copy.operation} | ${copy.quality} | ${rateHeader(`1K `, tierUnit)} | ${rateHeader(`2K `, tierUnit)} | ${rateHeader(`4K `, tierUnit)} |\n| --- | --- | --- | --- | ---: | ---: | ---: |\n${imageRows}`,
         });
       }
       const hasSubgroups = tableSections.length > 1;
-      const tables = tableSections.map(({ title, body }) => `${hasSubgroups ? `#### ${title}\n\n` : ""}${body}`).join("\n\n");
+      const tables = tableSections.map(({ title, body }) => {
+        const comfyUsageNote = provider === "Comfy" && title === copy.usageRates
+          ? `${copy.comfyGpuUsageNote}\n\n` : "";
+        return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
+      }).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
       return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
+  return `<Tabs>\n${tabs}\n</Tabs>`;
+}
+
+function render(locale: PricingLocale = "en"): string {
+  const copy = pricingCopy[locale];
+  const data = loadMetronomeData();
+  const currencyToggleImport = locale === "en"
+    ? "../../snippets/router-pricing-currency.jsx"
+    : "../../../snippets/router-pricing-currency.jsx";
   return `---
 title: "${copy.title}"
 sidebarTitle: "${copy.sidebar}"
@@ -1049,15 +1093,16 @@ description: "${copy.description}"
 mode: "wide"
 ---
 
+import { PricingCurrencyToggle } from "${currencyToggleImport}";
+
 {/* Generated pricing page. */}
 
-${copy.intro}
+${copy.intro(data.credits_per_usd)}
 
-<Tabs>
-
-${tabs}
-
-</Tabs>
+<PricingCurrencyToggle creditsLabel="${copy.credits}" usdLabel="USD">
+${renderCurrencyView(locale, "credits")}
+${renderCurrencyView(locale, "usd")}
+</PricingCurrencyToggle>
 
 ${copy.status}
 
