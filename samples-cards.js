@@ -1,0 +1,41 @@
+document.addEventListener("click", (event) => {
+  const openButton = event.target.closest("[data-sample-open]");
+  const preview = event.target.closest("[data-sample-preview]");
+  const backButton = event.target.closest("[data-sample-back]");
+  const openTarget = openButton || preview;
+
+  if (openTarget) {
+    const card = openTarget.closest("[data-sample-card]");
+    const path = openButton?.dataset.sampleOpen || preview?.dataset.samplePreview;
+    const front = card.querySelector("[data-sample-front]");
+    const selectedPath = card.querySelector(`[data-sample-path="${path}"]`);
+    event.preventDefault();
+    if (preview) event.stopPropagation();
+    card.dataset.activePath = path;
+    card.dataset.flipped = "true";
+    front.inert = true;
+    front.setAttribute("aria-hidden", "true");
+    card.querySelectorAll("[data-sample-path]").forEach((panel) => {
+      panel.inert = panel !== selectedPath;
+      panel.setAttribute("aria-hidden", panel === selectedPath ? "false" : "true");
+    });
+    selectedPath.querySelector("[data-sample-back]").focus();
+  }
+
+  if (backButton) {
+    const card = backButton.closest("[data-sample-card]");
+    const front = card.querySelector("[data-sample-front]");
+    const path = card.dataset.activePath;
+    const openButton = front.querySelector(`[data-sample-open="${path}"]`);
+    event.preventDefault();
+    card.querySelectorAll("[data-sample-path]").forEach((panel) => {
+      panel.inert = true;
+      panel.setAttribute("aria-hidden", "true");
+    });
+    card.removeAttribute("data-flipped");
+    card.removeAttribute("data-active-path");
+    front.inert = false;
+    front.setAttribute("aria-hidden", "false");
+    openButton.focus();
+  }
+}, true);

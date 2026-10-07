@@ -103,7 +103,7 @@ async function prepareForProject(
   dryRun: boolean,
   force: boolean,
   explicitVersions: string[]
-): Promise<void> {
+): Promise<string[]> {
   const config = configForProject(baseConfig, projectId);
 
   const docsEnPath = join(ROOT, config.docs_en);
@@ -113,7 +113,7 @@ async function prepareForProject(
   const incremental = incrementalVersionSet();
   if (incremental && incremental.size === 0 && explicitVersions.length === 0) {
     console.log(`[${projectId}] No new <Update> blocks — nothing to prepare.`);
-    return;
+    return [];
   }
 
   const targetEntries = resolveTargetVersions(
@@ -148,9 +148,10 @@ async function prepareForProject(
 
   if (entriesToPrepare.length === 0) {
     console.log(`[${projectId}] No versions to prepare (min=${config.min_version}).`);
-    return;
+    return [];
   }
 
+  const preparedVersions = entriesToPrepare.map((e) => e.version);
   const targetVersions = versionLabelsFromEntries(entriesToPrepare);
   const modeLabel = mode === "en-only" ? "simplify EN" : "translate locales";
   console.log(
@@ -172,7 +173,7 @@ async function prepareForProject(
     );
     console.log(`[${projectId}] Staging: ${enStagingPath}`);
     console.log(`[${projectId}] Next: review staging EN, then pnpm cms:prepare:locales`);
-    return;
+    return preparedVersions;
   }
 
   // translate-only — read existing simplified EN staging (never re-simplify)
@@ -212,6 +213,7 @@ async function prepareForProject(
   );
   console.log(`[${projectId}] Staging: ${enStagingPath.replace("/en/", "/{locale}/")}`);
   console.log(`[${projectId}] Next: review staging locales, then pnpm cms:preview / cms:sync`);
+  return preparedVersions;
 }
 
 async function main(): Promise<void> {
@@ -232,14 +234,49 @@ async function main(): Promise<void> {
 
   const [primary, ...secondary] = projects;
 
-  await prepareForProject(baseConfig, primary!, mode, dryRun, force, explicitVersions);
+  // Locales must come from each project's own staging EN. Copying comfyui
+  // translations onto cloud overwrites cloud campaign shortlinks.
+  if (mode === "translate-only") {
+    for (const projectId of projects) {
+      await prepareForProject(
+        baseConfig,
+        projectId,
+        mode,
+        dryRun,
+        force,
+        explicitVersions
+      );
+      if (projects.length > 1) console.log("");
+    }
+    return;
+  }
+
+  const preparedVersions = await prepareForProject(
+    baseConfig,
+    primary!,
+    mode,
+    dryRun,
+    force,
+    explicitVersions
+  );
 
   for (const projectId of secondary) {
-    if (dryRun) {
-      console.log(`[${projectId}] Would copy staging from ${primary}`);
+    if (preparedVersions.length === 0) {
+      console.log(`[${projectId}] Skip staging merge — no versions prepared`);
+    } else if (dryRun) {
+      console.log(
+        `[${projectId}] Would merge v${preparedVersions.join(", v")} from ${primary} (keep dest EN tracking shortlinks)`
+      );
     } else {
-      const copied = await copyProjectStaging(baseConfig, primary!, projectId);
-      console.log(`[${projectId}] Copied ${copied} staging file(s) from ${primary}`);
+      const copied = await copyProjectStaging(
+        baseConfig,
+        primary!,
+        projectId,
+        preparedVersions
+      );
+      console.log(
+        `[${projectId}] Merged v${preparedVersions.join(", v")} into ${copied} staging file(s) from ${primary} (dest EN tracking shortlinks preserved)`
+      );
     }
     if (projects.length > 1) console.log("");
   }

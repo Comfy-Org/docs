@@ -188,12 +188,28 @@ export function unionRange(a: DateRange, b: DateRange): DateRange {
   };
 }
 
-/** Incremental fetch window: from last manifest dateTo (with 1-day overlap) through tomorrow. */
+/**
+ * Incremental fetch window.
+ *
+ * Mintlify analytics data is delayed ~1-2 weeks (observed ~1 week): recent days
+ * return 0 rows until the platform releases them. The window must therefore END
+ * in the past (today - delay), not tomorrow, otherwise every incremental run
+ * fetches an empty future window and the cache never advances.
+ *
+ * The old buggy version ended at "tomorrow", which made the daily cron fetch
+ * `[last dateTo, tomorrow]` — a window whose data is never released yet.
+ */
 export function incrementalRangeFromManifest(manifest: ManifestSnapshot): DateRange | null {
+  const ANALYTICS_DELAY_DAYS = 7;
+  const WINDOW_OVERLAP_DAYS = 2;
+
   const dateTo = new Date();
-  dateTo.setUTCDate(dateTo.getUTCDate() + 1);
-  const from = new Date(`${manifest.dateTo}T00:00:00.000Z`);
-  from.setUTCDate(from.getUTCDate() - 1);
+  dateTo.setUTCDate(dateTo.getUTCDate() - ANALYTICS_DELAY_DAYS);
+  // Last fetch end (old bug may have pushed it into the future; clamp it).
+  const lastRaw = new Date(`${manifest.dateTo}T00:00:00.000Z`);
+  const last = lastRaw > dateTo ? new Date(dateTo) : lastRaw;
+  const from = new Date(last);
+  from.setUTCDate(from.getUTCDate() - WINDOW_OVERLAP_DAYS);
   const dateFrom = isoDateOnly(from);
   const nextDateTo = isoDateOnly(dateTo);
   if (dateFrom >= nextDateTo) return null;

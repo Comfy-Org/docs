@@ -88,7 +88,7 @@ PR을 생성해 주시면 며칠 내에 검토합니다.
 
 다른 언어 문서가 필요하신가요? [Issue를 열어](https://github.com/Comfy-Org/docs/issues/new) 원하는 로케일(예: 프랑스어, 독일어, 브라질 포르투갈어)을 알려 주세요. 메인테이너가 `translation-config.json`과 `docs.json`에 추가한 뒤 **전체 콘텐츠를 일괄 번역**합니다. 요청만 보내시면 됩니다. 번역 MDX PR은 필요 없습니다.
 
-MDX 편집 규격은 [Mintlify](https://mintlify.com/docs/page) Writing Content 섹션을 참고하세요.
+MDX 편집 규격은 [Mintlify](https://www.mintlify.com/docs/pages) Writing Content 섹션을 참고하세요.
 
 > **참고**: `built-in-nodes/`는 [embedded-docs](https://github.com/Comfy-Org/embedded-docs)에서 관리되며, 번역 스크립트가 이 디렉터리를 **자동으로 건너뜁니다**.
 
@@ -180,11 +180,14 @@ npm run glossary:sync -- --lang ko    # 단일 언어
 npm run glossary:sync:dry-run         # 개수만 보고, 쓰기 없음
 ```
 
-프론트엔드 locale 경로는 다음 순서로 해석됩니다: `--frontend <path>` → `FRONTEND_LOCALES_PATH` 환경 변수 → `translation-config.json`의 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`.
+프론트엔드 locale 소스는 다음 순서로 해석됩니다:
+
+- **원격(기본):** `translation-config.json`의 `frontend_locales_url`(GitHub raw `main` 브랜치). `FRONTEND_LOCALES_URL` 또는 `--frontend-url <url>`로 덮어쓸 수 있습니다.
+- **로컬(선택):** 오프라인 또는 fork checkout이 필요할 때 `--frontend <path>` 또는 `FRONTEND_LOCALES_PATH`.
 
 #### 새 언어 추가
 
-위 [새 언어 요청](#새-언어-요청) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
+위 [새 언어 요청](#새-언어-추가) 참고 — Issue로 신청해 주세요. PR로 직접 언어를 추가하지 마세요.
 
 메인테이너: `.github/scripts/i18n/translation-config.json`의 `languages`에 항목 추가（`code`, `name`, `dir`, `snippets_dir`）. 경로 제외, 링크 현지화, 영문 파일 스캔은 같은 폴더의 `i18n-config.mjs`에서 자동으로 파생되므로 로케일 추가 시 번역 스크립트를 언어별로 수정할 필요가 없습니다. 그다음 `docs.json`에 내비게이션 추가（[Mintlify 로컬라이제이션](https://mintlify.com/docs/navigation/localization) 참고） 후 일괄 번역:
 

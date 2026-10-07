@@ -6,8 +6,8 @@
  * - heading_sections: long pages — split on level-2 `##` headings
  *
  * Incremental sync stores per-block English hashes in frontmatter
- * (`translationBlockHashes`) keyed by stable English labels. Target files
- * are split by section index (headings are translated, so labels differ).
+ * (`translationBlockHashes`) keyed by stable English labels. Target headings
+ * are translated, so stored label order maps them back to their English keys.
  */
 
 import { createHash } from "crypto";
@@ -232,6 +232,20 @@ export function stripTranslationMetaFromFrontmatter(body: string): string {
   return out;
 }
 
+/**
+ * Reassemble the opening `---` plus whatever frontmatter survived meta
+ * stripping, ready for a translation meta block to be appended.
+ *
+ * When the frontmatter held nothing but translation metadata, `cleaned` is
+ * empty and the naive `${open}${cleaned}\n` leaves a blank first line inside
+ * the frontmatter that the next run cannot remove — the write stops being
+ * idempotent. See https://github.com/Comfy-Org/docs/issues/1358.
+ */
+export function frontmatterMetaPrefix(open: string, cleaned: string): string {
+  const head = cleaned.replace(/\n+$/, "");
+  return head ? `${open}${head}\n` : open;
+}
+
 export function setChunkedTranslationMeta(
   content: string,
   fileHash: string,
@@ -253,7 +267,7 @@ export function setChunkedTranslationMeta(
   const [, open, body, close] = fmMatch;
   const rest = content.slice(fmMatch[0].length);
   const cleaned = stripTranslationMetaFromFrontmatter(body);
-  return `${open}${cleaned}\n${metaBlock}${close}${rest}`;
+  return `${frontmatterMetaPrefix(open, cleaned)}${metaBlock}${close}${rest}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +279,340 @@ const FENCE_RE = /^(```|~~~)/;
 
 function toggleFence(line: string, inFence: boolean): boolean {
   return FENCE_RE.test(line.trim()) ? !inFence : inFence;
+}
+
+/** Extract fenced code blocks exactly as written, including fence markers. */
+function extractCodeFences(content: string): string[] {
+  const lines = content.split("\n");
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of lines) {
+    if (FENCE_RE.test(line.trim())) {
+      if (current) {
+        current.push(line);
+        blocks.push(current.join("\n"));
+        current = null;
+      } else {
+        current = [line];
+      }
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Line-comment markers per language tag. Comments inside a fenced block are
+ * documentation prose, so they may be localized; code lines may not change.
+ * The markers are used to strip comments before comparing code.
+ */
+const LINE_COMMENT_MARKERS: Record<string, string[]> = {
+  python: ["#"], py: ["#"], bash: ["#"], sh: ["#"], shell: ["#"], zsh: ["#"],
+  yaml: ["#"], yml: ["#"], toml: ["#"], ini: ["#"], conf: ["#"],
+  dockerfile: ["#"], ruby: ["#"], rb: ["#"], perl: ["#"], r: ["#"],
+  ts: ["//"], typescript: ["//"], js: ["//"], javascript: ["//"],
+  tsx: ["//"], jsx: ["//"], jsonc: ["//"], go: ["//"], rust: ["//"],
+  java: ["//"], kotlin: ["//"], swift: ["//"], c: ["//"], cpp: ["//"],
+  csharp: ["//"], cs: ["//"], php: ["//"], dart: ["//"], scala: ["//"],
+  sql: ["--"], lua: ["--"],
+};
+const DEFAULT_COMMENT_MARKERS = ["#", "//"];
+
+/** Languages where `#` opens a comment anywhere outside a string literal. */
+const HASH_COMMENT_ANYWHERE = new Set(["python", "py", "ruby", "rb", "perl", "r"]);
+
+/** Fence languages whose C-style block comments span several lines. */
+const BLOCK_COMMENT_LANGS = new Set([
+  "ts", "typescript", "js", "javascript", "tsx", "jsx", "jsonc", "go", "rust",
+  "java", "kotlin", "swift", "c", "cpp", "csharp", "cs", "php", "dart", "scala",
+]);
+
+/**
+ * The language tag of a fenced block. Mintlify info strings are
+ * `<lang> [title]` (for example `python Python` or `bash Install`), so only the
+ * first token identifies the language. Comparing the first token also keeps a
+ * localized fence title from failing the language check.
+ */
+function codeFenceLang(block: string): string {
+  const first = block.split("\n", 1)[0] ?? "";
+  const info = first.trim().replace(/^`+/, "").trim();
+  return info.split(/\s+/)[0] ?? "";
+}
+
+function commentMarkersFor(langTag: string): string[] {
+  return LINE_COMMENT_MARKERS[langTag.toLowerCase()] ?? DEFAULT_COMMENT_MARKERS;
+}
+
+/** A shebang is executable, not documentation: never treat it as a comment. */
+function isShebang(line: string): boolean {
+  return line.trimStart().startsWith("#!");
+}
+
+/**
+ * True when `marker` at position `index` opens a comment in this language.
+ * Python-style `#` and `//` open a comment anywhere outside a string literal.
+ * Shell-style `#` and `--` need a word boundary, so a CLI flag such as
+ * `--deployment` in a `bash` block is never mistaken for a comment.
+ */
+function isCommentStart(line: string, index: number, marker: string, langTag: string): boolean {
+  if (marker === "//") return true;
+  const atBoundary = index === 0 || /\s/.test(line[index - 1] as string);
+  if (marker === "#") return HASH_COMMENT_ANYWHERE.has(langTag.toLowerCase()) || atBoundary;
+  return atBoundary;
+}
+
+/** True for lines that carry no code: blanks and whole-line line-comments. */
+function isCommentOnlyLine(line: string, markers: string[]): boolean {
+  const trimmed = line.trimStart();
+  if (!trimmed) return true;
+  if (isShebang(line)) return false;
+  return markers.some((marker) => trimmed.startsWith(marker));
+}
+
+/**
+ * Drop a trailing line comment from `line`, honouring quotes so a marker inside
+ * a string literal stays part of the code. Boundary rules come from the fence
+ * language: `value=1# comment` and `run();// comment` are comments, while
+ * `comfy deploy --deployment dep_1` is not.
+ */
+export function stripTrailingComment(line: string, markers: string[], langTag = "", state = { templateOpen: false }): string {
+  if (isShebang(line)) return line;
+  const start = findCommentToken(line, markers, langTag, false, state);
+  return start === -1 ? line : line.slice(0, start).trimEnd();
+}
+
+const REGEX_LITERAL_LANGS = new Set(["js", "javascript", "jsx", "ts", "typescript", "tsx"]);
+
+/** Find the first comment token outside strings and JavaScript regex literals. */
+function findCommentToken(line: string, markers: string[], langTag: string, includeBlock: boolean, state = { templateOpen: false }): number {
+  let quote: string | null = state.templateOpen ? "`" : null;
+  let regex = false;
+  let regexClass = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i] as string;
+    if (quote || regex) {
+      if (char === "\\") {
+        i += 1;
+        continue;
+      }
+      if (quote && char === quote) quote = null;
+      if (regex) {
+        if (char === "[") regexClass = true;
+        if (char === "]") regexClass = false;
+        if (char === "/" && !regexClass) regex = false;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (includeBlock && line.startsWith("/*", i)) {
+      state.templateOpen = quote === "`";
+      return i;
+    }
+    const found = markers.find((candidate) => line.startsWith(candidate, i));
+    if (found && isCommentStart(line, i, found, langTag)) {
+      state.templateOpen = quote === "`";
+      return i;
+    }
+    if (char === "/" && REGEX_LITERAL_LANGS.has(langTag.toLowerCase())) {
+      const before = line.slice(0, i).trimEnd();
+      if (/[=(:,!\[{?]$/.test(before) || /\b(?:return|case|throw)$/.test(before)) regex = true;
+    }
+  }
+  state.templateOpen = quote === "`";
+  return -1;
+}
+
+/**
+ * The byte-identical part of a fenced block: every line that carries code, with
+ * comments removed. Comment-only lines are dropped, so translations may
+ * localize comments without failing validation. Block comments are tracked
+ * across lines, so a generator method that starts with `*` stays code.
+ */
+export function codeSignature(block: string, langTag: string): string[] {
+  const markers = commentMarkersFor(langTag);
+  const blockComments = BLOCK_COMMENT_LANGS.has(langTag.toLowerCase());
+  const lines = block.split("\n");
+  const body = lines.length >= 2 ? lines.slice(1, -1) : [];
+  const withoutDocstringText = stripDocstringText(body, langTag);
+  const out: string[] = [];
+  let inBlockComment = false;
+  const scanState = { templateOpen: false };
+
+  body.forEach((line, index) => {
+    const codeLine = withoutDocstringText[index];
+    if (codeLine === null) return;
+
+    if (inBlockComment) {
+      const close = line.indexOf("*/");
+      if (close === -1) return;
+      inBlockComment = false;
+      const tail = stripTrailingComment(line.slice(close + 2), markers, langTag);
+      if (tail.trim()) out.push(tail);
+      return;
+    }
+
+    if (!scanState.templateOpen && isCommentOnlyLine(codeLine, markers)) return;
+
+    if (blockComments) {
+      const open = findBlockCommentStart(codeLine, markers, langTag, scanState);
+      if (open !== -1) {
+        const close = codeLine.indexOf("*/", open + 2);
+        if (close === -1) {
+          inBlockComment = true;
+          const kept = stripTrailingComment(codeLine.slice(0, open), markers, langTag, scanState);
+          if (kept.trim()) out.push(kept);
+          return;
+        }
+        const merged = `${codeLine.slice(0, open)}${codeLine.slice(close + 2)}`;
+        const kept = stripTrailingComment(merged, markers, langTag, scanState);
+        if (kept.trim()) out.push(kept);
+        return;
+      }
+    }
+
+    out.push(stripTrailingComment(codeLine, markers, langTag, scanState));
+  });
+
+  return out;
+}
+
+/** Locate a block comment only before a line comment and outside quoted strings. */
+function findBlockCommentStart(line: string, markers: string[], langTag: string, state: { templateOpen: boolean }): number {
+  const start = findCommentToken(line, markers, langTag, true, { ...state });
+  return start !== -1 && line.startsWith("/*", start) ? start : -1;
+}
+
+/** Languages whose triple-quoted strings are documentation (docstrings). */
+const DOCSTRING_LANGS = new Set(["python", "py"]);
+
+/**
+ * A docstring opens a suite: it is the first statement after a `:` header line,
+ * or the first statement of the block. A triple-quoted string used as a value
+ * (a line inside a parenthesized assignment, say) opens at a different
+ * position, so its text stays code and changing it is still rejected.
+ */
+function opensSuite(previousMeaningful: string): boolean {
+  if (!previousMeaningful) return true;
+  return /^(?:async\s+def|def|class)\b.*:\s*$/.test(previousMeaningful);
+}
+
+/**
+ * Flag the lines that belong to a docstring. A docstring is documentation, the
+ * same as a comment, so its text may be localized while the code around it must
+ * not change.
+ */
+function stripDocstringText(lines: string[], langTag: string): (string | null)[] {
+  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return [...lines];
+  const result: (string | null)[] = [];
+  let open: string | null = null;
+  let openAt = -1;
+  let previousMeaningful = "";
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    const trimmed = line.trimStart();
+
+    if (open) {
+      const close = line.indexOf(open);
+      if (close === -1) result.push(null);
+      else {
+        const suffix = line.slice(close + open.length);
+        if (!/^\s*(?:#.*)?$/.test(suffix)) {
+          for (let from = openAt; from <= index; from += 1) result[from] = lines[from] as string;
+        } else {
+          result.push(`${line.slice(0, line.length - trimmed.length)}${open}${suffix}`);
+        }
+        open = null;
+        openAt = -1;
+      }
+      continue;
+    }
+
+    if (opensSuite(previousMeaningful)) {
+      const delimiters = ['"""', "'''"];
+      const delim = delimiters.find((candidate) => trimmed.startsWith(candidate));
+      if (delim) {
+        const close = trimmed.indexOf(delim, delim.length);
+        const prefix = line.slice(0, line.length - trimmed.length);
+        if (close === -1) {
+          result.push(`${prefix}${delim}`);
+          open = delim;
+          openAt = index;
+        } else {
+          const suffix = trimmed.slice(close + delim.length);
+          result.push(/^\s*(?:#.*)?$/.test(suffix)
+            ? `${prefix}${delim}${delim}${suffix}`
+            : line);
+        }
+        continue;
+      }
+    }
+
+    result.push(line);
+    if (trimmed && !trimmed.startsWith("#")) previousMeaningful = trimmed;
+  }
+
+  return result;
+}
+
+export function docstringLineFlags(lines: string[], langTag: string): boolean[] {
+  const flags = lines.map(() => false);
+  if (!DOCSTRING_LANGS.has(langTag.toLowerCase())) return flags;
+  let open: string | null = null;
+  let openAt = -1;
+  let previousMeaningful = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    const trimmed = line.trimStart();
+    if (open) {
+      const close = line.indexOf(open);
+      if (close !== -1) {
+        if (/^\s*(?:#.*)?$/.test(line.slice(close + open.length))) {
+          for (let from = openAt; from <= index; from += 1) flags[from] = true;
+        }
+        open = null;
+        openAt = -1;
+      }
+      continue;
+    }
+    if (opensSuite(previousMeaningful)) {
+      const delim = ['"""', "'''"].find((candidate) => trimmed.startsWith(candidate));
+      if (delim) {
+        const close = trimmed.indexOf(delim, delim.length);
+        if (close === -1) {
+          open = delim;
+          openAt = index;
+        } else if (/^\s*(?:#.*)?$/.test(trimmed.slice(close + delim.length))) {
+          flags[index] = true;
+        }
+        continue;
+      }
+    }
+    if (trimmed && !trimmed.startsWith("#")) previousMeaningful = trimmed;
+  }
+  return flags;
+}
+
+/**
+ * A translated fenced block passes when its language tag and every code line
+ * match the English block byte-for-byte. Comments are excluded: they are
+ * documentation and are allowed to be localized.
+ */
+export function codeBlocksMatch(enBlock: string, translatedBlock: string): boolean {
+  const enLines = enBlock.split("\n");
+  const trLines = translatedBlock.split("\n");
+  if (enLines[0] !== trLines[0] || enLines.at(-1) !== trLines.at(-1)) return false;
+  const enLang = codeFenceLang(enBlock);
+  const trLang = codeFenceLang(translatedBlock);
+  if (enLang !== trLang) return false;
+  const enCode = codeSignature(enBlock, enLang);
+  const trCode = codeSignature(translatedBlock, trLang);
+  if (enCode.length !== trCode.length) return false;
+  return enCode.every((line, index) => line === trCode[index]);
 }
 
 function isH2SectionLine(line: string, inFence: boolean): boolean {
@@ -359,6 +707,34 @@ export function parseTargetSectionsByIndex(body: string, enBlockCount: number): 
     sections.push("");
   }
   return sections.slice(0, enBlockCount);
+}
+
+/**
+ * Map localized target sections back to their stable English labels.
+ *
+ * Target H2 text is translated, so the labels stored in frontmatter are the
+ * only reliable identity. Refuse a partial positional mapping when the target
+ * section count differs from the stored label count. In that case, callers
+ * must treat the structure as incomplete and re-translate instead of borrowing
+ * content from a neighboring section.
+ */
+export function mapTargetSectionsByStoredLabels(
+  body: string,
+  storedLabels: string[]
+): Map<string, string> {
+  const targetSections = parseHeadingSections(body);
+  if (targetSections.length !== storedLabels.length) {
+    return new Map();
+  }
+
+  const introIndex = storedLabels.indexOf("_intro");
+  if (introIndex !== -1 && targetSections[introIndex]?.label !== "_intro") {
+    return new Map();
+  }
+
+  return new Map(
+    storedLabels.map((label, index) => [label, targetSections[index]!.content])
+  );
 }
 
 export function countH2Sections(body: string): number {
@@ -654,19 +1030,36 @@ export function getSectionSyncStatus(
   }
 
   const storedHashes = parseBlockHashesFromFrontmatter(existingFmBody);
+  const targetByStoredLabel = mapTargetSectionsByStoredLabels(
+    parseFrontmatterAndBody(existingContent).body,
+    storedLabels
+  );
+  const targetStructureComplete =
+    storedLabels.length > 0 && targetByStoredLabel.size === storedLabels.length;
 
   const pendingBlocks = enDoc.blocks
-    .filter((b) => storedHashes[b.label] !== enHashes[b.label])
+    .filter(
+      (b) =>
+        !targetStructureComplete ||
+        !targetByStoredLabel.get(b.label)?.trim() ||
+        storedHashes[b.label] !== enHashes[b.label]
+    )
     .map((b) => b.label);
 
   const hasStructureDrift = Object.keys(storedHashes).some((k) => !(k in enHashes));
 
   return {
-    upToDate: pendingBlocks.length === 0 && !hasStructureDrift && !hasOrderDrift,
+    upToDate:
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      !hasStructureDrift &&
+      !hasOrderDrift,
     pendingBlocks,
     needsFrontmatter: Object.keys(storedHashes).length === 0,
     needsReserialize:
-      pendingBlocks.length === 0 && (hasStructureDrift || hasOrderDrift),
+      targetStructureComplete &&
+      pendingBlocks.length === 0 &&
+      (hasStructureDrift || hasOrderDrift),
   };
 }
 
@@ -872,6 +1265,19 @@ export function validateTranslatedBlock(
 
   if (hasUnclosedCodeFence(translated)) return false;
 
+  // Code is executable documentation. Never accept a translation that
+  // changes, drops, or truncates a line of code. Comments inside the block are
+  // documentation prose, so a localized comment is accepted while a changed,
+  // dropped or commented-out code line still fails (see codeBlocksMatch).
+  const enCode = extractCodeFences(enBlock.content);
+  const translatedCode = extractCodeFences(translated);
+  if (
+    enCode.length !== translatedCode.length ||
+    enCode.some((block, index) => !codeBlocksMatch(block, translatedCode[index] as string))
+  ) {
+    return false;
+  }
+
   const enTabs = countTagOpens(enBlock.content, "Tab");
   const trTabs = countTagOpens(translated, "Tab");
   if (enTabs >= 2 && trTabs !== enTabs) return false;
@@ -884,7 +1290,11 @@ export function validateTranslatedBlock(
 
   const enLines = countNonEmptyLines(enBlock.content);
   const trLines = countNonEmptyLines(translated);
-  if (enLines >= 80 && trLines < enLines * 0.6) return false;
+  // A stopped model response can be syntactically valid but still be severely
+  // truncated. Apply the guard to ordinary-sized sections too, not only very
+  // long ones. Short sections are exempt because localization can legitimately
+  // reduce their line count.
+  if (enLines >= 20 && trLines < enLines * 0.6) return false;
 
   return true;
 }

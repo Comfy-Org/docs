@@ -27,6 +27,74 @@ pnpm translate:sync-docs-json       ← mirror nav paths in docs.json (opt-in)
 ```
 Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged English → skip.
 
+### Code and comments inside fenced blocks
+
+Code lines (identifiers, keywords, string literals, numeric values, indentation,
+blank lines, the language tag, the closing fence) stay byte-for-byte identical to
+the English source. The **comment text** inside a fenced block is translated: it
+is documentation prose the reader is meant to understand, so whole-line comments
+and trailing comments after code are localized, on the same line and position as
+in English.
+
+Python docstrings (a standalone triple-quoted string that opens a `def`, `class` or module)
+count as documentation, so their text is translated too; a triple-quoted string
+used as a value inside code stays code.
+
+Boundary rules: Python-style `#` and `//` open a comment outside a string or
+regex literal, so `value=1# note` counts as a comment; shell-style `#` and
+`--` need a word boundary, so a CLI flag such as `--deployment` stays code.
+C-style block comments are tracked across lines, so a generator method starting
+with `*` stays code. Comment markers inside quoted strings or JavaScript regex
+literals and multiline template literals stay code. A docstring is only a
+standalone triple-quoted string that opens a suite, not a triple-quoted value
+inside an expression or conditional. A line with other executable code stays
+byte-identical. Opening and closing fence lines stay byte-identical too.
+
+- Never translate a shebang (`#!...`), a string literal used as a value, a
+  variable name or any code token.
+- `validateTranslatedBlock` compares code via `codeBlocksMatch()`, which strips
+  comments per the fence's language tag. A translated comment passes; a changed,
+  dropped or commented-out code line still fails and the block is retried.
+- When editing a translation by hand, translate its comments and docstrings too.
+
+### Values, headings and punctuation
+
+Values the caller sends are not prose. In code blocks **and in prose labels**
+they stay byte-for-byte identical to the English source:
+
+- booleans `true` / `false`, enums such as `auto`, `disabled`, `standard`, `fast`,
+  `mp4`, `mov`, JSON keys, model ids, endpoint paths
+- the label punctuation and its own line: `true:` stays `true:`, `standard =`
+  stays `standard =`, and every labelled item keeps its own line (`mp4:` must not
+  be glued to the sentence above it)
+- only the explanation after the label is translated: `true: Returns the last
+  frame` becomes `true: 最終フレームを返します`, never `真：…`
+
+Headings: translate the heading text the way the target language's pages do
+(ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出), and keep any
+`{#anchor}` exactly as the English source has it. Chinese model pages
+conventionally keep `## Schema` in English, so leave that heading alone for zh.
+
+Other rules that the reviews keep flagging:
+
+- Chinese prose uses full-width punctuation (，。：；（）), not ASCII commas or colons.
+- Terminology follows the glossary (`glossary.mjs` and the per-language
+  overrides) and stays consistent inside a file; no invented words (fixed is
+  固定, not 顶固). Keep senses apart: an English `link` pointing at a URL or a
+  document is a 链接, a link between nodes in a graph (`LLink`, node connections,
+  canvas wiring) is a 连线.
+- Never reverse the polarity of a sentence: `so it applies here` must not become
+  `so it does not apply here`, and a limit that "never adjudicates a real prompt"
+  is not an instruction to configure it.
+
+### Title / description frontmatter (localized pages)
+
+`title` and `description` frontmatter carry localized meaning, not word-for-word
+translation. Localized titles keep the official product name untranslated;
+descriptions convey the same scope as EN within 40-160 chars. When an EN page's
+title/description changes in this repo, the zh/ja/ko values are updated in the
+same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../rules/docs-frontmatter.mdc).
+
 ## Environment (`.env.local`)
 
 | Variable | Purpose |
@@ -35,7 +103,8 @@ Incremental: each file stores `translationSourceHash` in frontmatter. Unchanged 
 | `TRANSLATE_API_BASE_URL` | OpenAI-compatible endpoint |
 | `TRANSLATE_API_MODEL` | e.g. `deepseek-v4-pro`, `qwen-mt-plus` |
 | `TRANSLATE_CONCURRENCY` | Parallel requests (default 5) |
-| `FRONTEND_LOCALES_PATH` | Optional; ComfyUI frontend locales for glossary sync |
+| `FRONTEND_LOCALES_URL` | Optional; override remote locale URL for glossary sync |
+| `FRONTEND_LOCALES_PATH` | Optional; use a local frontend checkout instead of remote |
 
 Requires **Bun**.
 
@@ -102,6 +171,8 @@ only re-translate changed `##` sections when `auto_chunk` applies).
 | Model blueprints | `Add new model blueprints`, template-library starter workflows |
 
 Do not add bullets for dependency-only version bumps. See also **`cms-changelog-sync`** for CMS popup rules.
+
+**Docs changelog bullet URLs** (same as local CMS): matching [blog.comfy.org](https://blog.comfy.org/) post first, then the GitHub PR, then the ComfyUI repo commit/tag/compare. Do not use Cloud `?template=` links on the docs changelog. Cloud popup URLs are a separate rule in **cms-changelog-sync**.
 
 ```bash
 pnpm translate -- changelog/index.mdx

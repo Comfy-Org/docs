@@ -1,0 +1,178 @@
+---
+title: "Comfy API：サーバーレスデプロイ"
+description: "バージョン管理された ComfyUI 環境を構築し、マネージドエンドポイントとしてデプロイして、API 経由でワークフローを実行します。"
+icon: "cloud-arrow-up"
+translationSourceHash: 097a1f5a
+translationFrom: development/serverless/overview.mdx
+translationBlockHashes:
+  "_intro": 944b30f6
+  "The Build file": 70f351b1
+  "Update and release": 66e5f4ab
+  "Regions and GPU availability": fe40705f
+  "Workspace limits": e0643567
+  "Monitor and call a deployment": ff860dab
+  "Operate a deployment": de5e72b5
+  "Inspect and clean up": 0033fd9b
+  "FAQ": 54896279
+  "Next steps": 0045baa9
+---
+
+Comfy API は、マネージド型のオートスケーリング GPU エンドポイント上でワークフローを実行します。**Build** は、モデル、カスタムノード、設定など、ComfyUI 環境を記述するものです。CLI は Build からリリースを作成し、それをエンドポイントとしてデプロイします。
+
+<Card title="Comfy API クイックスタート" icon="play" href="/ja/development/serverless/quickstart">
+  エージェントから始めるか、環境やワークフローを用意する別の方法を選んでください。
+</Card>
+
+デスクトップのスナップショットとワークフロー JSON のインポートについては、[Build Sources](/ja/development/serverless/build-sources) を参照してください。
+
+## ビルドファイル
+
+`comfy-build.yaml` は Build 定義と最後に確認したリモートの状態を保存します。CLI はその状態を使って、リモートの Build が変更されたかどうかを検出します。このファイルはプロジェクトと一緒に管理してください。環境を記述するものであり、モデルファイルは含みません。
+
+変更をプッシュする前に、ローカルの Build がインストール済みの内容やリモートのバージョンとどう違うかを確認します：
+
+```bash
+comfy build status
+```
+
+## 更新とリリース
+
+ローカルのインストールを変更した後は、Build 定義を更新します：
+
+```bash
+comfy build update --yes
+```
+
+既存の Build から別のリリースを作成するには、サポートされているターゲットを確認して 1 つ選択します：
+
+```bash
+comfy build refs build-targets
+comfy build release create --target linux/nvidia --watch
+```
+
+1 つのリリースのビルドログを追うには：
+
+```bash
+comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## リージョンと GPU の可用性
+
+リージョンのキャパシティは変化するため、デプロイ先を選ぶ際はプラットフォームのカタログを確認してください。結果は `--region <region>` でフィルタします:
+
+```bash
+comfy deploy refs compute --region <region>
+```
+
+デプロイ時に各リージョンでどの GPU クラスが利用可能かについては、カタログがソースオブトゥルースとなります。
+
+## ワークスペースの制限
+
+ワークスペースの使用量とプランの上限については、[制限](https://platform.comfy.org/profile/limits)を参照してください。`--max` はデプロイメントごとのワーカー上限内に収めてください。
+
+## デプロイの監視と呼び出し
+
+`--min` と `--max` オプションはワーカーの下限と上限を設定します。デプロイのヘルス、リリースの最新性、サービングのアクティビティを追跡するには、`comfy deploy status --watch` を実行します。
+
+[Comfy SDK](/ja/development/api-development/sdks) を使用してエンドポイントを呼び出すこともできます。`COMFY_BASE_URL` にデプロイの URL を設定し、APIキーを指定します。詳細は[ベース URL の選択](/ja/development/api-development/sdks#ベースurlの選択)を参照してください。
+
+## デプロイメントの運用
+
+```bash
+# ワーカーの下限と上限を変更する
+comfy deploy scale --deployment dep_123456 --min 2 --max 5
+
+# デプロイメントの記録を保持したまま一時停止または再開する
+comfy deploy stop --deployment dep_123456
+comfy deploy start --deployment dep_123456
+```
+
+## 検査とクリーンアップ
+
+```bash
+# ビルドの状態
+comfy build ls
+comfy build show --id bld_123456
+comfy build release ls
+comfy build release show rel_123456
+
+# デプロイメントの状態
+comfy deploy ls --workspace --status ready
+comfy deploy logs --deployment dep_123456
+comfy deploy events --deployment dep_123456
+```
+
+<Warning>
+  デプロイメントの削除とビルドの削除は、それぞれ別個の不可逆的な操作です。`comfy deploy delete --yes` または `comfy build delete --id bld_123456 --yes` を使用する前に、対象を確認してください。
+</Warning>
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="1 つの Build を複数のワークフローから作成できますか？">
+    はい。Builder では、1 つ以上のワークフローをアップロードして、そのモデルとカスタムノードをあらかじめ選択できます。実行する予定のすべてのワークフローが必要とする依存関係を含めてから、各 API フォーマットのワークフローをデプロイ済みのエンドポイントに送信します。
+
+    各デプロイメントは 1 つの GPU タイプを使用します。異なる GPU タイプでワークフローを実行するには、同じ Build のデプロイメントを別々に作成します。
+  </Accordion>
+
+  <Accordion title="デプロイしていない Build の保存に料金はかかりますか？">
+    いいえ。Build とそのリリースは、アカウントに無料で保存されます。デプロイするまで、Build のストレージ使用量に対して課金されることはありません。
+
+    ストレージの課金はデプロイメントから始まります：
+
+    - リリースをデプロイすると、そのモデルはデプロイメントのワーカー間で共有されるネットワークストレージに配置されます。このストレージはデプロイ後は読み取り専用となり、そのリージョンにその Build のデプロイメントが存在する限り、`comfy deploy stop` でデプロイメントが一時停止している間も含めて、GB 月単位で課金されます。
+    - 各ワーカーには固定 50 GB のコンテナディスクも割り当てられます。これはエフェメラルであり、ワーカーのコンピュートコストの一部として、ワーカーの実行中のみ課金されます。
+    - デプロイメントを削除すると、そのコンピュートが解放されます。配置されたネットワークストレージは、そのリージョンでそれを使用している最後のデプロイメントが削除された直後にクリーンアップされ、その課金も終了します。
+
+    現在のストレージ料金については、[Comfy 料金ページ](https://www.comfy.org/pricing)をご覧ください。コンピュートカタログ（`comfy deploy refs compute`）とデプロイダイアログにも、デプロイメントに適用される料金が表示されます。
+  </Accordion>
+
+  <Accordion title="アクティブワーカーはどのように課金され、時間単価はいくらですか？">
+    `--min` は**アクティブワーカー**の数を設定します。アクティブワーカーとは、常に実行し続けるワーカーであり、リクエストがコールドスタートを待つことはありません。アクティブワーカーは、ジョブを処理しているかどうかに関係なく、実行している間ずっと秒単位で課金されます。
+
+    `--min` を超えて `--max` までのワーカーは**フレックスワーカー**です。フレックスワーカーは、起動した瞬間（起動とモデルの読み込みを含む）からジョブの処理を経て、スケールダウンする前の短いアイドルウィンドウ（現在は 30 秒）まで、秒単位で課金されます。フレックスワーカーがスケールダウンされると、コストはかかりません。`--min 0` の場合、デプロイメント全体がゼロにスケールし、アイドル中はコンピュートの課金が発生しませんが、最初のリクエストでコールドスタートが発生します。
+
+    課金は、実際のワーカーの秒単位の使用量に、実行中のワーカー数を掛けて計測されます。ワークスペースのクレジットが不足すると、デプロイメントは自動的に停止されます。
+
+    現在のワーカーあたりの GPU 料金については、[Comfy 料金ページ](https://www.comfy.org/pricing)をご覧ください。料金はワーカー時間あたりで提示され、秒単位で課金されます。リージョンごとの GPU の可用性はコンピュートカタログから取得できます。現在のリストを確認するには `comfy deploy refs compute` を実行してください。
+  </Accordion>
+
+  <Accordion title="デプロイメントは複数のリクエストをどのように処理しますか？">
+    デプロイメントは、リクエストをワーカー間で自動的に分散し、設定された `--min` と `--max` の範囲内でスケールします。すぐに実行できないリクエストはキューに入り、ワーカーのキャパシティが空き次第処理されます。
+  </Accordion>
+
+  <Accordion title="プロビジョニングに時間がかかる場合はどうすればよいですか？">
+    デプロイメントの状態を確認し、次にそのログとイベントを調べて原因を特定します：
+
+    ```bash
+    comfy deploy status --deployment <deployment-id> --watch
+    comfy deploy logs --deployment <deployment-id>
+    comfy deploy events --deployment <deployment-id>
+    ```
+
+    選択した GPU またはリージョンにキャパシティがない場合は、後で再試行するか、`comfy deploy refs compute` を実行して利用可能なリージョンと GPU のペアを選択してください。サポートを依頼する際は、Build、リリース、デプロイメントの ID を添えてください。
+  </Accordion>
+
+  <Accordion title="デプロイメントを削除するとどうなりますか？">
+    デプロイメントを削除すると、そのエンドポイントが削除され、コンピュートが解放されます。Build やそのリリースは削除されません。あるリージョンでその Build を使用する最後のデプロイメントを削除すると、配置されたネットワークストレージはクリーンアップされ、その後まもなくストレージの課金が終了します。
+
+    Build の削除は別の操作です：`comfy build delete --id <build-id> --yes`。
+  </Accordion>
+</AccordionGroup>
+
+## 次のステップ
+
+<CardGroup cols={2}>
+  <Card title="Comfy SDKs" icon="code" href="/ja/development/api-development/sdks">
+    Python または TypeScript のアプリから使用して、ワークフローを送信し、入力、進行状況、出力を処理します。
+  </Card>
+  <Card title="Comfy API v2" icon="cloud" href="/ja/api-reference/v2/overview">
+    HTTP API を直接呼び出す場合や、そのリクエストとレスポンスの形式を確認する場合に、任意の言語から使用します。
+  </Card>
+  <Card title="ワークフロー API 形式" icon="file-code" href="/ja/development/api-development/workflow-api-format">
+    API リクエスト用のワークフロー JSON を準備するときや、その入力と出力をトラブルシューティングするときに使用します。
+  </Card>
+  <Card title="Comfy CLI リファレンス" icon="terminal" href="/ja/comfy-cli/reference">
+    ターミナルから Build、リリース、デプロイメント、ワークフローのコマンドを自動化するために使用します。
+  </Card>
+</CardGroup>

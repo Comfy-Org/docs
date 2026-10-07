@@ -1,0 +1,178 @@
+---
+title: "Comfy API：Serverless 部署"
+description: "构建版本化的 ComfyUI 环境，将其部署为托管端点，并通过 API 运行工作流。"
+icon: "cloud-arrow-up"
+translationSourceHash: 097a1f5a
+translationFrom: development/serverless/overview.mdx
+translationBlockHashes:
+  "_intro": 944b30f6
+  "The Build file": 70f351b1
+  "Update and release": 66e5f4ab
+  "Regions and GPU availability": fe40705f
+  "Workspace limits": e0643567
+  "Monitor and call a deployment": ff860dab
+  "Operate a deployment": de5e72b5
+  "Inspect and clean up": 0033fd9b
+  "FAQ": 54896279
+  "Next steps": 0045baa9
+---
+
+Comfy API 可在托管、自动扩缩容的 GPU 端点上运行工作流。**Build** 描述了 ComfyUI 环境，包括其模型、自定义节点和设置。CLI 基于 Build 创建发布版本（release），并将其部署为端点。
+
+<Card title="Comfy API 快速入门" icon="play" href="/zh/development/serverless/quickstart">
+  从 agent 开始，或选择其他方式来提供你的环境或工作流。
+</Card>
+
+关于 Desktop 快照和工作流 JSON 导入，请参阅 [Build 来源](/zh/development/serverless/build-sources)。
+
+## 构建文件
+
+`comfy-build.yaml` 保存 Build 定义和最近一次已知的远程状态。CLI 会利用该状态判断远程 Build 是否已发生变化。请将此文件与项目放在一起。它描述的是环境，本身并不包含模型文件。
+
+在推送更改之前，先检查本地 Build 与已安装内容以及远程版本的差异：
+
+```bash
+comfy build status
+```
+
+## 更新与发布
+
+修改本地安装后，刷新 Build 定义：
+
+```bash
+comfy build update --yes
+```
+
+要从现有 Build 创建另一个发布版本，请先查看受支持的目标并选择一个：
+
+```bash
+comfy build refs build-targets
+comfy build release create --target linux/nvidia --watch
+```
+
+跟踪某个发布版本的构建日志：
+
+```bash
+comfy build release logs rel_123456 --target linux/nvidia --follow
+```
+
+## 区域和 GPU 可用性
+
+区域容量会发生变化，因此在选择部署目标时，请查看平台目录。使用 `--region <region>` 过滤结果：
+
+```bash
+comfy deploy refs compute --region <region>
+```
+
+目录是部署时每个区域有哪些 GPU 类别可用的权威来源。
+
+## 工作区限制
+
+有关工作区的用量和套餐限制，请参阅[限制](https://platform.comfy.org/profile/limits)。请将 `--max` 保持在每个部署的 worker 限制之内。
+
+## 监控并调用部署
+
+`--min` 和 `--max` 选项用于设置 worker 数量边界。运行 `comfy deploy status --watch` 可跟踪部署健康状况、发布时效以及服务活动。
+
+你也可以使用 [Comfy SDKs](/zh/development/api-development/sdks) 调用该端点。将 `COMFY_BASE_URL` 设置为部署 URL，并提供 API 密钥。请参阅[选择基础 URL](/zh/development/api-development/sdks#选择基础-url)。
+
+## 部署运维
+
+```bash
+# 修改 worker 数量边界
+comfy deploy scale --deployment dep_123456 --min 2 --max 5
+
+# 暂停或恢复，同时保留部署记录
+comfy deploy stop --deployment dep_123456
+comfy deploy start --deployment dep_123456
+```
+
+## 检查与清理
+
+```bash
+# 构建状态
+comfy build ls
+comfy build show --id bld_123456
+comfy build release ls
+comfy build release show rel_123456
+
+# 部署状态
+comfy deploy ls --workspace --status ready
+comfy deploy logs --deployment dep_123456
+comfy deploy events --deployment dep_123456
+```
+
+<Warning>
+  删除部署与删除 Build 是两个相互独立的不可逆操作。在执行 `comfy deploy delete --yes` 或 `comfy build delete --id bld_123456 --yes` 之前，请先确认目标。
+</Warning>
+
+## 常见问题
+
+<AccordionGroup>
+  <Accordion title="一个 Build 可以来自多个工作流吗？">
+    可以。在构建器中上传一个或多个工作流，以预选它们所需的模型和自定义节点。请包含你计划运行的所有工作流所需的依赖关系，然后将每个 API 格式的工作流提交到已部署的端点。
+
+    每个部署只使用一种 GPU 类型。若要在不同的 GPU 类型上运行工作流，请为同一个 Build 创建多个独立的部署。
+  </Accordion>
+
+  <Accordion title="未部署的 Build 会产生存储费用吗？">
+    不会。Build 及其发布版本免费存储在你的账户中。在部署之前，Build 的存储占用不会计费。
+
+    存储计费从部署开始：
+
+    - 部署某个发布版本时，其模型会被暂存到该部署的 worker 共享的网络存储上。部署完成后该存储为只读，只要该区域内还存在该 Build 的任何部署，就会按 GB-月 计费，包括使用 `comfy deploy stop` 暂停部署期间。
+    - 每个 worker 还会获得一块固定的 50 GB 容器磁盘。它是临时的，仅在 worker 运行期间计费，并计入该 worker 的计算费用。
+    - 删除部署会释放其计算资源。当该区域内最后一个使用该暂存网络存储的部署被删除后，存储会很快被清理，其计费也随之结束。
+
+    如需了解当前的存储费率，请参阅 [Comfy 定价页面](https://www.comfy.org/pricing)。计算资源目录（`comfy deploy refs compute`）和部署对话框也会显示适用于某个部署的费率。
+  </Accordion>
+
+  <Accordion title="活跃 worker 如何计费，按什么小时费率计费？">
+    `--min` 设置 **活跃 worker** 的数量：这类 worker 始终处于运行状态，因此请求永远不会等待冷启动。活跃 worker 在其运行的整个期间都按秒计费，无论它是否正在处理任务。
+
+    超过 `--min`、最多到 `--max` 的 worker 是 **弹性 worker**。弹性 worker 从其启动的那一刻起（包括启动和模型加载）按秒计费，一直计到任务处理结束，再加上缩减前的一段短暂空闲窗口（目前为 30 秒）。弹性 worker 缩减后不再产生费用。当设置为 `--min 0` 时，整个部署会缩减到零，空闲时不产生计算费用，代价是第一个请求会有冷启动。
+
+    计费按 worker 的实际每秒用量计算，再乘以正在运行的 worker 数量。如果你的工作区积分已用完，部署会被自动停止。
+
+    如需了解当前每个 worker 的 GPU 费率，请参阅 [Comfy 定价页面](https://www.comfy.org/pricing)。费率以每个 worker 小时为单位报价，并按秒计费。各区域的 GPU 可用情况来自计算资源目录：运行 `comfy deploy refs compute` 可查看当前列表。
+  </Accordion>
+
+  <Accordion title="部署如何处理多个请求？">
+    部署会自动将请求分发到各个 worker，并在配置的 `--min` 和 `--max` 范围内扩缩容。无法立即运行的请求会进入队列，在 worker 容量可用时依次处理。
+  </Accordion>
+
+  <Accordion title="如果预配耗时很长，我该怎么办？">
+    先跟踪部署状态，然后查看其日志和事件以找出原因：
+
+    ```bash
+    comfy deploy status --deployment <deployment-id> --watch
+    comfy deploy logs --deployment <deployment-id>
+    comfy deploy events --deployment <deployment-id>
+    ```
+
+    如果所选的 GPU 或区域没有可用容量，请稍后重试，或运行 `comfy deploy refs compute` 并选择一个可用的区域与 GPU 组合。寻求帮助时，请附上 Build、发布版本和部署的 ID。
+  </Accordion>
+
+  <Accordion title="删除部署时会发生什么？">
+    删除部署会移除其端点并释放其计算资源，但不会删除 Build 或它的发布版本。当你删除某个区域内使用该 Build 的最后一个部署后，其暂存网络存储会被清理，存储计费也会随之很快结束。
+
+    删除 Build 是一项单独的操作：`comfy build delete --id <build-id> --yes`。
+  </Accordion>
+</AccordionGroup>
+
+## 后续步骤
+
+<CardGroup cols={2}>
+  <Card title="Comfy SDKs" icon="code" href="/zh/development/api-development/sdks">
+    在 Python 或 TypeScript 应用中使用，以提交工作流并处理输入、进度和输出。
+  </Card>
+  <Card title="Comfy API v2" icon="cloud" href="/zh/api-reference/v2/overview">
+    在使用任意语言直接调用 HTTP API，或查看其请求与响应格式时使用。
+  </Card>
+  <Card title="工作流 API 格式" icon="file-code" href="/zh/development/api-development/workflow-api-format">
+    在准备用于 API 请求的工作流 JSON，或排查其输入和输出问题时使用。
+  </Card>
+  <Card title="Comfy CLI 参考" icon="terminal" href="/zh/comfy-cli/reference">
+    用于从终端自动执行 Build、发布、部署和工作流命令。
+  </Card>
+</CardGroup>
