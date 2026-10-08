@@ -1,0 +1,248 @@
+---
+title: "Learn from the example packs"
+description: "Run focused, tested examples for frontend-only nodes, widgets, graph interaction, execution, and application services."
+---
+
+The ComfyUI frontend repository includes four small custom-node packs under
+`examples/node-api`. Each pack demonstrates one family of published JavaScript
+APIs without importing ComfyUI source files, patching generated node classes, or
+using the legacy `app` global.
+
+| Pack | What it demonstrates |
+| --- | --- |
+| `how_to_frontend_nodes` | Frontend-only nodes, literals, reroutes, suppliers, and dynamic slots |
+| `how_to_widgets` | Widget events, canvas and mounted widgets, custom widget types, and prompt serialization |
+| `how_to_graph_interaction` | Badges, menus, lifecycle state, file drops, link rules, graph edits, and undo |
+| `how_to_execution` | Queueing, execution results, the mask editor, backend routes and events, settings, commands, and storage |
+
+These are executable examples, not isolated fragments. The frontend repository
+also contains a saved workflow and browser tests that exercise registration,
+prompt resolution, widget events, backend calls, graph batching, undo, and a
+real backend run.
+
+<Note>
+  The example packs keep their Python deliberately small because they teach the
+  published frontend API. Each pack's `v2/__init__.py` only registers the
+  extension and exposes `WEB_DIRECTORY`; the behavior under test is the
+  JavaScript module.
+</Note>
+
+## Find and install the examples
+
+In a checkout of the ComfyUI frontend repository, the files are here:
+
+```text
+examples/node-api/
+├── README.md
+├── how_to_execution/
+├── how_to_frontend_nodes/
+├── how_to_graph_interaction/
+└── how_to_widgets/
+```
+
+Copy one or more packs into a local ComfyUI `custom_nodes` directory, then
+restart ComfyUI:
+
+```sh
+cp -R examples/node-api/how_to_* /path/to/ComfyUI/custom_nodes/
+```
+
+Search the node library for `API Examples`. Each pack README gives a short
+exercise for the nodes it installs.
+
+These checkout examples are arranged for direct local testing. When publishing
+a converted V2 pack, retain the complete V1 distribution at the pack root and
+put the complete V2 replacement distribution under `v2/`. Do not flatten these
+example directories into a converted pack or treat `v2/` as an overlay.
+
+## Start with a frontend-only node
+
+`how_to_frontend_nodes` is the smallest starting point. Its Constant Text node
+stays in the saved workflow but resolves to a literal before the backend prompt
+is sent:
+
+```js
+import { comfy } from '/comfy/api/v2.js'
+
+const api = comfy.forMajor(2)
+
+api.require('defs.define')
+api.require('node.resolve')
+
+api.defs.define({
+  type: 'HowTo/ConstantText',
+  title: 'How-To: Constant Text',
+  category: 'API Examples/Frontend Nodes',
+  outputs: [{ name: 'text', type: 'STRING' }],
+  widgets: [
+    {
+      type: 'text',
+      name: 'value',
+      value: 'Hello from a frontend node',
+      serialize: true
+    }
+  ],
+  execution: 'frontend',
+  resolve: ({ self }) => ({
+    text: { literal: String(self.widgetValue('value') ?? '') }
+  })
+})
+```
+
+Three details are worth copying into real packs:
+
+- `forMajor(2)` pins the contract the module expects;
+- `require()` fails early with the missing capability name;
+- `resolve()` describes the output without mutating the graph or a prompt draft.
+
+The same pack shows a reroute with `forwardTo`, a same-group text supplier, and
+a First Connected node that adds a new input whenever its final input becomes
+connected:
+
+```js
+const dynamicNode = {
+  onConnectionsChanged(node) {
+    const last = node.inputs.at(node.inputs.length - 1)
+    if (last?.isConnected) {
+      node.inputs.add(`input_${node.inputs.length + 1}`, '*', {
+        shape: 'optional'
+      })
+    }
+  }
+}
+```
+
+Use that example when a node needs dynamic slots; use the Constant Text and
+Reroute nodes when learning prompt-time resolution.
+
+## Choose the right widget ownership model
+
+`how_to_widgets` places four widget approaches next to each other:
+
+1. ordinary declared widgets with additive event listeners;
+2. a host-rendered canvas widget;
+3. a mounted, pack-owned DOM control;
+4. a custom renderer for a Python-declared input type.
+
+For an ordinary button, listen for `activate` and update another widget through
+its handle:
+
+```js
+const widgetEvents = {
+  onCreated(node) {
+    const count = node.widgets.get('count')
+    node.widgets.get('increment')?.on('activate', () => {
+      count?.setValue(Number(count.getValue()) + 1)
+    })
+  }
+}
+```
+
+For a custom input type, register the renderer with
+`defs.defineWidgetType()`. The example returns a cleanup function that removes
+DOM listeners and API subscriptions when the mounted widget is destroyed:
+
+```js
+api.defs.defineWidgetType('HOW_TO_RATING', {
+  defaultValue: 3,
+  minWidth: 160,
+  serialize: true,
+  render(container, value, name, context) {
+    // Create controls inside the supplied container.
+    // Subscribe through value and context handles.
+    return () => {
+      // Remove every retained listener and subscription.
+    }
+  }
+})
+```
+
+The pack also shows how to change a widget's prompt value without changing the
+value stored in the workflow. Its Prompt Serialization node expands ComfyUI
+text tokens only when `event.context === 'prompt'`.
+
+## Add graph behavior without internal objects
+
+`how_to_graph_interaction` demonstrates behavior that legacy extensions often
+implemented through LiteGraph instances or canvas hooks.
+
+The Lifecycle Badge node stores pack-owned state in a `Map`, returns that state
+from `onSerialize`, restores it in `onConfigured`, and releases the badge in
+`onRemoved`. This makes ownership and cleanup visible in the code.
+
+The Graph Builder node uses a synchronous batch so adding, connecting, and
+selecting two nodes becomes one undoable edit:
+
+```js
+api.graph.batch(() => {
+  const source = api.graph.add('HowTo/GraphSource', {
+    position: { x: x + 320, y }
+  })
+  const target = api.graph.add('HowTo/GraphTarget', {
+    position: { x: x + 640, y }
+  })
+  source.outputs.get('text')?.connectTo(target.id, 'text')
+  api.graph.select([source, target])
+  api.graph.centerOn(target)
+})
+```
+
+The same pack contains focused patterns for connection vetoes, dropped browser
+files, duplication, and same-type node replacement.
+
+## Connect execution to application services
+
+`how_to_execution` combines small backend nodes and routes with supported
+frontend services. Its Text Output node adds a context-menu action that queues
+only that node and updates a badge from the correlated result:
+
+```js
+api.defs.extend('HowToTextOutput', (definition) => {
+  definition.onExecuted((node, result) => {
+    textResults.set(`${node.graphId}:${node.id}`, result.text[0] ?? 'complete')
+  })
+  definition.addMenuItem({
+    label: 'Run This Node',
+    run: (node) => {
+      void api.queue.run({ nodes: [node] })
+    }
+  })
+})
+```
+
+Other nodes in the pack show:
+
+- `commands.has()` and `commands.run()` for the host mask editor;
+- `backend.fetch()` for a pack-owned route;
+- `backend.on()` for a validated custom backend event;
+- `settings.declare()` for a preference;
+- `commands.register()` for a command and keybinding;
+- `storage.set()` and `storage.get()` for named per-user content.
+
+Prefer these services to importing application stores, constructing private
+URLs, or reaching into host UI objects.
+
+## Use the examples as a pattern library
+
+Do not copy an entire pack when one focused pattern is enough. Start with the
+example closest to the behavior you need, copy its capability requirements and
+lifecycle structure, then rename its types, settings, commands, storage keys,
+and backend events into a namespace owned by your pack.
+
+Before release:
+
+- verify each retained `require()` names a capability the feature truly needs;
+- remove demo categories and identifiers;
+- keep cleanup paired with every retained subscription or mounted control;
+- test save, reload, duplicate, delete, undo, and execution behavior;
+- test the complete V2 replacement under the pack's `v2/` directory.
+
+## Continue learning
+
+- [JavaScript concepts](/custom-nodes/v2/javascript/concepts)
+- [Nodes and definitions](/custom-nodes/v2/javascript/definitions)
+- [Widgets and mounted UI](/custom-nodes/v2/javascript/widgets-ui)
+- [Graphs and nodes](/custom-nodes/v2/javascript/graphs-nodes)
+- [Execution and resolution](/custom-nodes/v2/javascript/execution)
+- [Application services](/custom-nodes/v2/javascript/execution-services)
+- [Test a V2 pack](/custom-nodes/v2/testing)
