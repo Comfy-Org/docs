@@ -1,0 +1,220 @@
+---
+title: "Properties (V3)"
+description: "Properties of a custom node (V3 schema)."
+---
+
+<Info>
+The node definitions on this page use the modern V3 schema (`io.ComfyNode` with `define_schema` and a `comfy_entrypoint` function), which is how the bundled [`custom_nodes/example_node.py.example`](https://github.com/comfyanonymous/ComfyUI/blob/master/custom_nodes/example_node.py.example) is written. The legacy V1 schema (`INPUT_TYPES` / `RETURN_TYPES`) is still fully supported. For the differences and how to migrate, see the [V3 Migration guide](/custom-nodes/v3_migration).
+</Info>
+
+### Simple Example
+
+Here's the code for the Invert Image Node, which gives an overview of the key concepts in custom node development.
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class InvertImageNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="InvertImageNode",
+            display_name="Invert Image",
+            category="examples",
+            inputs=[
+                io.Image.Input("image_in"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="image_out"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image_in) -> io.NodeOutput:
+        image_out = 1 - image_in
+        return io.NodeOutput(image_out)
+
+class ExampleExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            InvertImageNode,
+        ]
+
+async def comfy_entrypoint() -> ExampleExtension:  # ComfyUI calls this to load your extension and its nodes.
+    return ExampleExtension()
+```
+
+### Main properties
+
+Every custom node is a Python class inheriting from `io.ComfyNode`, with the following key properties:
+
+#### define_schema
+
+`define_schema`, as the name suggests, defines the schema for the node. The class method returns an `io.Schema` object which contains the node's metadata, inputs and outputs.
+
+The schema fields are:
+
+- `node_id`: a unique identifier for the node, used in the API and workflow JSON.
+- `display_name`: the friendly name shown in the UI. Optional; defaults to `node_id`.
+- `category`: where the node is found in the ComfyUI **Add Node** menu. Submenus can be specified as a path, eg. `examples/trivial`.
+- `inputs`: a list of input objects.
+- `outputs`: a list of output objects.
+- `description`: the tooltip shown when hovering over the node. Optional.
+- `search_aliases`: a list of alternative names users might search for when looking for this node. Optional.
+
+Each input is an object like `io.Int.Input("count", default=1, min=0, max=4096)`. The available input types are `io.Image`, `io.Mask`, `io.Model`, `io.VAE`, `io.CLIP`, `io.Conditioning`, `io.Latent`, `io.Audio`, `io.Int`, `io.Float`, `io.String`, `io.Combo`, `io.Boolean`, and more. See the [Datatypes](/custom-nodes/v3/backend/datatypes) page for details.
+
+As in V1, `define_schema` is a `@classmethod` so that widget options (like the name of the checkpoint to be loaded) can be computed at runtime. Let's go into this more later.
+
+Outputs are listed as `io.Image.Output()` and so on, with an optional `display_name` to label the output in the UI.
+
+#### execute
+
+The execution function is fixed to the name `execute`, and is a class method. It is called with named arguments matching the input ids defined in the schema.
+
+The function returns an `io.NodeOutput`, wrapping the result values. If the node has multiple outputs, pass them as multiple arguments:
+
+```python
+return io.NodeOutput(model, clip, vae)
+```
+
+If the node has no outputs, return `io.NodeOutput()` (or simply nothing after processing side effects, but the return value must be `io.NodeOutput`, so `return` a bare `io.NodeOutput()`).
+
+### Execution Control Extras
+
+A great feature of Comfy is that it caches outputs,
+and only executes nodes that might produce a different result than the previous run.
+This can greatly speed up lots of workflows.
+
+In essence this works by identifying which nodes produce an output (these, notably the Image Preview and Save Image nodes, are always executed), and then working
+backwards to identify which nodes provide data that might have changed since the last run.
+
+Two optional features of a custom node assist in this process.
+
+#### is_output_node
+
+By default, a node is not considered an output. Set `is_output_node=True` in the schema to specify that it is.
+
+```python
+return io.Schema(
+    node_id="SaveImage",
+    ...
+    is_output_node=True,
+)
+```
+
+#### fingerprint_inputs
+
+By default, Comfy considers that a node has changed if any of its inputs or widgets have changed.
+This is normally correct, but you may need to override this if, for instance, the node uses a random
+number (and does not specify a seed - it's best practice to have a seed input in this case so that
+the user can control reproducibility and avoid unnecessary execution), or loads an input that may have
+changed externally, or sometimes ignores inputs (so doesn't need to execute just because those inputs changed).
+
+`fingerprint_inputs` (formerly `IS_CHANGED` in V1) receives the same arguments as `execute` and returns a
+value that Comfy compares with the one returned in the previous run. If the value differs, the node is executed.
+
+<Warning>The name of this method was misleading in V1: `IS_CHANGED` is not "changed"; it is a cache key. Returning `True` every time makes the node run only once.</Warning>
+
+A good example of actually checking for changes is the code from the built-in LoadImage node, which loads the image and returns a hash:
+
+```python
+    @classmethod
+    def fingerprint_inputs(s, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, 'rb') as f:
+            m.update(f.read())
+        return m.digest().hex()
+```
+
+To specify that your node should always be considered to have changed (which you should avoid if possible, since it
+stops Comfy optimising what gets run), return a value that is never equal to the previous one, such as `float("NaN")`.
+
+#### not_idempotent
+
+If your node produces an output that depends on something other than its inputs (for example, a random number without a seed), set `not_idempotent=True` in the schema. This tells Comfy to skip the fast-path that assumes identical inputs produce identical outputs.
+
+### Other schema flags
+
+There are several other flags that can be used to modify how Comfy treats a node:
+
+- `is_deprecated`: flags the node as deprecated, telling users to find alternatives.
+- `is_experimental`: flags the node as experimental, warning users that it may change.
+- `is_input_list`: controls sequential processing of data, described [later](./lists).
+- `hidden`: a list of hidden inputs (see [Hidden Inputs](./more_on_inputs#hidden-inputs)).
+- `enable_expand`: allows the node to expand into a subgraph (see [Node Expansion](/custom-nodes/backend/expansion)).
+- `accept_all_inputs`: passes all inputs that are not defined in the schema through to `execute` (see [Dynamically created inputs](./more_on_inputs#dynamically-created-inputs)).
+
+### validate_inputs
+
+If a class method `validate_inputs` is defined, it will be called before the workflow begins execution.
+`validate_inputs` should return `True` if the inputs are valid, or a message (as a `str`) describing the error (which will prevent execution).
+
+#### Validating Constants
+
+<Warning>Note that `validate_inputs` will only receive inputs that are defined as constants within the workflow. Any inputs that are received from other nodes will *not* be available in `validate_inputs`.</Warning>
+
+`validate_inputs` is called with only the inputs that its signature requests (those returned by `inspect.getfullargspec(obj_class.validate_inputs).args`). Any inputs which are received in this way will *not* run through the default validation rules.
+
+For example, in the following snippet, the front-end will use the specified `min` and `max` values of the `foo` input, but the back-end will not enforce it.
+
+```python
+from comfy_api.latest import io
+
+class CustomNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="CustomNode",
+            inputs=[
+                io.Int.Input("foo", min=0, max=10),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def validate_inputs(cls, foo):
+        # YOLO, anything goes!
+        return True
+```
+
+Additionally, if the function takes a `**kwargs` input, it will receive *all* available inputs and all of them will skip validation as if specified explicitly.
+
+#### Validating Types
+
+If the `validate_inputs` method receives an argument named `input_types`, it will be passed a dictionary in which the key is the name of each input which is connected to an output from another node and the value is the type of that output.
+
+When this argument is present, all default validation of input types is skipped. Here's an example making use of the fact that the front-end allows for the specification of multiple types:
+
+```python
+from comfy_api.latest import io
+
+class AddNumbers(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AddNumbers",
+            inputs=[
+                io.MultiType.Input(
+                    io.Int.Input("input1", min=0, max=1000),
+                    types=[io.Int, io.Float],
+                ),
+                io.MultiType.Input(
+                    io.Int.Input("input2", min=0, max=1000),
+                    types=[io.Int, io.Float],
+                ),
+            ],
+            outputs=[io.Int.Output()],
+        )
+
+    @classmethod
+    def validate_inputs(cls, input_types):
+        # The min and max of input1 and input2 are still validated because
+        # we didn't take `input1` or `input2` as arguments
+        if input_types["input1"] not in (io.Int.io_type, io.Float.io_type):
+            return "input1 must be an INT or FLOAT type"
+        if input_types["input2"] not in (io.Int.io_type, io.Float.io_type):
+            return "input2 must be an INT or FLOAT type"
+        return True
+```

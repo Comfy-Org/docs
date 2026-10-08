@@ -1,0 +1,184 @@
+---
+title: "Lazy Evaluation (V3)"
+description: "Learn how lazy evaluation works in ComfyUI (v0.2.0+). Discover how to defer input evaluation, optimize VRAM usage, and implement lazy inputs in V3 custom nodes."
+---
+
+## Lazy Evaluation
+
+By default, all inputs are evaluated before a node can be run. Sometimes, however, an input won't
+necessarily be used and evaluating it would result in unnecessary processing. Here are some examples of
+nodes where lazy evaluation may be beneficial:
+
+1. A `ModelMergeSimple` node where the ratio is either `0.0` (in which case the first model doesn't need to be loaded) or `1.0` (in which case the second model doesn't need to be loaded).
+2. Interpolation between two images where the ratio (or mask) is either entirely `0.0` or entirely `1.0`.
+3. A Switch node where one input determines which of the other inputs will be passed through.
+
+<Tip>There is very little cost in making an input lazy. If it's something you can do, you generally should.</Tip>
+
+### Creating Lazy Inputs
+
+There are two steps to making an input a "lazy" input. They are:
+
+1. Mark the input as lazy in the schema, by passing `lazy=True` to its `Input` definition
+2. Define a class method named `check_lazy_status` that will be called prior to evaluation to determine if any more inputs are necessary.
+
+To demonstrate these, we'll make a "MixImages" node that interpolates between two images according to a
+mask. If the entire mask is `0.0`, we don't need to evaluate any part of the tree leading up to the second
+image. If the entire mask is `1.0`, we can skip evaluating the first image.
+
+#### Defining the schema
+
+Declaring that an input is lazy is as simple as passing `lazy=True` to the input's definition.
+
+```python
+from comfy_api.latest import io
+
+
+class LazyMixImages(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="LazyMixImages",
+            display_name="Lazy Mix Images",
+            category="examples",
+            inputs=[
+                io.Image.Input("image1", lazy=True),
+                io.Image.Input("image2", lazy=True),
+                io.Mask.Input("mask"),
+            ],
+            outputs=[
+                io.Image.Output(),
+            ],
+        )
+```
+
+In this example, `image1` and `image2` are both marked as lazy inputs, but `mask` will always be evaluated.
+
+#### Defining `check_lazy_status`
+
+A `check_lazy_status` method is called if there are one or more lazy inputs that are not yet available. It
+receives the same arguments as `execute`. All available inputs are passed in with their final values while
+unavailable lazy inputs have a value of `None`.
+
+<Note>When a lazy input was defined with `INPUT_IS_LIST = True`, an unevaluated input is passed to
+`check_lazy_status` as `(None,)` rather than `None`, so an `is None` check would miss it. Instead, check for
+the `(None,)` sentinel to ensure required inputs are not omitted.</Note>
+
+The responsibility of `check_lazy_status` is to return a list of the names of any lazy inputs that are
+needed to proceed. If all lazy inputs are available, the function should return an empty list.
+
+Note that `check_lazy_status` may be called multiple times. (For example, you might find after evaluating
+one lazy input that you need to evaluate another.)
+
+<Tip>In V3 `check_lazy_status` is a class method, like `execute`. (In the legacy V1 schema it was a plain method.)</Tip>
+
+```python
+@classmethod
+def check_lazy_status(cls, mask, image1=None, image2=None):
+    mask_min = float(mask.min())
+    mask_max = float(mask.max())
+    needed = []
+    if image1 is None and not (mask_min == 1.0 and mask_max == 1.0):
+        needed.append("image1")
+    if image2 is None and not (mask_min == 0.0 and mask_max == 0.0):
+        needed.append("image2")
+    return needed
+
+@classmethod
+def execute(cls, mask, image1=None, image2=None) -> io.NodeOutput:
+    mask_min = float(mask.min())
+    mask_max = float(mask.max())
+    if mask_min == 0.0 and mask_max == 0.0:
+        return io.NodeOutput(image1)
+    if mask_min == 1.0 and mask_max == 1.0:
+        return io.NodeOutput(image2)
+    # Not trying to handle different batch sizes here just to keep the demo simple
+    return io.NodeOutput(image1 * (1.0 - mask) + image2 * mask)
+```
+
+### Full Example
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+
+class LazyMixImages(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="LazyMixImages",
+            display_name="Lazy Mix Images",
+            category="examples",
+            inputs=[
+                io.Image.Input("image1", lazy=True),
+                io.Image.Input("image2", lazy=True),
+                io.Mask.Input("mask"),
+            ],
+            outputs=[
+                io.Image.Output(),
+            ],
+        )
+
+    @classmethod
+    def check_lazy_status(cls, mask, image1=None, image2=None):
+        mask_min = float(mask.min())
+        mask_max = float(mask.max())
+        needed = []
+        if image1 is None and not (mask_min == 1.0 and mask_max == 1.0):
+            needed.append("image1")
+        if image2 is None and not (mask_min == 0.0 and mask_max == 0.0):
+            needed.append("image2")
+        return needed
+
+    @classmethod
+    def execute(cls, mask, image1=None, image2=None) -> io.NodeOutput:
+        mask_min = float(mask.min())
+        mask_max = float(mask.max())
+        if mask_min == 0.0 and mask_max == 0.0:
+            return io.NodeOutput(image1)
+        if mask_min == 1.0 and mask_max == 1.0:
+            return io.NodeOutput(image2)
+        # Not trying to handle different batch sizes here just to keep the demo simple
+        return io.NodeOutput(image1 * (1.0 - mask) + image2 * mask)
+
+
+class ExampleExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [LazyMixImages]
+
+
+async def comfy_entrypoint() -> ExampleExtension:
+    return ExampleExtension()
+```
+
+## Execution Blocking
+
+While Lazy Evaluation is the recommended way to "disable" part of a graph, there are times when you want to
+disable a node that doesn't implement lazy evaluation itself. If it's an output node that you developed
+yourself, you should just add lazy evaluation as follows:
+
+1. Add a required (if this is a new node) or optional (if you care about backward compatibility) input for `enabled` that defaults to `True`
+2. Make all other inputs lazy inputs
+3. Only evaluate the other inputs if `enabled` is `True`
+
+To block execution from a node whose output may be invalid or meaningless, return an
+`io.NodeOutput` with a `block_execution` message. Comfy replaces every output of the node with an
+`ExecutionBlocker` carrying that message. Any nodes which receive an `ExecutionBlocker` as input will skip
+execution and return that `ExecutionBlocker` for any outputs, so the message is reported to the user when a
+blocked output is actually used.
+
+```python
+@classmethod
+def execute(cls, ckpt_name) -> io.NodeOutput:
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # This error is more useful than a "'NoneType' has no attribute" error
+        # in a later node
+        return io.NodeOutput(
+            block_execution=f"No VAE contained in the loaded model {ckpt_name}"
+        )
+    return io.NodeOutput(model, clip, vae)
+```
+
+<Tip>**There is intentionally no way to stop an ExecutionBlocker from propagating forward.** If you think you want this, you should really be using Lazy Evaluation.</Tip>

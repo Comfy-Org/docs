@@ -1,0 +1,83 @@
+---
+title: "Data lists (V3)"
+description: "Learn how ComfyUI handles data as Python lists internally, including length-one processing, list processing for batches, and how to use the V3 is_input_list and is_output_list schema options when developing custom nodes."
+---
+
+## Length one processing
+
+Internally, the Comfy server represents data flowing from one node to the next as a Python `list`, normally
+length 1, of the relevant datatype. In normal operation, when a node returns an output, each element in the
+output is separately wrapped in a list (length 1); then when the next node is called, the data is unwrapped
+and passed to the `execute` method.
+
+<Tip>You generally don't need to worry about this, since Comfy does the wrapping and unwrapping.</Tip>
+
+<Tip>This isn't about batches. A batch (of, for instance, latents, or images) is a *single entry* in the list (see [tensor datatypes](/custom-nodes/backend/images_and_masks))</Tip>
+
+## List processing
+
+In some circumstance, multiple data instances are processed in a single workflow, in which case the internal
+data will be a list containing the data instances. An example of this might be processing a series of images
+one at a time to avoid running out of VRAM, or handling images of different sizes.
+
+By default, Comfy will process the values in the list sequentially:
+
+- if the inputs are `list`s of different lengths, the shorter ones are padded by repeating the last value
+- the `execute` method is called once for each value in the input lists
+- the outputs are `list`s, each of which is the same length as the longest input
+
+The relevant code can be found in the method `map_node_over_list` in `execution.py`.
+
+However, as Comfy wraps node outputs into a `list` of length one, if the values returned by a custom node
+contain a `list`, that `list` will be wrapped, and treated as a single piece of data.
+
+Two V3 schema options change this behaviour:
+
+- `is_input_list=True` on the schema: the node receives the *whole* list in a single call, instead of being
+  called once per item. All inputs become `list[type]`, regardless of how many items are passed in. This
+  replaces the legacy V1 class attribute `INPUT_IS_LIST`.
+- `is_output_list=True` on an output: the list returned for that output is not wrapped, and is treated as a
+  series of data for sequential processing by downstream nodes. This replaces the legacy V1 class attribute
+  `OUTPUT_IS_LIST`.
+
+To show how the two options work together, here's an `ImageRebatch`-style node written in the V3 schema. It
+takes one or more batches of images (received as a list, because `is_input_list=True`) and rebatches them
+into batches of the requested size:
+
+<Tip>`is_input_list` is node level - all inputs get the same treatment. So the value of the `batch_size` widget is given by `batch_size[0]`.</Tip>
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+
+class ImageRebatch(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="ImageRebatch",
+            category="image/batch",
+            inputs=[
+                io.Image.Input("images"),
+                io.Int.Input("batch_size", default=1, min=1, max=4096),
+            ],
+            outputs=[
+                io.Image.Output(is_output_list=True),
+            ],
+            is_input_list=True,
+        )
+
+    @classmethod
+    def execute(cls, images, batch_size) -> io.NodeOutput:
+        batch_size = batch_size[0]    # everything comes as a list, so batch_size is list[int]
+
+        output_list = []
+        all_images = []
+        for img in images:                    # each img is a batch of images
+            for i in range(img.shape[0]):     # each i is a single image
+                all_images.append(img[i:i+1])
+
+        for i in range(0, len(all_images), batch_size):  # take batch_size chunks and turn each into a new batch
+            output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # will die horribly if the image batches had different width or height!
+
+        return io.NodeOutput(output_list)
+```
