@@ -4,15 +4,31 @@ description: >-
   Sync ComfyUI release notes to Strapi CMS: LLM-simplify English changelog for
   in-app popup, translate to zh/ja/ko/fr/ru/es in staging, push drafts to CMS.
   Resolves docs/local/cloud bullet URLs (blog.comfy.org, workflow_templates
-  index.json, Cloud ?template=, user UTM, GitHub PRs). Use when updating
-  changelog/index.mdx for CMS, running cms:prepare/cms:sync, Strapi
-  release-notes, published-versions.json, CMS staging, simplifying release
-  notes for the notification popup, or cms:publish to go live.
+  index.json, Cloud ?template=, user UTM, GitHub PRs). HARD GATE: before any
+  cms:sync/cms:publish for Cloud, always ask the user to manually confirm Cloud;
+  default push is comfyui only. Use when updating changelog/index.mdx for CMS,
+  running cms:prepare/cms:sync, Strapi release-notes, published-versions.json,
+  CMS staging, simplifying release notes for the notification popup, or
+  cms:publish to go live.
 ---
 
 # CMS Changelog Sync
 
 Push **draft** release notes to Strapi (`release-notes` content type). Docs changelog stays full; CMS uses committed staging with popup-sized copy.
+
+## Hard gate: Cloud push / publish (ask every time)
+
+Whenever the user asks to **push**, **sync**, or **publish** to CMS (in any language), agents **must**:
+
+1. Default to **`--project comfyui` only**. Do **not** run `cms:sync` / `cms:publish` / `cms:preview` for cloud in the same turn as the request.
+2. **Stop and ask a second confirmation about Cloud**, even if the user already mentioned Cloud links, templates, or “push both”. Ask in plain language, for example:
+   > Should Cloud go to CMS this time as well? Please check Cloud staging (links and copy) yourself, then confirm. Until you confirm, I will only handle comfyui.
+3. Run **`--project cloud`** for preview/sync/publish **only after** the user replies with an explicit yes for Cloud in **this** conversation turn chain (e.g. “yes, push Cloud”, “cloud too”). Linking shortlinks earlier, preparing staging, or saying “push to CMS” alone is **not** Cloud approval.
+4. If unsure, ask again. Never infer Cloud approval from prior releases, PR text, or that Cloud staging already exists.
+
+`cms:prepare:en` / `cms:prepare:locales` may still prepare both projects’ staging files. The gate applies to **Strapi preview, push, and publish** (`cms:preview`, `cms:sync`, `cms:publish`), not to local staging generation.
+
+Write this skill and related CMS agent docs in **English**. Match the user’s language only when asking the confirmation question in chat.
 
 ## Architecture
 
@@ -27,7 +43,7 @@ staging/en/changelog/index.mdx         ← simplified popup EN → **review & ap
         ▼  Step 2: pnpm cms:prepare:locales
 staging/{zh,ja,ko,fr,ru,es}/…          ← translated from staging EN → **review & approve**
         │
-        ▼  Step 3: pnpm cms:preview → cms:sync  (only after user confirms)
+        ▼  Step 3: pnpm cms:preview / cms:sync -- --project comfyui  (only after user confirms)
 Strapi CMS (draft) → manual Publish → published-versions.json
 ```
 
@@ -168,7 +184,9 @@ Sync adds header: `# ComfyUI vX.Y.Z` via `format-cms-content.ts`.
 
 ## Projects (comfyui + cloud)
 
-`cms:prepare` may generate both projects so staging stays mirrored. For `cms:sync` and `cms:publish`, agents must treat **comfyui as the default project** and pass `--project comfyui`. Only sync or publish **cloud** after the user explicitly confirms cloud, using `--project cloud`.
+`cms:prepare` may generate both projects so staging stays mirrored. For `cms:sync` and `cms:publish`, agents must treat **comfyui as the default project** and pass `--project comfyui`.
+
+**Cloud is never implied.** Follow **Hard gate: Cloud push / publish** above: ask every time the user requests a CMS push or publish; run `--project cloud` only after they explicitly confirm Cloud in that request chain.
 
 Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI` vs `# Cloud`).
 
@@ -177,7 +195,7 @@ Same changelog content; Strapi `project` field and CMS header differ (`# ComfyUI
 | `comfyui` | `staging/{locale}/…` | `# ComfyUI vX.Y.Z` |
 | `cloud` | `staging/cloud/{locale}/…` | `# Cloud vX.Y.Z` |
 
-When prepare:en targets both projects, it runs the LLM once on comfyui, then merges those version blocks into cloud while keeping any tracking shortlinks already on cloud EN for that version. `prepare:locales` translates each project from its own staging EN. It does not copy comfyui locale files onto cloud. With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then `--project cloud` only after explicit cloud approval.
+When prepare:en targets both projects, it runs the LLM once on comfyui, then merges those version blocks into cloud while keeping any tracking shortlinks already on cloud EN for that version. `prepare:locales` translates each project from its own staging EN. It does not copy comfyui locale files onto cloud. With `--project cloud` alone, cloud is prepared directly. Sync/publish must be project-scoped by agents: `--project comfyui` first, then ask for Cloud confirmation, then `--project cloud` only after that yes.
 
 Single project: `--project comfyui`, `--project cloud`, or `CMS_PROJECT=<project>`.
 
@@ -252,17 +270,24 @@ Requires **Bun**. Loads `.env.local` automatically.
    pnpm cms:publish -- --project comfyui v0.25.1
    ```
 
-6. **Cloud is separate**: run cloud preview/sync/publish only after the user explicitly confirms cloud, using `--project cloud`.
+6. **Cloud is separate (hard gate)**: before any cloud `cms:preview` / `cms:sync` / `cms:publish`, **ask the user to manually confirm Cloud** (see **Hard gate: Cloud push / publish**). Do not treat “push to CMS” or pasted Cloud URLs as that confirmation. Only then:
+
+   ```bash
+   pnpm cms:preview -- --project cloud v0.25.1
+   pnpm cms:sync -- --project cloud v0.25.1
+   pnpm cms:publish -- --project cloud v0.25.1   # only if they asked to publish
+   ```
 
 7. Commit `.github/scripts/cms/staging/` and `.github/scripts/cms/published-versions.json` after publish.
 
 ### Catch up all unpublished versions locally
 
 ```bash
-pnpm cms:prepare:en -- --force              # Step 1: all unpublished EN
-pnpm cms:prepare:locales -- --force         # Step 2: all locales
-pnpm cms:preview
-pnpm cms:sync                               # Step 3: after review
+pnpm cms:prepare:en -- --force                         # Step 1: all unpublished EN
+pnpm cms:prepare:locales -- --force                    # Step 2: all locales
+pnpm cms:preview -- --project comfyui
+pnpm cms:sync -- --project comfyui                     # Step 3: after review (comfyui only)
+# Cloud preview/sync/publish: only after Hard gate confirmation, with --project cloud
 ```
 
 ### After prompt or config changes
@@ -307,7 +332,7 @@ When user asks to update CMS release notes:
 - [ ] Run `pnpm cms:prepare:en`; rewrite Cloud EN links; show staging EN → **wait for user approval**
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
 - [ ] Run `pnpm cms:preview -- --project comfyui ...` then `pnpm cms:sync -- --project comfyui ...` **only after user confirms staging**
-- [ ] Run cloud `cms:sync` / `cms:publish` only after separate explicit cloud confirmation
+- [ ] **Before any Cloud push/publish:** stop and ask the user to manually confirm Cloud (hard gate). Do not sync/publish `--project cloud` until they explicitly say yes this time
 - [ ] Remind: Strapi publish is manual; then `--write` on published-versions
 - [ ] Commit `.github/scripts/cms/staging/` together with `published-versions.json` after publish
 - [ ] Do **not** shorten docs changelog for CMS — staging is separate

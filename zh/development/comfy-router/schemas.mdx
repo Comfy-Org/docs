@@ -1,0 +1,52 @@
+---
+title: "Comfy Router 模型 schema 与结果"
+sidebarTitle: "Schema 与结果"
+description: "获取 Router 模型的 OpenAPI 输入与输出 schema，用 ETag 缓存它，并读取模型的原生结果形状。"
+translationSourceHash: 9b69e6fc
+translationFrom: development/comfy-router/schemas.mdx
+---
+
+每个 Router 模型都接受自己原生的请求体，并返回自己原生的结果。阅读模型的 schema 即可同时了解这两者。
+
+## 读取输入与输出 schema
+
+每个模型都暴露一份独立的 OpenAPI 文档：
+
+```bash
+curl --dump-header schema-headers.txt \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+在模型 operation 中，`requestBody` 描述输入，而在已编写输出 schema 的情况下，`200` 响应描述输出。输入验证与输出文档是两回事：Router 会依据其输入 schema 进行验证，但不会依据输出 schema 验证返回的提供商结果。
+
+不仅要检查输出媒体类型，还要检查它的字段。若输出 schema 尚未编写，其媒体类型可能是 `*/*`，并且有些模型返回二进制数据而非 JSON。
+
+### 缓存 schema
+
+保存 schema 及其 `ETag`。在之后获取 schema 时，通过 `If-None-Match` 传入该 ETag。`304` 没有响应体；保留缓存的文档即可。`200` 会提供一份替换的文档和 ETag。
+
+```bash
+curl -H "X-API-Key: $COMFY_API_KEY" \
+  -H 'If-None-Match: "previous-etag-value"' \
+  https://api.comfy.org/v2/models/bfl/flux-2-pro/openapi.json
+```
+
+schema 路由使用 `Cache-Control: private, must-revalidate`。请勿将需要认证的响应放入共享缓存。此 ETag/304 行为仅适用于 schema 端点。
+
+## 验证与回退 schema
+
+已编写的输入 schema 会在调用提供商之前，用 `422` 和 `detail[]` 数组拒绝无效字段。请查看 `loc` 中的字段路径；参见[验证错误](/zh/development/comfy-router/errors#验证错误)。
+
+有些 schema 接受任意 JSON 对象，并设置 `x-comfy-input-schema-authored: false`。Router 会转发这些请求而不做模型特定的验证，因此提供商仍可能拒绝它们。
+
+## 读取结果
+
+Router 返回每个模型的终端结果形状。并不存在通用的图像、视频或文本信封：BFL 的图像输出使用 `result.sample`，而其他模型可能返回 URL 列表或内联字节。
+
+部分资产 URL 由 Comfy 重新托管；其他则仍是提供商 URL 或内联字节。请查看[结果资产](/zh/development/comfy-router/reference#结果资产)，并及时下载会过期的资产。重放不会续期 URL。
+
+## 下一步
+
+- [排队请求](/zh/development/comfy-router/queue)：提交一次运行，稍后再收集结果。
+- [错误与重试](/zh/development/comfy-router/errors)：处理失败，而不重复付费。

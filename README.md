@@ -86,10 +86,11 @@ Some files in this repository are written by the Comfy API v2 specification sync
 | `router-schemas/**` | The API contract upstream. The whole directory is re-mirrored on every sync. |
 | `development/comfy-router/models.mdx` | A model's `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
 | `development/comfy-router/models/**/code.mdx` | The sibling `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
+| `development/comfy-router/providers.mdx` | The upstream alt-provider contract. Regenerate with `bun run code-pages:gen`. |
 
 Two things inside that tree stay editable: `docs.json` (the sync rewrites only the `Models` nav group and the model-page redirects) and the hand-curated `development/comfy-router/models/**/code.yaml` generator inputs, which are where a change to a generated model page belongs.
 
-The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last two rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check.
+The `Sync-Owned Files Check` workflow fails a PR that touches any of the guarded paths and prints, per file, where the edit belongs. The last three rows are the generator's output, so they are judged on freshness instead: committing pages that match `bun run code-pages:gen` is a regeneration and passes, while a page that does not match is a hand-edit and fails. The sync's own PR is exempt. Localized copies under `zh/`, `ja/` and `ko/` are maintained by the i18n sync and are not covered by this check. When an English change introduces or increases a gap on these pages, Structure Parity reports a warning naming the i18n sync. The changed-file report omits unchanged missing-only gaps; use `--all` to see the backlog. A localized-direction gap still fails.
 
 ### i18n Contributions
 
@@ -105,7 +106,7 @@ Supported locales are maintained through **automated translation** from English.
 
 Want docs in another language? [Open an issue](https://github.com/Comfy-Org/docs/issues/new) with the locale you need (for example French, German, or Brazilian Portuguese). A maintainer will add the language to `translation-config.json` and `docs.json`, then run a **full batch translation** of all content. You only need to submit the request; no translated MDX PR is required to get started.
 
-Specifications for editing MDX can be found in the Writing Content section of the [Mintlify](https://mintlify.com/docs/page) document.
+Specifications for editing MDX can be found in the Writing Content section of the [Mintlify](https://www.mintlify.com/docs/pages) document.
 
 > **Note**: `built-in-nodes/` is maintained in [embedded-docs](https://github.com/Comfy-Org/embedded-docs) and is **skipped** by the translation script. Do not run bulk translation against that folder.
 
