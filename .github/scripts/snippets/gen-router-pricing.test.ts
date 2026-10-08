@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion } from "./gen-router-pricing.ts";
+import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -153,7 +153,7 @@ describe("public Router pricing", () => {
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
       "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
     ]) {
-      expect(cell(id)).toStartWith("Usage-based");
+      expect(cell(id)).toBe("0.266 / GPU-second");
     }
   });
 
@@ -176,6 +176,22 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Extra conditions");
     expect(page).not.toContain("How billing works");
     expect(page).toContain("Unpublished prices do not mean free usage.");
+  });
+
+  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+    const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
+      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
+    expect(comfyUsageRows.length).toBeGreaterThan(0);
+    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
+    expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
+    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
+    expect(alternateUsageRows.length).toBeGreaterThan(0);
+    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
+    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
@@ -243,8 +259,12 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
-    expect(creditsPanel).toContain("Reasoning: 2262.975");
-    expect(creditsPanel).not.toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).not.toMatch(/\| Reasoning: 2262\.975/);
+    expect(render("ja")).toContain("テキスト / 推論: 2262.975");
+    const tokenRate = (conditions: string) => ({ model_id: "m", serving_provider: "p", kind: "metered" as const, unit: "per 1M tokens", credits: "10", conditions, effective_from: "2026-01-01" });
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "en", "credits", 211)).toBe("Text / Reasoning: 10");
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "ko", "credits", 211)).toBe("텍스트 / 추론: 10");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");

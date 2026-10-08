@@ -9,6 +9,7 @@ const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
+const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
 
 type CatalogModel = {
   id: string;
@@ -346,10 +347,12 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
+  // Every modality sharing an amount is named, including text next to reasoning, in all locales.
+  // Reasoning sorts last so the label reads "Text / Reasoning" whatever the source order.
+  const reasoning = label("Reasoning tokens");
   return ordered.map(([, group]) => {
-    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
-    const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
-      ? groupLabels.filter((value) => value !== "Text") : groupLabels;
+    const labels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))]
+      .sort((a, b) => Number(a === reasoning) - Number(b === reasoning));
     const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
     return `${prefix}${formatRateAmount(group[0], currency, creditsPerUsd)}`;
   }).join("<br />") || "-";
@@ -438,6 +441,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
   } : baseCopy;
   const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
+  const comfyGpuRate = currency === "credits"
+    ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
+    : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
@@ -484,7 +490,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${amount(rate)} / ${priceUnit}`;
+          const credits = rate.kind === "usage"
+            ? provider === "Comfy" ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
@@ -1061,7 +1069,11 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         });
       }
       const hasSubgroups = tableSections.length > 1;
-      const tables = tableSections.map(({ title, body }) => `${hasSubgroups ? `#### ${title}\n\n` : ""}${body}`).join("\n\n");
+      const tables = tableSections.map(({ title, body }) => {
+        const comfyUsageNote = provider === "Comfy" && title === copy.usageRates
+          ? `${copy.comfyGpuUsageNote}\n\n` : "";
+        return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
+      }).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
       return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
     }).join("\n\n");
@@ -1115,4 +1127,4 @@ if (import.meta.main) {
   }
 }
 
-export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion };
+export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
