@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion } from "./gen-router-pricing.ts";
+import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -262,6 +262,9 @@ describe("public Router pricing", () => {
     expect(creditsPanel).toContain("Text / Reasoning: 2262.975");
     expect(creditsPanel).not.toMatch(/\| Reasoning: 2262\.975/);
     expect(render("ja")).toContain("テキスト / 推論: 2262.975");
+    const tokenRate = (conditions: string) => ({ model_id: "m", serving_provider: "p", kind: "metered" as const, unit: "per 1M tokens", credits: "10", conditions, effective_from: "2026-01-01" });
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "en", "credits", 211)).toBe("Text / Reasoning: 10");
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "ko", "credits", 211)).toBe("텍스트 / 추론: 10");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
