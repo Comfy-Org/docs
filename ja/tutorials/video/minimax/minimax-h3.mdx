@@ -2,17 +2,17 @@
 title: "ComfyUI MiniMax H3 動画生成ガイド"
 description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
 sidebarTitle: "概要"
-translationSourceHash: 2e1e1337
+translationSourceHash: 6ac70cae
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": 8e430e23
   "Key features": 7bfa7de1
   "Getting started": ed2dace3
-  "Choosing the checkpoint precision": e53cd0d5
+  "Choosing the checkpoint precision": 933b1231
   "Workflow index": 4eb0081d
   "Setting the output resolution": 8b2ea067
   "Step count": fb8902ba
-  "Sampler and scheduler": 86560ba1
+  "Sampler and scheduler": 1185dc53
   "Speeding up generation with Sage Attention": 7ff7d016
   "Speeding up generation with sparse attention": 4cd41a94
 ---
@@ -73,6 +73,8 @@ VRAM に収まる最小のビルドをダウンロードしてください。ど
 表のリンクは Text to Video と Image to Video が使う `fl2va` のファイルです。`ref2va` の対応ファイル（Reference to Video とそれを基にしたワークフロー）は同じフォルダに同じサイズで置かれています。Comfy Kitchen attention は `int8_convrot` チェックポイントを実行できないため、このバックエンドを使う場合は `bf16` ビルドを選んでください。
 
 VRAM に収まらないビルドはサンプリングの各ステップでシステムメモリから読み出され、そのコストは精度差よりはるかに大きくなります。オフロードさせるより、1 段小さいサイズに下げてください。30 シリーズの NVIDIA カードでは INT8 が速い経路です。これらの GPU は INT8 の行列積をハードウェアで FP16 の約 2 倍のレートで実行し、FP8 の行列演算経路を持たないため、INT8 ビルドは同じサイズの FP8 ビルドより速くサンプリングできます。
+
+さらに動画 VAE と音声 VAE も必要です。動画 VAE は `fp16` と `int8_convrot` の 2 つのビルド（[minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) と [minimax_h3_video_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_int8_convrot.safetensors)）、音声 VAE は `fp32` ビルド（[minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors)）が公開されています。テンプレートが読み込むのは int8 の動画ビルドと fp32 の音声ビルドです。2 つの動画ファイルは同じ VAE で精度だけが異なり、int8 ビルドは ComfyUI 0.36.0 以降でデコードが約 2 倍速くなります。切り替えは拡散モデルと同じで、それぞれの `VAELoader`（**Load VAE**）ノードでファイルを差し替えます。
 
 ## ワークフローインデックス
 
@@ -149,7 +151,7 @@ VRAM に収まらないビルドはサンプリングの各ステップでシス
 
 マルチステップの履歴は潜在データではなく1回のサンプリング実行の内部に存在するため、スケジュールを2つのサンプラーに分割したワークフローでは引き継がれません。ベース段階の後に潜在空間アップスケールを挟んで2つ目のサンプラーに渡すような構成では、2つ目のサンプラーは空の履歴から始まります。最初のステップは1次で実行され、2次の更新は2ステップ目から再開します。これが効いてくるのは短い後段で、数少ないステップのうち1つを低い次数で使うことになります。スケジュール全体を1回のサンプリング実行にまとめるか、2つ目のサンプラーに履歴を再構築できるだけのステップ数を与えてください。
 
-flow shift の組はワークフローではなくモデル定義から来ます。ComfyUI の H3 定義は `shift` `12` と `audio_shift` `3` を持ち、FastH3 以外のワークフローはこの値を使うため、それらのワークフローには shift ノードが現れません。一方 FastH3 テンプレートは組み込みの **ModelSamplingMiniMaxH3** ノード(ワークフロー JSON では `MiniMaxH3SigmaShift`、カテゴリ `model/patch/minimax`)を `shift_video` `10`、`shift_audio` `3` で含んでおり、これが蒸留スケジュールの前提となる組です。動画 shift がサンプラーの sigma スケジュールを決め、モデルは動画スケジュールを共有のベースグリッドに反転してオーディオスケジュールを導きます。チェックポイントが別の組を要求するときにこのノードを追加し、そのチェックポイントの前提値の近くに保ってください。蒸留された 8 ステップ版では、`shift_video` を `10` ではなく `3` でサンプリングするとフレームにグリッド状のアーティファクトが現れます。
+flow shift の組はワークフローではなくモデル定義から来ます。ComfyUI の H3 定義は `shift` `12` と `audio_shift` `3` を持ち、FastH3 以外のワークフローはこの値を使うため、それらのワークフローには shift ノードが現れません。一方 FastH3 テンプレートは組み込みの **ModelSamplingMiniMaxH3** ノード(ワークフロー JSON では `MiniMaxH3SigmaShift`、カテゴリ `model/patch/minimax`)を `shift_video` `10`、`shift_audio` `3` で含んでおり、これが蒸留スケジュールの前提となる組です。動画 shift がサンプラーの sigma スケジュールを決め、モデルは動画スケジュールを共有のベースグリッドに反転してオーディオスケジュールを導きます。チェックポイントが別の組を要求するときにこのノードを追加し、そのチェックポイントの前提値の近くに保ってください。蒸留された 8 ステップ版では、`shift_video` を `10` ではなく `3` でサンプリングするとフレームにグリッド状のアーティファクトが現れます。蒸留 LoRA やファインチューニングが独自の組を要求することもあります。モデルカードに記載された値に合わせて設定してください。
 
 ## Sage Attention で生成を高速化
 

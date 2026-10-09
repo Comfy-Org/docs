@@ -2,17 +2,17 @@
 title: "ComfyUI MiniMax H3 视频生成指南"
 description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
 sidebarTitle: "概述"
-translationSourceHash: 2e1e1337
+translationSourceHash: 6ac70cae
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": 8e430e23
   "Key features": 7bfa7de1
   "Getting started": ed2dace3
-  "Choosing the checkpoint precision": e53cd0d5
+  "Choosing the checkpoint precision": 933b1231
   "Workflow index": 4eb0081d
   "Setting the output resolution": 8b2ea067
   "Step count": fb8902ba
-  "Sampler and scheduler": 86560ba1
+  "Sampler and scheduler": 1185dc53
   "Speeding up generation with Sage Attention": 7ff7d016
   "Speeding up generation with sparse attention": 4cd41a94
 ---
@@ -73,6 +73,8 @@ LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两
 表中链接指向文生视频与图生视频使用的 `fl2va` 文件；`ref2va` 对应文件（参考生视频及基于它的工作流）在同一目录、尺寸相同。Comfy Kitchen attention 无法运行 `int8_convrot` checkpoint，使用该后端时请选择 `bf16` 构建。
 
 放不进显存的构建会在每一步采样时从系统内存流式读取，耗时远大于精度差异，所以宁可降一档也不要让它 offload。在 30 系 NVIDIA 显卡上 INT8 更快。这类显卡的 INT8 矩阵乘法硬件速率约为 FP16 的两倍，且没有 FP8 矩阵运算路径，因此 INT8 构建的采样速度比同尺寸的 FP8 构建更快。
+
+此外还需要一个视频 VAE 和一个音频 VAE。视频 VAE 提供 `fp16` 与 `int8_convrot` 两种构建（[minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) 与 [minimax_h3_video_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_int8_convrot.safetensors)），音频 VAE 提供 `fp32` 构建（[minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors)）。模板加载的是 int8 视频构建与 fp32 音频构建。两个视频文件是同一个 VAE，只是精度不同，int8 构建在 ComfyUI 0.36.0 及以上解码速度约为两倍。切换方式与扩散模型相同，在对应的 `VAELoader`（**Load VAE**）节点上更换文件即可。
 
 ## 工作流索引
 
@@ -149,7 +151,7 @@ LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两
 
 多步采样的历史记录存在于单次采样过程内部，而不是 Latent 中，因此把调度拆分给两个采样器的工作流不会把它延续下去。在双采样器配置中，例如先跑基础阶段、做一次 Latent 放大后再交给第二个采样器时，第二个采样器从空历史开始：它的第一步以一阶运行，二阶更新要到第二步才恢复。这一步的影响在短尾段上最明显，因为尾段本就没有几步，其中一步只以低阶执行。要么把整条调度放在一次采样过程中，要么给第二个采样器足够多的步数去重建历史。
 
-flow shift 这一对参数来自模型定义，而不是工作流：ComfyUI 的 H3 定义带有 `shift` `12` 和 `audio_shift` `3`，除 FastH3 之外的所有工作流都读取这两个值，因此这些工作流里不会出现 shift 节点。FastH3 模板则内置了 **ModelSamplingMiniMaxH3** 节点（在工作流 JSON 里为 `MiniMaxH3SigmaShift`，分类 `model/patch/minimax`），取值为 `shift_video` `10`、`shift_audio` `3`，这正是其蒸馏调度所依据的一对参数。视频 shift 决定采样器的 sigma 调度，模型再把视频调度反推到共享的基础网格上，并由此推导出音频调度。当检查点需要另一组取值时再添加该节点，并贴近该检查点所依据的值：在蒸馏的 8 步版本上，把 `shift_video` 用 `3` 而不是 `10` 来采样，画面会出现网格状伪影。
+flow shift 这一对参数来自模型定义，而不是工作流：ComfyUI 的 H3 定义带有 `shift` `12` 和 `audio_shift` `3`，除 FastH3 之外的所有工作流都读取这两个值，因此这些工作流里不会出现 shift 节点。FastH3 模板则内置了 **ModelSamplingMiniMaxH3** 节点（在工作流 JSON 里为 `MiniMaxH3SigmaShift`，分类 `model/patch/minimax`），取值为 `shift_video` `10`、`shift_audio` `3`，这正是其蒸馏调度所依据的一对参数。视频 shift 决定采样器的 sigma 调度，模型再把视频调度反推到共享的基础网格上，并由此推导出音频调度。当检查点需要另一组取值时再添加该节点，并贴近该检查点所依据的值：在蒸馏的 8 步版本上，把 `shift_video` 用 `3` 而不是 `10` 来采样，画面会出现网格状伪影。蒸馏 LoRA 或微调也可能要求自己的一组 shift 值。按模型卡上给出的取值设置即可。
 
 ## 使用 Sage Attention 加速生成
 
