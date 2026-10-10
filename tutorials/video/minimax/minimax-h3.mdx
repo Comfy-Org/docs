@@ -10,7 +10,7 @@ import UpdateReminder from "/snippets/tutorials/update-reminder.mdx";
 
 ComfyUI natively supports MiniMax H3. The documentation is split across six pages:
 
-- **Overview** (this page): model capabilities, workflow index, output resolution, step count, sampler and scheduler, and speedups
+- **Overview** (this page): model capabilities, checkpoint precision, workflow index, output resolution, step count, sampler and scheduler, and speedups
 - **[Native workflows](/tutorials/video/minimax/minimax-h3-native)**: Text-to-Video, Image-to-Video, Reference-to-Video, plus advanced native-node techniques
 - **[Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe)**: anchor reference frames at specific points along the output timeline
 - **[Fun ControlNet Union](/tutorials/video/minimax/minimax-h3-fun-controlnet)**: drive H3 with a control video, or run video inpainting with a mask
@@ -44,6 +44,24 @@ The model files are hosted on Hugging Face in the [Comfy-Org/MiniMax-H3](https:/
 <Note>
 Match an H3 LoRA to the checkpoint build it was distilled on, and take the `pruned` build when a repository publishes both. Pruned checkpoints replace the time embedder and the full-width adaln weights with a short shared curve basis (`adaln_t_table`, 1025 curve samples by 8 basis columns) that ComfyUI reads from the checkpoint itself, and the templates load the pruned builds (`minimax_h3_fl2va_pruned_int8_convrot.safetensors` and `minimax_h3_ref2va_pruned_int8_convrot.safetensors`, with bf16 and fp8 counterparts). A LoRA distilled on the full build (`minimax_h3_fl2va_int8_convrot.safetensors` or `minimax_h3_ref2va_int8_convrot.safetensors`) carries adaln weights with no matching tensor in the pruned build: ComfyUI reports a shape mismatch for them and does not merge them, so that part of the LoRA is skipped. The turbo LoRAs the workflows download carry no adaln tensors, so they load on either build.
 </Note>
+
+## Choosing the checkpoint precision
+
+Download the smallest build your VRAM can hold. Every precision runs the same workflows, and switching means pointing the `UNETLoader` (**Load Diffusion Model**) node at another file: ComfyUI reads the quantization format from the checkpoint, so nothing else changes. LoRAs still have to match the build family, because one distilled on a full build loses its adaln weights on a pruned build.
+
+| Build (fl2va / ref2va) | Size | Notes |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | smallest, keeps the INT8 matrix path, needs ComfyUI 0.38.0 or later |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | what the templates load |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | same size as INT8 |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | unquantized |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | unquantized, full build |
+
+The links point at the `fl2va` files used by Text to Video and Image to Video. The `ref2va` counterparts for Reference to Video and the workflows built on it sit in the same folder at the same sizes. Comfy Kitchen attention cannot run the `int8_convrot` checkpoints, so use a `bf16` build with that backend.
+
+A build that does not fit in VRAM is streamed from system RAM at every step, which costs far more time than the precision difference, so step down a size instead of letting it offload. On 30-series NVIDIA cards INT8 is the faster path. Those GPUs run INT8 matrix multiplications in hardware at about twice the FP16 rate and have no FP8 matrix path, so an INT8 build samples faster than an FP8 build of the same size.
+
+H3 also needs a video VAE and an audio VAE. The video VAE ships in `fp16` and `int8_convrot` builds ([minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) and [minimax_h3_video_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_int8_convrot.safetensors)), and the audio VAE ships as `fp32` ([minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors)). The templates load the int8 video build and the fp32 audio build. Both video files are the same VAE at a different precision, and the int8 build decodes about twice as fast on ComfyUI 0.36.0 or later. Swap either file on its `VAELoader` (**Load VAE**) node the same way you swap the diffusion model.
 
 ## Workflow index
 
@@ -83,11 +101,25 @@ The template ships with a fast preview size. For full-quality output at 16:9, se
 
 Frames well above the native canvas do not hold detail: H3 is trained at around 1 megapixel, and a later upscaling pass cannot recover what the generation step left out. For 2K output, generate at the native canvas and upscale in a separate pass.
 
+### Upscaling to higher resolution
+
+Higher-resolution output comes from a second pass in latent space. A trained latent upscaler resizes the H3 latents directly, which skips the decode and re-encode round trip through H3's VAE and avoids the ghosting that plain latent interpolation leaves.
+
+[Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) is an unofficial 24-channel latent upscaler for H3. Place [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) in `ComfyUI/models/latent_upscale_models/` and install its [companion custom node](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). Add the **Minimax H3 Latent Upscaler (3D)** node after a low-resolution generation, set `scale` (`1.0` to `4.0`, default `2.0`), then re-sample at the target resolution to refine the result. The repository ships example Image to Video and Reference to Video workflows.
+
+The latent route saves time, not VRAM. The refine pass still runs at the target resolution, so peak memory is comparable to generating at that size directly.
+
 ## Step count
 
-These numbers apply to the base weights with the template's **Enable Lightning LoRA** switch off, which is the default and runs 20 steps. Turning that switch on loads the turbo LoRA and drops the step count to 8 in the Text to Video and Image to Video templates (including the continuation variant), and to 4 in the templates that ship the reference turbo LoRA: Reference to Video, Multiframe Reference, and Fun ControlNet Union. In the Text to Video and Image to Video templates the switch appears as the `turbo_mode` widget on the subgraph node.
+These numbers apply to the base weights with the template's **Enable Lightning LoRA** switch off, which is the default and runs 20 steps. Turning that switch on loads the turbo LoRA and drops the step count to 8 in the Text to Video and Image to Video templates (including the continuation variant), and to 4 in the templates that ship the reference turbo LoRA: Reference to Video, Multiframe Reference, and Fun ControlNet Union. In the Text to Video and Image to Video templates the switch appears as the `turbo_mode` widget on the subgraph node, next to `turbo_steps` and `turbo_model_strength`. `turbo_steps` carries the distilled file's own step count (`8`), and `turbo_model_strength` defaults to `1`. Those two templates also list a 4-step variant, [`minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors), distilled for 768p output. Download it into `ComfyUI/models/loras/`, then select it on the subgraph node's LoRA widget and set `turbo_steps` to `4`.
 
 A short schedule costs the most on reference-driven shots. Reference tokens ride along every sampling step, so turning the switch on leaves far fewer steps for that conditioning to act on: at 4 steps a reference can end up barely applied, and a subject's pose or face angle can drift away from the reference as the clip goes on. When a shot has to follow a reference closely, leave the **Enable Lightning LoRA** switch off and run the base 20-step schedule; if the reference still drifts, raise the step count to 25.
+
+A distilled LoRA also changes how the model resolves detail. At a distilled step count, skin, fabric weave, hair, and small repeating patterns come out smoother and flatter than in a 20-step base render, and the gap is widest on close-up faces and on frames full of fine detail. Each distilled file is built for one generation mode and step count, so a strength that holds on one file does not carry over to another: test the distilled file on its own at a fixed seed before stacking a style LoRA on top.
+
+The step count and the LoRA strength are not fixed by the distilled file. In the Text to Video and Image to Video templates they appear as the `turbo_steps` and `turbo_model_strength` widgets on the subgraph node. In the other turbo templates the strength is the field on the node that loads the LoRA. At strength `1`, the distilled step count is the fastest setting.
+
+Both values can move off the distilled defaults. Raising the step count above the distilled count and scaling the strength below `1` take the render back toward the base model, which restores detail and audio and costs time. A 4-step file remains usable at 6 to 8 steps with the strength near `0.8`.
 
 The step count a shot needs depends on what the shot contains:
 
@@ -100,13 +132,13 @@ Audio settles later than the picture does. Video and audio are denoised together
 
 ## Sampler and scheduler
 
-Every local MiniMax H3 workflow samples with `res_multistep` and the `simple` scheduler. The Text to Video, Image to Video, and FastH3 templates keep those two nodes inside the workflow's subgraph, so open the subgraph to reach them. In the Reference to Video, Multiframe Reference, and Fun ControlNet Union templates, `KSamplerSelect` and `BasicScheduler` sit on the top-level canvas.
+Every local MiniMax H3 template samples with `res_multistep` and the `simple` scheduler. The Text to Video, Image to Video, and FastH3 templates keep those two nodes inside the workflow's subgraph, so open the subgraph to reach them. In the Reference to Video, Multiframe Reference, and Fun ControlNet Union templates, `KSamplerSelect` and `BasicScheduler` sit on the top-level canvas.
 
 `res_multistep` is a second-order multistep sampler: each step reuses the denoised estimate from the step before it. The first step has no previous estimate to reuse, so it runs as an ordinary first-order (Euler) step, and the second-order steps begin with the second step. `er_sde` builds up its order in the same way, running one stage on its first step, two on the second, and, at its default `max_stage` of 3, all three stages from the third step on.
 
 Multistep history lives inside a single sampling run rather than in the latent, so a workflow that splits the schedule across two samplers does not carry it over. In a two-sampler setup, such as a base stage followed by a second sampler after a latent upscale, the second sampler starts from an empty history: its first step runs at first order, and the second-order update resumes from its second step. A short tail is where that shows, because one of its few steps is spent at lower order. Keep the whole schedule in one sampling run, or give the second sampler enough steps to rebuild its history.
 
-The flow-shift pair comes from the model definition rather than the workflow: ComfyUI's H3 definition carries `shift` `12` and `audio_shift` `3`, and every workflow except FastH3 reads those values, so no shift node appears in them. The FastH3 templates instead ship the built-in **ModelSamplingMiniMaxH3** node (`MiniMaxH3SigmaShift` in the workflow JSON, category `model/patch/minimax`), set to `shift_video` `10` and `shift_audio` `3`, the pair its distilled schedule is built around. The video shift drives the sampler's sigma schedule, and the model inverts the video schedule onto the shared base grid to derive the audio schedule from it. Add the node when a checkpoint calls for a different pair, and stay near the values that checkpoint is built for: on the distilled 8-step builds, sampling at `shift_video` `3` instead of `10` shows grid artifacts in the frames.
+The flow-shift pair comes from the model definition rather than the workflow: ComfyUI's H3 definition carries `shift` `12` and `audio_shift` `3`, and every shipped template except FastH3 reads those values, so no shift node appears in them. The FastH3 templates instead ship the built-in **ModelSamplingMiniMaxH3** node (`MiniMaxH3SigmaShift` in the workflow JSON, category `model/patch/minimax`), set to `shift_video` `10` and `shift_audio` `3`, the pair its distilled schedule is built around. The video shift drives the sampler's sigma schedule, and the model inverts the video schedule onto the shared base grid to derive the audio schedule from it. Add the node when a checkpoint calls for a different pair, and stay near the values that checkpoint is built for: on the distilled 8-step builds, sampling at `shift_video` `3` instead of `10` shows grid artifacts in the frames. A distilled LoRA or finetune can call for its own pair. Set it on the **ModelSamplingMiniMaxH3** node, and take the pair from the file's model card. The [DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) is such a file: it is trained for `shift` `12` and `audio_shift` `2`, and it samples with `lcm` and `simple` instead of `res_multistep`, so switch `KSamplerSelect` to `lcm` and `BasicScheduler` to `simple`. ODE samplers such as `euler` fall outside its operating point.
 
 ## Speeding up generation with Sage Attention
 

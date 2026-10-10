@@ -2,16 +2,17 @@
 title: "ComfyUI MiniMax H3 视频生成指南"
 description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
 sidebarTitle: "概述"
-translationSourceHash: f0802ee4
+translationSourceHash: d68b000a
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": ca407622
+  "_intro": 8e430e23
   "Key features": 7bfa7de1
   "Getting started": ed2dace3
+  "Choosing the checkpoint precision": 933b1231
   "Workflow index": 4eb0081d
-  "Setting the output resolution": 9aac37c9
-  "Step count": 96c7fd7f
-  "Sampler and scheduler": 86560ba1
+  "Setting the output resolution": 8b2ea067
+  "Step count": fb8902ba
+  "Sampler and scheduler": cebf74d2
   "Speeding up generation with Sage Attention": 7ff7d016
   "Speeding up generation with sparse attention": 4cd41a94
 ---
@@ -22,7 +23,7 @@ import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx";
 
 ComfyUI 原生支持 MiniMax H3。文档分为六个页面：
 
-- **概述**（本页）：模型能力、工作流索引、输出分辨率、步数、采样器与调度器，以及加速技巧
+- **概述**（本页）：模型能力、检查点精度、工作流索引、输出分辨率、步数、采样器与调度器，以及加速技巧
 - **[原生工作流](/zh/tutorials/video/minimax/minimax-h3-native)**：文生视频、图生视频、参考生视频，以及高级原生节点技巧
 - **[多帧参考](/zh/tutorials/video/minimax/minimax-h3-multiframe)**：将参考帧锚定在输出时间线上的特定位置
 - **[Fun ControlNet Union](/zh/tutorials/video/minimax/minimax-h3-fun-controlnet)**：使用控制视频驱动 H3，或使用遮罩进行视频修补
@@ -56,6 +57,24 @@ ComfyUI 支持开放权重的 MiniMax H3。开始使用：
 <Note>
 LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两种构建时请选 `pruned` 版本。pruned checkpoint 用一张较短的共享曲线基表（`adaln_t_table`，1025 个曲线采样 × 8 个基列）取代时间嵌入器和全宽 adaln 权重，ComfyUI 会从 checkpoint 本身读取该基表，模板加载的正是 pruned 构建（`minimax_h3_fl2va_pruned_int8_convrot.safetensors` 与 `minimax_h3_ref2va_pruned_int8_convrot.safetensors`，另有 bf16 与 fp8 版本）。在完整构建（`minimax_h3_fl2va_int8_convrot.safetensors` 或 `minimax_h3_ref2va_int8_convrot.safetensors`）上蒸馏的 LoRA 带有 adaln 权重，而 pruned 构建中没有与之对应的张量：ComfyUI 会报出形状不匹配并且不合并这些权重，这部分 LoRA 因此被跳过。工作流下载的 turbo LoRA 不含任何 adaln 张量，在两种构建上都能加载。
 </Note>
+
+## 选择检查点精度
+
+下载能放进显存的最小构建。各精度运行的是同一批工作流，切换时只需把 `UNETLoader`（**Load Diffusion Model**）节点指向另一个文件：量化格式由 checkpoint 自身声明，其它节点与设置都不用改。LoRA 仍需与构建系列匹配，在完整构建上蒸馏的 LoRA 在 pruned 构建上会丢失 adaln 权重。
+
+| 构建（fl2va / ref2va） | 大小 | 说明 |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | 最小，保留 INT8 矩阵运算路径，需要 ComfyUI 0.38.0 及以上 |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | 模板加载的构建 |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | 与 INT8 同尺寸 |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 未量化 |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | 未量化，完整构建 |
+
+表中链接指向文生视频与图生视频使用的 `fl2va` 文件；`ref2va` 对应文件（参考生视频及基于它的工作流）在同一目录、尺寸相同。Comfy Kitchen attention 无法运行 `int8_convrot` checkpoint，使用该后端时请选择 `bf16` 构建。
+
+放不进显存的构建会在每一步采样时从系统内存流式读取，耗时远大于精度差异，所以宁可降一档也不要让它 offload。在 30 系 NVIDIA 显卡上 INT8 更快。这类显卡的 INT8 矩阵乘法硬件速率约为 FP16 的两倍，且没有 FP8 矩阵运算路径，因此 INT8 构建的采样速度比同尺寸的 FP8 构建更快。
+
+此外还需要一个视频 VAE 和一个音频 VAE。视频 VAE 提供 `fp16` 与 `int8_convrot` 两种构建（[minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) 与 [minimax_h3_video_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_int8_convrot.safetensors)），音频 VAE 提供 `fp32` 构建（[minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors)）。模板加载的是 int8 视频构建与 fp32 音频构建。两个视频文件是同一个 VAE，只是精度不同，int8 构建在 ComfyUI 0.36.0 及以上解码速度约为两倍。切换方式与扩散模型相同，在对应的 `VAELoader`（**Load VAE**）节点上更换文件即可。
 
 ## 工作流索引
 
@@ -95,11 +114,25 @@ LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两
 
 远超原生画布的帧无法保持细节：H3 的训练分辨率约为 100 万像素，生成阶段丢掉的细节，后续再放大也补不回来。需要 2K 输出时，先在原生画布下生成，再单独跑一次放大。
 
+### 放大到更高分辨率
+
+更高分辨率的输出来自潜空间中的第二次处理。训练好的潜空间放大器直接放大 H3 的潜变量，从而跳过经过 H3 VAE 的解码与重编码往返，也避免朴素的潜空间插值带来的重影。
+
+[Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) 是面向 H3 的非官方 24 通道潜空间放大器。将 [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) 放入 `ComfyUI/models/latent_upscale_models/`，并安装它的 [配套自定义节点](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler)。在低分辨率生成之后添加 **Minimax H3 Latent Upscaler (3D)** 节点，设置 `scale`（`1.0` 到 `4.0`，默认 `2.0`），再在目标分辨率下重新采样以细化结果。该仓库附带图生视频与参考生视频的示例工作流。
+
+这条路线省的是时间，不是显存。细化步骤仍在目标分辨率下运行，因此峰值显存与直接生成该分辨率相当。
+
 ## 步数
 
-这些数值适用于基础权重，且模板中的 **Enable Lightning LoRA** 开关处于关闭状态，这是默认设置，采样 20 步。开启该开关会加载 turbo LoRA，步数在文生视频与图生视频模板（含续写变体）中降至 8 步，在自带参考 turbo LoRA 的模板（参考生视频、多帧参考、Fun ControlNet Union）中降至 4 步。在文生视频与图生视频模板中，该开关是子图节点上的 `turbo_mode` 控件。
+这些数值适用于基础权重，且模板中的 **Enable Lightning LoRA** 开关处于关闭状态，这是默认设置，采样 20 步。开启该开关会加载 turbo LoRA，步数在文生视频与图生视频模板（含续写变体）中降至 8 步，在自带参考 turbo LoRA 的模板（参考生视频、多帧参考、Fun ControlNet Union）中降至 4 步。在文生视频与图生视频模板中，该开关是子图节点上的 `turbo_mode` 控件，旁边还有 `turbo_steps` 与 `turbo_model_strength`：`turbo_steps` 对应蒸馏文件自身的步数（`8`），`turbo_model_strength` 默认为 `1`。这两个模板的模型说明中还列出了 4 步变体 [`minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors)，它按 768p 输出蒸馏。把它下载到 `ComfyUI/models/loras/`，然后在子图节点的 LoRA 控件中选择该文件，并把 `turbo_steps` 设为 `4`。
 
 调度越短，参考驱动的镜头受影响最大。参考 token 会参与每一个采样步，因此开启该开关后，留给这部分条件引导的步数要少得多：在 4 步时，参考可能几乎没有被应用，主体的姿态或面部角度也可能随着片段推进逐渐偏离参考。当镜头需要严格跟随参考时，保持 **Enable Lightning LoRA** 开关关闭，改用基础的 20 步调度；如果参考仍然漂移，再把步数提高到 25。
+
+蒸馏 LoRA 还会改变模型解析细节的方式。在蒸馏步数下，皮肤、织物纹理、毛发和细密重复图案比 20 步基础渲染更平滑、更扁平，近景人脸和细节密集的画面差异最明显。每个蒸馏文件都针对一种生成模式和一组步数蒸馏，因此在某个文件上可用的强度不能照搬到另一个文件：先把蒸馏文件单独跑一遍，固定种子对比，再在其上叠加风格 LoRA。
+
+步数与 LoRA 强度并不由蒸馏文件固定。在文生视频与图生视频模板中，它们表现为子图节点上的 `turbo_steps` 与 `turbo_model_strength` 控件。在其它 turbo 模板中，强度是加载 LoRA 的那个节点上的字段。在强度为 `1` 时，蒸馏步数是速度最快的设置。
+
+这两个值都可以偏离蒸馏默认值。把步数提高到蒸馏步数以上、同时把强度降到 `1` 以下，会让渲染回到更接近基础模型的位置，从而恢复细节与音频，代价是耗时更长。4 步文件在 6 到 8 步、强度接近 `0.8` 时仍然可用。
 
 一个镜头需要多少步，取决于画面内容：
 
@@ -112,13 +145,13 @@ LoRA 要与它蒸馏时所用的 checkpoint 构建对应，仓库同时提供两
 
 ## 采样器与调度器
 
-所有本地 MiniMax H3 工作流都使用 `res_multistep` 采样器和 `simple` 调度器。文生视频、图生视频和 FastH3 模板把这两个节点放在工作流的子图内部，需要进入子图才能修改。在参考生视频、多帧参考和 Fun ControlNet Union 模板中，`KSamplerSelect` 和 `BasicScheduler` 位于顶层画布上。
+所有本地 MiniMax H3 模板都使用 `res_multistep` 采样器和 `simple` 调度器。文生视频、图生视频和 FastH3 模板把这两个节点放在工作流的子图内部，需要进入子图才能修改。在参考生视频、多帧参考和 Fun ControlNet Union 模板中，`KSamplerSelect` 和 `BasicScheduler` 位于顶层画布上。
 
 `res_multistep` 是二阶多步采样器：每一步都会复用上一步的去噪估计。第一步没有可复用的估计，因此按普通的一阶（Euler）步骤执行，二阶步骤从第二步开始。`er_sde` 以同样的方式逐级升阶：在默认的 `max_stage` 为 3 时，第一步只跑一个阶段，第二步跑两个阶段，从第三步起才跑满三个阶段。
 
 多步采样的历史记录存在于单次采样过程内部，而不是 Latent 中，因此把调度拆分给两个采样器的工作流不会把它延续下去。在双采样器配置中，例如先跑基础阶段、做一次 Latent 放大后再交给第二个采样器时，第二个采样器从空历史开始：它的第一步以一阶运行，二阶更新要到第二步才恢复。这一步的影响在短尾段上最明显，因为尾段本就没有几步，其中一步只以低阶执行。要么把整条调度放在一次采样过程中，要么给第二个采样器足够多的步数去重建历史。
 
-flow shift 这一对参数来自模型定义，而不是工作流：ComfyUI 的 H3 定义带有 `shift` `12` 和 `audio_shift` `3`，除 FastH3 之外的所有工作流都读取这两个值，因此这些工作流里不会出现 shift 节点。FastH3 模板则内置了 **ModelSamplingMiniMaxH3** 节点（在工作流 JSON 里为 `MiniMaxH3SigmaShift`，分类 `model/patch/minimax`），取值为 `shift_video` `10`、`shift_audio` `3`，这正是其蒸馏调度所依据的一对参数。视频 shift 决定采样器的 sigma 调度，模型再把视频调度反推到共享的基础网格上，并由此推导出音频调度。当检查点需要另一组取值时再添加该节点，并贴近该检查点所依据的值：在蒸馏的 8 步版本上，把 `shift_video` 用 `3` 而不是 `10` 来采样，画面会出现网格状伪影。
+flow shift 这一对参数来自模型定义，而不是工作流：ComfyUI 的 H3 定义带有 `shift` `12` 和 `audio_shift` `3`，除 FastH3 之外的所有模板都读取这两个值，因此这些工作流里不会出现 shift 节点。FastH3 模板则内置了 **ModelSamplingMiniMaxH3** 节点（在工作流 JSON 里为 `MiniMaxH3SigmaShift`，分类 `model/patch/minimax`），取值为 `shift_video` `10`、`shift_audio` `3`，这正是其蒸馏调度所依据的一对参数。视频 shift 决定采样器的 sigma 调度，模型再把视频调度反推到共享的基础网格上，并由此推导出音频调度。当检查点需要另一组取值时再添加该节点，并贴近该检查点所依据的值：在蒸馏的 8 步版本上，把 `shift_video` 用 `3` 而不是 `10` 来采样，画面会出现网格状伪影。蒸馏 LoRA 或微调也可能要求自己的一组 shift 值。把这组值设到 **ModelSamplingMiniMaxH3** 节点上，并以其模型卡为准。[DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) 就是这样一个文件：它按 `shift` `12` 和 `audio_shift` `2` 训练，采样用 `lcm` 加 `simple` 而不是 `res_multistep`，所以要把 `KSamplerSelect` 换成 `lcm`、`BasicScheduler` 换成 `simple`。`euler` 这类 ODE 采样器不在它的工作点上。
 
 ## 使用 Sage Attention 加速生成
 

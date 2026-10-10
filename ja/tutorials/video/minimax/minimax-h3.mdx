@@ -2,16 +2,17 @@
 title: "ComfyUI MiniMax H3 動画生成ガイド"
 description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
 sidebarTitle: "概要"
-translationSourceHash: f0802ee4
+translationSourceHash: d68b000a
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": ca407622
+  "_intro": 8e430e23
   "Key features": 7bfa7de1
   "Getting started": ed2dace3
+  "Choosing the checkpoint precision": 933b1231
   "Workflow index": 4eb0081d
-  "Setting the output resolution": 9aac37c9
-  "Step count": 96c7fd7f
-  "Sampler and scheduler": 86560ba1
+  "Setting the output resolution": 8b2ea067
+  "Step count": fb8902ba
+  "Sampler and scheduler": cebf74d2
   "Speeding up generation with Sage Attention": 7ff7d016
   "Speeding up generation with sparse attention": 4cd41a94
 ---
@@ -22,7 +23,7 @@ import UpdateReminder from "/snippets/ja/tutorials/update-reminder.mdx";
 
 ComfyUIは MiniMax H3をネイティブにサポートしています。ドキュメントは6つのページに分かれています：
 
-- **概要**（このページ）: モデルの機能、ワークフローの一覧、出力解像度、ステップ数、サンプラーとスケジューラ、高速化
+- **概要**（このページ）: モデルの機能、チェックポイント精度、ワークフローの一覧、出力解像度、ステップ数、サンプラーとスケジューラ、高速化
 - **[ネイティブワークフロー](/ja/tutorials/video/minimax/minimax-h3-native)**: テキストから動画へ、画像から動画へ、参照から動画、および高度なネイティブノードテクニック
 - **[マルチフレーム参照](/ja/tutorials/video/minimax/minimax-h3-multiframe)**: 出力タイムライン上の特定のポイントに参照フレームを固定
 - **[Fun ControlNet Union](/ja/tutorials/video/minimax/minimax-h3-fun-controlnet)**: コントロールビデオで H3 を駆動する、またはマスクによるビデオインペイント
@@ -56,6 +57,24 @@ MiniMax H3はオープンウェイトで、ComfyUIでサポートされていま
 <Note>
 LoRA は蒸留元のチェックポイントビルドに合わせて選び、リポジトリが両方を公開している場合は `pruned` 版を使ってください。pruned チェックポイントは時間エンベッダーと全幅の adaln 重みを、短い共有カーブ基底(`adaln_t_table`、1025 個のカーブサンプル × 8 個の基底列)に置き換えており、ComfyUI はその基底をチェックポイント自体から読み取ります。テンプレートが読み込むのは pruned ビルド(`minimax_h3_fl2va_pruned_int8_convrot.safetensors` と `minimax_h3_ref2va_pruned_int8_convrot.safetensors`、ほかに bf16 版と fp8 版)です。フルビルド(`minimax_h3_fl2va_int8_convrot.safetensors` または `minimax_h3_ref2va_int8_convrot.safetensors`)で蒸留された LoRA が持つ adaln 重みには、pruned ビルドに対応するテンソルがありません。ComfyUI はそれらの形状不一致を報告し、マージしないため、その部分の LoRA はスキップされます。ワークフローがダウンロードする turbo LoRA は adaln テンソルを含まないため、どちらのビルドでも読み込めます。
 </Note>
+
+## チェックポイント精度の選択
+
+VRAM に収まる最小のビルドをダウンロードしてください。どの精度も同じワークフローで動作し、切り替えるときは `UNETLoader`（**Load Diffusion Model**）ノードを別のファイルに向けるだけです。量子化形式はチェックポイント自体が持つ情報なので、他のノードや設定を変更する必要はありません。LoRA はビルド系列に合わせる必要があり、フルビルドで蒸留した LoRA は pruned ビルドで adaln 重みを失います。
+
+| ビルド（fl2va / ref2va） | サイズ | 補足 |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | 最小。INT8 行列演算の経路を保ち、ComfyUI 0.38.0 以降が必要 |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | テンプレートが読み込むビルド |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | INT8 と同じサイズ |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 非量子化 |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | 非量子化のフルビルド |
+
+表のリンクは Text to Video と Image to Video が使う `fl2va` のファイルです。`ref2va` の対応ファイル（Reference to Video とそれを基にしたワークフロー）は同じフォルダに同じサイズで置かれています。Comfy Kitchen attention は `int8_convrot` チェックポイントを実行できないため、このバックエンドを使う場合は `bf16` ビルドを選んでください。
+
+VRAM に収まらないビルドはサンプリングの各ステップでシステムメモリから読み出され、そのコストは精度差よりはるかに大きくなります。オフロードさせるより、1 段小さいサイズに下げてください。30 シリーズの NVIDIA カードでは INT8 が速い経路です。これらの GPU は INT8 の行列積をハードウェアで FP16 の約 2 倍のレートで実行し、FP8 の行列演算経路を持たないため、INT8 ビルドは同じサイズの FP8 ビルドより速くサンプリングできます。
+
+さらに動画 VAE と音声 VAE も必要です。動画 VAE は `fp16` と `int8_convrot` の 2 つのビルド（[minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) と [minimax_h3_video_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_int8_convrot.safetensors)）、音声 VAE は `fp32` ビルド（[minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors)）が公開されています。テンプレートが読み込むのは int8 の動画ビルドと fp32 の音声ビルドです。2 つの動画ファイルは同じ VAE で精度だけが異なり、int8 ビルドは ComfyUI 0.36.0 以降でデコードが約 2 倍速くなります。切り替えは拡散モデルと同じで、それぞれの `VAELoader`（**Load VAE**）ノードでファイルを差し替えます。
 
 ## ワークフローインデックス
 
@@ -95,11 +114,25 @@ LoRA は蒸留元のチェックポイントビルドに合わせて選び、リ
 
 ネイティブキャンバスを大きく超えるフレームはディテールを保てません。H3 の学習解像度は約 100 万ピクセルで、生成時に失われた情報は後からアップスケールしても戻りません。2K 出力が必要な場合は、ネイティブキャンバスで生成してから別パスでアップスケールしてください。
 
+### 高解像度へのアップスケール
+
+より高解像度の出力は、潜在空間での2回目の処理で得ます。学習済みの潜在アップスケーラーが H3 の潜在を直接リサイズするため、H3 の VAE を経由するデコードと再エンコードの往復を省き、単純な潜在補間で生じるゴーストも避けられます。
+
+[Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) は H3 向けの非公式な24チャンネル潜在アップスケーラーです。[minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) を `ComfyUI/models/latent_upscale_models/` に置き、[対応するカスタムノード](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) をインストールします。低解像度で生成した後に **Minimax H3 Latent Upscaler (3D)** ノードを追加し、`scale` を設定して（`1.0` から `4.0`、既定 `2.0`）、目標解像度で再サンプルして結果を仕上げます。リポジトリには画像からビデオ、参照からビデオのサンプルワークフローが含まれます。
+
+この経路が節約するのは時間で、VRAM ではありません。仕上げのパスは目標解像度で実行されるため、ピークメモリはその解像度で直接生成する場合と同程度です。
+
 ## ステップ数
 
-これらの数値はベースウェイトを対象とし、テンプレートの **Enable Lightning LoRA** スイッチがオフの場合の値です。これが既定で、20 ステップで実行されます。このスイッチをオンにすると turbo LoRA が読み込まれ、ステップ数はテキストからビデオと画像からビデオのテンプレート（続き生成のバリアントを含む）では 8、参照用 turbo LoRA を同梱するテンプレート（参照から動画へ、マルチフレーム参照、Fun ControlNet Union）では 4 に下がります。テキストからビデオと画像からビデオのテンプレートでは、このスイッチはサブグラフノードの `turbo_mode` ウィジェットとして表示されます。
+これらの数値はベースウェイトを対象とし、テンプレートの **Enable Lightning LoRA** スイッチがオフの場合の値です。これが既定で、20 ステップで実行されます。このスイッチをオンにすると turbo LoRA が読み込まれ、ステップ数はテキストからビデオと画像からビデオのテンプレート（続き生成のバリアントを含む）では 8、参照用 turbo LoRA を同梱するテンプレート（参照から動画へ、マルチフレーム参照、Fun ControlNet Union）では 4 に下がります。このスイッチは、サブグラフノードの `turbo_mode` ウィジェットとして表示され、その隣に `turbo_steps` と `turbo_model_strength` があります。`turbo_steps` は蒸留ファイル自体のステップ数（`8`）に対応し、`turbo_model_strength` の既定値は `1` です。この 2 つのテンプレートのモデル案内には 4 ステップ版 [`minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors) も記載されています。これは 768p 出力向けに蒸留されたものです。`ComfyUI/models/loras/` にダウンロードしてから、サブグラフノードの LoRA ウィジェットで選択し、`turbo_steps` を `4` に設定します。
 
 スケジュールが短いほど、影響が最も大きく出るのは参照ベースのショットです。参照トークンはサンプリングの各ステップに同行するため、スイッチをオンにすると、この条件付けに使えるステップ数が大幅に減ります。4 ステップでは参照がほとんど反映されないことがあり、クリップが進むにつれて被写体のポーズや顔の角度が参照から離れていくこともあります。参照に厳密に従わせたいショットでは、**Enable Lightning LoRA** スイッチをオフのままにして基本の 20 ステップのスケジュールで実行し、それでも参照がずれる場合はステップ数を 25 に上げてください。
+
+蒸留 LoRA は、モデルがディテールを解決する方法も変えます。蒸留ステップ数では、肌、生地の織り、髪、細かい繰り返しパターンが 20 ステップのベースレンダーより滑らかで平坦になり、寄りの顔や細部の多いフレームで差が最も大きくなります。各蒸留ファイルは 1 つの生成モードとステップ数向けに蒸留されているため、あるファイルで有効な強度は別のファイルには当てはまりません。まず蒸留ファイル単体を固定シードで試し、その上にスタイル LoRA を重ねてください。
+
+ステップ数と LoRA 強度は蒸留ファイルによって固定されているわけではありません。テキストからビデオと画像からビデオのテンプレートでは、サブグラフノード上の `turbo_steps` と `turbo_model_strength` ウィジェットとして現れます。それ以外の turbo テンプレートでは、強度は LoRA を読み込むノードのフィールドです。強度 `1` では、蒸留ステップ数が最速の設定です。
+
+どちらの値も蒸留時の既定値から外せます。ステップ数を蒸留ステップ数より上げ、強度を `1` 未満に下げると、レンダーはベースモデル寄りに戻り、ディテールとオーディオが回復します。その分だけ時間がかかります。4 ステップのファイルは、強度 `0.8` 前後で 6 から 8 ステップでも使用できます。
 
 ショットに必要なステップ数は、内容によって変わります：
 
@@ -112,13 +145,13 @@ LoRA は蒸留元のチェックポイントビルドに合わせて選び、リ
 
 ## サンプラーとスケジューラ
 
-ローカルの MiniMax H3 ワークフローはすべて `res_multistep` サンプラーと `simple` スケジューラでサンプリングします。テキストから動画へ、画像から動画へ、FastH3 のテンプレートではこれら2つのノードがワークフローのサブグラフ内にあるため、変更するにはサブグラフを開きます。参照から動画へ、マルチフレーム参照、Fun ControlNet Union のテンプレートでは、`KSamplerSelect` と `BasicScheduler` はトップレベルのキャンバス上にあります。
+ローカルの MiniMax H3 テンプレートはすべて `res_multistep` サンプラーと `simple` スケジューラでサンプリングします。テキストから動画へ、画像から動画へ、FastH3 のテンプレートではこれら2つのノードがワークフローのサブグラフ内にあるため、変更するにはサブグラフを開きます。参照から動画へ、マルチフレーム参照、Fun ControlNet Union のテンプレートでは、`KSamplerSelect` と `BasicScheduler` はトップレベルのキャンバス上にあります。
 
 `res_multistep` は2次のマルチステップサンプラーで、各ステップで直前のステップのデノイズ推定値を再利用します。最初のステップには再利用できる推定値がないため、通常の1次（Euler）ステップとして実行され、2次のステップは2ステップ目から始まります。`er_sde` も同じように次数を積み上げ、既定の `max_stage` が 3 の場合、1ステップ目は1段階、2ステップ目は2段階、3ステップ目以降で3段階すべてを使います。
 
 マルチステップの履歴は潜在データではなく1回のサンプリング実行の内部に存在するため、スケジュールを2つのサンプラーに分割したワークフローでは引き継がれません。ベース段階の後に潜在空間アップスケールを挟んで2つ目のサンプラーに渡すような構成では、2つ目のサンプラーは空の履歴から始まります。最初のステップは1次で実行され、2次の更新は2ステップ目から再開します。これが効いてくるのは短い後段で、数少ないステップのうち1つを低い次数で使うことになります。スケジュール全体を1回のサンプリング実行にまとめるか、2つ目のサンプラーに履歴を再構築できるだけのステップ数を与えてください。
 
-flow shift の組はワークフローではなくモデル定義から来ます。ComfyUI の H3 定義は `shift` `12` と `audio_shift` `3` を持ち、FastH3 以外のワークフローはこの値を使うため、それらのワークフローには shift ノードが現れません。一方 FastH3 テンプレートは組み込みの **ModelSamplingMiniMaxH3** ノード(ワークフロー JSON では `MiniMaxH3SigmaShift`、カテゴリ `model/patch/minimax`)を `shift_video` `10`、`shift_audio` `3` で含んでおり、これが蒸留スケジュールの前提となる組です。動画 shift がサンプラーの sigma スケジュールを決め、モデルは動画スケジュールを共有のベースグリッドに反転してオーディオスケジュールを導きます。チェックポイントが別の組を要求するときにこのノードを追加し、そのチェックポイントの前提値の近くに保ってください。蒸留された 8 ステップ版では、`shift_video` を `10` ではなく `3` でサンプリングするとフレームにグリッド状のアーティファクトが現れます。
+flow shift の組はワークフローではなくモデル定義から来ます。ComfyUI の H3 定義は `shift` `12` と `audio_shift` `3` を持ち、FastH3 以外のテンプレートはこの値を使うため、それらのワークフローには shift ノードが現れません。一方 FastH3 テンプレートは組み込みの **ModelSamplingMiniMaxH3** ノード(ワークフロー JSON では `MiniMaxH3SigmaShift`、カテゴリ `model/patch/minimax`)を `shift_video` `10`、`shift_audio` `3` で含んでおり、これが蒸留スケジュールの前提となる組です。動画 shift がサンプラーの sigma スケジュールを決め、モデルは動画スケジュールを共有のベースグリッドに反転してオーディオスケジュールを導きます。チェックポイントが別の組を要求するときにこのノードを追加し、そのチェックポイントの前提値の近くに保ってください。蒸留された 8 ステップ版では、`shift_video` を `10` ではなく `3` でサンプリングするとフレームにグリッド状のアーティファクトが現れます。蒸留 LoRA やファインチューニングが独自の組を要求することもあります。その組は **ModelSamplingMiniMaxH3** ノードに設定し、モデルカードの値に従ってください。[DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) がその一例で、`shift` `12` と `audio_shift` `2` 向けに学習され、`res_multistep` ではなく `lcm` と `simple` でサンプリングするため、`KSamplerSelect` を `lcm` に、`BasicScheduler` を `simple` に変更します。`euler` などの ODE サンプラーはこの LoRA の動作点ではありません。
 
 ## Sage Attention で生成を高速化
 
