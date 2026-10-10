@@ -219,7 +219,7 @@ paths:
       tags:
       - assets
       summary: Existence check for a blob by blake3 hash
-      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes.'
+      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes. A refusal answers its status with no body, so a `403`''s code is not readable here.'
       parameters:
       - $ref: '#/components/parameters/BlakeHash'
       responses:
@@ -229,6 +229,8 @@ paths:
           description: No blob the caller may mint from.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/RateLimited'
         '500':
@@ -450,6 +452,18 @@ paths:
                     auth_token_comfy_org:
                       type: string
                       description: Session bearer token for partner (API) nodes — the equivalent of `api_key_comfy_org` for a caller authenticated by session rather than by key.
+                metadata:
+                  type: object
+                  description: 'Your own labels for the job, such as which of your customers it ran for. At most 16 pairs. A key is 1 to 40 characters from `A-Z a-z 0-9 _ - .`; a value is a string of at most 256 bytes in UTF-8 (bytes, not characters: 200 `é` is 400 bytes) with no control character (U+0000 to U+001F, tab and newline included, and U+007F to U+009F) and no bidirectional embedding, override or isolate (U+202A to U+202E, U+2066 to U+2069). Anything else is refused `422` `metadata_invalid` and no job is created: a bad key or value is named in the message and in `details.key`, while more than 16 pairs is refused with the count and no `details`. A `metadata` that is not an object is refused `400` `invalid_request`; `null` is the same as none. Stored with the job, returned on it, and filterable on `GET /api/v2/jobs`. Set once, here: nothing changes it later. Only jobs sent to a deployment keep it today: Comfy Cloud refuses a non-empty `metadata` with `422` `metadata_not_supported`, and runs a job with empty or absent `metadata` as before. The public demo deployment, which takes no credential, refuses it the same way, so an anonymous caller cannot label jobs in its owner''s workspace.'
+                  maxProperties: 16
+                  additionalProperties:
+                    type: string
+                    description: 'At most 256 bytes in UTF-8, which is what the server counts. `maxLength` counts characters, so it is only an upper bound: a shorter value with multi-byte characters can still be refused.'
+                    maxLength: 256
+                  x-go-type: interface{}
+                  example:
+                    client: acme
+                    batch: '2026-10-05'
       responses:
         '201':
           description: Job created and queued.
@@ -457,6 +471,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Job'
+        '400':
+          description: '`invalid_request`: `metadata` is not an object. A body that is not JSON at all, or whose `workflow` or `extra_data` is not an object, is a `400` too, answered by the request decoder before any of these checks, with a bare `message` body rather than this envelope.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '402':
@@ -467,8 +487,14 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`not_found`: on a deployment''s address, no deployment there that the caller''s workspace owns.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         '422':
-          description: '`invalid_workflow` (with per-node details), `workflow_format_ui`, `missing_asset`, or `idempotency_key_reuse`.'
+          description: '`invalid_workflow` (with per-node details), `workflow_format_ui`, `missing_asset`, `idempotency_key_reuse`, `metadata_invalid` (for a bad key or value, the message and `details.key` name the key; for more than 16 pairs, the message gives the count and there are no `details`), or `metadata_not_supported` (a surface that keeps no job labels yet, or the public demo deployment).'
           content:
             application/json:
               schema:
@@ -484,6 +510,122 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '500':
           $ref: '#/components/responses/UpstreamError'
+    get:
+      operationId: listJobs
+      tags:
+      - jobs
+      summary: List jobs, newest first
+      description: 'Lists jobs newest first. At a deployment''s address, the jobs sent to
+
+        that deployment; at the workspace address, every job in the
+
+        caller''s workspace. A caller never sees another workspace''s jobs.
+
+
+        Filter by your own labels with `metadata[<key>]=<value>`, up to 3
+
+        times; a job is listed only when every pair matches exactly. A 4th
+
+        filter, a repeated key, a key outside the key rule, or a value with a
+
+        character no label may hold (a control character or a bidirectional
+
+        embedding, override or isolate, as on submit) is refused `400`
+
+        `invalid_metadata_filter`. A filter value must be URL-encoded; a raw
+
+        `;` or a bad `%` escape answers `400` `invalid_metadata_filter`.
+
+
+        Pages: pass the response''s `next_cursor` back as `cursor`, with the
+
+        same filters, to read the next page. `next_cursor` is absent on the
+
+        last page. Each job appears once across the pages.
+
+
+        List items are a job''s stored record, not the `Job` object: they
+
+        carry no `outputs` and no `urls`. Read a job with
+
+        `GET /api/v2/jobs/{id}` for its outputs.
+
+
+        Only the serverless platform lists jobs today. Comfy Cloud answers
+
+        `501` `not_implemented`.
+
+        '
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        description: 'Most jobs per page. Above 500 is read as 500; absent means 500. Not a positive integer: `422` `invalid_request`.'
+        schema:
+          type: integer
+          minimum: 1
+      - name: cursor
+        in: query
+        required: false
+        description: 'The previous page''s `next_cursor`, unchanged. Opaque: do not build or edit one. A cursor that is not well-formed is refused `400` `invalid_cursor`. Cursors are not signed, so a well-formed one is read as a position whether or not this list issued it.'
+        schema:
+          type: string
+      - name: metadata
+        in: query
+        required: false
+        style: deepObject
+        explode: true
+        description: Exact-match label filters, written `metadata[client]=acme`. Up to 3; all must match.
+        schema:
+          type: object
+          maxProperties: 3
+          additionalProperties:
+            type: string
+        example:
+          client: acme
+      responses:
+        '200':
+          description: One page of jobs, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobList'
+        '400':
+          description: '`invalid_metadata_filter` or `invalid_cursor`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '`public_deployment_no_list`: the public demo deployment''s address serves no job list, whatever credential is sent; its owner lists its jobs at the workspace address. Also `sso_required`, as on every operation (see `Forbidden`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '404':
+          description: '`not_found`: on a deployment''s address, no deployment there that the caller''s workspace owns.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: '`invalid_request`: `limit` is not a positive integer.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/UpstreamError'
+        '501':
+          description: '`not_implemented`: this surface does not list jobs yet.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
   /api/v2/jobs/{id}:
     get:
       operationId: getJob
@@ -846,7 +988,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     Forbidden:
-      description: '`forbidden` — authenticated but not allowed.'
+      description: '`forbidden` — authenticated but not allowed. On a serverless deployment, also `sso_required` — the key is valid, but the account must sign in through its organization''s single sign-on, which does not accept this key; it can come back on any operation.'
       content:
         application/json:
           schema:
@@ -875,7 +1017,7 @@ components:
   schemas:
     Asset:
       type: object
-      description: 'A user-owned record identified by a server-assigned UUID, backing an immutable blob whose content carries a server-computed blake3 hash. `hash` may be computed lazily: an asset record (and its retrievable bytes) can exist before its hash is filled in.'
+      description: 'A user-owned record identified by a server-assigned UUID, backing an immutable blob whose content carries a server-computed blake3 hash. `hash` may be computed lazily: an asset record (and its retrievable bytes) can exist before its hash is filled in. On an output, `job_metadata` carries the labels its producing job was submitted with, so code holding only the asset knows which run it came from. It is absent for assets no job produced, for outputs of a job sent without labels, where the serving surface keeps no job labels, at the public demo deployment''s own address, where no credential is checked, and when the labels could not be read: so `job_id` without `job_metadata` does not prove the job had no labels. A create whose file path and bytes match an existing output answers with that output, so its `job_id` and `job_metadata` are the output''s.'
       required:
       - id
       - hash
@@ -925,7 +1067,11 @@ components:
         job_id:
           type: string
           nullable: true
-          description: ID of the job that produced this asset. Absent for uploaded assets, which have no producing job.
+          description: ID of the job that produced this asset. Absent for assets no job produced, such as a fresh upload.
+        job_metadata:
+          allOf:
+          - $ref: '#/components/schemas/JobMetadata'
+          description: 'The labels the producing job was submitted with, read through `job_id` on each read. Absent for assets no job produced, for outputs of a job sent without labels, where the serving surface keeps no job labels, at the public demo deployment''s own address, where no credential is checked, when the job is gone, and when the labels could not be read: so `job_id` without `job_metadata` does not prove the job had no labels.'
     Job:
       type: object
       description: One execution of a workflow. Durable from creation until `expires_at`; `outputs` populates incrementally during execution.
@@ -997,6 +1143,51 @@ components:
           type: string
           description: The release of the deployment's build that ran the job, which can differ from the release the deployment runs now. Absent where the serving surface does not report it.
           example: 7c1e9a40-3b2d-4f6a-9e81-0c5d2a7b4f13
+        metadata:
+          $ref: '#/components/schemas/JobMetadata'
+    JobMetadata:
+      type: object
+      description: The labels the job was submitted with, exactly as sent. Absent when it was sent with none.
+      additionalProperties:
+        type: string
+      example:
+        client: acme
+    JobList:
+      type: object
+      description: One page of `GET /api/v2/jobs`.
+      required:
+      - jobs
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobListItem'
+        next_cursor:
+          type: string
+          description: Pass as `cursor` to read the next page. Absent on the last page.
+    JobListItem:
+      type: object
+      description: A job's stored record. The fields below are stable; an item may carry more, which a client should ignore rather than rely on.
+      required:
+      - id
+      - status
+      - create_time
+      - update_time
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+          example: 7f3d2c1b-9a8e-4d6f-b012-3c4d5e6f7a8b
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+        metadata:
+          $ref: '#/components/schemas/JobMetadata'
     JobLogs:
       type: object
       description: 'A job''s captured execution log — the body of `GET /api/v2/jobs/{id}/logs`. Diagnostics, not a contract on content: this is whatever the workflow''s own code and nodes wrote to standard output, in the order they wrote it, so nothing about its shape is stable between runs or between releases of a build. It is **untrusted text** — a workflow chooses what goes in it — and must be rendered as plain text rather than interpreted.'
@@ -1189,6 +1380,7 @@ components:
           example: node_execution_error
         message:
           type: string
+          description: Why the job failed, written for a person to read. On a serverless deployment, where ComfyUI refused the workflow, it names the rejected nodes it has room for and their reasons, which `node_errors` carries in full. Its wording may change; read `code` and `node_errors` rather than matching this text.
         node_id:
           type: string
           nullable: true
@@ -1265,9 +1457,29 @@ components:
 
         cannot succeed without operator action), `invalid_request` (422:
 
-        a malformed asset upload or asset-from-hash field) and `content_blocked` (451:
+        a malformed asset upload or asset-from-hash field, or a jobs-list
 
-        content moderation flagged the asset''s bytes). A 429 is disambiguated
+        `limit` that is not a positive integer), `content_blocked` (451:
+
+        content moderation flagged the asset''s bytes) and `sso_required` (403:
+
+        the key is valid, but the account must sign in through its
+
+        organization''s single sign-on, which does not accept this key). Job
+
+        labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
+
+        limit; `details.key` names the key, except for too many pairs, which
+
+        has no `details`), `metadata_not_supported` (422:
+
+        this surface keeps no job labels yet, or the public demo deployment,
+
+        which takes no credential), `invalid_metadata_filter` (400)
+
+        and `invalid_cursor` (400). A surface that does not list jobs yet
+
+        answers `not_implemented` (501). A 429 is disambiguated
 
         by `error.code` alone; clients should treat any 429 + Retry-After
 
@@ -1289,6 +1501,10 @@ components:
             message:
               type: string
               example: 'Node 12 (KSampler): required input ''model'' is not connected'
+            organization_id:
+              type: string
+              description: 'On `sso_required`: the organization whose single sign-on governs this key, the one that holds the account, else the one that holds the key''s workspace. It is the `organization` query parameter of Comfy Cloud''s single sign-on start; treat it as opaque. Absent when the organization is unknown, and on every other code.'
+              example: org_01HXYZEXAMPLE
             details:
               type: object
               nullable: true

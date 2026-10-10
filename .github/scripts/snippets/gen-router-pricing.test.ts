@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, validateCreditConversion } from "./gen-router-pricing.ts";
+import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
-const page = render();
+const sourcePage = render();
+const currencyToggleStart = sourcePage.indexOf("<PricingCurrencyToggle");
+const creditsTabsStart = sourcePage.indexOf("<Tabs>", currencyToggleStart);
+const usdTabsStart = sourcePage.indexOf("<Tabs>", creditsTabsStart + 1);
+const currencyToggleEnd = sourcePage.indexOf("</PricingCurrencyToggle>", usdTabsStart);
+const creditsPage = sourcePage.slice(creditsTabsStart, usdTabsStart);
+const usdPage = sourcePage.slice(usdTabsStart, currencyToggleEnd);
 
 function pricingTables(content: string) {
   const tables: { provider: string; section: string; headers: string[]; rows: string[][]; displayRows: string[][] }[] = [];
@@ -44,8 +50,10 @@ function pricingTables(content: string) {
   return tables;
 }
 
-const tables = pricingTables(page);
-const priceAmounts = (cell: string) => [...cell.matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?(\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1]);
+const page = sourcePage;
+const tables = pricingTables(creditsPage);
+const usdTables = pricingTables(usdPage);
+const priceAmounts = (cell: string) => [...cell.replaceAll("&#36;", "$").matchAll(/(?:^|<br\s*\/?>)(?:[^<>:]+:\s*)?\$?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*\/|(?=<br\s*\/?>)|$)/g)].map((match) => match[1].replaceAll(",", ""));
 
 describe("public Router pricing", () => {
   test("shows every model/provider route under its provider and model-type section", () => {
@@ -60,7 +68,7 @@ describe("public Router pricing", () => {
       expect(page).toContain(`<Accordion title="${provider}"`);
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
-    const unavailable = page.split("\n").filter((line) => line.includes("| Not published |"));
+    const unavailable = tables.flatMap((table) => table.rows.filter((row) => row.includes("Not published")));
     const unpricedRoutes = routes.filter(({ model, provider }) => !snapshot.rates.some((rate) =>
       rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider));
     expect(unavailable).toHaveLength(unpricedRoutes.length);
@@ -77,8 +85,8 @@ describe("public Router pricing", () => {
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
     expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Runware", "WaveSpeed"]);
     expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
-    expect(page).toContain("Model ID prefixes identify model owners.");
-    expect(page).toContain("[See provider coverage](/development/comfy-router/providers)");
+    expect(page).not.toContain("Model ID prefixes identify model owners.");
+    expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
     expect(page).not.toContain('<Accordion title="Kling"');
     expect(page).not.toContain('<Accordion title="Black Forest Labs"');
@@ -119,32 +127,94 @@ describe("public Router pricing", () => {
     ]);
   });
 
-  test("uses model IDs and credit prices without USD or internal billing metadata", () => {
+  test("resolves keyed prices per model before a provider-wide usage rail", () => {
+    const usage = snapshot.rates.find((rate) => rate.kind === "usage")!;
+    const keyed = { ...snapshot.rates.find((rate) => rate.kind !== "usage")!, model_id: usage.model_id, serving_provider: usage.serving_provider };
+    const otherModel = { ...usage, model_id: `${usage.model_id}-other` };
+    const otherProvider = { ...usage, serving_provider: `${usage.serving_provider} alternate` };
+    expect(resolveKeyedRates([usage, keyed, otherModel, otherProvider])).toEqual([keyed, otherModel, otherProvider]);
+
+    const bflSource = snapshot.supplemental_sources!.find((source) => source.source.endsWith("services/comfy-api/scripts/metronome/bfl/rates/rates.json"))!;
+    expect(bflSource.rates.every((rate) => rate.entitled === true)).toBe(true);
+    const cell = (id: string) => tables.find((table) => table.provider === "Comfy" && table.rows.some((row) => row[1] === `\`${id}\``))!
+      .rows.find((row) => row[1] === `\`${id}\``)!.at(-1);
+    for (const [id, credits] of [
+      ["bfl/flux-kontext-pro", "8.44"],
+      ["bfl/flux-kontext-max", "16.88"],
+      ["bfl/flux-pro-1.1", "8.44"],
+      ["bfl/flux-pro-1.1-ultra", "12.66"],
+      ["bfl/flux-pro-1.0-expand", "10.55"],
+      ["bfl/flux-pro-1.0-fill", "10.55"],
+      ["freepik/ai-skin-enhancer-creative", "61.19"],
+    ]) {
+      expect(cell(id)).toBe(credits);
+    }
+    for (const id of [
+      "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
+      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
+    ]) {
+      expect(cell(id)).toBe("0.266 / GPU-second");
+    }
+  });
+
+  test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
-    expect(page).toContain("Prices are in Comfy credits.");
+    expect(sourcePage).toContain("\n\n211 credits = $1 USD.\n\n<PricingCurrencyToggle");
+    expect(sourcePage).toContain('import { PricingCurrencyToggle } from "../../snippets/router-pricing-currency.jsx";');
+    expect(sourcePage).toContain('<PricingCurrencyToggle creditsLabel="Credits" usdLabel="USD">');
+    expect(sourcePage).not.toContain("Use the currency switch");
+    expect(sourcePage).not.toContain('label="Currency"');
+    const toggle = readFileSync("snippets/router-pricing-currency.jsx", "utf8");
+    expect(toggle).toContain('role="switch"');
+    expect(toggle).toContain("setShowUsd");
+    expect(toggle).not.toContain("{label}");
+    expect(usdTables.some((table) => table.headers.includes("Input USD / 1M tokens"))).toBe(true);
+    expect(usdPage).toContain("Text: &#36;7.15");
     for (const clutter of ["Metronome", "Pricing source", "Serving provider", "Router model ID", "USD price:", "Credits:", "Conditions:", "Effective: From", "effective_from", "source_sha256"]) {
       expect(page).not.toContain(clutter);
     }
     expect(page).not.toContain("Extra conditions");
-    expect(page).not.toContain("USD");
-    expect(page).not.toContain("$");
     expect(page).not.toContain("How billing works");
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
+  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+    const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
+      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
+    expect(comfyUsageRows.length).toBeGreaterThan(0);
+    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
+    expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
+    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
+    expect(alternateUsageRows.length).toBeGreaterThan(0);
+    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
+    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
+  });
+
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
-    expect(snapshot.rates).toHaveLength(626);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(588);
+    expect(snapshot.credits_per_usd).toBe(211);
+    expect(snapshot.rates).toHaveLength(622);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(591);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
       const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
         .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
         .flatMap((row) => table.headers.flatMap((header, index) => /credits/i.test(header) ? [{ header, cell: row[index], section: table.section }] : [])));
+      const matchingUsdPrices = usdTables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
+        .flatMap((table) => table.rows.filter((row) => row[1] === `\`${rate.model_id}\``)
+        .flatMap((row) => table.headers.flatMap((header, index) => /usd/i.test(header) ? [row[index]] : [])));
       const amount = formatAmount(rate.credits!);
+      const usdAmount = new Intl.NumberFormat("en-US", {
+        style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
+      }).format(Number(rate.price_usd)).replace(/[,$]/g, "");
       const imageGeneration = model.category === "images" && ["per request", "per image", "per output image"].includes(rate.unit);
       const unit = imageGeneration ? "generation"
         : rate.unit === "per second" ? "s" : formatUnit(rate.unit, "en");
+      expect(matchingUsdPrices.some((cell) => priceAmounts(cell).includes(usdAmount))).toBe(true);
       expect(matchingPrices.some(({ header, cell, section }) => priceAmounts(cell).includes(amount)
         && (cell.includes(` / ${unit}`) || header.includes(` / ${unit}`) || section.toLowerCase().includes(`credits / ${unit}`)
           || (rate.model_id === "beeble/switchx" && page.includes("Images are billed per output image. Videos are billed per 30 output frames, rounded up."))
@@ -176,10 +246,11 @@ describe("public Router pricing", () => {
 
   test("token-priced models have one row with cached, input, and output columns", () => {
     expect(page).toContain("| Name | Model ID | Cached input credits / 1M tokens | Input credits / 1M tokens | Output credits / 1M tokens |");
-    expect(page.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
-    expect(page.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
-    expect(page).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | 3017.3 | 15086.5 |");
-    expect(page).toContain("| Read: 60.346<br />Write: 754.325 | 603.46 | 3017.3 |");
+    const creditsPanel = creditsPage;
+    expect(creditsPanel.match(/`anthropic\/claude-fable-5`/g)).toHaveLength(1);
+    expect(creditsPanel.match(/`openai\/gpt-5\.6-luna`/g)).toHaveLength(1);
+    expect(creditsPanel).toContain("| Read: 301.73<br />Write (1h): 6034.6<br />Write (5m): 3771.625 | Text: 3017.3 | Text: 15086.5 |");
+    expect(creditsPanel).toContain("| Read: 60.346<br />Write: 754.325 | Text: 603.46 | Text: 3017.3 |");
     const gpt4o = tables.find((table) => table.headers.includes("Cached input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-4o`"))!;
     expect(gpt4o.rows.find((row) => row[1] === "`openai/gpt-4o`")?.[2]).toBe("263.75");
@@ -188,26 +259,30 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
-    expect(page).toContain("Reasoning: 2262.975");
-    expect(page).not.toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).not.toMatch(/\| Reasoning: 2262\.975/);
+    expect(render("ja")).toContain("テキスト / 推論: 2262.975");
+    const tokenRate = (conditions: string) => ({ model_id: "m", serving_provider: "p", kind: "metered" as const, unit: "per 1M tokens", credits: "10", conditions, effective_from: "2026-01-01" });
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "en", "credits", 211)).toBe("Text / Reasoning: 10");
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "ko", "credits", 211)).toBe("텍스트 / 추론: 10");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
       }
     }
-    expect(page).toContain("Cached input credits");
+    expect(creditsPanel).toContain("Cached input credits");
     const geminiImage = tables.find((table) => table.provider === "Comfy"
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`vertexai/gemini-2.5-flash-image`"))!;
     const geminiRow = geminiImage.rows.find((row) => row[1] === "`vertexai/gemini-2.5-flash-image`")!;
     expect(geminiRow).toHaveLength(4);
     expect(geminiRow[2]).toContain("Audio: 211");
-    expect(geminiRow[2]).toContain("Image / Video: 63.3");
+    expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
-    expect(geminiRow[3]).toContain("527.5");
+    expect(geminiRow[3]).toContain("Text: 527.5");
     const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
     expect(gptImage).toHaveLength(4);
-    expect(gptImage[2]).toBe("1055<br />Image: 2110");
+    expect(gptImage[2]).toBe("Text: 1055<br />Image: 2110");
     expect(gptImage[3]).toBe("Image: 8440");
   });
 
@@ -276,9 +351,9 @@ describe("public Router pricing", () => {
     expect(page).toContain("Audio");
     expect(page).not.toContain("With audio");
     const veoRows = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
-    const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.0-fast-generate-001`");
+    const fastVeoRows = veoRows.displayRows.filter((row, index) => veoRows.rows[index][1] === "`veo/veo-3.1-fast-generate-001`");
     expect(fastVeoRows.map((row) => row[0])).toEqual([
-      "[Veo 3.0 Fast Generate 001](/development/comfy-router/models/veo/veo-3-0-fast-generate-001/code)", "",
+      "[Veo 3.1 Fast Generate 001](/development/comfy-router/models/veo/veo-3-1-fast-generate-001/code)", "",
     ]);
     expect(fastVeoRows.map((row) => row[2])).toEqual(["No audio", "Audio"]);
     const ltx = snapshot.rates.filter((rate) => rate.model_id === "ltx/ltx-2-5-pro");
@@ -482,9 +557,9 @@ describe("public Router pricing", () => {
     expect(minimax.rows.some((row) => row[1] === "`pruna/p-video-2`")).toBe(false);
     const veo = tables.find((table) => table.provider === "Comfy" && table.headers.includes("Audio"))!;
     expect(veo).toBeDefined();
-    expect(veo.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
+    expect(veo.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`" && row[2] === "No audio" && row[3] === "42.2 / s")).toBe(true);
     const standaloneVeo = tables.find((table) => table.provider === "Comfy" && table.section === "Rates per second");
-    expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-2.0-generate-001`" )).toBe(false);
+    expect(standaloneVeo?.rows.some((row) => row[1] === "`veo/veo-3.1-generate-001`" )).toBe(false);
     const seedance = tables.find((table) => table.provider === "Higgsfield" && table.rows.some((row) => row[1] === "`byteplus/dreamina-seedance-2-0-260128`"))!;
     expect(seedance.headers).toContain("480p Credits");
     expect(seedance.headers).toContain("720p Credits");
