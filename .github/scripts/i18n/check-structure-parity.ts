@@ -19,6 +19,9 @@
  * The second direction only fails when the counterpart was in parity before the
  * change, so pre-existing debt in untouched pages never blocks a pull request
  * (it is reported as a warning instead).
+ * On English pages the Comfy-Org/cloud spec sync owns (SYNC_OWNED_RULES), an
+ * English-direction gap is a warning naming the i18n sync, because the sync PR
+ * cannot edit ja/zh/ko; a localized-direction gap there still fails.
  *
  * Missing elements and links fail the run. Extra elements are reported as
  * warnings, because a locale may legitimately add something (the zh home page
@@ -41,6 +44,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { SYNC_OWNED_RULES } from "../sync-owned/check-sync-owned.ts";
 
 const LOCALES = ["ja", "zh", "ko"];
 
@@ -252,6 +256,46 @@ export function externalSource(relativePath: string): string | null {
   return hit ? hit.note : null;
 }
 
+/**
+ * Note for an English page the Comfy-Org/cloud spec sync owns. The sync PR cannot
+ * edit ja/zh/ko (it stages English paths only, and its rolling branch refuses
+ * foreign commits), and the i18n sync re-translates from translationSourceHash,
+ * so an English-direction gap there is the i18n sync's to close, not this PR's.
+ */
+export function syncOwnedNote(relativePath: string): string | null {
+  const parts = relativePath.split("/");
+  const rest = LOCALES.includes(parts[0]) ? parts.slice(1).join("/") : relativePath;
+  const rule = SYNC_OWNED_RULES.find((r) => r.test(rest));
+  return rule
+    ? `English page is owned by the Comfy-Org/cloud spec sync (${rule.id}); the i18n sync (bun run translate) refreshes this locale`
+    : null;
+}
+
+/**
+ * Sets `finding.note` and decides where a finding goes. Externally generated
+ * pages always downgrade; sync-owned pages downgrade only in the English
+ * direction, so a translation that drops structure on its own still fails.
+ */
+export function classifyFinding(finding: Finding, failed: boolean): "failure" | "warning" {
+  finding.note =
+    externalSource(finding.file) ??
+    (finding.source === "english" ? syncOwnedNote(finding.file) ?? undefined : undefined);
+  return failed && !finding.note ? "failure" : "warning";
+}
+
+/**
+ * Detail for a warning line. Missing links are listed because a downgraded
+ * finding (external or sync-owned page) can be a link-only gap.
+ */
+export function warningDetail(f: Finding): string {
+  return [
+    ...f.missingComponents.map((c) => `${c.label} short by ${c.en - c.localized}`),
+    ...f.missingLinks.map((link) => `missing link ${link}`),
+    ...f.extraComponents.map((c) => `${c.label} +${c.localized - c.en}`),
+    ...f.extraLinks,
+  ].join(", ");
+}
+
 export function isExempt(relativePath: string): boolean {
   const parts = relativePath.split("/");
   const rest = LOCALES.includes(parts[0]) ? parts.slice(1).join("/") : relativePath;
@@ -373,8 +417,7 @@ function main(): void {
     const interesting =
       failed || finding.extraComponents.length > 0 || finding.extraLinks.length > 0;
     if (!interesting) return; // a clean page is not a warning
-    finding.note = externalSource(finding.file) ?? undefined;
-    if (failed && !finding.note) failures.push(finding);
+    if (classifyFinding(finding, failed) === "failure") failures.push(finding);
     else warnings.push(finding);
   };
   let checked = 0;
@@ -458,11 +501,7 @@ function main(): void {
       if (f.missingLinks.length > 8) console.log(`    ... and ${f.missingLinks.length - 8} more missing links`);
     }
     for (const f of warnings) {
-      const extra = [
-        ...f.missingComponents.map((c) => `${c.label} short by ${c.en - c.localized}`),
-        ...f.extraComponents.map((c) => `${c.label} +${c.localized - c.en}`),
-        ...f.extraLinks,
-      ].join(", ");
+      const extra = warningDetail(f);
       const kind = f.source === "english" ? "pre-existing drift, not caused by this change" : "extra content";
       console.log(`\n⚠ ${f.file}: ${f.note ?? kind} (${extra})`);
     }
