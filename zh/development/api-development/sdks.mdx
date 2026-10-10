@@ -3,16 +3,17 @@ title: "Comfy SDKs"
 description: "用 Python 或 TypeScript 对 Comfy Cloud、自建部署或自有 ComfyUI 运行 ComfyUI 工作流，并处理资产、任务、实时事件和幂等重试。"
 sidebarTitle: "SDK 概述"
 icon: "code"
-translationSourceHash: fea11dc9
+translationSourceHash: dbb2e0a8
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
-  "_intro": 04d89053
+  "_intro": c92c7b51
   "Install": da9a0a57
   "Quickstart": 02297586
-  "Choosing a base URL": 026e1789
+  "Choosing a base URL": 2265e6f6
   "Retrying a submit: the idempotency key": 7c83d78f
   "Watching a job run": 34d74bcc
   "Tracing an output back to its workflow": b01886a3
+  "Label jobs and find them later": 5e8d85e5
   "What the SDKs cover today": 69ebfcc7
   "Reference": 71489703
   "Feedback": 14dd521e
@@ -31,7 +32,7 @@ import SdkVersions from "/snippets/zh/sdk/versions.mdx";
 
 本页介绍第二行：Comfy Cloud 和 Comfy API v2 客户端。如果您要使用模型路由器，请从 [Comfy Router 快速入门](/zh/development/comfy-router/quickstart)开始。
 
-Comfy SDK 让您的应用程序能够运行 ComfyUI 工作流并取回结果。您提交工作流，ComfyUI 执行它，然后您下载输出。同一份代码既可用于 Comfy Cloud，也可用于您自行托管的 ComfyUI 实例，只需更改基础 URL。
+Comfy SDK 让您的应用程序能够运行 ComfyUI 工作流并取回结果。您提交工作流，ComfyUI 执行它，然后您下载输出。同一份代码既可用于 Comfy Cloud，也可用于您自行托管的 ComfyUI 实例，只需更改基础 URL。[任务标签](#为任务添加标签并在之后查找)和任务列表除外：任务标签只适用于 Comfy API 部署，Comfy Cloud 也暂不提供任务列表。
 
 这些 SDK 是 [Comfy API v2](/zh/api-reference/v2/overview) 的客户端。Comfy API v2 是一个版本化的 HTTP API，我们计划长期支持。未来发布的 ComfyUI 新版本不会破坏基于该 API 构建的集成。
 
@@ -150,7 +151,7 @@ const client = new Comfy({ apiKey: "comfyui-..." });
 
 ### Comfy API 部署
 
-通过 [开发者平台](https://platform.comfy.org) 部署的工作流会有自己的端点。将 `COMFY_BASE_URL` 指向该端点并使用您的 API 密钥，与 Comfy Cloud 完全相同。本指南中的所有内容都以相同的方式工作。
+通过 [开发者平台](https://platform.comfy.org) 部署的工作流会有自己的端点。将 `COMFY_BASE_URL` 指向该端点并使用您的 API 密钥，与 Comfy Cloud 完全相同。本指南中的所有内容都以相同的方式工作，[任务标签和任务列表](#为任务添加标签并在之后查找)除外，Comfy Cloud 暂不支持这两项。
 
 Comfy API 部署可以使用其 Build 中包含的模型和自定义节点运行多个工作流。对于每个任务，`get_workflow()` 返回的工作流响应带有 `format: "api"`，并在其 `.graph` 属性中包含已执行的图。
 
@@ -342,6 +343,98 @@ if (wf.format === "save") {
 | `api` | 已执行的图。仅编辑器可见的结构已消失，Get/Set 节点已展开 | 其他所有情况，包括目前通过这些 SDK 提交的每个任务 |
 
 您通过 SDK 提交的任务始终返回 `api`，因为 v2 提交目前还没有版本固定字段。这种情况将来会改变；判别字段的存在就是为了让您的代码无需随之改变。
+
+## 为任务添加标签并在之后查找
+
+标签是提交任务时附加的一组键和值，例如 `client: acme` 或 `project: spring`。用标签记录任务是为哪个客户或项目运行的。这样无需自己维护任务 ID 对照表，也能列出某个客户的任务。标签和任务列表需要当前的 SDK 版本，即[安装](#安装)中版本说明所列的版本。
+
+标签适用于发送到 [Comfy API 部署](#comfy-api-部署)的任务，因此请按照[选择基础 URL](#选择基础-url) 中的说明，将 `COMFY_BASE_URL` 设为该部署的地址。Comfy Cloud 目前会拒绝标签，并对任务列表返回 `501` 和代码 `not_implemented`。自托管的 [comfy-api-proxy](#您自己的-comfyui) 也不保存标签：它自己的 `metadata` 字段是单个文本字符串，因此会拒绝标签映射。它的任务列表会忽略标签筛选，因此在其上带标签的 SDK 列表调用不会返回任何任务，而通过 HTTP 发送相同的筛选条件会返回所有任务。
+
+限制：
+
+- 每个任务最多 16 个标签。
+- 键为 1 到 40 个字符，只能使用字母、数字、`_`、`-` 和 `.`。
+- 值是最多 256 字节（UTF-8）的字符串。
+- 标签在提交任务时设置，之后不能更改。
+
+违反限制的提交会以 `422` 和代码 `metadata_invalid` 失败，且不会创建任务。错误消息会指出违反规则的键；标签超过 16 个时，会给出标签数量。SDK 本身不检查这些限制，而是抛出一个带有服务器代码和消息的错误。
+
+<Warning>
+  工作区中能看到某个任务的任何人，也能看到它的标签。请勿在标签中放入密钥或个人数据。
+</Warning>
+
+提交时传入 `metadata`。读回任务时，任务会带有这些标签：
+
+<CodeGroup>
+```python Python
+job = client.submit(wf, metadata={"client": "acme", "project": "spring"})
+job.metadata  # {"client": "acme", "project": "spring"}
+```
+
+```typescript TypeScript
+const job = await client.submit(wf, {
+  metadata: { client: "acme", project: "spring" },
+});
+job.metadata; // { client: "acme", project: "spring" }
+```
+</CodeGroup>
+
+未带标签提交的任务，其 `metadata` 为空。
+
+要查找某个客户的任务，请按标签筛选并列出任务。列表只包含发送到基础 URL 所指部署的任务。结果按从新到旧排列，迭代时 SDK 会自动获取下一页：
+
+<CodeGroup>
+```python Python
+for job in client.list_jobs(metadata={"client": "acme"}):
+    print(job.id, job.status)
+```
+
+```typescript TypeScript
+for await (const job of client.listJobs({ metadata: { client: "acme" } })) {
+  console.log(job.id, job.status);
+}
+```
+</CodeGroup>
+
+一次最多可按 3 个标签筛选，任务必须与所有标签完全匹配。列表项不包含输出。要获取任务的输出，请用 `client.jobs.get(job.id)` 按 ID 读取该任务。
+
+### 通过 HTTP
+
+在 `POST /api/v2/jobs` 的请求体中发送 `metadata`：
+
+```bash
+curl -X POST "https://<deployment>.run.comfy.app/api/v2/jobs" \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow": { ... },
+    "metadata": { "client": "acme", "project": "spring" }
+  }'
+```
+
+筛选 `GET /api/v2/jobs` 时，每个标签对应一个 `metadata[<key>]=<value>` 查询参数。`-g` 参数可防止 curl 把方括号解析为匹配模式：
+
+```bash
+curl -g "https://<deployment>.run.comfy.app/api/v2/jobs?metadata[client]=acme" \
+  -H "Authorization: Bearer $COMFY_API_KEY"
+```
+
+响应包含一页任务；如果还有更多页，还会包含 `next_cursor`。将它作为 `cursor`，连同相同的 `metadata[...]` 筛选条件一起传回，即可获取下一页。不带筛选条件发送的游标会返回未经筛选的任务。用 `limit` 设置每页大小（最多 500）。
+
+```json
+{
+  "jobs": [
+    {
+      "id": "6f1c2b9e-...",
+      "status": "succeeded",
+      "metadata": { "client": "acme", "project": "spring" }
+    }
+  ],
+  "next_cursor": "eyJ..."
+}
+```
+
+标签筛选超过 3 个，或键不符合键规则时，会以 `400` 和代码 `invalid_metadata_filter` 失败。任务和列表的全部字段请参阅 [Comfy API v2 参考](/zh/api-reference/v2/overview)。
 
 ## SDK 目前涵盖的内容
 
