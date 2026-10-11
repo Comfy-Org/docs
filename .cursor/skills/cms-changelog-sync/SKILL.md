@@ -109,7 +109,7 @@ Config: `.github/scripts/cms/cms-config.json` → `simplify`
 
 | Rule | Value |
 |------|-------|
-| Total bullets per version | **up to 10** (`max_bullets_total: 10`) |
+| Total bullets per version | **up to 10** (`max_bullets_total: 10`), a target for optional items. Lifecycle bullets are mandatory and may take the version over it |
 | Section headings max | **3** (`max_sections: 3`) |
 | Section order | **New Open-Source Model Support** → **Partner Node Updates** → **New Node Updates** (optional) |
 | Words per version | ~60–120 |
@@ -187,6 +187,7 @@ When curating `changelog/index.mdx` or simplifying CMS staging, **do not skip** 
 - If the same PR both adds a successor and removes the old node, you may use one bullet that names both. If they are separate products, use two bullets (add under the usual new-item style; lifecycle under this rule).
 - Keep Cloud copy short, but still mention the event: `Removed retiring Veo 2 and Veo 3.0`. Do not drop lifecycle bullets when shortening Cloud.
 - CMS simplify must **keep** these items. They are not in the Drop list. Do not treat "removed" or "deprecated" as internal refactors.
+- **Overflow:** lifecycle bullets outrank the bullet limit. If a version has more items than `max_bullets_total`, keep every lifecycle bullet and drop optional items first (ordinary new-node additions, then minor partner tweaks). Never omit a deprecation, removal, replacement, or EOL to stay under the limit.
 
 ## Example staging shape
 
