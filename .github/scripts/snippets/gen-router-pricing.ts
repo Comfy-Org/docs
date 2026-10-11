@@ -896,9 +896,15 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
       }
       const switchxImageRates = switchxRatesByUnit.get("per generated image");
       const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
+      // Price-cell modality prefixes follow the page locale (EN keeps "Image"/"Video").
+      const modalityLabels: Record<string, [string, string, string, string]> = {
+        Image: ["Image", "画像", "图像", "이미지"],
+        Video: ["Video", "動画", "视频", "동영상"],
+      };
+      const modalityName = (kind: "Image" | "Video") => modalityLabels[kind][["en", "ja", "zh", "ko"].indexOf(locale)];
       const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
       const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
-        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
+        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `${modalityName("Image")}: ${switchxImageRates.get(resolution) ?? "-"}<br />${modalityName("Video")}: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
         : "";
       const switchxResolutionRows = new Set(switchxResolutionGroups);
       // Different model families can expose unrelated size bands under one provider.

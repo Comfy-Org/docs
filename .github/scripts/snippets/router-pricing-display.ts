@@ -148,7 +148,7 @@ const phrases: Record<string, Translation> = {
   "Image to video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성"],
   "text-to-video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성"],
   "image-to-video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성"],
-  "video-to-video": ["Video to video", "動画から動画", "视频编辑", "동영상 편집"],
+  "video-to-video": ["Video to video", "動画から動画", "视频转视频", "동영상 대 동영상"],
   "Input image": ["Input image", "入力画像", "输入图像", "입력 이미지"],
   "Output image": ["Output image", "出力画像", "输出图像", "출력 이미지"],
   "Output video": ["Output video", "出力動画", "输出视频", "출력 동영상"],
