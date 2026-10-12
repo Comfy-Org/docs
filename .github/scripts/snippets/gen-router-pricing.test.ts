@@ -60,8 +60,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -83,7 +83,7 @@ describe("public Router pricing", () => {
     const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
-    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Runware", "WaveSpeed"]);
+    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Pika", "Runware", "WaveSpeed"]);
     expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
