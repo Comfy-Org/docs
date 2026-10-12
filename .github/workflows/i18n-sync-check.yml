@@ -30,11 +30,13 @@ jobs:
           "${{ github.event.pull_request.base.sha }}" \
           "${{ github.event.pull_request.head.sha }}"
 
-      - name: Notify translator on PR
+      - name: Comment i18n sync status on PR
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHECK_I18N_OUTPUT: /tmp/i18n-check.json
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
         run: |
           if [ ! -f "$CHECK_I18N_OUTPUT" ]; then
             echo "No check output; skipping comment."
@@ -44,12 +46,27 @@ jobs:
           MISSING=$(node -e "
             const data = require('$CHECK_I18N_OUTPUT');
             if (data.skipped) process.exit(2);
-            const n = Object.values(data.missingByLang || {}).reduce((s, v) => s + v.files.length, 0);
+            const sameRepository = process.env.PR_HEAD_REPO === process.env.PR_BASE_REPO;
+            const autoTranslated = new Set(sameRepository ? [
+              'ja/development/comfy-router/pricing.mdx',
+              'zh/development/comfy-router/pricing.mdx',
+              'ko/development/comfy-router/pricing.mdx',
+            ] : []);
+            const n = Object.values(data.missingByLang || {}).reduce((s, v) => s + v.files.filter(f => !autoTranslated.has(f)).length, 0);
             if (n === 0) process.exit(2);
             process.stdout.write(String(n));
           " 2>/dev/null) || true
 
           if [ -z "$MISSING" ]; then
+            REPO="${{ github.repository }}"
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            MARKER="<!-- i18n-sync-check -->"
+            EXISTING_ID=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --jq '.[] | select(.body | contains("'"$MARKER"'")) | .id' | head -1)
+            if [ -n "$EXISTING_ID" ]; then
+              gh api -X DELETE "repos/${REPO}/issues/comments/${EXISTING_ID}"
+              echo "Removed the resolved i18n reminder comment."
+            fi
             echo "No missing translations; skipping PR comment."
             exit 0
           fi
@@ -57,20 +74,35 @@ jobs:
           BODY_FILE=/tmp/i18n-comment.md
           BODY_FILE="$BODY_FILE" node -e "
             const data = require(process.env.CHECK_I18N_OUTPUT);
+            const sameRepository = process.env.PR_HEAD_REPO === process.env.PR_BASE_REPO;
+            const autoTranslated = new Set(sameRepository ? [
+              'ja/development/comfy-router/pricing.mdx',
+              'zh/development/comfy-router/pricing.mdx',
+              'ko/development/comfy-router/pricing.mdx',
+            ] : []);
+            const groups = Object.entries(data.missingByLang)
+              .map(([code, { name, files }]) => ({ code, name, files: files.filter(f => !autoTranslated.has(f)) }))
+              .filter(g => g.files.length > 0);
+            const total = groups.reduce((s, g) => s + g.files.length, 0);
+            const plural = (n) => n + ' file' + (n === 1 ? '' : 's');
             const lines = [
-              '## 🌐 i18n translation sync reminder',
+              '## 🌐 i18n translation sync check',
               '',
-              '@comfyui-wiki English documentation was updated in this PR. Please complete or schedule translation updates for the following files:',
+              'English docs changed in this PR. ' + plural(total) + ' in ' + groups.length + ' language' + (groups.length === 1 ? '' : 's') + ' may not be synced yet. The automated translation workflow handles these updates. Expand a language to see the files.',
               '',
             ];
-            for (const [code, { name, files }] of Object.entries(data.missingByLang)) {
-              lines.push('### ' + name + ' (\`' + code + '\`)');
-              for (const f of files) lines.push('- \`' + f + '\`');
+            for (const { code, name, files } of groups) {
+              lines.push('<details>');
+              lines.push('<summary>' + name + ' (<code>' + code + '</code>): ' + plural(files.length) + '</summary>');
+              lines.push('');
+              for (const f of files) lines.push('- <code>' + f.replace(/[&<>\`]/g, c => '&#' + c.charCodeAt(0) + ';') + '</code>');
+              lines.push('');
+              lines.push('</details>');
               lines.push('');
             }
             lines.push('---');
             lines.push('');
-            lines.push('**Local sync:** \`npm run translate\` (see [README — Automated translation](https://github.com/${{ github.repository }}/blob/main/README.md#automated-translation))');
+            lines.push('**Local sync:** \`npm run translate\` (see [README: Automated translation](https://github.com/${{ github.repository }}/blob/main/README.md#automated-translation))');
             lines.push('');
             lines.push('<!-- i18n-sync-check -->');
             require('fs').writeFileSync(process.env.BODY_FILE, lines.join('\n'));

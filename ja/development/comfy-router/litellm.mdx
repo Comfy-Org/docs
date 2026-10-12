@@ -1,0 +1,125 @@
+---
+title: "LiteLLMでComfy Routerを使用する"
+sidebarTitle: "LiteLLM"
+description: "Comfy RouterをパススルーエンドポイントとしてLiteLLM Proxyの背後に配置し、x-litellm-response-costヘッダーから各実行の正確なUSDコストを記録します。料金表を維持する必要はありません。"
+translationSourceHash: 62eb02ac
+translationFrom: development/comfy-router/litellm.mdx
+translationBlockHashes:
+  "_intro": fe57ab19
+  "Configure the pass-through": 882570d1
+  "How spend is recorded": 204aef47
+  "Queued delivery": 2d3385e4
+  "Notes": 50e3cf6b
+---
+すでに [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through) で支出を追跡している場合は、Comfy Router をさらにもう 1 つのパススルーエンドポイントとして追加できます。呼び出し元は LiteLLM のキーを使い続け、Comfy APIキーはプロキシ上に保持されます。
+
+Router は、同期実行にかかったコストを米ドルで `x-litellm-response-cost` レスポンスヘッダーに報告します。対象となるのは、実行ごとに Comfy クレジット価格を報告するモデルです（[コストを報告しない実行](#コストを報告しない実行)を参照）。LiteLLM はすべてのパススルーレスポンスでこのヘッダーを読み取り、リクエストの支出として記録するため、それらのモデル用の価格表を自分で管理する必要はありません。
+
+<Note>
+  LiteLLM の組み込み `fal_ai/` プロバイダーは画像生成のみをカバーしています。一般的なワークロードを LiteLLM 経由でルーティングするには、ネイティブプロバイダーではなく、ここに示すようなパススルーエンドポイントを使用してください。
+</Note>
+
+## パススルーを設定する
+
+<Steps>
+  <Step title="Comfy APIキーを作成する">
+    [Comfy ワークスペース](https://platform.comfy.org/profile/api-keys)でキーを作成し、LiteLLM Proxy プロセスから利用できるようにします：
+
+    ```bash
+    export COMFY_API_KEY="comfyui-..."
+    ```
+  </Step>
+
+  <Step title="config.yaml に Router を追加する">
+    ```yaml config.yaml
+    general_settings:
+      pass_through_endpoints:
+        # 実行とキューの送信。同期実行は正確なコストを報告し、
+        # その行の cost_per_request を置き換えます。
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["POST"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+            content-type: application/json
+          cost_per_request: 0.10   # フォールバックの見積もり（USD）
+          timeout: 660             # Router の実行期限（デフォルトは10分）より長くする
+
+        # モデルカタログ、キューステータスのポーリング、結果の収集。
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["GET"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+          cost_per_request: 0
+    ```
+
+    - `include_subpath: true` は `/comfy/v2/models/{provider}/{model}` を `https://api.comfy.org/v2/models/{provider}/{model}` に転送するため、1組のエントリで全ての Router モデルをカバーできます。
+    - `path` と `target` は `/v2/models` に限定したままにしてください。パススルーを API ルートに向けると、LiteLLM キーを持つ呼び出し元が、LiteLLM の支出追跡の範囲外で、あなたの Comfy キーを他のすべての Comfy API ルートに利用できてしまいます。
+    - `methods` は同じパス上の2つのエントリを分けます。パススルーエンドポイントが `methods` をサポートする LiteLLM Proxy のリリースが必要です。このページは v1.103.0 で確認しています。
+    - `X-API-Key` はあなたの `comfyui-` キーを運びます。Router は同じキーを `Authorization: Bearer comfyui-...` としても受け付けます。
+    - `forward_headers` はオフのままにしてください。オンにすると、LiteLLM は呼び出し元の LiteLLM キーを含むすべての受信ヘッダーを Router に転送します。オフの場合、呼び出し元は `Idempotency-Key` を `x-pass-Idempotency-Key` として渡します。LiteLLM は `x-pass-` プレフィックスを取り除いて転送します。通常の `Idempotency-Key` ヘッダーは Router に届かないため、再試行すると2回目の生成が実行され課金されます。
+    - `timeout` は Router の[実行期限](/ja/development/comfy-router/limitations)より長く設定してください。そうすることで、LiteLLM が諦める前に Router が自身の `504` とリクエスト ID を返せます。期限はデフォルトで10分で、LiteLLM のパススルーのデフォルトタイムアウトである600秒と同じです。
+  </Step>
+
+  <Step title="プロキシ経由で Router を呼び出す">
+    呼び出し元は自身の LiteLLM キーで認証します。ボディはモデル自身の入力で、[Comfy Router リファレンス](/ja/development/comfy-router/reference)とまったく同じです：
+
+    ```bash
+    curl --max-time 660 \
+      http://localhost:4000/comfy/v2/models/byteplus/dreamina-seedance-2-5-260628 \
+      -H "Authorization: Bearer $LITELLM_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+    ```
+  </Step>
+</Steps>
+
+## 支出がどのように記録されるか
+
+コストを報告する同期実行には、次のレスポンスヘッダーが付きます：
+
+```http
+X-Comfy-Credits-Used: 12.5
+X-Litellm-Response-Cost: 0.0592417062
+X-Litellm-Total-Tokens: 0
+```
+
+`X-Comfy-Credits-Used` は、その実行の Comfy クレジットでの価格を小数点以下 2 桁に丸めたものです。`X-Litellm-Response-Cost` は同じ価格を、丸めていないクレジット量から USD に換算したもので、表示されたクレジットを換算レートで割った値とは下位の桁で異なることがあります。ヘッダー名は大文字と小文字を区別しないため、LiteLLM はこれを `x-litellm-response-cost` として読み取ります。LiteLLM は送信されたとおりに正確に記録し、あなたの `cost_per_request` の代わりにこれを使用します。`x-litellm-total-tokens` は常に `0` です。メディアの実行はトークンでは計量されないためです。
+
+`X-Comfy-Credits-Used` と同様に、このヘッダーが報告するのは確定した請求額ではなく価格です。照合は LiteLLM の合計ではなく、[ワークスペースの請求](https://platform.comfy.org) に対して行ってください。
+
+### コストを報告しない実行
+
+一部の実行には `x-litellm-response-cost` が付きません。`X-Comfy-Credits-Used` と同じケースで存在しません：
+
+- Comfy クレジットではなく、自分のプロバイダーキーに請求される実行
+- Router の、実行ごとのクレジット価格を報告するモデルのリストにまだ載っていないモデル。そのリストは保守的で、一部のプロバイダーはまったく載っていません
+- Comfy の請求に到達しなかった課金
+- エラーレスポンス
+
+また、Router が同じ `Idempotency-Key`（プロキシ経由では `x-pass-Idempotency-Key` として送信）を使ったリトライのために保存済みの結果を再生する場合にも存在しません。そのリトライは再度課金されないため、再生はその実行の正確なコストを二度目に報告しません。
+
+ヘッダーが存在しない場合、LiteLLM はエンドポイントの `cost_per_request` にフォールバックします。これは上記のすべてのケースに当てはまります。したがって、エラーレスポンス、自分のプロバイダーキーに請求される実行、冪等な再生は、Comfy がそれらのクレジットを請求していなくても、あなたの見積もり額で記録されます。典型的な実行の妥当な見積もりを `0` ではなく設定してください。そうすれば、コストを報告しない実行が支出レポートで無料として表示されません。また、それらの行によって LiteLLM の合計が Comfy の請求額を上回ることを想定してください。価格が付けられ、本当にコストがかからなかった実行は `x-litellm-response-cost: 0` を報告し、LiteLLM はこれをゼロとして記録します。
+
+## キュー配信
+
+[キュー配信](/ja/development/comfy-router/queue)では、1回の生成が複数のリクエストとして LiteLLM に到達し、それぞれが独立した支出行になります。
+
+| リクエスト | 方法 | 上記の設定での行コスト |
+| --- | --- | --- |
+| 送信: `/v2/models/{provider}/{model}/requests` | `POST` | `cost_per_request` の見積もり |
+| 各ステータスポーリング: `.../requests/{request_id}/status` | `GET` | `0` |
+| 結果の取得: `.../requests/{request_id}` | `GET` | `0` |
+| キャンセル: `.../requests/{request_id}/cancel` | `POST` | `cost_per_request` の見積もり |
+
+送信レスポンスの `status_url`、`response_url`、`cancel_url` は絶対 `https://api.comfy.org/...` URL であり、LiteLLM はレスポンスボディを書き換えません。これらをプロキシ経由で呼び出すには、`https://api.comfy.org` をプロキシの `/comfy` プレフィックスに置き換えます。たとえば `http://localhost:4000/comfy/v2/models/...` です。Comfy にストレートに送信すると、あなたの LiteLLM キーは拒否されます。
+
+キューのレスポンスはまだ `x-litellm-response-cost` を含んでいないため、キュー中の生成は正確な価格ではなく、あなたの見積もりで記録されます。エンドポイントを方法ごとに分割すると、その見積もりはポーリングごとではなく、送信時に一度だけ記録されます。LiteLLM で実行ごとの正確な支出を得るには、同期ルートを使用してください。
+
+## 注意事項
+
+- LiteLLM は使用額を記録しますが、課金内容は変更しません。Comfy は、プロキシを使用しない場合とまったく同じようにワークスペースに請求します。
+- すべてのモデルのリクエストとレスポンスの完全なスキーマは、[Comfy Router リファレンス](/ja/development/comfy-router/reference)にあります。デッドライン、リトライ、その他の制限については、[機能と制限](/ja/development/comfy-router/limitations)を参照してください。
