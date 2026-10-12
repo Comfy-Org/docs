@@ -522,7 +522,8 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const oneImagePerGeneration = item.unit === "per image"
             && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(item.modelId.slice(1, -1));
           const unitCanBeShortened = headerUnit === item.unit
-            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration));
+            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration
+              || (category === "images" && ["per image", "per output image"].includes(item.unit))));
           const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
@@ -558,7 +559,10 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => rateHeader("", ` / ${formatUnit(unit, locale)}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
-        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
+        // A model with several output-image prices keeps one row per price; its
+        // amounts are still generations, like the matrix above.
+        const fallbackUnit = fallbackRows.every((row) => row.kind !== "usage" && unitForRow(row) === "per generation") ? "per generation" : undefined;
+        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true, fallbackUnit) : ""].filter(Boolean).join("\n\n");
       };
       const ordinaryGroups = new Map<string, typeof ordinaryRows>();
       for (const row of ordinaryRows) {
@@ -1123,7 +1127,8 @@ ${copy.updated}: ${formatDate(data.snapshot_at, locale)}.
 }
 
 export type UnpricedRoute = { model_id: string; provider: string };
-export type UnpricedWaiver = UnpricedRoute & { reason: string };
+export const WAIVABLE_STATUSES = ["embargoed", "catalog_only_not_dispatchable"] as const;
+export type UnpricedWaiver = UnpricedRoute & { reason: string; status: string; evidence?: string };
 
 const routeKey = (route: UnpricedRoute) => `${route.model_id} @ ${route.provider}`;
 
@@ -1172,6 +1177,11 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
     if (typeof waiver.reason !== "string" || !waiver.reason.trim()) {
       errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no reason; say why this route has no published price`);
     }
+    if (!(WAIVABLE_STATUSES as readonly string[]).includes(waiver.status)) {
+      errors.push(waiver.status === "live"
+        ? `${WAIVER_PATH}: ${waiver.model_id} (provider ${waiver.provider}) is live on Router, and a live route cannot be waived; publish its price in router-pricing/metronome-rates.json`
+        : `${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) needs a status of ${WAIVABLE_STATUSES.join(" or ")} (got ${JSON.stringify(waiver.status)})`);
+    }
     if (waived.has(key)) errors.push(`${WAIVER_PATH}: duplicate waiver for ${waiver.model_id} (provider ${waiver.provider})`);
     waived.add(key);
     if (!unpricedKeys.has(key)) {
@@ -1180,7 +1190,7 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
   }
   for (const route of unpriced) {
     if (waived.has(routeKey(route))) continue;
-    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or add a waiver with a reason to ${WAIVER_PATH}`);
+    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or, only if Router does not dispatch it (embargoed or catalog-only), add a waiver with a status and reason to ${WAIVER_PATH}`);
   }
   return errors;
 }
