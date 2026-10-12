@@ -1128,7 +1128,7 @@ ${copy.updated}: ${formatDate(data.snapshot_at, locale)}.
 
 export type UnpricedRoute = { model_id: string; provider: string };
 export const WAIVABLE_STATUSES = ["embargoed", "catalog_only_not_dispatchable"] as const;
-export type UnpricedWaiver = UnpricedRoute & { reason: string; status: string; evidence?: string };
+export type UnpricedWaiver = UnpricedRoute & { reason: string; status: string; evidence: string };
 
 const routeKey = (route: UnpricedRoute) => `${route.model_id} @ ${route.provider}`;
 
@@ -1160,7 +1160,7 @@ function loadUnpricedWaivers(): UnpricedWaiver[] {
 
 /**
  * A published, billable Router route must show a price. Returns one message per
- * problem: an unwaived unpriced route, a waiver without a reason, a duplicate
+ * problem: an unwaived unpriced route, a waiver without a reason or evidence, a duplicate
  * waiver, or a stale waiver (its route is now priced or no longer listed), so
  * the waiver list can only shrink.
  */
@@ -1177,6 +1177,9 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
     if (typeof waiver.reason !== "string" || !waiver.reason.trim()) {
       errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no reason; say why this route has no published price`);
     }
+    if (typeof waiver.evidence !== "string" || !waiver.evidence.trim()) {
+      errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no evidence; cite the Comfy-Org/cloud file and line that shows its status`);
+    }
     if (!(WAIVABLE_STATUSES as readonly string[]).includes(waiver.status)) {
       errors.push(waiver.status === "live"
         ? `${WAIVER_PATH}: ${waiver.model_id} (provider ${waiver.provider}) is live on Router, and a live route cannot be waived; publish its price in router-pricing/metronome-rates.json`
@@ -1190,7 +1193,7 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
   }
   for (const route of unpriced) {
     if (waived.has(routeKey(route))) continue;
-    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or, only if Router does not dispatch it (embargoed or catalog-only), add a waiver with a status and reason to ${WAIVER_PATH}`);
+    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or, only if Router does not dispatch it (embargoed or catalog-only), add a waiver with a status, reason and evidence to ${WAIVER_PATH}`);
   }
   return errors;
 }

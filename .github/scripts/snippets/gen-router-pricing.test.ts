@@ -695,6 +695,7 @@ describe("Router pricing coverage guard", () => {
   const route = { model_id: "acme/video-1", provider: "Pika" };
   const reason = "Router refuses dispatch: no classification row.";
   const status = "catalog_only_not_dispatchable";
+  const evidence = "Comfy-Org/cloud@abc1234 routerresult/classification.go (no row)";
 
   test("fails on an unpriced route that has no waiver, naming the model, provider, and fix", () => {
     const errors = checkPricingCoverage([route], []);
@@ -703,47 +704,56 @@ describe("Router pricing coverage guard", () => {
     expect(errors[0]).toContain("provider Pika");
     expect(errors[0]).toContain("Not published");
     expect(errors[0]).toContain("router-pricing/metronome-rates.json");
-    expect(errors[0]).toContain("add a waiver with a status and reason");
+    expect(errors[0]).toContain("add a waiver with a status, reason and evidence");
   });
 
   test("passes when every unpriced route is waived with a reason", () => {
-    expect(checkPricingCoverage([route], [{ ...route, reason, status }])).toEqual([]);
+    expect(checkPricingCoverage([route], [{ ...route, reason, status, evidence }])).toEqual([]);
   });
 
   test("a waiver covers only its own provider leg", () => {
-    const errors = checkPricingCoverage([route, { ...route, provider: "Comfy" }], [{ ...route, reason, status }]);
+    const errors = checkPricingCoverage([route, { ...route, provider: "Comfy" }], [{ ...route, reason, status, evidence }]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("provider Comfy");
   });
 
   test("fails on a waiver with an empty or missing reason", () => {
     for (const badReason of ["", "   ", undefined]) {
-      const errors = checkPricingCoverage([route], [{ ...route, status, reason: badReason as unknown as string }]);
+      const errors = checkPricingCoverage([route], [{ ...route, status, evidence, reason: badReason as unknown as string }]);
       expect(errors).toHaveLength(1);
       expect(errors[0]).toContain("has no reason");
       expect(errors[0]).toContain("acme/video-1");
     }
   });
 
+  test("fails on a waiver with empty or missing evidence", () => {
+    for (const badEvidence of ["", "   ", undefined]) {
+      const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence: badEvidence as unknown as string }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("has no evidence");
+      expect(errors[0]).toContain("acme/video-1");
+    }
+  });
+
   test("rejects a waiver for a live route or with an unknown status", () => {
-    const live = checkPricingCoverage([route], [{ ...route, reason, status: "live" }]);
+    const live = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "live" }]);
     expect(live).toHaveLength(1);
     expect(live[0]).toContain("live route cannot be waived");
-    const unknown = checkPricingCoverage([route], [{ ...route, reason, status: "" }]);
+    const unknown = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "" }]);
     expect(unknown).toHaveLength(1);
     expect(unknown[0]).toContain("needs a status");
-    expect(checkPricingCoverage([route], [{ ...route, reason, status: "embargoed" }])).toEqual([]);
+    expect(checkPricingCoverage([route], [{ ...route, reason, evidence, status: "embargoed" }])).toEqual([]);
   });
 
   test("fails on a stale waiver whose route now has a price, so the list can only shrink", () => {
-    const errors = checkPricingCoverage([], [{ ...route, reason, status }]);
+    const errors = checkPricingCoverage([], [{ ...route, reason, status, evidence }]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("stale waiver");
     expect(errors[0]).toContain("acme/video-1");
   });
 
   test("fails on a duplicate waiver", () => {
-    const errors = checkPricingCoverage([route], [{ ...route, reason, status }, { ...route, reason, status }]);
+    const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence }, { ...route, reason, status, evidence }]);
     expect(errors.some((error) => error.includes("duplicate waiver"))).toBe(true);
   });
 
