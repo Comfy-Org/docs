@@ -3,24 +3,20 @@ title: "Comfy MCP：AIエージェントをComfyUIに接続"
 sidebarTitle: "Comfy MCP"
 description: "Model Context Protocol（MCP）で AI エージェントを ComfyUI に接続。画像、動画、音声、3D を生成し、Comfy Cloud または自分のマシンで実際のワークフローを実行できます。"
 icon: "bolt"
-translationSourceHash: 26d1bc72
+translationSourceHash: 4c4bb38e
 translationFrom: agent-tools/mcp.mdx
 translationBlockHashes:
-  "_intro": 340316c1
   "Overview": 64064e0e
-  "Comfy Cloud MCP Connection": f820ca16
+  "Comfy Cloud MCP Connection": 9270a2f0
   "Local Comfy MCP Connection": 59170570
   "Related resources": 2a86e2c5
-  "Related: Comfy In-App Agent": be5e2cdf
-  "Feedback": 25a3d53f
-  "FAQ": 5c144ebc
+  "Related: Comfy Agent": 76253cf0
+  "Feedback": 282a338c
+  "FAQ": 44b6d2b3
 ---
 
 
 
-<Info>
-  **パブリックベータ。** Comfy MCP はパブリックベータ版です。API、ツール、動作は開発中に変更される可能性があります。問題の報告や提案の共有については [フィードバック](#フィードバック) をご覧ください。
-</Info>
 
 ## 概要
 
@@ -261,6 +257,34 @@ https://cloud.comfy.org/mcp
 
       シェルまたはシステム環境に `COMFY_API_KEY` を設定してください。キーをバージョン管理にコミットしないでください。
     </Accordion>
+
+    <Accordion title="Codex で何度もサインインを求められる（invalid_grant またはリフレッシュトークンの再利用）">
+      **症状：** Codex が Comfy Cloud からサインアウトし、何度も再認証を求めます。数分ごとに発生することもあります。Codex の警告やログに、`invalid_grant`、すでに使用済みまたは失効済みのリフレッシュトークン、OAuth トークンの更新失敗などが表示される場合があります。
+
+      **原因：** これは Comfy Cloud ではなく、Codex が MCP の OAuth 認証情報を保存・更新する方法に起因します。複数の Codex プロセス（TUI セッション、アプリサーバー、`codex mcp` コマンド）が 1 つの OAuth サーバーを共有していると、あるプロセスが、別のプロセスによってすでにローテーションされたトークンで更新を行うことがあります。認可サーバーはこれをトークンの再利用とみなし、セッションを終了します。他の OAuth MCP サーバーのユーザーからも同じ現象が報告されています。以下の Issue は Codex リポジトリでオープンのままなので、現在の状況をご自身で確認できます。
+
+      - [openai/codex#46028](https://github.com/openai/codex/issues/46028)：長時間動作するクライアントがローテーション済みのリフレッシュトークンを再利用する
+      - [openai/codex#48507](https://github.com/openai/codex/issues/48507)：並行プロセスがリフレッシュトークンのローテーションで競合し、次回起動時に `invalid_grant` になる
+      - [openai/codex#41133](https://github.com/openai/codex/issues/41133)：終了時にローテーション済みのリフレッシュトークンが失われることがある
+      - [openai/codex#17265](https://github.com/openai/codex/issues/17265)：Codex が保存済みの MCP OAuth トークンを更新しない
+
+      **回避策 1：Codex のリフレッシュ調整フラグを有効にする。** Codex には、Codex プロセス間で OAuth トークンの更新を調整する機能フラグ `mcp_oauth_refresh_coordination` があります。これは Comfy ではなく Codex の設定です。Codex では開発中の機能としてデフォルトで無効になっており、Codex と Comfy のどちらも公式な修正としてサポートしていません。openai/codex#46028 では、このフラグを有効にすると報告者のテストで古いトークンの再利用が発生しなくなりました。お使いの Codex バージョンでまだ無効になっている場合は、`~/.codex/config.toml` に追加してください：
+
+      ```toml
+      [features]
+      mcp_oauth_refresh_coordination = true
+      ```
+
+      実行中のすべての Codex セッションを閉じて再起動し、すべてのセッションにフラグを反映させます。Codex で **comfy-cloud** がすでにサインアウト状態と表示されている場合は、もう一度サインインしてください（`codex mcp login comfy-cloud`、または設定の **Authenticate**）。今後の Codex リリースでこの機能がデフォルトで有効になった場合やフラグが削除された場合は、この手順は不要です。
+
+      **回避策 2：各サーバーの更新を 1 つの Codex プロセスに限定する。** フラグが使えない場合や効果がない場合は、`[mcp_servers.comfy-cloud]` エントリをグローバルの `~/.codex/config.toml` から信頼済みプロジェクトの `.codex/config.toml` に移動し、そのプロジェクト内のセッションだけが読み込んで更新するようにします。Comfy Cloud に接続する Codex セッションを同時に多数実行しないようにし、コンピューターを再起動する前に Codex セッションを閉じてください。これは openai/codex#48507 で報告されている回避策です。
+
+      エントリを移動しても、すでにグローバル設定を読み込んだ Codex プロセスは停止せず、古いサーバー定義の更新を続けます。移動後は、実行中のすべての Codex セッションを閉じて Codex のアプリサーバーを停止し、エントリを置いたプロジェクトでのみ Codex を起動してください。
+
+      OAuth が不要な場合は、上記の API キーによる設定ではリフレッシュトークンを使用しません。
+
+      これらの手順でサインアウトの頻度は減りますが、完全になくなるとは限りません。Comfy Cloud 側でも、この現象の発生を減らすための改善に取り組んでいます。
+    </Accordion>
   </Tab>
 
   <Tab title="OpenClaw">
@@ -443,7 +467,7 @@ MCP ツールを直接呼び出す必要はありません。エージェント�
 | --- | --- |
 | `get_billing_status` | クレジット残高、サブスクリプションのプラン、請求リンクを確認します |
 | `get_server_info` | エージェントが到達したサーバーを確認します：環境、ホスト、バージョン、認証状態 |
-| `submit_feedback` | ベータフィードバックアンケートのリンクを取得します |
+| `submit_feedback` | フィードバックアンケートのリンクを取得します |
 | `report_session_summary` | 匿名化されたセッションサマリーを Comfy チームと共有します。**あなたの明示的な同意がある場合のみ**行われます。エージェントはまず確認を求め、プロンプト、ファイルパス、個人情報は一切含まれません |
 
 **プロンプト（Claude Desktop）**
@@ -663,17 +687,17 @@ pip install comfy-mcp
 | [Comfy CLI](/ja/agent-tools/cli) | ローカル ComfyUI のインストール / 起動や、スクリプトや CI からホストされたパートナーノードを呼び出すためのコマンドラインツール（`comfy generate`、ベータ版）。ターミナルや自動化のワークフローが必要な場合に MCP を補完します。 |
 | [Share a workflow on Comfy Cloud](/ja/cloud/share-workflow) | Comfy Cloud UI からワークフローを共有します（MCP の `share_workflow` ツールはエージェントセッションから同様の操作を行います）。 |
 
-## 関連: Comfy アプリ内エージェント
+## 関連: Comfy Agent
 
-Comfy Cloud **内部**で、外部 MCP クライアントではなく、エージェント体験（チャットでグラフを構築・編集）が必要ですか？
+エージェント体験を外部の MCP クライアントではなく、ComfyUI の**内部**で使いたいですか？
 
-<Card title="Comfy In-App Agent" icon="comments" href="/ja/agent-tools/in-app-agent">
-  Comfy Cloud でのプライベートアルファ。ウェイトリストに参加してアクセスをリクエストしてください。
+<Card title="Comfy Agent" icon="comments" href="/ja/agent-tools/in-app-agent">
+  ComfyUI に組み込まれたアシスタントで、ワークフローの構築、編集、実行ができます。**Cloud で一般提供中。** ローカル（Comfy Desktop）版は近日公開予定です。
 </Card>
 
 ## フィードバック
 
-Comfy MCP はパブリックベータです。ぜひ試してみて、うまくいっている点や改善すべき点をお知らせください:
+Comfy MCP をぜひ試してみて、うまくいっている点や改善すべき点をお知らせください:
 
 - **[Feedback survey](https://links.comfy.org/cloudmcpbeta)**: バグの報告、機能のリクエスト、一般的なご感想の共有。
 - **Discord**: ご質問やディスカッションは Comfy Discord の [#comfy-mcp-and-cli](https://discord.gg/xWJn6nhE3R) チャンネルで。
@@ -709,7 +733,7 @@ Comfy MCP はパブリックベータです。ぜひ試してみて、うまく�
     **Mac**では、生成にはクラウド接続を使用してください。現在のオープンウェイトのモデルは大きく、Apple GPUでは実用的な速度で実行できません。**専用グラフィックカードを搭載したPC**では、VRAMが24 GB以上あればビデオを含むほとんどの処理を処理できます。8〜24 GBなら画像には問題ありませんが、ビデオは遅くなるかメモリに収まらない可能性があります。8 GB未満の場合はクラウドを使用してください。
   </Accordion>
   <Accordion title="一般提供されていますか？">
-    クラウド接続は**パブリックベータ**です。API、ツール、動作は改善の過程で変更される可能性があります。ローカル接続はローカルのComfyUIインストールで利用できます。問題を報告するには[フィードバック](#フィードバック)を参照してください。
+    はい。クラウド接続は一般提供されており、ローカル接続はローカルのComfyUIインストールで利用できます。問題の報告や提案の共有については[フィードバック](#フィードバック)を参照してください。
   </Accordion>
 </AccordionGroup>
 
