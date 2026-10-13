@@ -160,3 +160,28 @@ describe("compare: reporting a per-variant provider default", () => {
     ]);
   });
 });
+
+describe("compare: numeric bounds", () => {
+  const ours = (bounds: Record<string, number>) => ({ type: "object", properties: { safety_tolerance: { type: "integer", default: 2, ...bounds } } });
+  const theirs = { type: "object", properties: { safety_tolerance: { type: "integer", minimum: 0, maximum: 7, default: 2 } } };
+
+  test("a documented bound narrower than the provider's only warns: Router may enforce a tighter range", () => {
+    const { errors, warnings } = run(ours({ minimum: 1, maximum: 4 }), theirs);
+    expect(errors).toEqual([]);
+    expect(warnings.filter((m) => /safety_tolerance/.test(m))).toHaveLength(2);
+  });
+
+  test("a documented bound wider than the provider's is an error: it advertises values the provider rejects", () => {
+    const { errors } = run(ours({ minimum: -1, maximum: 9 }), theirs);
+    expect(errors).toEqual([
+      "model input: `safety_tolerance` minimum -1 vs provider 0",
+      "model input: `safety_tolerance` maximum 9 vs provider 7",
+    ]);
+  });
+
+  test("matching bounds report nothing", () => {
+    const { errors, warnings } = run(ours({ minimum: 0, maximum: 7 }), theirs);
+    expect(errors).toEqual([]);
+    expect(warnings.filter((m) => /safety_tolerance/.test(m))).toEqual([]);
+  });
+});
