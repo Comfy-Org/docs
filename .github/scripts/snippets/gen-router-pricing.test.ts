@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -750,6 +751,14 @@ describe("Router pricing coverage guard", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("stale waiver");
     expect(errors[0]).toContain("acme/video-1");
+  });
+
+  test("reports a null, primitive or array waiver entry instead of throwing", () => {
+    for (const bad of [null, "acme/video-1", 42, [route]]) {
+      const errors = checkPricingCoverage([route], [bad as unknown as UnpricedWaiver]);
+      expect(errors.some((error) => error.includes("must be an object with a model_id and a provider"))).toBe(true);
+      expect(errors.some((error) => error.includes("acme/video-1 (provider Pika) would render"))).toBe(true);
+    }
   });
 
   test("fails on a duplicate waiver", () => {

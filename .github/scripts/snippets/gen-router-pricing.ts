@@ -1169,11 +1169,11 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
   const unpricedKeys = new Set(unpriced.map(routeKey));
   const waived = new Set<string>();
   for (const waiver of waivers) {
-    const key = routeKey(waiver);
-    if (!waiver.model_id || !waiver.provider) {
-      errors.push(`${WAIVER_PATH}: every waiver needs a model_id and a provider (got ${JSON.stringify(waiver)})`);
+    if (waiver === null || typeof waiver !== "object" || Array.isArray(waiver) || !waiver.model_id || !waiver.provider) {
+      errors.push(`${WAIVER_PATH}: every waiver must be an object with a model_id and a provider (got ${JSON.stringify(waiver)})`);
       continue;
     }
+    const key = routeKey(waiver);
     if (typeof waiver.reason !== "string" || !waiver.reason.trim()) {
       errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no reason; say why this route has no published price`);
     }
