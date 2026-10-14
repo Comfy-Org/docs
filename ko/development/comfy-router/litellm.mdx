@@ -1,0 +1,125 @@
+---
+title: "LiteLLM과 함께 Comfy Router 사용하기"
+sidebarTitle: "LiteLLM"
+description: "Comfy Router를 패스스루 엔드포인트로 LiteLLM Proxy 뒤에 두고, x-litellm-response-cost 헤더에서 각 실행의 정확한 USD 비용을 기록합니다. 유지 관리할 가격표가 필요 없습니다."
+translationSourceHash: 62eb02ac
+translationFrom: development/comfy-router/litellm.mdx
+translationBlockHashes:
+  "_intro": fe57ab19
+  "Configure the pass-through": 882570d1
+  "How spend is recorded": 204aef47
+  "Queued delivery": 2d3385e4
+  "Notes": 50e3cf6b
+---
+이미 [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through)로 지출을 추적하고 있다면, Comfy Router를 pass-through 엔드포인트 하나 더 추가할 수 있습니다. 호출자는 LiteLLM 키를 그대로 사용하고, Comfy API 키는 프록시에 남아 있습니다.
+
+Router는 실행당 Comfy 크레딧 가격을 보고하는 모델에 대해, 동기 실행의 비용을 미국 달러로 `x-litellm-response-cost` 응답 헤더에 보고합니다([비용을 보고하지 않는 실행](#비용을-보고하지-않는-실행) 참조). LiteLLM은 모든 pass-through 응답에서 이 헤더를 읽어 요청의 지출로 기록하므로, 해당 모델에 대한 가격표를 유지할 필요가 없습니다.
+
+<Note>
+  LiteLLM의 내장 `fal_ai/` 공급자는 이미지 생성만 지원합니다. 일반 워크로드를 LiteLLM을 통해 라우팅하려면 네이티브 공급자가 아니라 여기에서처럼 pass-through 엔드포인트를 사용하세요.
+</Note>
+
+## 패스스루 구성
+
+<Steps>
+  <Step title="Comfy API 키 생성">
+    [Comfy 워크스페이스](https://platform.comfy.org/profile/api-keys)에서 키를 생성하고 LiteLLM Proxy 프로세스에서 사용할 수 있게 하세요:
+
+    ```bash
+    export COMFY_API_KEY="comfyui-..."
+    ```
+  </Step>
+
+  <Step title="config.yaml에 Router 추가">
+    ```yaml config.yaml
+    general_settings:
+      pass_through_endpoints:
+        # 실행 및 실행 대기열 제출. 동기 실행은 정확한 비용을 보고하며,
+        # 이는 해당 행의 cost_per_request를 대체합니다.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["POST"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+            content-type: application/json
+          cost_per_request: 0.10   # 예비 추정치(USD)
+          timeout: 660             # Router의 실행 기한(기본 10분)보다 큰 값
+
+        # 모델 카탈로그, 실행 대기열 상태 폴링, 결과 수집.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["GET"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+          cost_per_request: 0
+    ```
+
+    - `include_subpath: true`는 `/comfy/v2/models/{provider}/{model}`을 `https://api.comfy.org/v2/models/{provider}/{model}`로 전달하므로, 한 쌍의 항목으로 모든 Router 모델을 처리할 수 있습니다.
+    - `path`와 `target`은 `/v2/models` 범위로 유지하세요. 패스스루를 API 루트로 지정하면 LiteLLM 키를 가진 모든 호출자가 LiteLLM의 지출 추적 범위를 벗어나 다른 모든 Comfy API 경로에서 여러분의 Comfy 키를 사용할 수 있게 됩니다.
+    - `methods`는 같은 경로에 있는 두 항목을 구분합니다. 패스스루 엔드포인트가 `methods`를 지원하는 LiteLLM Proxy 릴리스가 필요합니다. 이 페이지는 v1.103.0을 기준으로 확인했습니다.
+    - `X-API-Key`는 여러분의 `comfyui-` 키를 전달합니다. Router는 동일한 키를 `Authorization: Bearer comfyui-...`로도 허용합니다.
+    - `forward_headers`는 꺼두세요. 켜져 있으면 LiteLLM이 호출자의 LiteLLM 키를 포함해 들어오는 모든 헤더를 Router로 전달합니다. 꺼져 있으면 호출자는 `Idempotency-Key`를 `x-pass-Idempotency-Key`로 전달합니다. LiteLLM은 `x-pass-` 접두사를 제거하고 전달합니다. 일반 `Idempotency-Key` 헤더는 Router에 도달하지 않으므로, 재시도하면 생성이 한 번 더 실행되고 비용이 청구됩니다.
+    - `timeout`은 Router의 [실행 기한](/ko/development/comfy-router/limitations)보다 크게 설정하세요. 그래야 LiteLLM이 포기하기 전에 Router가 자체 `504`와 요청 ID를 반환할 수 있습니다. 기한은 기본 10분이며, 이는 LiteLLM의 기본 패스스루 타임아웃 600초와 같습니다.
+  </Step>
+
+  <Step title="프록시를 통해 Router 호출">
+    호출자는 자신의 LiteLLM 키로 인증합니다. 본문은 [Comfy Router 레퍼런스](/ko/development/comfy-router/reference)에서와 정확히 동일하게 모델 자체의 입력입니다:
+
+    ```bash
+    curl --max-time 660 \
+      http://localhost:4000/comfy/v2/models/byteplus/dreamina-seedance-2-5-260628 \
+      -H "Authorization: Bearer $LITELLM_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+    ```
+  </Step>
+</Steps>
+
+## 지출이 기록되는 방식
+
+비용을 보고하는 동기 실행은 다음과 같은 응답 헤더를 포함합니다:
+
+```http
+X-Comfy-Credits-Used: 12.5
+X-Litellm-Response-Cost: 0.0592417062
+X-Litellm-Total-Tokens: 0
+```
+
+`X-Comfy-Credits-Used`는 실행 가격을 Comfy 크레딧으로 나타낸 값이며, 소수점 둘째 자리로 반올림됩니다. `X-Litellm-Response-Cost`는 반올림되지 않은 크레딧 수량에서 USD로 환산한 같은 가격이므로, 표시된 크레딧을 환산 비율로 나눈 값은 마지막 자릿수에서 이와 다를 수 있습니다. 헤더 이름은 대소문자를 구분하지 않으므로 LiteLLM은 이를 `x-litellm-response-cost`로 읽습니다. LiteLLM은 전송된 그대로 기록하며, 여러분의 `cost_per_request` 대신 이 값을 사용합니다. `x-litellm-total-tokens`는 항상 `0`입니다. 미디어 실행은 토큰으로 과금되지 않기 때문입니다.
+
+`X-Comfy-Credits-Used`와 마찬가지로, 이 헤더는 정산된 청구 금액이 아니라 가격을 보고합니다. LiteLLM의 합계가 아니라 [워크스페이스 청구](https://platform.comfy.org)와 대조해 확인하세요.
+
+### 비용을 보고하지 않는 실행
+
+일부 실행에는 `x-litellm-response-cost`가 포함되지 않습니다. `X-Comfy-Credits-Used`와 동일한 경우에 이 헤더도 존재하지 않습니다:
+
+- Comfy 크레딧이 아니라 자신의 공급자 키로 청구되는 실행
+- 아직 Router의 실행별 크레딧 가격을 보고하는 모델 목록에 없는 모델. 이 목록은 보수적이며, 일부 공급자는 아예 포함되지 않습니다
+- Comfy 청구에 도달하지 않은 청구
+- 오류 응답
+
+또한 Router가 동일한 `Idempotency-Key`(프록시를 통해 `x-pass-Idempotency-Key`로 전송됨)로 재시도할 때 저장된 결과를 재생하는 경우에도 존재하지 않습니다. 해당 재시도에는 다시 요금이 부과되지 않으므로, 재생은 실행의 정확한 비용을 두 번째로 보고하지 않습니다.
+
+헤더가 없으면 LiteLLM은 엔드포인트의 `cost_per_request`로 대체합니다. 이는 위의 모든 경우에 적용됩니다. 따라서 오류 응답, 자신의 공급자 키로 청구되는 실행, 멱등 재생은 Comfy가 해당 실행에 크레딧을 청구하지 않았음에도 여러분의 추정치로 기록됩니다. 비용을 보고하지 않는 실행이 지출 보고서에서 무료로 보이지 않도록 `0` 대신 일반적인 실행에 대한 합리적인 추정치로 설정하고, 해당 행들이 LiteLLM의 합계를 Comfy 청구서보다 높게 밀어 올릴 수 있음을 예상하세요. 가격이 책정되었지만 실제로 비용이 전혀 발생하지 않은 실행은 `x-litellm-response-cost: 0`을 보고하며, LiteLLM은 이를 0으로 기록합니다.
+
+## 대기 중 전달
+
+[대기 중 전달](/ko/development/comfy-router/queue)을 사용하면 하나의 생성이 여러 요청으로 LiteLLM에 도달하며, 각 요청은 자체 지출 행이 됩니다.
+
+| 요청 | 방법 | 위 설정에서의 행 비용 |
+| --- | --- | --- |
+| 제출: `/v2/models/{provider}/{model}/requests` | `POST` | `cost_per_request` 추정치 |
+| 각 상태 폴링: `.../requests/{request_id}/status` | `GET` | `0` |
+| 결과 수집: `.../requests/{request_id}` | `GET` | `0` |
+| 취소: `.../requests/{request_id}/cancel` | `POST` | `cost_per_request` 추정치 |
+
+제출 응답의 `status_url`, `response_url`, `cancel_url`은 절대 `https://api.comfy.org/...` URL이며, LiteLLM은 응답 본문을 재작성하지 않습니다. `https://api.comfy.org`를 프록시의 `/comfy` 접두사로 바꿔서, 예를 들어 `http://localhost:4000/comfy/v2/models/...`처럼 프록시를 통해 호출하세요. Comfy로 직접 전송하면 LiteLLM 키가 거부됩니다.
+
+실행 대기열 응답에는 아직 `x-litellm-response-cost`가 포함되지 않으므로, 대기 중인 생성은 정확한 가격이 아니라 추정치로 기록됩니다. 엔드포인트를 방법별로 분할하면 폴링마다 한 번이 아니라 제출 시 한 번만 해당 추정치가 청구됩니다. LiteLLM에서 실행별 정확한 지출을 확인하려면 동기 경로를 사용하세요.
+
+## 참고 사항
+
+- LiteLLM은 지출을 기록하지만 청구를 변경하지는 않습니다. Comfy는 프록시가 없을 때와 정확히 동일하게 워크스페이스에 청구합니다.
+- 모든 모델의 전체 요청 및 응답 스키마는 [Comfy Router 레퍼런스](/ko/development/comfy-router/reference)에 있습니다. 데드라인, 재시도 및 기타 제한은 [기능 및 제한](/ko/development/comfy-router/limitations)에 있습니다.

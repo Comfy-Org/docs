@@ -1,10 +1,11 @@
 ---
 title: 'ComfyUI Account API Key Integration'
-description: 'This article explains how to use ComfyUI Account API Key to call paid API nodes in headless mode'
-sidebarTitle: 'API Key Integration'
+description: 'This article explains how to use ComfyUI Account API Key to call paid Partner Nodes in headless mode'
+sidebarTitle: 'Partner Node API Integration'
+icon: 'puzzle-piece'
 ---
 
-Starting from [PR #8041](https://github.com/comfyanonymous/ComfyUI/pull/8041), ComfyUI supports directly using built-in paid API nodes through your ComfyUI Account API Key, without requiring a specific frontend interface (you can even run without a frontend).
+Starting from [PR #8041](https://github.com/Comfy-Org/ComfyUI/pull/8041), ComfyUI supports directly using built-in paid Partner Nodes through your ComfyUI Account API Key, without requiring a specific frontend interface (you can even run without a frontend).
 
 This means you can create workflows that combine:
 - local OS models
@@ -17,19 +18,17 @@ This is helpful for users who want to use Comfy as a backend service, via the co
 
 ## Prerequisites
 
-Using your ComfyUI Account API Key to call paid API nodes requires:
-- A ComfyUI Account API Key
+Using your ComfyUI Account API Key to call paid Partner Nodes requires:
+- A [ComfyUI Account API Key](/development/api-development/getting-an-api-key)
 - Sufficient account credits
 
 <Note>
-  **Important:** This page describes the **ComfyUI Account API Key** used for accessing paid API nodes in workflows. If you're looking to publish custom nodes to the registry instead, see [Publishing Nodes](/registry/publishing).
+  **Important:** This page describes the **ComfyUI Account API Key** used for accessing paid Partner Nodes in workflows. If you're looking to publish custom nodes to the registry instead, see [Publishing Nodes](/registry/publishing).
 </Note>
 
-To use your ComfyUI Account API Key to call paid API nodes, you need to first register an account on [ComfyUI Platform](https://platform.comfy.org/login) and create an API key
+To use your ComfyUI Account API Key to call paid Partner Nodes, you need to first register an account on [ComfyUI Platform](https://platform.comfy.org/login) and [create an API key](/development/api-development/getting-an-api-key)
 
-<Card title="Login with API Key" icon="link" href="/interface/user#logging-in-with-an-api-key">
-Please refer to the User Interface section to learn how to login with API Key
-</Card>
+
 
 You need to ensure your ComfyUI account has sufficient credits to test the corresponding features.
 
@@ -40,18 +39,18 @@ Please refer to the Credits section to learn how to purchase credits for your ac
 
 ## Python Example
 
-Here is an example of how to send a workflow containing API nodes to the ComfyUI API using Python code:
+Here is an example of how to send a workflow containing Partner Nodes to the ComfyUI API using Python code:
 
 ```python
-"""Using API nodes when running ComfyUI headless or with alternative frontend
+"""Using Partner Nodes when running ComfyUI headless or with alternative frontend
 
-You can execute a ComfyUI workflow that contains API nodes by including an API key in the prompt.
+You can execute a ComfyUI workflow that contains Partner Nodes by including an API key in the prompt.
 The API key should be added to the `extra_data` field of the payload.
 Below we show an example of how to do this.
 
 See more:
 
-- API nodes overview: https://docs.comfy.org/tutorials/partner-nodes/overview
+- Partner Nodes overview: https://docs.comfy.org/tutorials/partner-nodes/overview
 - To generate an API key, login here: https://platform.comfy.org/login
 """
 
@@ -60,7 +59,7 @@ from urllib import request
 
 SERVER_URL = "http://127.0.0.1:8188"
 
-# We have a prompt/job (workflow in "API format") that contains API nodes.
+# We have a prompt/job (workflow in "API format") that contains Partner Nodes.
 workflow_with_api_nodes = """{
   "11": {
     "inputs": {
@@ -122,6 +121,6 @@ request.urlopen(req)
 
 ## Related Documentation
 
-- [API nodes overview](https://docs.comfy.org/tutorials/partner-nodes/overview)
+- [Partner Nodes overview](https://docs.comfy.org/tutorials/partner-nodes/overview)
 - [Account management](https://docs.comfy.org/interface/user)
 - [Credits](https://docs.comfy.org/interface/credits)

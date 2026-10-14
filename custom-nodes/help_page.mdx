@@ -9,7 +9,7 @@ description: "How to create rich documentation for your custom nodes"
 Custom nodes can include rich markdown documentation that will be displayed in the UI instead of the generic node description. This provides users with detailed information about your node's functionality, parameters, and usage examples.
 
 If you have already added tooltips for each parameter in the node definition, this basic information can be directly accessed via the node documentation panel.
-No additional node documentation needs to be added, and you can refer to the related implementation of [ContextWindowsManualNode](https://github.com/comfyanonymous/ComfyUI/blob/master/comfy_extras/nodes_context_windows.py#L7)
+No additional node documentation needs to be added, and you can refer to the related implementation of [ContextWindowsManualNode](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_context_windows.py#L7)
 
 ## Setup
 

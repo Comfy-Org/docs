@@ -1,0 +1,40 @@
+---
+title: 'Getting an API Key'
+description: 'Learn how to create and manage your Comfy Platform API Key for accessing Cloud APIs, Partner Nodes, and more.'
+icon: 'key'
+---
+
+import GetApiKey from '/snippets/get-api-key.mdx'
+
+An API Key is your credential for accessing Comfy Platform services, including:
+
+- [Cloud API](/development/cloud/overview) — call Comfy Cloud endpoints programmatically
+- [Partner Node API Integration](/development/comfyui-server/api-key-integration) — use paid Partner Nodes in your local workflows
+- [Agent Tools / MCP](/agent-tools) — connect to Comfy through MCP
+- [Login to ComfyUI locally](/interface/user#logging-in-with-an-api-key) — authenticate with an API Key instead of email
+
+## Creating an API Key
+
+<GetApiKey />
+
+## Managing your API Keys
+
+You can view and manage all your API Keys on [platform.comfy.org](https://platform.comfy.org) after logging in.
+
+- **View existing keys**: See the name and creation date of each key
+- **Delete a key**: If a key is compromised or no longer needed, delete it immediately
+- **Create additional keys**: You can have multiple API Keys for different applications
+
+<Warning>
+  API Keys are only shown once upon creation. Save it immediately in a secure location. If you lose a key, delete it and create a new one.
+</Warning>
+
+## Using your API Key
+
+Once you have an API Key, you can:
+
+1. **Log in to ComfyUI locally** — go to **Settings → User** and select "Comfy API Key" login
+2. **Call Partner Node APIs** — include the key in `extra_data.api_key_comfy_org` when sending workflows
+3. **Use Cloud API** — include the key in request headers for Cloud API endpoints
+
+For security, never share your API Key or commit it to version control.

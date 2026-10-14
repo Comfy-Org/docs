@@ -1,9 +1,11 @@
 ---
 title: "How to Troubleshoot and Solve ComfyUI Issues"
-description: "Common ComfyUI issues, solutions, and how to report bugs effectively"
+description: "ComfyUI troubleshooting guide: rule out custom nodes first, fix common core issues, and file a bug report with the right details."
 icon: "lightbulb"
 sidebarTitle: "Overview"
 ---
+
+import DockerNotice from "/snippets/install/docker-notice.mdx"
 
 <Tip>
    We receive a lot of feedback issues, and we find that most of the issues submitted are related to custom nodes. So please ensure that you have read the [custom node troubleshooting guide](/troubleshooting/custom-node-issues) before submitting an error report to ensure that the issue is not caused by ComfyUI core issues.
@@ -32,7 +34,7 @@ Before diving into detailed troubleshooting, try these common solutions:
 **Quick fixes:**
 1. **Click "Show report"** - Read the detailed error message to identify the specific issue
 2. **Check if it's a custom node issue** - [Follow our custom node troubleshooting guide](/troubleshooting/custom-node-issues)
-3. **Verify model files** - See [Models documentation](/development/core-concepts/models) for model setup
+3. **Verify model files** - See [Models documentation](/basic-concepts/models) for model setup
 4. **Check VRAM usage** - Close other applications using GPU memory
 
 ### Slow Performance
@@ -91,9 +93,9 @@ For comprehensive desktop installation troubleshooting, see the [Desktop Install
 
 <Tabs>
 <Tab title="Windows">
-- **Unsupported device**: ComfyUI Desktop Windows only supports NVIDIA GPUs with CUDA. Use [ComfyUI Portable](/installation/comfyui_portable_windows) or [manual installation](/installation/manual_install) for other GPUs
+- **Unsupported device**: Comfy Desktop Windows only supports NVIDIA GPUs with CUDA. Use [ComfyUI Portable](/installation/comfyui_portable_windows) or [manual installation](/installation/manual_install) for other GPUs
 - **Installation fails**: Run installer as administrator, ensure at least 15GB disk space
-- **Maintenance page**: Check [mirror settings](/installation/desktop/windows#mirror-settings) if downloads fail
+- **Maintenance page**: Check [mirror settings](/installation/desktop/usage/settings#advanced) if downloads fail
 - **Missing models**: Models are not copied during migration, only linked. Verify model paths
 </Tab>
 <Tab title="macOS">
@@ -132,11 +134,11 @@ python -m pip install --upgrade pip
 # Install dependencies
 pip install -r requirements.txt
 
-# For NVIDIA GPUs (CUDA 12.8)
-pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128
+# For NVIDIA GPUs (CUDA 13.0)
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu130
 
-# For AMD GPUs (Linux only - ROCm 6.3)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+# For AMD GPUs (Linux only - ROCm 7.2)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.2
 ```
 
 ### Linux-Specific Issues
@@ -215,7 +217,7 @@ For comprehensive model troubleshooting including architecture mismatches, missi
 
 ## Network & API Issues
 
-### API Nodes Not Working
+### Partner Nodes Not Working
 
 **Symptoms:** API calls fail, timeout errors, quota exceeded
 
@@ -264,11 +266,11 @@ pip install -r requirements.txt
 # First uninstall torch
 pip uninstall torch
 
-# Install stable PyTorch with CUDA 12.8
-pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128
+# Install stable PyTorch with CUDA 13.0
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu130
 
 # For nightly builds (might have performance improvements)
-pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu132
 
 # Verify CUDA support
 python -c "import torch; print(torch.cuda.is_available())"
@@ -283,15 +285,42 @@ nvidia-smi
 nvidia-smi --query-gpu=driver_version --format=csv
 ```
 
+**Blackwell GPUs (`sm_103`): generation fails at the first attention layer:**
+
+On Blackwell-generation NVIDIA GPUs, PyTorch's default scaled dot-product attention (SDPA) can
+select the cuDNN backend, which has no valid plan for this architecture:
+
+```
+cuDNN Frontend error: No valid execution plans built
+```
+
+With FLUX this hits the very first attention block in the UNet, so no image is ever produced.
+
+```bash
+# Use a hand-written attention implementation that bypasses SDPA and cuDNN
+python main.py --use-split-cross-attention
+
+# Blackwell also requires a CUDA 12.8 or newer PyTorch build;
+# builds compiled against cu121 will not run on these cards at all
+```
+
+<Note>
+Disabling the cuDNN SDPA backend programmatically before startup — for example calling
+`torch.backends.cuda.enable_cudnn_sdp(False)` from a `sitecustomize.py` — does not work, because
+the flag is not retained through CUDA initialization. The launch flag is the reliable fix.
+</Note>
+
+*This entry was added in [PR #1491](https://github.com/Comfy-Org/docs/pull/1491).*
+
 ### AMD GPU Issues
 
 **ROCm support (Linux only):**
 ```bash
-# Install stable ROCm PyTorch (6.3.1 at the time of writing)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+# Install stable ROCm PyTorch (7.2 at the time of writing)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.2
 
-# For nightly builds (ROCm 6.4 at the time of writing), which might have performance improvements)
-pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
+# For nightly builds (ROCm 7.2 at the time of writing, which might have performance improvements)
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.2
 ```
 
 **Unsupported AMD GPUs:**
@@ -314,6 +343,12 @@ PYTORCH_TUNABLEOP_ENABLED=1 python main.py
 
 
 ### Apple Silicon (M1/M2/M3) Issues
+
+<Note>
+The steps in this section apply to a manual or source install, where ComfyUI runs in a Python environment you set up yourself. See [System Requirements](/installation/system_requirements) for the supported Python versions and [Manual Installation](/installation/manual_install) for the setup steps.
+
+**Comfy Desktop** on Apple silicon does not need a separate Python install: the app manages its own Python environment for each instance. See [Comfy Desktop for macOS](/installation/desktop/macos).
+</Note>
 
 **MPS backend setup:**
 ```bash
@@ -338,9 +373,30 @@ python main.py --force-fp16 --cpu
 
 ### Intel GPU Issues
 
+**"Torch not compiled with CUDA enabled" error:**
+
+On Intel GPUs this error means ComfyUI tried to use CUDA because the XPU backend was not available. Do not follow the NVIDIA CUDA reinstallation steps above. Intel GPUs use XPU, not CUDA.
+
+Check whether PyTorch can see the Intel GPU:
+
+```bash
+python -c "import torch; print('XPU available:', hasattr(torch, 'xpu') and torch.xpu.is_available())"
+```
+
+If this prints `True`, ComfyUI uses the XPU backend automatically.
+
+If it prints `False`:
+
+1. Confirm you have a supported Intel Arc GPU (Arc A-Series, Arc B-Series, or a Core Ultra processor with Arc Graphics).
+2. Install or update the [Intel GPU driver](https://www.intel.com/content/www/us/en/developer/articles/tool/pytorch-prerequisites-for-intel-gpu.html).
+3. Install an XPU-enabled PyTorch build using one of the options below. Do not install a CUDA wheel.
+
 **Option 1: Native PyTorch XPU support (Windows/Linux):**
 ```bash
-# Install PyTorch nightly with XPU support
+# Stable XPU wheels (recommended)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/xpu
+
+# Nightly XPU wheels (may include performance improvements)
 pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/xpu
 
 # Launch ComfyUI
@@ -354,12 +410,20 @@ conda install libuv
 pip install torch==2.3.1.post0+cxx11.abi torchvision==0.18.1.post0+cxx11.abi torchaudio==2.3.1.post0+cxx11.abi intel-extension-for-pytorch==2.3.110.post0+xpu --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
 ```
 
+## Frequently Asked Questions
+
+### How do I run ComfyUI with Docker?
+
+<DockerNotice />
+
+For local installation on Linux, follow the [Manual Installation Guide](/installation/manual_install). For cloud usage, see [Comfy Cloud](/get_started/cloud).
+
 ## Getting Help & Reporting Bugs
 
 ### Before Reporting a Bug
 
 1. **Check if it's a known issue:**
-   - Search [GitHub Issues](https://github.com/comfyanonymous/ComfyUI/issues)
+   - Search [GitHub Issues](https://github.com/Comfy-Org/ComfyUI/issues)
    - Check [ComfyUI Forum](https://forum.comfy.org/)
    - Review [Discord discussions](https://discord.com/invite/comfyorg)
 
@@ -372,10 +436,10 @@ pip install torch==2.3.1.post0+cxx11.abi torchvision==0.18.1.post0+cxx11.abi tor
 ### How to Report Bugs Effectively
 
 #### For ComfyUI Core Issues
-**Where to report:** [GitHub Issues](https://github.com/comfyanonymous/ComfyUI/issues)
+**Where to report:** [GitHub Issues](https://github.com/Comfy-Org/ComfyUI/issues)
 
 #### For Desktop App Issues
-**Where to report:** [Desktop GitHub Issues](https://github.com/Comfy-Org/desktop/issues)
+**Where to report:** [Desktop GitHub Issues](https://github.com/Comfy-Org/Comfy-Desktop/issues)
 
 #### For Frontend Issues
 **Where to report:** [Frontend GitHub Issues](https://github.com/Comfy-Org/ComfyUI_frontend/issues)

@@ -1,0 +1,422 @@
+# Docs i18n
+
+Tooling that translates the English MDX docs into the languages listed in
+[`translation-config.json`](./translation-config.json) (currently ja / zh / ko).
+English is the single source of truth; every other language is generated.
+
+## Relationship to CMS changelog
+
+`changelog/index.mdx` is the full English release notes for the **Mintlify docs site**.
+This pipeline produces `{lang}/**/*.mdx` via `pnpm translate`.
+
+**CMS popup release notes** are a separate pipeline — simplified copy in
+`.github/scripts/cms/staging/` → Strapi. See [cms/README.md](../cms/README.md).
+Do **not** use `pnpm translate` to fill CMS staging.
+
+```
+changelog/index.mdx
+        ├─► pnpm translate → zh/ ja/ ko/ (Mintlify docs)
+        └─► pnpm cms:prepare → staging/ → Strapi (in-app popup)
+```
+
+## Agent rules
+
+- Do **not** commit `.github/i18n-logs/`.
+- Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
+- Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
+- **Code in translations**: code lines must stay byte-for-byte identical to the
+  English source; the comment text inside a fenced block **is** translated, as
+  it is documentation prose. See [Code and comments in translations](#code-and-comments-in-translations).
+- **Values in translations**: a value the caller sends (booleans, enums, JSON
+  keys, model ids, endpoint paths) stays byte-for-byte identical, in code blocks
+  and in prose labels alike. See [Values, headings and punctuation](#values-headings-and-punctuation).
+- **Headings**: translate the heading text the way the target language's own
+  pages do, and keep any `{#anchor}` exactly as the English source has it.
+
+## Structure parity (`check-structure-parity.ts`)
+
+A localized page must carry the same MDX structure as its English source. The
+check compares, for every localized file with an English counterpart:
+
+| Compared | Detail |
+|----------|--------|
+| Components | every capitalized JSX tag, counted by name, so a new component is covered without editing the check; plus h2/h3/h4 counts |
+| Images | `<img ...>` and `![alt](...)` counted separately, so a form swap shows up |
+| Asset links | `raw.githubusercontent.com`, `github.com/Comfy-Org/*`, `cloud.comfy.org` (normalized, so embedded-docs locale paths compare equal) |
+
+Missing elements and links fail; extra elements warn, because a locale may add
+something on purpose (the zh home page carries an extra social icon). Frontmatter
+and fenced code blocks are stripped first (CommonMark fence rules: the closer must
+match the opener's character, be at least as long, and carry nothing else), so a
+`<Card>` shown inside a code sample is never counted. Deleted or renamed localized
+pages are skipped instead of crashing the run.
+
+```bash
+bun .github/scripts/i18n/check-structure-parity.ts              # changed files, both directions
+bun .github/scripts/i18n/check-structure-parity.ts --all        # whole repo, backlog report
+bun .github/scripts/i18n/check-structure-parity.ts --base=<ref> # explicit base
+bun .github/scripts/i18n/check-structure-parity.ts --json       # machine readable
+```
+
+Changed-file mode covers both directions:
+
+- a **localized page changed** -> compared with its English source, blocking;
+- an **English page changed** -> every existing ja/zh/ko counterpart is compared
+  with the updated English page. This direction only fails when the counterpart
+  matched the English page *before* the change, so pre-existing debt in untouched
+  pages is reported as a warning and never blocks a pull request.
+
+That keeps it a ratchet: the check bites the area a pull request touches, and the
+backlog is burned down with `--all` (131 files when the gate landed).
+
+Exemptions live in `EXEMPT_PATTERNS`: `pricing.mdx` (hand translated),
+`api-reference/**` (generated), `snippets/**` (imported), root
+`comfy-router-*.mdx` orphans, `changelog/**` (a separate pipeline) and
+`docs.json` (navigation). Workflow:
+[`.github/workflows/structure-parity.yml`](../../workflows/structure-parity.yml).
+
+## Values, headings and punctuation
+
+| Part | Rule |
+|------|------|
+| Booleans, enums and other values the caller sends (`true`, `false`, `auto`, `disabled`, `standard`, `fast`, `mp4`, `mov`) | byte-for-byte identical to the English source, including the label punctuation (`true:` stays `true:`, `standard =` stays `standard =`) and its own line |
+| JSON keys and values, model ids, endpoint paths (`seedream-5.0-pro`, `POST /v2/models/byteplus/{model}`) | byte-for-byte identical, also inside prose |
+| Explanation that follows a label (`true: Returns the last frame`) | translated; the label itself is untouched |
+| Heading text (`## Schema`, `### Input`, `### Output`, `## Examples`) | translated as the target language's pages do it: ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出. zh model pages keep `## Schema` in English |
+| `{#anchor}` inside a heading | identical to the English source, never localized, never dropped |
+| Chinese prose punctuation | full-width (，。：；（）), not ASCII commas or colons |
+| Terminology | the glossary (`glossary.mjs` plus the per-language overrides) is authoritative; the same term is rendered the same way inside a file; no invented words (fixed is 固定, not 顶固), and senses kept apart: a URL or document hyperlink is a 链接, a link between nodes in a graph (LLink, node connections) is a 连线 |
+| Sentence polarity | unchanged from the English: a consequence such as `so it applies here` must never read as `so it does not apply here` |
+
+These are also enforced in the prompts: `buildTranslationInstructions` in
+`translate-i18n.ts` tells the translator, and the judge prompt in `review-i18n.ts`
+reports a translated literal, an English heading, ASCII punctuation in Chinese
+prose or a reversed polarity as an issue.
+
+## Code and comments in translations
+
+A fenced code block splits into two halves that are treated differently:
+
+| Part | Rule |
+|------|------|
+| Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
+| Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
+| Python docstrings: a standalone triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
+
+`validateTranslatedBlock` in `chunked-translate.ts` compares code with
+`codeBlocksMatch()`, which strips comments (per the fence's language tag) and
+Python docstrings before comparing. A translated comment passes; a changed,
+dropped or commented-out code line still fails, and the block is rejected and retried.
+
+Boundary rules keep the comparison honest:
+
+- shebang lines (`#!...`) are code, never comments
+- Python-style `#` and `//` open a comment outside a string or regex literal,
+  so `value=1# note` and `run();// note` are recognized too
+- shell-style `#` and every `--` need a word boundary, so a CLI flag such as
+  `--deployment` is never mistaken for a comment
+- C-style block comments are tracked across lines, and a generator method that
+  starts with `*` stays code; comment markers inside quoted strings or JavaScript
+  regex and multiline template literals stay code
+- a docstring is only a standalone triple-quoted string that opens a suite (first statement
+  after a `def`, `class` or module): a triple-quoted value inside an expression
+  or conditional stays code; a line with other executable code stays code too
+- opening and closing fence lines must match the English source exactly
+
+When editing a translation by hand, translate the comments and docstrings too,
+and keep every code line untouched.
+
+## How translation works
+
+`translate-i18n.ts` is the entry point. It is **incremental**: each translated
+file records a `translationSourceHash` (SHA-256 of its English source) in
+frontmatter, and a re-run skips files whose English source is unchanged. The
+English source is the primary input; the existing target file is passed as
+context so unchanged sections are preserved.
+
+```bash
+pnpm translate                       # translate pending pages + snippets, all languages
+pnpm translate:dry-run               # list what would be translated
+pnpm translate:force                 # re-translate everything
+pnpm translate -- --lang zh,ja       # specific languages
+pnpm translate -- installation/x.mdx # specific files
+pnpm translate -- --with-docs-json   # also sync docs.json nav after translate (opt-in)
+pnpm translate:snippets              # snippets only
+pnpm translate:check-truncation      # scan for truncated output
+pnpm translate:repair-fences         # append missing closing ```
+pnpm translate:repair-truncated -- --lang ko
+pnpm translate:sync-hash             # update hashes after manual translation edits
+pnpm translate:sync-docs-json        # sync docs.json navigation paths (standalone)
+```
+
+**`docs.json` is not rewritten by `pnpm translate` by default.** Nav sync used to run
+after every page translate and would also normalize EN path casing against on-disk
+MDX filenames, so a changelog-only run could produce a large unrelated `docs.json`
+diff. When you add, move, or rename pages in the English nav, run
+`pnpm translate:sync-docs-json` (or `pnpm translate -- --with-docs-json`) separately.
+
+Quality controls during/after a run write to `.github/i18n-logs/translate/`
+(gitignored): semantic mismatches reported by the model, and a truncation scan
+(`check-translation-truncation.ts`).
+
+Truncation heuristics include **unclosed ` ``` ` blocks** (`unclosed_code_fence`),
+fewer fence markers than English (`missing_code_fence`), and short body length.
+
+```bash
+pnpm translate:check-truncation              # scan all languages
+pnpm translate:check-truncation -- --lang ko
+pnpm translate:repair-fences                 # append missing closing ```
+pnpm translate:repair-fences -- --dry-run    # preview fence fixes
+pnpm translate:repair-truncated -- --lang ko # re-translate via API when content was cut
+```
+
+`repair-fences` is a **structural** fix (adds `\`\`\`` at the end). It does not
+restore code lines lost inside the block. Use `repair-truncated` when the block
+body itself was truncated.
+
+### Anchor fragments (automatic)
+
+Translation localizes heading text, and Mintlify derives heading slugs from the
+**localized** text. Links inside translated files keep the English anchor
+fragment: the link text is translated but the `#...` fragment still points at
+the English slug (e.g. `#feedback` while the heading is `## フィードバック`,
+whose real anchor is `#フィードバック`). Those anchors are dead on the
+translated page and make the `check-anchors` CI job fail. `translate` therefore
+**automatically rewrites anchor fragments after every run** to the localized
+slug of the target page (English-order alignment against the source page, with
+a hyphen/underscore fallback; links whose target structure drifted are reported
+for manual review).
+
+```bash
+pnpm translate:fix-anchors                 # fix all translated pages + snippets
+pnpm translate:fix-anchors -- --lang ko    # one language
+pnpm translate:fix-anchors -- --dry-run    # report only (no writes)
+pnpm translate:fix-anchors -- path/to/page.mdx
+```
+
+`fix-anchor-slugs.ts` mirrors `check-anchors.py`'s slug rules and fence
+handling, so it never rewrites links the checker would consider valid.
+
+### Long pages (chunked translation)
+
+Very long MDX files (e.g. `tutorials/partner-nodes/pricing.mdx`) exceed model
+output limits when translated in one shot. Two strategies avoid truncation:
+
+| Strategy | Use case | Split boundary | Incremental sync |
+|----------|----------|----------------|------------------|
+| `heading_sections` | Long reference pages | Level-2 `##` headings | Per-section content hash in `translationBlockHashes` |
+| `update_blocks` | Changelog | `<Update label="…">` blocks | Per-block content hash in `translationBlockHashes` (new labels + EN edits) |
+
+Configure explicit paths in `translation-config.json` → `chunked_files`, or rely
+on `auto_chunk` (default: body ≥ 3k chars and ≥ 2 `##` sections) to auto-enable
+`heading_sections`.
+
+**Oversized H2 blocks:** a single `##` section can still be too large for one API
+call (e.g. Install tabs with many Mintlify `<Tab>` children). When an English
+block exceeds `auto_chunk.max_block_chars` (default **6000**), the translator
+sub-chunks it for the API only:
+
+1. Mintlify `<Tab title="…">…</Tab>` pieces (preferred)
+2. Else `###` subheadings
+3. Else fence-safe soft splits by character budget
+
+Pieces are translated separately and concatenated. Sync hashes stay keyed by the
+H2 label (no frontmatter schema change).
+
+API calls use `max_tokens: 16384` and inspect `finish_reason`. Truncated or
+structurally invalid block output (wrong Tab count, unclosed fences, short line
+ratio, `finish_reason === "length"`) is **rejected**: previous target content is
+kept and that block’s hash is left pending so the next run retries. A file with
+failed blocks is reported as failed, not silently marked up-to-date.
+
+Truncation scan also flags per-block problems (`truncated_block`) when whole-file
+line count still looks acceptable but a Tab-heavy section is cut.
+
+Changelog `<Update description="…">` dates are **derived from English** and
+localized automatically (`ja`/`zh`: `YYYY年M月D日`, `ko`: `YYYY년 M월 D일`) after
+each block is translated or re-serialized — English month names should not
+remain in translated files.
+
+During a chunked run the script:
+
+1. Parses English into blocks (intro + each `##` section).
+2. Compares each block’s hash to `translationBlockHashes` in the target frontmatter.
+3. Translates only pending blocks (plus frontmatter when needed), sub-chunking oversized blocks.
+4. Checkpoints after every block so a failed run can resume.
+
+`translationBlockHashes` keys are written in **descending semver order** for
+changelog (`v0.25.1` before `v0.25.0`), matching the canonical `<Update>`
+sequence. Long pages use **English document order** for section hashes.
+
+Example:
+
+```bash
+pnpm translate -- tutorials/partner-nodes/pricing.mdx --lang ko
+pnpm translate:check-truncation -- --lang ko
+pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
+```
+
+### Router pricing page
+
+`pnpm router-pricing:gen` renders the English, Japanese, Simplified Chinese,
+and Korean Comfy Router pricing pages from one shared renderer. Public labels,
+options, and rate units are localized. Model names, provider names, Router IDs,
+technical keys, and numeric rate amounts stay unchanged.
+Internal links use a localized target when it exists and fall back to the English
+page when that page has no translation yet.
+Translation hashes are synced so `pnpm translate` skips these pages when their
+English source has not changed. This path does not need the translation API key.
+
+`pnpm router-pricing:check` checks the English page against the renderer and all
+three localized pages, including their translation metadata, without writing files. Pricing
+page edits trigger this check on both same-repository and fork pull requests.
+
+The localized files are regular translation outputs under `ja/`, `zh/`, and
+`ko/`. For same-repository pull requests, the Router pricing workflow runs this
+generation automatically and commits the locale files to the PR branch. For
+fork pull requests, run the command locally and commit the locale files with
+the English page.
+
+### Sync hashes after manual edits
+
+When you edit English and update zh/ja/ko translations by hand (or with Cursor), refresh
+metadata so `pnpm translate` skips those files:
+
+```bash
+pnpm translate:sync-hash -- path/to/page.mdx           # specific file(s)
+pnpm translate:sync-hash -- --lang zh path/to/page.mdx
+pnpm translate:sync-hash -- --dry-run path/to/page.mdx # preview
+pnpm translate:sync-hash -- --verify path/to/page.mdx  # warn if EN blocks still look pending
+pnpm translate:sync-hash                               # all files with hash drift
+```
+
+This updates `translationSourceHash` (and `translationBlockHashes` on chunked pages)
+from the English source. It does **not** call the translation API or change prose.
+
+Example:
+
+```bash
+pnpm translate:sync-hash -- installation/system_requirements.mdx
+```
+
+## Quality review (LLM-as-a-judge)
+
+`review-i18n.ts` scores existing translations with an **independent** (and
+typically cheaper) model on four axes — accuracy, completeness, terminology
+(checked against the glossary), and fluency — and lists concrete issues. This is
+separate from the translation model's own `=== MISMATCHES ===` notes: here a
+different model acts as judge.
+
+Results are **advisory**: written to `.github/i18n-logs/review/`
+(`quality-report.json` / `.txt`, gitignored), never into MDX and never blocking.
+By default only translations that are up to date with English and not yet
+reviewed at that hash are checked. The reviewed hash is stored as
+`reviewSourceHash` in the translated file's frontmatter (snippets: an MDX
+comment) and committed to git — so review state is shared across the team and
+visible per file, mirroring `translationSourceHash`. Only the hash goes in
+frontmatter; scores and the issue list stay in the gitignored report.
+
+```bash
+pnpm translate:review                     # pending reviews, all languages
+pnpm translate:review -- --lang ko        # one language
+pnpm translate:review -- installation/x.mdx
+pnpm translate:review -- --all            # re-review everything
+pnpm translate:review -- --sample 20      # N pending files per language
+pnpm translate:review -- --min-score 4    # report files scoring below 4/5
+```
+
+Configure a dedicated (cheap) judge model via `REVIEW_API_*` — see
+[`.env.local.example`](../../../.env.local.example); falls back to the `TRANSLATE_*` model when unset. Use a fast model — evaluation is lighter than
+translation, and reasoning-heavy models are slow and can drop connections under
+concurrency (lower `REVIEW_CONCURRENCY` if you see socket errors).
+
+## Terminology consistency
+
+The same English term must render the same way across pages. Three complementary
+mechanisms handle this, each for a different category of term:
+
+| Mechanism | Effect | Example | Maintained |
+|-----------|--------|---------|------------|
+| `preserve_terms` (in `translation-config.json`) | keep the term **in English** | `checkpoint`, `LoRA`, `scheduler` | by hand |
+| glossary `frontend/{lang}.json` | use the frontend's **translation** | `workflow → 워크플로` | machine-synced |
+| glossary `overrides/{lang}.json` | **correct / extend** the frontend | `custom node → 커스텀 노드` | by hand, wins |
+
+**Why three.** ComfyUI proper nouns with no settled translation (model names,
+`checkpoint`, `embedding`, …) should stay in English → `preserve_terms`. Terms
+the ComfyUI frontend already translates well → mirror them. Terms the frontend
+gets wrong, lacks, or that a language community wants to pin → overrides.
+
+### The glossary (`glossary/`)
+
+```
+glossary/
+  frontend/{lang}.json   machine mirror of ComfyUI frontend locale terms
+  overrides/{lang}.json   hand-maintained corrections; win over the mirror
+```
+
+**`frontend/`** is rebuilt wholesale by `pnpm glossary:sync` from the ComfyUI
+frontend locales (the authoritative source). Never hand-edit it. Shape:
+
+```jsonc
+{ "custom nodes": "커스텀 노드", "workflow": "워크플로" }
+```
+
+**`overrides/{lang}.json`** is the place to record a term decision (issue #1124).
+It both remaps terms and drops noisy frontend terms:
+
+```jsonc
+{
+  "terms":  { "custom node": "커스텀 노드" },   // remap or add (wins over frontend)
+  "ignore": ["title", "additional", "work"]      // drop a noisy frontend term
+}
+```
+
+Resolution at translation time: frontend mirror → remove `ignore` → apply
+`terms`. For each document, only terms that literally appear are selected
+(whole-word, case-insensitive, longest-first, capped) and injected as
+**preferred** (not mandatory) hints — so the model keeps natural phrasing when a
+literal substitution would read awkwardly.
+
+```bash
+pnpm glossary:sync                 # rebuild the frontend mirror, all languages
+pnpm glossary:sync -- --lang ko    # one language
+pnpm glossary:sync:dry-run         # report counts without writing
+```
+
+Frontend path resolves in order:
+
+- **Remote (default):** `frontend_locales_url` in `translation-config.json` (GitHub raw `main` branch). Override with `FRONTEND_LOCALES_URL` or `--frontend-url <url>`.
+- **Local (optional):** `--frontend <path>` or `FRONTEND_LOCALES_PATH` when you need an offline or forked checkout.
+
+### Design notes
+
+- **Why not auto-extract everything from the frontend?** Its UI locale strings
+  are low signal as a glossary — full of button/toast text (`Download image`) and
+  function words whose UI rendering is wrong in prose (`of → 중`, `work → 업무용`).
+- **Why a curated word blocklist, not a length filter?** Gold short terms
+  (`node`, `model`, `latent`) and harmful ones (`work`, `mode`, `here`) are the
+  same length; length can't separate them. `sync-glossary.mjs` uses an explicit
+  common-word blocklist; the long tail that slips through goes in override
+  `ignore`.
+
+### Curating
+
+- A frontend term reads badly in prose → add it to the override `ignore` list.
+- A term needs a different / agreed translation → add it to override `terms`.
+- A term should stay in English everywhere → add it to `preserve_terms`.
+
+## Files
+
+| File | Role |
+|------|------|
+| `translate-i18n.ts` | translation entry point |
+| `chunked-translate.ts` | split/reassemble long MDX (`heading_sections`, `update_blocks`) |
+| `sync-hash-i18n.ts` | Refresh translation hashes after manual edits (no API) |
+| `repair-fences-i18n.ts` | Append missing closing ``` in translations (no API) |
+| `sync-glossary.mjs` | rebuild the glossary frontend mirror |
+| `glossary.mjs` | load glossary layers, select + inject terms |
+| `i18n-config.mjs` | shared path rules from `translation-config.json` |
+| `sync-docs-json.mjs` / `nav-label-translate.mjs` | docs.json navigation sync |
+| `check-translation-truncation.ts` | detect truncated output |
+| `check-i18n-sync.mjs` | PR check: English changes have matching translations |
+| `translation-config.json` | languages, skip paths, `preserve_terms`, frontend path |

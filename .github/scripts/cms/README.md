@@ -1,0 +1,153 @@
+# CMS Changelog Sync
+
+Push **draft** release notes to Strapi CMS. Content is **simplified for end users** in staging, separate from full docs changelog.
+
+## Relationship to docs translation
+
+`changelog/index.mdx` is the single English source. **Do not shorten it for CMS** — Step 1 (LLM simplify) produces popup copy in `staging/en/`.
+
+| | Docs translation ([i18n/README.md](../i18n/README.md)) | CMS sync (this doc) |
+|--|--|--|
+| Command | `pnpm translate` | `pnpm cms:prepare:en` / `cms:prepare:locales` / `cms:sync` |
+| Output | `{lang}/**/*.mdx` on Mintlify | `.github/scripts/cms/staging/` → Strapi |
+| Input | Full docs MDX | LLM-simplified popup copy |
+| Locales | ja, zh, ko | en, zh, ja, ko, fr, ru, es |
+
+## Agent rules
+
+- Do **not** use `pnpm translate` to fill CMS staging — use `pnpm cms:prepare:en` then `cms:prepare:locales`.
+- Get user approval on **staging EN** before `cms:prepare:locales`; on **all staging** before `cms:sync`.
+- Sync and publish **comfyui only** by default (`--project comfyui`).
+- **Cloud hard gate:** every time someone asks to push/sync/publish to CMS, **ask again** whether Cloud should go out. Run `--project cloud` only after they manually confirm Cloud staging (links + copy) in that request. Pasted Cloud URLs or “push to CMS” alone are not Cloud approval. The gate covers **preview, sync, and publish**. See skill `cms-changelog-sync` → **Hard gate: Cloud push / publish**.
+- Strapi publish is **manual by default** — run `pnpm cms:publish` after review (not automatic on sync).
+- Do commit `.github/scripts/cms/staging/` and `published-versions.json` after Strapi publish.
+
+## Architecture
+
+Three separate steps — review between each; sync only after confirmation:
+
+```
+changelog/index.mdx          ← full docs (unchanged)
+        │
+        ▼  Step 1: pnpm cms:prepare:en
+staging/en/                  ← simplified popup EN (review)
+        │
+        ▼  Step 2: pnpm cms:prepare:locales
+staging/{zh,ja,ko,fr,ru,es}/ ← translated from staging EN (review)
+        │
+        ▼  Step 3: pnpm cms:sync
+Strapi drafts → publish → published-versions.json
+```
+
+| Command | Step | Role |
+|---------|------|------|
+| `pnpm cms:prepare:en` | 1 | LLM simplify docs EN → `staging/en/` |
+| `pnpm cms:prepare:locales` | 2 | Translate `staging/en/` → other locales |
+| `pnpm cms:preview` / `cms:sync` | 3 | Push staging → Strapi drafts |
+| `pnpm cms:publish` | — | Publish reviewed Strapi drafts → live |
+
+**Docs site** (`zh/changelog/`, etc.) stays independent. **CMS** uses `.github/scripts/cms/staging/` only.
+
+## Staging layout (gitignored)
+
+```
+.github/scripts/cms/staging/
+  en/changelog/index.mdx              ← comfyui (default project)
+  zh/ … ja/ … ko/ … fr/ … ru/ … es/
+  cloud/
+    en/changelog/index.mdx            ← cloud project
+    zh/ … (same locale set)
+```
+
+Each version is **saved immediately** after simplify/translate (safe to resume).
+
+After prepare:en, secondary projects (cloud) merge only the prepared `<Update>` blocks from comfyui. If cloud EN already has that version, incoming tracking shortlinks are rewritten to match cloud EN (local vs cloud campaign URLs). `prepare:locales` translates each project from its own staging EN and does not copy comfyui locale files onto cloud.
+
+**Bullet URLs** (agents rewrite after prepare:en; see skill `cms-changelog-sync`): Cloud prefers a user-supplied UTM/`links.comfy.org` URL, else `https://cloud.comfy.org/?template=<name>` from [workflow_templates `index.json`](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/index.json) (video: r2v → i2v → t2v). Docs and local CMS prefer a [blog.comfy.org](https://blog.comfy.org/) post, then the GitHub PR, then the repo commit/tag. **Cloud copy** is shorter than local (announce the model, do not enumerate every node).
+
+## Projects & attention
+
+| Project | CLI | Default attention |
+|---------|-----|-------------------|
+| `comfyui` | default / `CMS_PROJECT=comfyui` | `low` |
+| `cloud` | `--project cloud` / `CMS_PROJECT=cloud` | `low` |
+
+Set **high** attention for a specific version:
+
+```bash
+pnpm cms:set-attention -- cloud v0.24.0 high --save
+```
+
+Persists to `attention-overrides.json` (used on sync). Or edit that file manually.
+
+## Commands
+
+```bash
+pnpm cms:prepare:en -- --force v0.25.0                 # Step 1: simplify EN
+pnpm cms:prepare:locales -- v0.25.1                    # Step 2: translate (after EN approved)
+pnpm cms:preview -- --project comfyui v0.25.1          # Step 3: dry-run sync (comfyui only)
+pnpm cms:sync -- --project comfyui v0.25.1             # Step 3: push drafts (after staging approved)
+pnpm cms:publish -- --project comfyui v0.25.1          # publish + refresh published-versions.json
+# Cloud: pnpm cms:preview|sync|publish -- --project cloud …  only after Hard gate confirmation
+```
+
+Default: **comfyui + cloud** on prepare. **Sync/publish/preview default for agents: comfyui only** — add `--project cloud` only when the user **explicitly confirms Cloud** after the agent asks (hard gate; every CMS push/publish request; includes preview).
+
+Local default (no args): **all unpublished EN versions** (from `published-versions.json`). Full backfill: `CMS_SYNC_ALL=1`.
+
+## Simplification rules (EN)
+
+Prompt: `cms-simplify-prompt.ts` — tuned for a **small in-app notification**, not full docs.
+
+Configured in `cms-config.json` → `simplify`:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `max_bullets_total` | **10** | Bullets for the **entire version** (not per section). A target for optional items: lifecycle bullets are mandatory and may take the version over it |
+| `max_sections` | **3** | `**New Open-Source Model Support**` → `**Partner Node Updates**` → optional `**New Node Updates**` (bold labels, not `##`) |
+
+- Section order is **fixed** when present: open-source models first, partner nodes second, node updates last
+- **New Node Updates is optional by default** for ordinary new nodes. Omit those from the CMS popup even if docs has New Nodes, unless a human asks
+- **Never drop** node deprecation, removal, replacement, or EOL. Partner/API lifecycle goes under **Partner Node Updates**. Core/built-in lifecycle goes under **New Node Updates** (emit that section for those items even if nobody asked for new-node listings). Name the replacement when one exists. Lifecycle bullets outrank `max_bullets_total`: if they do not fit, keep them and drop ordinary new-node additions and minor partner tweaks first
+- Each bullet: **[**Name**](pr_url): 12–25 word description** — preserve model/node traits from source
+- **Keep PR links** when the source has them
+- **Drop** performance tweaks, minor fixes, Load3D/UI housekeeping, and ordinary New Nodes unless requested. Do not drop lifecycle items; they outrank the bullet limit
+- English only (Step 1): `pnpm cms:prepare:en -- --force v0.25.0`
+- Translate only (Step 2): `pnpm cms:prepare:locales -- --force v0.25.0` — reads existing `staging/en/`, never re-simplifies
+
+## Configuration
+
+| File | Purpose |
+|------|---------|
+| `cms-config.json` | Locales, projects (comfyui/cloud), simplify settings |
+| `attention-overrides.json` | Per-project high-attention versions (optional) |
+| `published-versions.json` | Published versions — sync skips these |
+
+## API tokens
+
+See [`.env.local.example`](../../../.env.local.example) (`TRANSLATE_*` for prepare, `CMS_*` for sync).
+
+## Publish (draft → live)
+
+After reviewing drafts in Strapi (or trusting staging content):
+
+```bash
+pnpm cms:publish --preview -- --project comfyui v0.25.1   # dry-run
+pnpm cms:publish -- --project comfyui v0.25.1             # publish + auto-refresh published-versions.json
+pnpm cms:publish -- --project comfyui v0.25.1 --no-registry   # publish only, skip JSON
+# Cloud publish: only after Hard gate confirmation, with --project cloud
+```
+
+- Publishes every locale that has a **draft** (en first, then zh/ja/ko/fr/ru/es)
+- **Automatically refreshes** `published-versions.json` from Strapi (scans comfyui + cloud)
+- Default (no version): all **unpublished EN versions** that have EN drafts in Strapi
+- Bulk: add `--yes` or `CMS_PUBLISH_CONFIRM=1`; all drafts: `CMS_PUBLISH_ALL=1`
+- Uses Strapi Content API `PUT ?status=published`
+
+## Published registry
+
+`cms:publish` refreshes the registry automatically. Manual rescan without publishing:
+
+```bash
+bun .github/scripts/cms/update-published-versions.ts --write
+```
