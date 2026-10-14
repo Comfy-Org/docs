@@ -1,0 +1,113 @@
+---
+title: "工作流元数据"
+description: "了解 ComfyUI 如何将工作流嵌入已生成的文件中，以及如何读取嵌入的元数据"
+icon: "file-code"
+translationSourceHash: 73399dac
+translationFrom: development/api-development/workflow-metadata.mdx
+translationBlockHashes:
+  "Overview": 2181be93
+  "Embedded fields": 9538565e
+  "Supported formats": 055eb94e
+  "How ComfyUI writes metadata": 4cc6f35c
+  "How ComfyUI reads metadata": 2f6c9bc5
+  "Limitations": 52df0a77
+---
+## 概述
+
+当 ComfyUI 保存输出文件时，它可以将生成该文件的工作流存储在文件本身内部。
+
+你可以将此视为将已生成的图像连同其配方一起保存。图像是结果，嵌入的工作流描述了创建它所用的步骤。
+
+嵌入的工作流元数据允许你：
+
+- 在 ComfyUI 中重新打开已生成的文件并恢复其工作流。
+- 共享已生成的文件以及用于创建它的工作流。
+- 在自动化工作流中检查生成设置。
+- 构建能够从输出文件中读取 ComfyUI 工作流元数据的工具。
+
+元数据存储在文件格式内部。它不会改变可见的图像或视频内容。
+
+## 嵌入字段
+
+ComfyUI 通常存储两个 JSON 字段：
+
+| 字段 | 描述 |
+| --- | --- |
+| `workflow` | 完整的工作流图，包括节点、链接和布局信息。 |
+| `prompt` | 用于执行工作流的 API 提示。其中包含执行所需的节点和输入。 |
+
+简化示例如下：
+
+```json
+{
+  "workflow": {
+    "nodes": [],
+    "links": []
+  },
+  "prompt": {
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {}
+    }
+  }
+}
+```
+
+实际内容取决于工作流和 ComfyUI 版本。自定义节点还可以通过 `extra_pnginfo` 添加字段。
+
+这两个字段的用途不同。`workflow` 用于在前端恢复工作流。`prompt` 是面向执行的表示形式，用于向 ComfyUI 服务器提交工作流。文件可能只包含其中一个字段。
+
+## 支持的格式
+
+内置保存节点会将元数据嵌入到以下输出格式中：
+
+| 输出 | 元数据位置 |
+| --- | --- |
+| PNG | PNG `tEXt` 数据块 |
+| 动画 PNG | PNG 文本元数据 |
+| 动画 WebP | EXIF 标签 |
+| MP4 | 容器元数据标签 |
+| WebM | 容器元数据标签 |
+| `.latent` | Safetensors 元数据 |
+| `.safetensors` | Safetensors 元数据（由包含工作流元数据的节点写入时） |
+
+具体的元数据支持取决于保存节点和文件写入路径。经过其他应用程序重新编码的文件可能不再包含元数据。
+
+动画 WebP 文件会将这些值存储在 EXIF 标签中。标签值包含类似 `workflow:{JSON}` 和 `prompt:{JSON}` 的字符串。这与 MP4 和 WebM 不同，后两者会将这些值存储为容器元数据标签。
+
+## ComfyUI 如何写入元数据
+
+内置输出节点在 ComfyUI 执行工作流时会收到 API prompt 和额外的工作流信息。除非已禁用元数据保存，否则保存节点会将这些值序列化为 JSON 并写入输出文件。
+
+对于 PNG 输出，这些值将以文本条目的形式写入。标准字段名为 `prompt` 和 `workflow`。
+
+元数据不是单独的旁车文件，而是在保存操作期间写入输出文件本身。因此，复制文件也会复制其中嵌入的工作流，但任何重写文件的操作都可能移除或替换元数据。
+
+要在启动 ComfyUI 时禁用元数据，请使用：
+
+```bash
+python main.py --disable-metadata
+```
+
+在 ComfyUI Desktop 中，打开**设置** > **服务器配置**，启用**禁止将提示词元数据保存到文件中。**
+
+启用该选项期间创建的文件无法用于从嵌入的元数据中恢复工作流。
+
+## ComfyUI 如何读取元数据
+
+要在 ComfyUI 界面中恢复工作流，请将已生成的文件拖放到画布上。你也可以从**文件** > **打开**中打开文件。
+
+如果文件同时包含 `workflow` 和 `prompt`，ComfyUI 会使用嵌入的 `workflow` 来重建画布。如果文件不包含工作流，ComfyUI 会将支持的媒体文件视为常规输入媒体。
+
+构建集成时，请先检查字段是否存在，再进行解析。文件可能因为使用了 `--disable-metadata` 创建、保存节点没有收到工作流信息，或被其他应用重新编码而不包含元数据。
+
+如需在浏览器中查看或编辑嵌入的工作流，请参阅 [ComfyUI 嵌入式工作流编辑器](https://comfyui-embedded-workflow-editor.vercel.app/)。
+
+## 限制
+
+- 嵌入的元数据并非数字签名。它不能证明谁创建或修改了文件。
+- 工作流不包含其依赖的模型文件、输入资产或自定义节点包。
+- 移动或重命名模型、输入资产或自定义节点可能会导致恢复的工作流无法运行。
+- 图像和视频编辑器在重新编码文件时可能会移除元数据。
+- 使用 `--disable-metadata` 创建的文件不包含标准的 ComfyUI 工作流元数据。
+- 将嵌入的元数据视为可选且不可信的输入。使用前验证值是否为有效 JSON，也不要假设工作流包含运行它所需的所有模型或自定义节点。
