@@ -93,7 +93,7 @@ Other rules that the reviews keep flagging:
 translation. Localized titles keep the official product name untranslated;
 descriptions convey the same scope as EN within 40-160 chars. When an EN page's
 title/description changes in this repo, the zh/ja/ko values are updated in the
-same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../.cursor/rules/docs-frontmatter.mdc).
+same commit. Rules and examples: [.cursor/rules/docs-frontmatter.mdc](../../rules/docs-frontmatter.mdc).
 
 ## Environment (`.env.local`)
 
@@ -170,7 +170,7 @@ only re-translate changed `##` sections when `auto_chunk` applies).
 | Workflow templates | `update workflow templates to v…`, `comfyui-workflow-templates` bump |
 | Model blueprints | `Add new model blueprints`, template-library starter workflows |
 
-Do not add bullets for dependency-only version bumps. See also **`cms-changelog-sync`** for CMS popup rules.
+Do not add bullets for dependency-only version bumps. See also **`cms-changelog-sync`** for CMS popup rules, including **node lifecycle**: partner deprecation, removal, replacement, and EOL go under **Partner Node Updates**; core/built-in lifecycle goes under **New Nodes** / **New Node Updates**.
 
 **Docs changelog bullet URLs** (same as local CMS): matching [blog.comfy.org](https://blog.comfy.org/) post first, then the GitHub PR, then the ComfyUI repo commit/tag/compare. Do not use Cloud `?template=` links on the docs changelog. Cloud popup URLs are a separate rule in **cms-changelog-sync**.
 

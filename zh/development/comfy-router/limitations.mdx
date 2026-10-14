@@ -1,23 +1,26 @@
 ---
 title: "Comfy Router 的能力与限制"
-sidebarTitle: "Capabilities and limits"
+sidebarTitle: "能力与限制"
 description: "选择 Comfy Router 还是合作伙伴代理，为长时间运行的调用做好规划，并了解恢复、速率限制与资产存储。"
-translationSourceHash: aa6b3271
+translationSourceHash: 8367ba3c
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
   "What Router supports": 2cc63403
-  "Queued submission": bfb591cc
+  "Queued submission": d0798008
   "Calls are cut off at a server deadline": 6dd44c43
   "Recovery depends on the provider": 7206a852
   "Request bodies are capped": 675b77c8
   "Requests are rate limited per caller": 421194d9
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": c820ac4c
-  "Router does not cover every partner operation": 4de37c36
+  "Comfy charges and usage": 1ba61544
+  "Router does not cover every partner operation": f0902b33
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
+
+
 
 
 Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个已排队的请求运行：你提交请求，稍后再收集结果。当你的应用能够等待一个已完成的结果，或稍后收集结果，并且能够处理模型自身的输入和输出字段时，就使用它。
@@ -42,7 +45,7 @@ Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个�
 
 如果你的请求无法保持打开足够长的时间，就把它放入队列。当你需要使用提供商自己的提交与轮询控制时，请使用[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)。
 
-目前有两个模型仅支持同步方式，若将它们提交到队列，会被以 `403` / `not_enabled` 拒绝：`elevenlabs/eleven_sfx_v2` 和 `elevenlabs/eleven_v3`。它们返回的是原始音频字节，而不是 JSON 结果文档，队列投递无处存储这些内容。请在同步路由上运行它们，该路由会正常返回这些字节。
+目前有四个模型仅支持同步方式，若将它们提交到队列，会被以 `403` / `not_enabled` 拒绝：`elevenlabs/eleven_sfx_v2`、`elevenlabs/eleven_v3`、`elevenlabs/eleven_v4` 和 `elevenlabs/eleven_v4_turbo`。它们返回的是原始音频字节，而不是 JSON 结果文档，队列投递无处存储这些内容。请在同步路由上运行它们，该路由会正常返回这些字节。
 
 LTX v1 的文生视频和图生视频操作出于同样的原因返回原始视频字节，队列投递同样无法存储它们，但它们只能通过位于 `/proxy/ltx/v1/…` 的[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)访问，而不能通过 Router 模型 ID 访问：每个 `ltx/*` 目录模型都会解析为可排队的 v2 提交与轮询操作。
 
@@ -50,7 +53,7 @@ LTX v1 的文生视频和图生视频操作出于同样的原因返回原始视�
 
 Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。请将客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
 
-`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收费](/zh/development/comfy-router/errors#超时与收集)。
+`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收集](/zh/development/comfy-router/errors#超时与收集)。
 
 <span id="no-way-to-resume-a-call-you-lost" />
 
@@ -93,13 +96,15 @@ Router 只返回最终响应，不提供流式 token、服务器发送事件、�
 
 ## Comfy 费用与用量
 
-响应可能包含提供商的用量或成本字段。它们并不代表通用的 Comfy 计费。`X-Comfy-Credits-Used` 是可选的，并且不会被重放。请使用 Comfy 平台查询余额、用量和发票。
+响应可能包含提供商的用量或成本字段。它们并不代表通用的 Comfy 收费。`X-Comfy-Credits-Used` 是可选响应头：缺失该响应头意味着成本未被报告，而不是该次运行为免费。重放的响应（`Idempotent-Replayed: true`）不会再次计费，但可能重复给出原始运行的数字，因此不要将同一个 `Idempotency-Key` 的多次重试中的该响应头累加。请使用 Comfy 平台查询余额、用量和发票。
 
 目录提供的是计费事实，包括 `billing.charges_on_policy_rejection`，而不是价格。请显式处理 `yes`、`no` 和 `unknown`。参见[计费](/zh/development/comfy-router/billing#模型计费事实)。
 
+要在运行之前查看价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。在估算功能逐步推出的期间，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中不包含 `estimate`。两者的定价都来自 Comfy 为该次运行计费所依据的费率表，但它并非价格锁定：使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍是运行结束后的事后数字。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检费用预估)。
+
 ## Router 并不覆盖每个合作伙伴操作
 
-Router 运行模型。文件上传、账户读取、资产管理、流式传输以及提供商任务控制可能需要 `/proxy/…` 下的合作伙伴代理路由。请查阅 [Comfy API 规范](/openapi-v2.yaml)；支持情况因提供商而异。
+Router 运行模型。文件上传、账户读取、资产管理、流式传输以及提供商任务控制可能需要位于 `/proxy/…` 下的合作伙伴代理路由，这些路由处在 Router 之外，其契约也不对其加以描述。Router 自身的接口面是 [Comfy Router 规范](/router-openapi.yaml)；支持情况因提供商而异。
 
 ## 模型输出与存储资产
 
