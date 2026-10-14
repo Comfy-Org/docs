@@ -3,24 +3,20 @@ title: "Comfy MCP: AI 에이전트를 ComfyUI에 연결"
 sidebarTitle: "Comfy MCP"
 description: "Model Context Protocol(MCP)로 AI 에이전트를 ComfyUI에 연결하세요. 이미지, 비디오, 오디오, 3D를 생성하고 Comfy Cloud 또는 자신의 컴퓨터에서 실제 워크플로를 실행할 수 있습니다."
 icon: "bolt"
-translationSourceHash: 26d1bc72
+translationSourceHash: 4c4bb38e
 translationFrom: agent-tools/mcp.mdx
 translationBlockHashes:
-  "_intro": 340316c1
   "Overview": 64064e0e
-  "Comfy Cloud MCP Connection": f820ca16
+  "Comfy Cloud MCP Connection": 9270a2f0
   "Local Comfy MCP Connection": 59170570
   "Related resources": 2a86e2c5
-  "Related: Comfy In-App Agent": be5e2cdf
-  "Feedback": 25a3d53f
-  "FAQ": 5c144ebc
+  "Related: Comfy Agent": 76253cf0
+  "Feedback": 282a338c
+  "FAQ": 44b6d2b3
 ---
 
 
 
-<Info>
-  **공개 베타.** Comfy MCP는 현재 공개 베타 상태입니다. API, 도구, 동작은 개선 과정에서 변경될 수 있습니다. 문제를 신고하거나 제안을 공유하려면 [피드백](#피드백)을 참조하세요.
-</Info>
 
 ## 개요
 
@@ -261,6 +257,34 @@ https://cloud.comfy.org/mcp
 
       셸 또는 시스템 환경에 `COMFY_API_KEY`를 설정하세요. 키를 버전 관리에 커밋하지 마세요.
     </Accordion>
+
+    <Accordion title="Codex가 계속 다시 로그인하라고 요청함(invalid_grant 또는 리프레시 토큰 재사용)">
+      **증상:** Codex가 Comfy Cloud에서 로그아웃되고 반복해서 재인증을 요청하며, 몇 분마다 발생하기도 합니다. Codex 경고나 로그에 `invalid_grant`, 이미 사용되었거나 폐기된 리프레시 토큰, OAuth 토큰 갱신 실패 등이 표시될 수 있습니다.
+
+      **원인:** 이 문제는 Comfy Cloud가 아니라 Codex가 MCP OAuth 자격 증명을 저장하고 갱신하는 방식에서 비롯됩니다. 여러 Codex 프로세스(TUI 세션, 앱 서버, `codex mcp` 명령)가 하나의 OAuth 서버를 공유하면, 한 프로세스가 다른 프로세스에서 이미 교체한 토큰으로 갱신을 시도할 수 있습니다. 인증 서버는 이를 토큰 재사용으로 간주하고 세션을 종료합니다. 다른 OAuth MCP 서버 사용자들도 같은 현상을 보고하고 있습니다. 아래 이슈는 Codex 저장소에서 아직 열려 있으므로 현재 상태를 직접 확인할 수 있습니다.
+
+      - [openai/codex#46028](https://github.com/openai/codex/issues/46028): 오래 실행되는 클라이언트가 교체된 리프레시 토큰을 재사용함
+      - [openai/codex#48507](https://github.com/openai/codex/issues/48507): 동시 프로세스가 리프레시 토큰 교체에서 경합하여 다음 시작 시 `invalid_grant` 발생
+      - [openai/codex#41133](https://github.com/openai/codex/issues/41133): 종료 시 교체된 리프레시 토큰이 유실될 수 있음
+      - [openai/codex#17265](https://github.com/openai/codex/issues/17265): Codex가 저장된 MCP OAuth 토큰을 갱신하지 않음
+
+      **해결 방법 1: Codex의 갱신 조정 플래그 켜기.** Codex에는 Codex 프로세스 간 OAuth 토큰 갱신을 조정하는 기능 플래그 `mcp_oauth_refresh_coordination`이 있습니다. 이는 Comfy가 아닌 Codex의 설정입니다. Codex에서는 개발 중인 기능으로 분류되어 기본적으로 꺼져 있으며, Codex와 Comfy 모두 공식 해결책으로 지원하지 않습니다. openai/codex#46028에서는 이 플래그를 켜자 보고자의 테스트에서 오래된 토큰 재사용이 발생하지 않았습니다. 사용 중인 Codex 버전에서 아직 꺼져 있다면 `~/.codex/config.toml`에 추가하세요:
+
+      ```toml
+      [features]
+      mcp_oauth_refresh_coordination = true
+      ```
+
+      실행 중인 모든 Codex 세션을 닫고 다시 시작하여 모든 세션에 플래그가 적용되도록 하세요. Codex에 **comfy-cloud**가 이미 로그아웃 상태로 표시된다면 한 번 더 로그인하세요(`codex mcp login comfy-cloud` 또는 설정의 **Authenticate**). 이후 Codex 릴리스에서 이 기능이 기본으로 켜지거나 플래그가 제거되면 이 단계는 건너뛰어도 됩니다.
+
+      **해결 방법 2: 서버마다 하나의 Codex 프로세스만 갱신하도록 하기.** 플래그를 사용할 수 없거나 효과가 없다면 `[mcp_servers.comfy-cloud]` 항목을 전역 `~/.codex/config.toml`에서 신뢰할 수 있는 프로젝트의 `.codex/config.toml`로 옮겨, 해당 프로젝트의 세션만 이를 불러오고 갱신하도록 하세요. Comfy Cloud에 연결된 Codex 세션을 동시에 여러 개 실행하지 말고, 컴퓨터를 다시 시작하기 전에 Codex 세션을 닫으세요. 이는 openai/codex#48507에서 보고된 해결 방법입니다.
+
+      항목을 옮겨도 이미 전역 설정을 불러온 Codex 프로세스는 멈추지 않고 이전 서버 정의를 계속 갱신합니다. 옮긴 뒤에는 실행 중인 모든 Codex 세션을 닫고 Codex 앱 서버를 중지한 다음, 항목이 있는 프로젝트에서만 Codex를 시작하세요.
+
+      OAuth가 필요 없다면 위의 API 키 설정은 리프레시 토큰을 사용하지 않습니다.
+
+      이 단계들은 로그아웃 빈도를 줄여 주지만 완전히 없애지는 못할 수 있습니다. Comfy Cloud 측에서도 이 문제의 발생을 줄이기 위한 개선 작업을 진행하고 있습니다.
+    </Accordion>
   </Tab>
 
   <Tab title="OpenClaw">
@@ -443,7 +467,7 @@ MCP 도구를 직접 호출하지 않습니다. 에이전트가 사용자의 요
 | --- | --- |
 | `get_billing_status` | 크레딧 잔액, 구독 등급, 결제 링크 확인 |
 | `get_server_info` | 에이전트가 연결한 서버 확인: 환경, 호스트, 버전, 인증 상태 |
-| `submit_feedback` | 베타 피드백 설문조사 링크 가져오기 |
+| `submit_feedback` | 피드백 설문조사 링크 가져오기 |
 | `report_session_summary` | 익명화된 세션 요약을 Comfy 팀과 공유. **명시적 동의가 있는 경우에만** 진행하며, 에이전트가 먼저 요청해야 함. 프롬프트, 파일 경로, 개인 정보는 포함되지 않음 |
 
 **프롬프트(Claude Desktop)**
@@ -610,9 +634,9 @@ pip install comfy-mcp
     ```bash
     git clone https://github.com/Comfy-Org/comfy-mcp
     cd comfy-mcp
-    pip install "comfy-cli>=1.14.0"  # the engine
-    comfy install             # create a ComfyUI workspace (skip if you have one)
-    pip install comfy-mcp            # this MCP server → the `comfy-mcp` command
+    pip install "comfy-cli>=1.14.0"  # 엔진
+    comfy install             # ComfyUI 워크스페이스 생성 (이미 있으면 생략)
+    pip install comfy-mcp            # 이 MCP 서버 → `comfy-mcp` 명령
     ```
   </Step>
   <Step title="ComfyUI 실행 후 실행 상태로 두기">
@@ -663,17 +687,17 @@ pip install comfy-mcp
 | [Comfy CLI](/ko/agent-tools/cli) | 로컬 ComfyUI 설치/실행 및 스크립트나 CI에서 호스팅된 파트너 노드를 호출하기 위한 명령줄 도구(`comfy generate`, 베타). 터미널이나 자동화 워크플로가 필요할 때 MCP를 보완합니다. |
 | [Comfy Cloud에서 워크플로 공유하기](/ko/cloud/share-workflow) | Comfy Cloud UI에서 워크플로를 공유합니다(MCP `share_workflow` 도구가 에이전트 세션에서 이 작업을 수행합니다). |
 
-## 관련 항목: Comfy 인앱 에이전트
+## 관련 항목: Comfy Agent
 
-외부 MCP 클라이언트가 아닌, **Comfy Cloud 내부**에서 에이전트 경험(그래프를 빌드하고 편집하는 채팅)을 원하시나요?
+외부 MCP 클라이언트가 아닌, ComfyUI **내부**에서 에이전트 경험을 원하시나요?
 
-<Card title="Comfy 인앱 에이전트" icon="comments" href="/ko/agent-tools/in-app-agent">
-  Comfy Cloud의 비공개 알파입니다. 액세스를 요청하려면 웨이팅 리스트에 참여하세요.
+<Card title="Comfy Agent" icon="comments" href="/ko/agent-tools/in-app-agent">
+  워크플로를 빌드, 편집, 실행하기 위한 ComfyUI 내장 어시스턴트입니다. **클라우드에서 정식 제공됩니다.** 로컬(Comfy Desktop)은 곧 출시 예정입니다.
 </Card>
 
 ## 피드백
 
-Comfy MCP는 공개 베타 단계입니다. 사용해 보시고 작동하는 점과 그렇지 않은 점을 알려주세요:
+Comfy MCP를 사용해 보시고 작동하는 점과 그렇지 않은 점을 알려주세요:
 
 - **[피드백 설문조사](https://links.comfy.org/cloudmcpbeta)**: 버그 신고, 기능 요청 또는 일반적인 소감을 공유하세요.
 - **Discord**: Comfy Discord의 [#comfy-mcp-and-cli](https://discord.gg/xWJn6nhE3R)에서 문의 및 토론하세요.
@@ -709,7 +733,7 @@ Comfy MCP는 공개 베타 단계입니다. 사용해 보시고 작동하는 점
     **Mac**에서는 생성 작업에 클라우드 연결을 사용하세요. 현재의 오픈웨이트 모델은 Apple GPU에서 실용적인 속도로 실행하기에는 너무 큽니다. **전용 그래픽 카드가 있는 PC**의 경우, VRAM이 24GB 이상이면 비디오를 포함한 대부분의 작업을 처리할 수 있습니다. 8~24GB는 이미지에 적합하지만 비디오는 느리거나 맞지 않을 수 있습니다. 8GB 미만이라면 클라우드를 사용하세요.
   </Accordion>
   <Accordion title="일반 공개되었나요?">
-    클라우드 연결은 **공개 베타** 상태입니다. API, 도구, 동작은 개발 과정에서 변경될 수 있습니다. 문제를 신고하려면 [피드백](#피드백)을 참고하세요.
+    네. 클라우드 연결은 일반 공개되었으며, 로컬 연결은 로컬 ComfyUI 설치에서 사용할 수 있습니다. 문제를 신고하거나 제안을 공유하려면 [피드백](#피드백)을 참고하세요.
   </Accordion>
 </AccordionGroup>
 
