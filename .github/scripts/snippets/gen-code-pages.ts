@@ -9,7 +9,7 @@
  *   bun .github/scripts/snippets/gen-code-pages.ts --prune    # also delete the page of a model that left the catalog, redirecting its URL
  *
  * The template below is the only place the page shape lives. Python, TypeScript,
- * Swift and cURL are all emitted from the same `example` object, so the four cannot
+ * and cURL are emitted from the same `example` object, so the three cannot
  * disagree about the request body, and both delivery modes (wait for the
  * result, or queue it and collect later) are emitted from that one object too.
  */
@@ -27,6 +27,7 @@ const MODELS_INDEX_URL = `/${MODELS_DIR}`;
 /** The generated serving-provider index, written only while some model has an alt-provider leg. */
 const PROVIDERS_PAGE = "development/comfy-router/providers";
 const PROVIDERS_URL = `/${PROVIDERS_PAGE}`;
+const PRICING_PAGE = "development/comfy-router/pricing";
 const REFERENCE_URL = "/development/comfy-router/reference";
 /**
  * The three query parameters that select and control an alternate serving provider.
@@ -254,31 +255,6 @@ function shellVar(s: string): string {
   return s.toUpperCase();
 }
 
-/**
- * A JSON string value -> a valid Swift string literal.
- *
- * Not `JSON.stringify`: JSON spells a control character `\uXXXX`, and Swift's
- * unicode escape is `\u{XXXX}` (and it has no `\b` / `\f` at all), so a
- * JSON-escaped string can fail `swiftc -parse`. Escaping the raw value against
- * Swift's own grammar keeps every emitted literal parseable. Backslash is
- * escaped first, so a literal `\(` can never become string interpolation, and
- * non-ASCII (accents, emoji) passes through as UTF-8, which Swift source is.
- */
-function swiftString(s: string): string {
-  let out = '"';
-  for (const ch of s) {
-    const code = ch.codePointAt(0)!;
-    if (ch === "\\") out += "\\\\";
-    else if (ch === '"') out += '\\"';
-    else if (ch === "\n") out += "\\n";
-    else if (ch === "\r") out += "\\r";
-    else if (ch === "\t") out += "\\t";
-    else if (code < 0x20 || code === 0x7f) out += `\\u{${code.toString(16)}}`;
-    else out += ch;
-  }
-  return out + '"';
-}
-
 /** Result path like `candidates[0].content.parts[0].inlineData.data` -> segments. */
 function pathSegments(path: string): (string | number)[] {
   const out: (string | number)[] = [];
@@ -297,16 +273,6 @@ function pyPath(path: string): string {
 
 function tsPath(path: string): string {
   return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `.${p}`)).join("");
-}
-
-/**
- * Result path -> a chain of subscripts on the SDK's `result.output` view, e.g.
- * `["result"]["sample"]` or `["images"][0]["url"]`. The view subscripts by
- * string key and by integer index and returns `null` on a miss, so the same
- * path the Python and TypeScript emitters walk reads a field here too.
- */
-function swiftPath(path: string): string {
-  return pathSegments(path).map((p) => (typeof p === "number" ? `[${p}]` : `[${swiftString(p)}]`)).join("");
 }
 
 function tsResultType(path: string): string {
@@ -350,49 +316,30 @@ function tsLiteral(v: unknown, indent: number, files: FileInput[], topKey?: stri
   return `{\n${entries.map(([k, x]) => `${pad}  ${key(k)}: ${tsLiteral(x, indent + 2, files)},`).join("\n")}\n${pad}}`;
 }
 
-/**
- * JSON value -> a Swift literal for the SDK's `input: [String: Any]` parameter,
- * multi-line, at the given indent. A file input is substituted by its variable
- * name (camelCased, as in TypeScript). JSON `null` is `NSNull()` and an empty
- * object is `[:]`, the two places a Swift dictionary literal differs from JSON.
- */
-export function swiftLiteral(v: unknown, indent: number, files: FileInput[], topKey?: string): string {
-  const pad = " ".repeat(indent);
-  const f = topKey !== undefined ? files.find((x) => x.key === topKey) : undefined;
-  if (f) return camel(f.varName);
-  if (v === null) return "NSNull()";
-  if (typeof v === "boolean") return v ? "true" : "false";
-  if (typeof v === "number") return JSON.stringify(v);
-  if (typeof v === "string") return swiftString(v);
-  if (Array.isArray(v)) {
-    if (v.every((x) => typeof x !== "object" || x === null)) return `[${v.map((x) => swiftLiteral(x, indent, files)).join(", ")}]`;
-    return `[\n${v.map((x) => `${pad}    ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
-  }
-  const entries = Object.entries(v as Record<string, unknown>);
-  if (entries.length === 0) return "[:]";
-  return `[\n${entries.map(([k, x]) => `${pad}    ${swiftString(k)}: ${swiftLiteral(x, indent + 4, files)},`).join("\n")}\n${pad}]`;
-}
-
 function pythonSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
   const reads = files
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .map(([k, v]) => `                ${JSON.stringify(k)}: ${pyLiteral(v, 16, files, k)},`)
     .join("\n");
-  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+  return `import asyncio
+${files.length ? "import base64\n" : ""}from comfy_sdk import AsyncComfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
 # The SDK automatically creates an idempotency key and reuses it for automatic retries.
-with Comfy() as client:
-    result = client.models.run(
-        "${model}",
-        {
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "${model}",
+            {
 ${body}
-        },
-    )
+            },
+        )
 
-print("${label}:", result${pyPath(resultPath)})`;
+    print("${label}:", result${pyPath(resultPath)})
+
+asyncio.run(main())`;
 }
 
 function typescriptSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
@@ -413,36 +360,6 @@ ${body}
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
 console.log("${label}:", result.data${tsPath(resultPath)});`;
-}
-
-/**
- * Swift, synchronous. `client.models.run` holds the connection until the model
- * answers, the same call and step order as the Python and TypeScript snippets.
- * An empty `resultPath` (a derived page) prints the whole payload instead of a
- * field read.
- */
-export function swiftSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
-  const reads = files
-    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
-    .join("\n");
-  const body = Object.entries(example)
-    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
-    .join("\n");
-  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
-  return `import Foundation
-import ComfySwiftSDK
-${reads ? `\n${reads}\n` : ""}
-// Reads COMFY_API_KEY from the environment.
-// The SDK mints an idempotency key per call and reuses it for automatic retries.
-let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
-let result = try await client.models.run(
-    "${model}",
-    input: [
-${body}
-    ]
-)
-
-${show}`;
 }
 
 function curlSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
@@ -480,31 +397,35 @@ function pythonQueueSnippet(model: string, example: Record<string, unknown>, fil
     .map((f) => `with open(${JSON.stringify(f.path)}, "rb") as f:\n    ${f.varName} = base64.b64encode(f.read()).decode()`)
     .join("\n\n");
   const body = Object.entries(example)
-    .map(([k, v]) => `            ${JSON.stringify(k)}: ${pyLiteral(v, 12, files, k)},`)
+    .map(([k, v]) => `                ${JSON.stringify(k)}: ${pyLiteral(v, 16, files, k)},`)
     .join("\n");
   const show = resultPath ? `print("${label}:", result${pyPath(resultPath)})` : "print(result)";
-  return `${files.length ? "import base64\n\n" : ""}from comfy_sdk import Comfy
+  return `import asyncio
+${files.length ? "import base64\n" : ""}from comfy_sdk import AsyncComfy
 ${reads ? `\n${reads}\n` : ""}
 # Reads COMFY_API_KEY from the environment.
 # Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
-with Comfy() as client:
-    handle = client.models.submit(
-        "${model}",
-        {
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "${model}",
+            {
 ${body}
-        },
-    )
-    print("request_id:", handle.request_id)  # with the model ID, all another process needs
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
 
-    # Poll until the request completes, waiting the Retry-After the server names.
-    for update in handle.iter_events():
-        print(update.status, update.queue_position)
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
 
-    # The provider's own payload, the same value models.run() returns.
-    # A request that failed or was cancelled raises the typed Router error here.
-    result = handle.get()
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
 
-${show}`;
+    ${show}
+
+asyncio.run(main())`;
 }
 
 /** TypeScript, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
@@ -543,41 +464,6 @@ for await (const update of handle.events()) {
 ${show}`;
 }
 
-/** Swift, queued. As `pythonQueueSnippet`, an empty `resultPath` prints the whole payload. */
-export function swiftQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[], resultPath: string, label: string): string {
-  const reads = files
-    .map((f) => `let ${camel(f.varName)} = try Data(contentsOf: URL(fileURLWithPath: ${swiftString(f.path)})).base64EncodedString()`)
-    .join("\n");
-  const body = Object.entries(example)
-    .map(([k, v]) => `        ${swiftString(k)}: ${swiftLiteral(v, 8, files, k)},`)
-    .join("\n");
-  const show = resultPath ? `print(${swiftString(`${label}:`)}, result.output${swiftPath(resultPath)}.stringValue ?? "")` : "print(result.output)";
-  return `import Foundation
-import ComfySwiftSDK
-${reads ? `\n${reads}\n` : ""}
-// Reads COMFY_API_KEY from the environment.
-// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
-let client = ComfyCloudClient(apiKey: ProcessInfo.processInfo.environment["COMFY_API_KEY"]!)
-let handle = try await client.models.submit(
-    "${model}",
-    input: [
-${body}
-    ]
-)
-print("requestId:", handle.requestId)  // with the model ID, all another process needs
-
-// Poll until the request completes, waiting the Retry-After the server names.
-for try await update in handle.events() {
-    print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")
-}
-
-// The provider's own payload, the same value models.run() returns.
-// A request that failed or was cancelled throws the typed Router error here.
-let result = try await handle.result()
-
-${show}`;
-}
-
 /** cURL, queued: submit, then poll and collect by request id. */
 function curlQueueSnippet(model: string, example: Record<string, unknown>, files: FileInput[]): string {
   const reads = files.map((f) => `${shellVar(f.varName)}=$(base64 < ${f.path} | tr -d '\\n')`).join("\n");
@@ -606,8 +492,8 @@ curl ${requests}/$REQUEST_ID \\
   -H "X-API-Key: $COMFY_API_KEY"`;
 }
 
-/** The four languages of one delivery mode. Tab order (SDKs first, raw HTTP last) is the same on every page. */
-function codeGroup(python: string, typescript: string, swift: string, curl: string): string {
+/** The three languages of one delivery mode. */
+function codeGroup(python: string, typescript: string, curl: string): string {
   return `<CodeGroup>
 \`\`\`python Python
 ${python}
@@ -615,10 +501,6 @@ ${python}
 
 \`\`\`typescript TypeScript
 ${typescript}
-\`\`\`
-
-\`\`\`swift Swift
-${swift}
 \`\`\`
 
 \`\`\`bash cURL
@@ -634,7 +516,7 @@ ${curl}
  * exists (see `queueNotice` below).
  */
 function deliveryTabs(model: string, sync: string, queued: string): string {
-  return `<Tabs>
+  return `<Tabs defaultTabIndex={1}>
   <Tab title="Wait for the result">
 ${sync}
   </Tab>
@@ -667,6 +549,8 @@ type SchemaDoc = {
   "x-comfy-router-alt-providers"?: unknown;
   "x-comfy-router-alias-of"?: unknown;
   "x-comfy-router-alias-provider"?: unknown;
+  "x-comfy-router-input-modalities"?: string[];
+  "x-comfy-router-output-modalities"?: string[];
 };
 
 /** One alternate serving provider for a native model, from `x-comfy-router-alt-providers`. */
@@ -695,6 +579,10 @@ type ModelSchema = {
   /** Media type the 200 response is keyed under; unset only when the 200 publishes no content. */
   outputMediaType?: string;
   components: Record<string, any>;
+  /** From `x-comfy-router-input-modalities`; unset on a document that predates it. */
+  inputModalities?: string[];
+  /** From `x-comfy-router-output-modalities`, primary modality first; unset on a document that predates it. */
+  outputModalities?: string[];
   // Partial so a caller that only needs the output half (the schema-rendering
   // tests) can still build one; `loadModelSchema` always fills both in.
 } & Partial<ModelRelations>;
@@ -784,8 +672,53 @@ export function loadModelSchema(model: string): ModelSchema | null {
     outputExample: res?.example ?? res?.schema?.example,
     outputMediaType: res?.mediaType,
     components: doc.components?.schemas ?? {},
+    ...readModalities(doc),
     ...readRelations(model, doc),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Modalities
+//
+// Router publishes what a model takes and what it returns as two root
+// extensions on its schema document. The output list is ordered: the first
+// entry is the primary artifact (a video model that also returns a soundtrack
+// is `["video", "audio"]`). A document from before the extensions existed
+// carries neither, and every consumer below renders that as unknown rather
+// than guessing.
+// ---------------------------------------------------------------------------
+
+const MODALITY_LABEL: Record<string, string> = { text: "Text", image: "Image", video: "Video", audio: "Audio", "3d": "3D" };
+
+/** The order the "Find by output" list walks, most-browsed first. */
+const OUTPUT_ORDER = ["video", "image", "audio", "3d", "text"];
+
+const modalityLabel = (m: string) => MODALITY_LABEL[m] ?? m.charAt(0).toUpperCase() + m.slice(1);
+
+/** A modality list as published, or undefined when it is absent or not a list of strings. */
+const modalityList = (v: unknown): string[] | undefined =>
+  Array.isArray(v) && v.length > 0 && v.every((m) => typeof m === "string" && m !== "") ? (v as string[]) : undefined;
+
+export function readModalities(doc: SchemaDoc): { inputModalities?: string[]; outputModalities?: string[] } {
+  return {
+    inputModalities: modalityList(doc["x-comfy-router-input-modalities"]),
+    outputModalities: modalityList(doc["x-comfy-router-output-modalities"]),
+  };
+}
+
+/**
+ * One modality list as a table cell: input as `Text, Image`, output as
+ * `Video + Audio` (the primary first, secondaries joined on). Unknown is `—`.
+ */
+export function modalityCell(list: string[] | undefined, kind: "input" | "output"): string {
+  if (!list) return "\u2014";
+  return list.map(modalityLabel).join(kind === "output" ? " + " : ", ");
+}
+
+/** The `**Input:** … · **Output:** …` line under a page's intro, or `""` unless both lists are known. */
+export function modalityLine(input: string[] | undefined, output: string[] | undefined): string {
+  if (!input || !output) return "";
+  return `**Input:** ${modalityCell(input, "input")} \u00b7 **Output:** ${modalityCell(output, "output")}`;
 }
 
 function deref(schema: any, components: Record<string, any>, depth = 0): any {
@@ -1028,8 +961,8 @@ function quickStart(v: Variant, spec: Spec): string {
   const files = fileInputs(example);
   const label = spec.result.label;
   const path = spec.result.path;
-  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), swiftSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
-  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), swiftQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
+  const sync = codeGroup(pythonSnippet(v.model, example, files, path, label), typescriptSnippet(v.model, example, files, path, label), curlSnippet(v.model, example, files));
+  const queued = codeGroup(pythonQueueSnippet(v.model, example, files, path, label), typescriptQueueSnippet(v.model, example, files, path, label), curlQueueSnippet(v.model, example, files));
   return `**Model ID:** \`${v.model}\`
 
 **Endpoint:** \`POST ${BASE_URL}${ROUTE}/${v.model}\`
@@ -1106,11 +1039,19 @@ function renderPage(spec: Spec, dir: string): string {
   // The one-time setup a snippet cannot run without. Everything else that is
   // shared across models (idempotency, deadline, request IDs) lives on the
   // headers page the footer links to.
-  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\` and \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`;
   // Every model this page documents, with the legs its own schema document
   // publishes. A spec with no aliased model renders no section at all.
   const serving = servingProvidersSection(spec.variants.map((v) => ({ model: v.model, legs: loadModelSchema(v.model)?.altProviders ?? [] })));
   const after = serving ? `\n\n${serving}` : "";
+  // One modality line for the page, and only when every model on it publishes the
+  // same pair: a multi-model page whose variants differ says nothing rather than
+  // describing the first variant as if it were all of them.
+  const lines = spec.variants.map((v) => {
+    const s = loadModelSchema(v.model);
+    return modalityLine(s?.inputModalities, s?.outputModalities);
+  });
+  const modalities = lines.every((l) => l === lines[0]) ? lines[0] : "";
   let body: string;
   if (!both) {
     body = `## Quick start\n\n${setup}\n\n${quickStart(spec.variants[0], spec)}${after}\n\n${sections(spec.variants[0], spec, false)}`;
@@ -1133,7 +1074,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
-${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
 ${body}
 
 <RouterCodeFooter />
@@ -1175,8 +1116,8 @@ function bodyExample(example: unknown): Record<string, unknown> | undefined {
 }
 
 function derivedSnippets(model: string, example?: unknown): string {
-  // Rendered through the same pyLiteral/tsLiteral/swiftLiteral/esc helpers the
-  // curated snippets use, so the four languages cannot drift from one another or
+  // Rendered through the same pyLiteral/tsLiteral helpers the curated snippets
+  // use, so the three languages cannot drift from one another or
   // from the JSON in the Examples section -- the invariant stated at the top of
   // this file. Derived pages have no file inputs, so the FileInput list is empty.
   const body = bodyExample(example);
@@ -1205,8 +1146,8 @@ ${tsBody}
 });
 
 console.log(data);`;
-  const sync = codeGroup(python, typescript, swiftSnippet(model, body, [], "", ""), curlSnippet(model, body, []));
-  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), swiftQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
+  const sync = codeGroup(python, typescript, curlSnippet(model, body, []));
+  const queued = codeGroup(pythonQueueSnippet(model, body, [], "", ""), typescriptQueueSnippet(model, body, [], "", ""), curlQueueSnippet(model, body, []));
   return deliveryTabs(model, sync, queued);
 }
 
@@ -1233,13 +1174,13 @@ function responseExampleForModel(model: string, example: unknown): unknown {
   return sample;
 }
 
-function renderDerivedPage(model: string, s: ModelSchema): string {
+export function renderDerivedPage(model: string, s: ModelSchema): string {
   const provider = providerLabel(providerOf(model));
   const requestExample = bodyExample(s.inputExample);
   const clients = requestExample
-    ? `The Python, TypeScript and Swift snippets use the Comfy SDKs (\`pip install comfy-sdk\`, \`npm install @comfyorg/sdk\`, and the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) Swift package); the cURL snippet is the same call over raw HTTP.`
-    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. For Swift, add the [\`ComfySwiftSDK\`](https://github.com/Comfy-Org/comfy-swift-sdk) package. cURL uses raw HTTP.`;
-  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys) and export it as \`COMFY_API_KEY\`. ${clients}`;
+    ? `The Python and TypeScript snippets use the Comfy SDKs (\`pip install comfy-sdk\` and \`npm install @comfyorg/sdk\`); the cURL snippet is the same call over raw HTTP.`
+    : `For Python, run \`pip install comfy-sdk\`. For TypeScript, run \`npm install @comfyorg/sdk\`. cURL uses raw HTTP.`;
+  const setup = `Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it as \`COMFY_API_KEY\`. ${clients}`;
   const docBase = PROVIDER_DOC_BASE[providerOf(model)];
   const apiDocs = PROVIDER_API_DOCS[providerOf(model)];
   const input = s.authored && s.input
@@ -1268,6 +1209,7 @@ function renderDerivedPage(model: string, s: ModelSchema): string {
   const requestSetup = requestExample ? derivedSnippets(model, requestExample) : `<Note>\n${noExample}\n</Note>`;
   const serving = servingProvidersSection([{ model, legs: s.altProviders ?? [] }]);
   const title = modelTitle(model);
+  const modalities = modalityLine(s.inputModalities, s.outputModalities);
   return `---
 title: ${JSON.stringify(`Use ${title} with Comfy Router`)}
 description: ${JSON.stringify(`Call ${model} through Comfy Router: endpoint, request shape and the response Router returns.`)}
@@ -1279,7 +1221,7 @@ sidebarTitle: ${JSON.stringify(title)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
-${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
 ## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}
@@ -1312,8 +1254,35 @@ ${output}${examples}
 // page lists every model page, grouped by provider like the sidebar.
 // ---------------------------------------------------------------------------
 
-function renderModelsIndex(pages: { model: string; page: string; title: string }[], hasProviders: boolean): string {
-  const byProvider = new Map<string, { model: string; page: string; title: string }[]>();
+/** One row of the catalog index: a model page and the modalities its document publishes. */
+export type IndexPage = { model: string; page: string; title: string; input?: string[]; output?: string[] };
+
+/** A table cell holds one line of inline markdown, so a literal `|` must not end it early. */
+const cellText = (v: string) => v.replace(/\|/g, "\\|");
+
+/**
+ * The `## Find by output` jump list: one accordion per output modality, in
+ * {@link OUTPUT_ORDER}, listing every model whose output includes it. A model
+ * returning `["video", "audio"]` is under both. Empty when no model publishes an
+ * output list yet, so a catalog synced before the extension renders no section.
+ */
+function findByOutput(pages: IndexPage[]): string {
+  const sorted = [...pages].sort((a, b) => a.page.localeCompare(b.page));
+  const known = new Set(pages.flatMap((p) => p.output ?? []));
+  const order = [...OUTPUT_ORDER, ...[...known].filter((m) => !OUTPUT_ORDER.includes(m)).sort()];
+  const groups = order
+    .map((modality) => ({ modality, list: sorted.filter((p) => p.output?.includes(modality)) }))
+    .filter((g) => g.list.length > 0)
+    .map(
+      ({ modality, list }) =>
+        `<Accordion title="${attr(modalityLabel(modality))} (${list.length})">\n\n${list.map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``).join("\n")}\n\n</Accordion>`
+    );
+  if (!groups.length) return "";
+  return `## Find by output\n\n<AccordionGroup>\n${groups.join("\n")}\n</AccordionGroup>`;
+}
+
+export function renderModelsIndex(pages: IndexPage[], hasProviders: boolean): string {
+  const byProvider = new Map<string, IndexPage[]>();
   for (const p of pages) {
     const label = providerLabel(providerOf(p.model));
     const list = byProvider.get(label) ?? [];
@@ -1325,22 +1294,23 @@ function renderModelsIndex(pages: { model: string; page: string; title: string }
     .map(([label, list]) => {
       const rows = [...list]
         .sort((a, b) => a.page.localeCompare(b.page))
-        .map((p) => `- [${p.title}](/${p.page}): \`${p.model}\``)
+        .map((p) => `| [${cellText(p.title)}](/${p.page}) | \`${p.model}\` | ${cellText(modalityCell(p.input, "input"))} | ${cellText(modalityCell(p.output, "output"))} |`)
         .join("\n");
-      return `## ${label}\n\n${rows}`;
+      return `## ${label}\n\n| Model | ID | Input | Output |\n| --- | --- | --- | --- |\n${rows}`;
     })
     .join("\n\n");
+  const jump = findByOutput(pages);
   return `---
 title: "Comfy Router models"
 sidebarTitle: "All models"
-description: "Every model available through Comfy Router, grouped by provider."
+description: "Every model available through Comfy Router, grouped by provider, with the input and output modality of each."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
-Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, Swift, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
+Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
 ${hasProviders ? `\nSome of these models can also be served by an aggregator on the same route and the same model ID. [Serving providers](${PROVIDERS_URL}) lists which provider covers which model, and how to select one.\n` : ""}
-${sections}
+${jump ? `${jump}\n\n` : ""}${sections}
 `;
 }
 
@@ -1416,6 +1386,22 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
     .map(([label, list]) => ({ label, rows: [...list].sort((a, b) => a.page.localeCompare(b.page) || a.aliasId.localeCompare(b.aliasId)) }));
 }
 
+/** Build a compact provider-by-model matrix for the Providers page. */
+function providerMatrixTable(rows: Coverage[]): string {
+  const models = new Map<string, { page: string; title: string }>();
+  for (const row of rows) models.set(row.model, { page: row.page, title: row.title });
+  const modelsInOrder = [...models.entries()].sort(([, a], [, b]) => a.title.localeCompare(b.title));
+  const providers = providerCoverage(rows);
+  const cell = (providerRows: Coverage[], model: string) => providerRows.some((row) => row.model === model) ? "✓" : "-";
+  const header = ["Model / provider", "**Comfy (default)**", ...providers.map((provider) => `**${provider.label}**`)].join(" | ");
+  const divider = ["---", "---", ...providers.map(() => "---")].join(" | ");
+  const lines = [`| ${header} |`, `| ${divider} |`];
+  for (const [model, page] of modelsInOrder) {
+    lines.push(`| [${page.title}](/${page.page}) | ✓ | ${providers.map((provider) => cell(provider.rows, model)).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
 /**
  * The Providers page.
  *
@@ -1425,31 +1411,23 @@ export function providerCoverage(rows: Coverage[]): { label: string; rows: Cover
  * repo to drift apart.
  */
 export function renderProvidersPage(rows: Coverage[]): string {
-  const sections = providerCoverage(rows)
-    .map(({ label, rows: list }) => {
-      const lines = list
-        .map((r) => `- [${r.title}](/${r.page}): \`${r.model}\`, served as \`${r.aliasId}\` with \`?model_provider=${r.provider}\``)
-        .join("\n");
-      return `## ${label}\n\n${lines}`;
-    })
-    .join("\n\n");
   return `---
 title: "Comfy Router serving providers"
 sidebarTitle: "Serving providers"
-description: "Which provider serves each Comfy Router model: Comfy by default, plus the aggregators a request can select with the model_provider parameter."
+description: "See which providers can serve each Comfy Router model and how to select an alternate provider."
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
 
-Comfy Router serves every model on one route, \`POST /v2/models/{provider}/{model}\`. A few of those models can be served by more than one provider, and the \`model_provider\` query parameter picks which one runs the call. The model ID, the request body and the response shape do not change. See ${ROUTING_PARAMS_LINK} in the API reference.
+<div className="router-provider-coverage-marker" />
 
-## Comfy (direct)
+Every model uses \`POST /v2/models/{provider}/{model}\`. Comfy is the default provider. For models with alternate coverage, \`model_provider\` selects another provider without changing the model ID or request body. See ${ROUTING_PARAMS_LINK} in the API reference.
 
-Every model in the [model catalog](${MODELS_INDEX_URL}) is served by Comfy Router directly. This is what a call with no \`model_provider\` gets, and it is the only route for every model not listed below.
+## Provider coverage
 
-${sections}
+${providerMatrixTable(rows)}
 
-\`strict_mode\` defaults to false, so a request written against the native model's schema is translated into the alternate provider's own schema, and the response is translated back. Any native field that cannot be expressed on that provider is dropped and named in the \`X-Comfy-Router-Dropped-Params\` response header.
+\`strict_mode=false\` (the default) translates the native request and response for the selected provider. Fields that cannot be translated are listed in the \`X-Comfy-Router-Dropped-Params\` response header.
 `;
 }
 
@@ -1459,7 +1437,8 @@ ${sections}
 // `docs.json` carries the nav for four locales; only `en` lists these pages, and
 // the zh/ja/ko trees are maintained by the i18n sync. With one page per catalog
 // model a flat list is unreadable, so the Models group holds one sub-group per
-// provider, behind the generated catalog landing page.
+// provider, behind the generated catalog landing page and a collapsed
+// "All Models" group.
 // ---------------------------------------------------------------------------
 
 type NavGroup = { group: string; pages: (string | NavGroup)[] };
@@ -1476,12 +1455,16 @@ export function modelsNav(pages: { model: string; page: string }[], hasProviders
     group: "Models",
     pages: [
       MODELS_DIR,
+      PRICING_PAGE,
       // Beside the catalog index, not inside a provider sub-group: it is the
-      // second way into the same catalog, not a model page.
+      // pricing and coverage indexes are separate from model pages.
       ...(hasProviders ? [PROVIDERS_PAGE] : []),
-      ...[...byProvider.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+      {
+        group: "All Models",
+        pages: [...byProvider.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([group, list]) => ({ group, pages: [...list].sort((a, b) => a.localeCompare(b)) })),
+      },
     ],
   };
 }
@@ -1581,10 +1564,10 @@ function validate(page: string, rel: string): string[] {
   const problems: string[] = [];
   const tmp = mkdtempSync(join(tmpdir(), "code-pages-"));
   try {
-    const fences = [...page.matchAll(/```(python|typescript|swift|bash)[^\n]*\n([\s\S]*?)```/g)];
+    const fences = [...page.matchAll(/```(python|typescript|bash)[^\n]*\n([\s\S]*?)```/g)];
     fences.forEach((m, i) => {
       const [, lang, code] = m;
-      const ext = lang === "python" ? "py" : lang === "typescript" ? "ts" : lang === "swift" ? "swift" : "sh";
+      const ext = lang === "python" ? "py" : lang === "typescript" ? "ts" : "sh";
       const file = join(tmp, `s${i}.${ext}`);
       writeFileSync(file, code);
       const cmd =
@@ -1592,9 +1575,7 @@ function validate(page: string, rel: string): string[] {
           ? ["python3", "-m", "py_compile", file]
           : lang === "typescript"
             ? ["bun", "build", "--target=node", "--no-bundle", file, "--outfile", `${file}.out.js`]
-            : lang === "swift"
-              ? ["swiftc", "-parse", file]
-              : ["bash", "-n", file];
+            : ["bash", "-n", file];
       const r = Bun.spawnSync(cmd, { stderr: "pipe", stdout: "pipe" });
       if (r.exitCode !== 0) problems.push(`${rel}: ${lang} snippet #${i + 1} failed syntax check:\n${r.stderr.toString()}`);
     });
@@ -1613,7 +1594,7 @@ if (import.meta.main) {
   const doValidate = process.argv.includes("--validate");
   const prune = process.argv.includes("--prune");
 
-  type Page = { model: string; page: string; title: string; text: string; out: string };
+  type Page = IndexPage & { text: string; out: string };
 
   const pages: Page[] = [];
   const covered = new Set<string>();
@@ -1657,7 +1638,18 @@ if (import.meta.main) {
       covered.add(v.model);
       pageByModel.set(v.model, { page: `${dir}/code`, title: v.title ?? spec.name });
     }
-    pages.push({ model: spec.variants[0].model, page: `${dir}/code`, title: spec.name, text, out: join(ROOT, dir, "code.mdx") });
+    // The index row is the page's first model, so its modalities are that model's.
+    // renderPage above already loaded this document, so it cannot throw here.
+    const first = loadModelSchema(spec.variants[0].model);
+    pages.push({
+      model: spec.variants[0].model,
+      page: `${dir}/code`,
+      title: spec.name,
+      input: first?.inputModalities,
+      output: first?.outputModalities,
+      text,
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
   if (specCount === 0) {
     console.error(`no specs matched ${SPEC_GLOB}`);
@@ -1711,7 +1703,15 @@ if (import.meta.main) {
     }
     claimed.set(`${dir}/code`, rel);
     pageByModel.set(model, { page: `${dir}/code`, title: modelTitle(model) });
-    pages.push({ model, page: `${dir}/code`, title: modelTitle(model), text: renderDerivedPage(model, schema), out: join(ROOT, dir, "code.mdx") });
+    pages.push({
+      model,
+      page: `${dir}/code`,
+      title: modelTitle(model),
+      input: schema.inputModalities,
+      output: schema.outputModalities,
+      text: renderDerivedPage(model, schema),
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
 
   // ---- alias documents, now that every native page is known
@@ -1735,7 +1735,15 @@ if (import.meta.main) {
     console.warn(`${a.rel}: alias of \`${a.aliasOf}\`, which has no page here; keeping its own page until that model is documented`);
     claimed.set(`${dir}/code`, a.rel);
     pageByModel.set(a.model, { page: `${dir}/code`, title: modelTitle(a.model) });
-    pages.push({ model: a.model, page: `${dir}/code`, title: modelTitle(a.model), text: renderDerivedPage(a.model, a.schema), out: join(ROOT, dir, "code.mdx") });
+    pages.push({
+      model: a.model,
+      page: `${dir}/code`,
+      title: modelTitle(a.model),
+      input: a.schema.inputModalities,
+      output: a.schema.outputModalities,
+      text: renderDerivedPage(a.model, a.schema),
+      out: join(ROOT, dir, "code.mdx"),
+    });
   }
 
   // ---- the alt-provider relationship, resolved to pages
@@ -1766,6 +1774,16 @@ if (import.meta.main) {
   }
 
   // ---- catalog landing page
+  //
+  // A model with no published modality renders `—` in the index. That is a
+  // warning, not a failure: the sync that first carries the extensions can land
+  // after this generator does, and a document may predate them.
+  if (check) {
+    const unknown = pages.filter((p) => !p.input || !p.output).map((p) => p.model);
+    if (unknown.length) {
+      console.warn(`warning: ${unknown.length} model(s) publish no x-comfy-router-input/output-modalities, shown as \u2014 in ${MODELS_DIR}.mdx:\n  ${unknown.join("\n  ")}`);
+    }
+  }
   const indexOut = join(ROOT, `${MODELS_DIR}.mdx`);
   const indexText = renderModelsIndex(pages, providersText !== null);
   if (check) {
@@ -1832,7 +1850,7 @@ if (import.meta.main) {
   let docsJson: string;
   try {
     docsJson = renderDocsJson(modelsNav(pages.map(({ model, page }) => ({ model, page })), providersText !== null), {
-      live: [...pages.map((p) => p.page), ...(providersText !== null ? [PROVIDERS_PAGE] : [])],
+      live: [...pages.map((p) => p.page), PRICING_PAGE, ...(providersText !== null ? [PROVIDERS_PAGE] : [])],
       pruned,
     });
   } catch (e) {

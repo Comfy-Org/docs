@@ -155,7 +155,7 @@ Run a model and receive its finished result in the same response.
 </ParamField>
 
 <ParamField query="model_provider" type="string">
-  Selects an alternate provider for this model, instead of its current default.
+  Selects an alternate provider to serve this model, instead of its current default; `fal`, `wavespeed`, `runware`, and `higgsfield` are the alternates, and `GET /v2/models/{provider}/{model}` reports which of them a given model supports. Its refusals are checked in a fixed order, and the earlier ones answer whether or not the later ones would: an unrecognized value - not a registered provider at all - is refused `400`; then an alternate provider on a request whose body selects a multipart operation (an edit) is refused `409` with `detail` beginning "this request's `image` selects the edit operation", but only when that provider's translator for this model cannot serve the operation - a leg whose translator does carry the media proceeds normally; then any alternate provider on a request that resolved a bring-your-own-key credential is refused `409` with `detail` beginning `this request resolved a BYOK credential` (see that response), whether or not that provider serves this model; then the named provider's own gate, which refuses `403` with `error_type: not_enabled` when that provider is not turned on for you and `503` with `error_type: service_unavailable` when the gate cannot be evaluated; and only past all four is a real provider with no leg for this model refused `400` with `error_type: invalid_input`, the same answer as an unrecognized value. `fallback_provider` is inert rather than refused on a bring-your-own-key request, on a request whose body selects a multipart operation, and under `strict_mode=true`.
 </ParamField>
 
 <ParamField query="strict_mode" type="boolean">
@@ -165,27 +165,33 @@ Run a model and receive its finished result in the same response.
 </ParamField>
 
 <ParamField query="fallback_provider" type="string">
-  Controls whether Router retries this call against the model's other registered provider when the first attempt fails for a reason attributable to Router's own side or to the specific provider tried - never for a reason attributable to the request itself (an unretried failure is refused exactly as it always was).
+  Controls whether Router retries this call against the model's other registered provider when the first attempt fails for a reason attributable to Router or to the provider tried. Omitted, or any value other than `false`, leaves fallback on; `false` turns it off. A successful fallback response carries `X-Comfy-Router-Fallback-Provider`. On a request that resolved a bring-your-own-key credential fallback is unavailable whatever this parameter says - the attempt is simply not made and the first failure reaches you unchanged, which is inert, not refused: no `409` originates here. The same is true, for the same reason, on a request whose body selects a multipart operation and under `strict_mode=true` - each binds the call to one provider that cannot be faithfully replayed against another, so fallback is simply skipped rather than refused. Only an explicit `model_provider` is refused with that `409`, and unlike this unconditional skip its multipart `409` applies only to a leg whose translator cannot serve the operation.
+</ParamField>
+
+<ParamField query="reject_unknown_fields" type="boolean">
+  Opt in to refusing a top-level request-body field this model's input schema does not declare, rather than accepting it; nested fields are not checked, and nothing is refused for a model whose schema allows undeclared fields or has no authored schema, or on a queued submit sent with `strict_mode=true`.
+
+  Default: False
 </ParamField>
 
 **Request body**
 
 `application/json` -- [`RouterModelInput`](#routermodelinput) (required)
 
-The partner model's native JSON input. Without `model_provider`, or with `strict_mode=true`, forwarded to the provider unchanged - under `strict_mode=true` the body must already be the alternate provider's own real schema, not this model's native one (see `strict_mode`). With `model_provider` selecting an alternate provider and `strict_mode=false` (the default), the body is translated into that provider's real schema before it is sent - any native field that cannot be expressed exactly is dropped and disclosed via the response's `X-Comfy-Router-Dropped-Params` header, never silently.
+The partner model's native JSON input. Without `model_provider` the request runs native dispatch on the model's default provider and this body is the model's own native schema, forwarded unchanged (`strict_mode` is meaningless there and changes nothing). With `model_provider` selecting an alternate provider and `strict_mode=false` (the default), the body is translated into that provider's real schema before it is sent - any native field that cannot be expressed exactly is dropped and disclosed via the response's `X-Comfy-Router-Dropped-Params` header, never silently. With `model_provider` selecting an alternate provider and `strict_mode=true` no translation runs: the body must already be that alternate provider's own real schema, not this model's native one (see `strict_mode`), and is forwarded unchanged. The body's own fields also select which operation Router runs on a model that supports more than one: for an editable image model, including an input image switches it from text-to-image to the image-to-image (edit) operation, which may be metered on its own rate; for a Seedance video model, `content[].role` selects the operation (a first-frame image selects image-to-video, a reference image or clip selects reference-to-video). On native dispatch, Seedance billing follows the media kinds in `content`, not the roles: a request with any video input bills as video-to-video, otherwise one with any image bills as image-to-video, otherwise text-to-video, except that a final render from a `draft_task` item bills as the operation of the Draft it renders; some models charge the same rate for text-to-video and image-to-video. With `model_provider` selecting an alternate provider, each conditioned operation may be metered on that provider's own rate.
 
 **Responses**
 
 <ResponseField name="200" type="RouterModelOutput">
-  OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged.
+  OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged. For a model whose partner answers a generation directly as bytes, the body is those bytes under the partner's own `Content-Type` rather than `application/json`; branch on the response `Content-Type` and do not assume a JSON document.
 
-  Body: [`RouterModelOutput`](#routermodeloutput) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
+  Body: [`RouterModelOutput`](#routermodeloutput) or raw bytes (`*/*`) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
 </ResponseField>
 
 <ResponseField name="400" type="RouterErrorResponse">
   Invalid request. Check the error type and request body.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -213,7 +219,7 @@ The partner model's native JSON input. Without `model_provider`, or with `strict
 </ResponseField>
 
 <ResponseField name="409" type="RouterErrorResponse">
-  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key.
+  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. Two `invalid_input` conflicts on this route are not about the key at all and no new key clears either: `model_provider` naming an alternate provider is refused when the request body selects a multipart operation (an edit) that provider's translator for this model cannot serve, whose `detail` begins "this request's `image` selects the edit operation"; and, checked after that, when the request has already resolved a bring-your-own-key credential for the provider in the path, whose `detail` begins `this request resolved a BYOK credential`. Drop `model_provider`, or send the request without the BYOK credential and (for the multipart case) without the edit.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`)
 </ResponseField>
@@ -245,13 +251,93 @@ The partner model's native JSON input. Without `model_provider`, or with `strict
 <ResponseField name="503" type="RouterErrorResponse">
   Router is temporarily unavailable. Retry with backoff.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (capacity refusals only)
 </ResponseField>
 
 <ResponseField name="504" type="RouterErrorResponse">
   The request exceeded a deadline. Check the error type before retrying.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `Retry-After`
+</ResponseField>
+
+### `POST /v2/models/{provider}/{model}/estimate`
+
+**Price a model call before running it, without running it.**
+
+Returns what Comfy will charge for running this body on this model, in US dollars, priced from the same rate card the charge is billed against. The body is validated against the model's input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model's schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`.
+
+**Parameters**
+
+<ParamField path="provider" type="RouterProviderSegment" required>
+  Lowercase provider segment of the canonical `{provider}/{model}` model ID - the partner whose model is being run.
+
+  Type: [`RouterProviderSegment`](#routerprovidersegment) -- Alphanumeric slug, e.g. `anthropic`, Up to 64 characters
+</ParamField>
+
+<ParamField path="model" type="RouterModelSegment" required>
+  Lowercase model segment of the canonical `{provider}/{model}` model ID - the model to run within that provider.
+
+  Type: [`RouterModelSegment`](#routermodelsegment) -- Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters
+</ParamField>
+
+<ParamField query="model_provider" type="string">
+  Selects an alternate provider to serve this model, instead of its current default.
+</ParamField>
+
+**Request body**
+
+`application/json` -- [`RouterModelInput`](#routermodelinput) (required)
+
+The partner model's native JSON input, identical to the body the synchronous route accepts for this model. It is validated against the model's own input schema as a default run validates it (this route takes no `strict_mode` or `reject_unknown_fields`), and its own fields (the output count, the operation an input image selects) decide what is priced.
+
+**Responses**
+
+<ResponseField name="200" type="RouterCostEstimate">
+  The quote.
+
+  Body: [`RouterCostEstimate`](#routercostestimate) -- Headers: `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="400" type="RouterErrorResponse">
+  Invalid request. Check the error type and request body.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="401" type="RouterErrorResponse">
+  Missing or invalid credentials.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="403" type="RouterErrorResponse">
+  The request is not allowed for this caller or model.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="404" type="RouterErrorResponse">
+  The model ID was not found.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="413" type="RouterErrorResponse">
+  The request body is too large.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="422" type="RouterValidationErrorResponse">
+  The estimate's body was rejected against the model's schema, or named a different model than the path.
+
+  Body: [`RouterValidationErrorResponse`](#routervalidationerrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+</ResponseField>
+
+<ResponseField name="503" type="RouterErrorResponse">
+  Router is temporarily unavailable. Retry with backoff.
+
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (capacity refusals only)
 </ResponseField>
 
 ### `GET /v2/models/{provider}/{model}/openapi.json`
@@ -342,17 +428,33 @@ Comfy Router's queued delivery mode. The request body is the same partner-native
   Type: [`RouterModelSegment`](#routermodelsegment) -- Alphanumeric slug, e.g. `claude-opus-4-6`, Up to 128 characters
 </ParamField>
 
+<ParamField query="model_provider" type="string">
+  Selects an alternate provider to serve this model, instead of its current default.
+</ParamField>
+
+<ParamField query="strict_mode" type="boolean">
+  Only meaningful together with `model_provider`.
+
+  Default: False
+</ParamField>
+
 <ParamField header="Idempotency-Key" type="string">
   Caller-generated key that makes retrying one logical call safe.
 
   1–255 characters
 </ParamField>
 
+<ParamField query="reject_unknown_fields" type="boolean">
+  Opt in to refusing a top-level request-body field this model's input schema does not declare, rather than accepting it; nested fields are not checked, and nothing is refused for a model whose schema allows undeclared fields or has no authored schema, or on a queued submit sent with `strict_mode=true`.
+
+  Default: False
+</ParamField>
+
 **Request body**
 
 `application/json` -- [`RouterModelInput`](#routermodelinput) (required)
 
-The partner model's native JSON input, identical to the body the synchronous route accepts for this model. Validated against the model's own input schema before the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later.
+The partner model's native JSON input, identical to the body the synchronous route accepts for this model, and it selects the operation and is metered the same way: the body's own fields choose which operation Router runs on a model that supports more than one (an input image switches an editable image model to image-to-image, which may be metered on its own rate; a Seedance first-frame image selects image-to-video and a reference image or clip selects reference-to-video). On native dispatch a Seedance request bills by the media kinds in `content`, not the roles: any video input bills as video-to-video, otherwise any image bills as image-to-video, otherwise text-to-video, except that a final render from a `draft_task` item bills as the operation of the Draft it renders, with some models charging the same rate for text-to-video and image-to-video; with `model_provider` selecting an alternate provider, each conditioned operation may be metered on that provider's own rate. The same provider-selection contract applies at dispatch: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default), the body is the model's native document and is validated against the model's own input schema before the run is admitted, so a body the model would reject is a `422` here rather than a queued request that fails minutes later - a non-strict alternate-provider body is additionally translated into that provider's real schema at dispatch. With `strict_mode=true` the body must already be the alternate provider's own schema and is forwarded unchanged: native-schema validation is skipped, exactly as on the synchronous route (see `model_provider` and `strict_mode`).
 
 **Responses**
 
@@ -387,7 +489,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 </ResponseField>
 
 <ResponseField name="403" type="RouterErrorResponse">
-  The request is not allowed for this caller or model.
+  The request is not allowed for this caller or model. A model whose partner answers a generation directly as bytes cannot yet be queued and is refused with `not_enabled`; run it on the synchronous route instead.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
 </ResponseField>
@@ -399,7 +501,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 </ResponseField>
 
 <ResponseField name="409" type="RouterErrorResponse">
-  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key.
+  Inspect `X-Comfy-Error-Type`: `concurrency_limit_exceeded` means the original call is still running, so wait for `Retry-After` and reuse the same key; `invalid_input` requires a new key. Two `invalid_input` conflicts on this route are not about the key at all and no new key clears either: `model_provider` naming an alternate provider is refused when the request body selects a multipart operation (an edit) that provider's translator for this model cannot serve, whose `detail` begins "this request's `image` selects the edit operation"; and, checked after that, when the request has already resolved a bring-your-own-key credential for the provider in the path, whose `detail` begins `this request resolved a BYOK credential`. Drop `model_provider`, or send the request without the BYOK credential and (for the multipart case) without the edit.
 
   Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (when `concurrency_limit_exceeded`)
 </ResponseField>
@@ -413,7 +515,7 @@ The partner model's native JSON input, identical to the body the synchronous rou
 <ResponseField name="503" type="RouterErrorResponse">
   Router is temporarily unavailable. Retry with backoff.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `Retry-After` (capacity refusals only)
 </ResponseField>
 
 ### `GET /v2/models/{provider}/{model}/requests/{request_id}`
@@ -445,9 +547,9 @@ The collect endpoint. On a request that has finished successfully it returns the
 **Responses**
 
 <ResponseField name="200" type="RouterModelOutput">
-  OK - the partner model's native output for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner's own media type, exactly as the synchronous route's `200` returns it.
+  OK - the result stored for a request that produced one - a request that completed successfully, or a terminal one that carries both a recorded charge and a stored result - returned unchanged under the partner's own media type, exactly as the synchronous route's `200` returns it, and under the same provider-selection contract the submit accepted: without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model's native contract when possible, falling back to the alternate provider's own raw response on a translation failure - logged, never silent), the shape is this model's own native output; with `strict_mode=true` it is the alternate provider's response returned unchanged. For a model whose partner answers a generation directly as bytes, the body is those bytes under the partner's own `Content-Type` rather than `application/json`; branch on the response `Content-Type` and do not assume a JSON document.
 
-  Body: [`RouterModelOutput`](#routermodeloutput) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`
+  Body: [`RouterModelOutput`](#routermodeloutput) or raw bytes (`*/*`) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`
 </ResponseField>
 
 <ResponseField name="202" type="RouterQueueStatusResponse">
@@ -673,7 +775,7 @@ Raised for a request Router accepted and then could not complete.
 | `provider_error` | The partner provider reported a failure of its own, or returned a response Router could not interpret as a result. |
 | `provider_timeout` | The partner provider did not answer within its deadline. |
 | `insufficient_credits` | The calling workspace does not have enough credits to run the model. |
-| `model_not_found` | The `{provider}/{model}` ID names no model Router can run; an unknown provider lands here too. |
+| `model_not_found` | The `{provider}/{model}` ID names no model Router can run: an unknown provider, an unenrolled id, one the catalog has retired past its sunset date, or a catalogued ID the provider does not currently serve for Comfy. |
 
 ### Transport-level buckets
 
@@ -693,6 +795,7 @@ Raised by Router itself, before or around the call to the model.
 | `cancelled` | A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is terminal, and it is not by itself a statement about the charge. |
 | `queue_timeout` | A queued request waited past its queue timeout without ever being admitted. |
 | `request_not_found` | The `request_id` names no request of the caller's under this model. |
+| `queue_backlog_full` | The caller already has too many queued requests waiting to run, so this submit was refused. |
 
 ## Response headers
 
@@ -709,7 +812,21 @@ Raised by Router itself, before or around the call to the model.
 </ResponseField>
 
 <ResponseField name="Retry-After" type="integer">
+  Seconds to wait before re-sending the same request, unchanged.
+
+  Sent on: `503`
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Seconds to wait before polling this queued request again.
+
+  Sent on: `200`, `202`
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
   Seconds to wait before retrying the same request with the same `Idempotency-Key`.
+
+  Sent on: `409`, `504`
 </ResponseField>
 
 <ResponseField name="X-Comfy-Credits-Used" type="string">
@@ -722,6 +839,10 @@ Raised by Router itself, before or around the call to the model.
   Type: [`RouterErrorType`](#routererrortype)
 </ResponseField>
 
+<ResponseField name="X-Comfy-Refusal-Subject" type="string">
+  Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`.
+</ResponseField>
+
 <ResponseField name="X-Comfy-Request-Id" type="string">
   Server-generated identifier for this call, present on every Router response - success, 4xx and 5xx alike, because an error response is exactly when a user needs an id to quote in a support request.
 </ResponseField>
@@ -732,6 +853,10 @@ Raised by Router itself, before or around the call to the model.
 
 <ResponseField name="X-Comfy-Router-Fallback-Provider" type="string">
   Present, naming the provider, only when `fallback_provider` actually retried this call against a second provider and that retry succeeded - the provider that ultimately served the call, never one that was attempted and also failed.
+</ResponseField>
+
+<ResponseField name="X-Comfy-Upstream-Detail" type="string">
+  A bounded, sanitized reason the model provider gave for rejecting the request.
 </ResponseField>
 
 <ResponseField name="X-Comfy-Upstream-Status" type="integer">
@@ -754,6 +879,40 @@ Raised by Router itself, before or around the call to the model.
   Always `nosniff`, on every successful run of a Router model.
 </ResponseField>
 
+## Pre-flight cost estimates
+
+`POST /v2/models/{provider}/{model}/estimate` prices a body without running it, and a queued submit (`POST /v2/models/{provider}/{model}/requests`) returns the same [`RouterCostEstimate`](#routercostestimate) as `estimate` on its `201`. Both are priced from the rate card Comfy bills the run against; a run on your own provider key is not billed by Comfy (see below). While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit response omits `estimate`. The catalog still carries no prices.
+
+Read `source` before any amount. A missing figure never means free.
+
+| `source` | Carries | How to read it |
+| --- | --- | --- |
+| `exact` | `amount`, `amount_cents`, `credits` | The charge for this body at the rates in `pricing_as_of`. |
+| `estimated` | `min_amount`, `max_amount` and their `_cents` forms, no `amount` | The charge depends on a quantity the provider reports back, and the body bounds it; it is expected between the two bounds. |
+| `unknown` | `reason`, no figure | No price could be given before the run. Treat any other `source` value as `unknown`. |
+
+An `unknown` estimate's `reason` is one of:
+
+- `not_quotable`: Router cannot price this call before it runs, because it is billed on a quantity the provider reports back that the body does not bound, or the body cannot be priced as sent. Treat any unrecognized `reason` as `not_quotable`.
+- `unpriced_model`: the rate card does not price this request.
+- `byok` (queued submit only): the run uses your own provider key, so Comfy bills nothing for it.
+- `pricing_unavailable` (queued submit only): the rate card could not be read when the request was admitted. The submission is still accepted and the run is charged as usual.
+
+Where the estimate fails closed:
+
+- When a figure needs the rate card and the card is not loaded or is stale, `/estimate` answers `503` rather than a guess. The queued submit is never refused because of its estimate; it carries `source: unknown` with `reason: pricing_unavailable` instead. A call that cannot be priced before it runs at all (`not_quotable`), or a queued submit on your own provider key (`byok`), is answered without reading the card, so that `200` says nothing about whether the card is fresh.
+- `/estimate` validates the body against the model's own input schema as a default run does, so a body that fails the model's schema gets the same `422`, with the same `detail[]` shape, that the run would answer. Nothing is priced or dispatched.
+- An idempotent replay of a queued submit (`Idempotent-Replayed: true`) omits `estimate`, because the original quote is not stored.
+
+Limits of the estimate. A `200` figure is not a promise that the run is accepted, or that it is charged exactly that:
+
+- `/estimate` takes no `strict_mode` or `reject_unknown_fields`, so it checks the model's native contract only: a body a `strict_mode=true` run accepts in the alternate provider's own schema can get a `422` here, and an undeclared top-level field a `reject_unknown_fields=true` run would refuse is priced here.
+- `pricing_as_of` is when the rate card was fetched (or, when none was read, when the estimate was answered). It is not a price lock: the run is charged at the rates in force when it is rated.
+- `/estimate` quotes the leg `model_provider` names, or the native provider. It takes no `fallback_provider` or `strict_mode` parameter. A synchronous run whose fallback retry lands on another provider is charged at that provider's rate, which the estimate did not quote; `X-Comfy-Router-Fallback-Provider` on the run's response says it happened. A queued submit has no fallback, so its `estimate` quotes the leg that runs.
+- `/estimate` and a queued submit's `estimate` can price slightly different documents for the same body on a `model_provider` leg, or for a body that runs on a sibling operation. The submit's `estimate` is priced on the document the run sends.
+- `/estimate` always quotes the platform charge. A run on your own provider key is not billed by Comfy, but `/estimate` does not detect that and still returns a figure; only a queued submit answers `reason: byok`.
+- Dollars are rendered from unrounded cents, with up to 8 decimals, and a chargeable sub-cent `amount` is never shown as `0`. `credits` is `round(amount × 211, 2)`, the same conversion `X-Comfy-Credits-Used` applies to a charge, so `credits` can round to `0` for a very small non-zero price; budget on `amount` or `amount_cents`, not `credits`, when that matters. That header remains the post-hoc figure for a run; balances live on the Comfy platform.
+
 ## Result assets
 
 A model can return asset URLs, inline bytes, or both. The providers below copy selected assets onto Comfy storage and replace their URLs. This behavior depends on the model; there is no request header that selects it.
@@ -767,6 +926,8 @@ A model can return asset URLs, inline bytes, or both. The providers below copy s
 
 These lifetimes start when the URL is signed, not when you open it. Cached or replayed URLs can have less time remaining; replay does not renew them. Download the asset promptly. Only the assets named in each row are copied: `byteplus/seedream-*` and `byteplus/seededit-*` images are not covered by the BytePlus video row.
 
+Copying is performed by the model's native provider only. A run served by an alternate provider — `model_provider` naming one, or a native run whose fallback retry landed on one (disclosed by `X-Comfy-Router-Fallback-Provider`) — returns that provider's own URLs, which follow the provider's expiry and are not copied. `model_provider` values `default`, `comfy` and `comfyui` name no alternate provider, so those runs are native and copied as above, as is a `model_provider` run whose fallback retry landed back on the native provider.
+
 **Veo (`veo/*`) has a separate storage path.** In `response.videos[]`, read whichever member is present: `bytesBase64Encoded` contains the clip inline, while `gcsUri` contains a Comfy-signed HTTPS link when the environment is configured for direct provider writes to Comfy storage. That link is valid for 24 hours from the response. The latter case writes the asset directly rather than copying it, so Veo is not in the rehosting table.
 
 Other models return provider asset references or inline bytes. Provider URLs follow the provider's expiry, which can be much shorter than the lifetimes above and is not specified by the Router contract.
@@ -779,7 +940,7 @@ Whether a result is Comfy-hosted also decides whether a completed call can still
 
 ## Per-model input and output schemas
 
-Read each model's fields from `GET /v2/models/{provider}/{model}/openapi.json`. The operation's `requestBody` describes input validation; its `200` response describes the output shape and media type when authored. When `x-comfy-input-schema-authored` is false, Router accepts any JSON object without model-specific prevalidation. Provider requirements still apply. The output schemas describe results; Router does not validate returned provider payloads against them. An unauthored output may use `*/*` rather than `application/json`; inspect the response content type before decoding it.
+Read each model's fields from `GET /v2/models/{provider}/{model}/openapi.json`. That call needs an API key. The same document, for every model with an authored schema, is also published on this site without one, at `/router-schemas/{provider}/{model}.json`. That copy is a snapshot taken at the last docs update, so the endpoint is authoritative when they differ. The operation's `requestBody` describes input validation; its `200` response describes the output shape and media type when authored. When `x-comfy-input-schema-authored` is false, Router accepts any JSON object without model-specific prevalidation. Provider requirements still apply. The output schemas describe results; Router does not validate returned provider payloads against them. An unauthored output may use `*/*` rather than `application/json`; inspect the response content type before decoding it.
 
 ## Schemas
 
@@ -789,6 +950,76 @@ Whether a content-policy refusal is charged for this model. Treat an unknown val
 
 Type: `string`
 
+### RouterCostEstimate
+
+What Comfy will charge for this call, priced before dispatch from the same rate card the charge is billed against, in US dollars. `source` says how much to trust the number: `exact` carries `amount`; `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.
+
+**Fields**
+
+<ResponseField name="source" type="string" required>
+  `exact` | `estimated` | `unknown`; read any other value as `unknown`.
+</ResponseField>
+
+<ResponseField name="currency" type="string" required>
+  Always `USD`.
+</ResponseField>
+
+<ResponseField name="amount" type="string">
+  Dollars as a decimal string, e.g. "0.04", with up to 8 decimals and no exponent. A chargeable sub-cent price is never rendered as "0". Present only when `source` is `exact`.
+</ResponseField>
+
+<ResponseField name="min_amount" type="string">
+  The lower bound in dollars as a decimal string. Present only when `source` is `estimated`.
+</ResponseField>
+
+<ResponseField name="max_amount" type="string">
+  The upper bound in dollars as a decimal string. Present only when `source` is `estimated`.
+</ResponseField>
+
+<ResponseField name="amount_cents" type="number">
+  The same figure in US cents, unrounded, for arithmetic. Present with `amount`.
+
+  double
+</ResponseField>
+
+<ResponseField name="min_amount_cents" type="number">
+  `min_amount` in US cents, unrounded. Present with `min_amount`.
+
+  double
+</ResponseField>
+
+<ResponseField name="max_amount_cents" type="number">
+  `max_amount` in US cents. Present with `max_amount`.
+
+  double
+</ResponseField>
+
+<ResponseField name="credits" type="number">
+  `amount` in Comfy credits using the platform conversion ($1 = 211 credits), rounded to 2 decimals - the figure `X-Comfy-Credits-Used` will carry for an `exact` quote.
+
+  double
+</ResponseField>
+
+<ResponseField name="provider" type="string" required>
+  The provider leg this quote is for. On a queued submit it is the leg that will run.
+</ResponseField>
+
+<ResponseField name="model" type="RouterModelId" required>
+  A canonical Comfy Router model ID, `{provider}/{model}` - exactly the value that addresses the model on `POST /v2/models/{provider}/{model}`, so a caller can interpolate it into that path without re-deriving it from anything. Its `pattern` is `RouterProviderSegment` and `RouterModelSegment` joined by a single `/`, and `maxLength` is their sum plus that separator.
+
+  Type: [`RouterModelId`](#routermodelid) -- Model ID, e.g. `anthropic/claude-opus-4-6`, Up to 193 characters
+</ResponseField>
+
+<ResponseField name="pricing_as_of" type="string" required>
+  When the rate card this quote was priced from was fetched. The run is charged at the rates in force when it is rated, not at this instant. Whenever no rate card was read (`reason: pricing_unavailable`, `byok`, or a `not_quotable` call that cannot be priced from any card), this is when the quote was answered.
+
+  date-time
+</ResponseField>
+
+<ResponseField name="reason" type="string">
+  Present only when `source` is `unknown`: `not_quotable` (Router cannot price this call before it runs - its price depends on what the provider reports back, or the body does not bound a billed quantity), `unpriced_model` (the rate card does not price this request), `byok` (queued submit only: the run uses your own provider key, so Comfy bills nothing for it), or `pricing_unavailable` (queued submit only: the rate card could not be read when the request was admitted; this is transient, and the run is still charged as usual). Read any other value as `not_quotable`.
+</ResponseField>
+
 ### RouterErrorResponse
 
 Error body for authentication, access, model lookup, quota, and provider transport failures.
@@ -796,13 +1027,21 @@ Error body for authentication, access, model lookup, quota, and provider transpo
 **Fields**
 
 <ResponseField name="detail" type="string" required>
-  Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead.
+  Human-readable description of the failure, safe to surface to an end user. Not machine-parsed - branch on `error_type` instead. For `model_not_found` on a retired model, `detail` reads `<id> was retired on <YYYY-MM-DD>; use <successor>` when a successor is recorded and visible to the caller, or just `<id> was retired on <YYYY-MM-DD>` when it is not, instead of the usual suggestion list. A successor named here is always a live catalog ID the call can be re-pointed at. A model whose sunset date is still in the future is not retired: it stays listed by `GET /v2/models` and stays runnable until that date. Like the rest of `detail`, this retirement wording is for display and carries no compatibility guarantee. Two documented exceptions to the not-machine-parsed rule: on `POST /v2/models/{provider}/{model}` the `409` is answered for three unrelated conditions that share the `invalid_input` bucket, and only `detail` separates them - a `detail` beginning "this request's `image` selects the edit operation" is the multipart `model_provider` refusal, and a `detail` beginning `this request resolved a BYOK credential` is the BYOK `model_provider` refusal; neither clears with a new `Idempotency-Key`. Any other `invalid_input` `409` on that route is the key conflict. Both prefixes are stable contract terms and may be matched. Nowhere else does branching on `detail` carry a compatibility guarantee.
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at eighteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout` and `request_not_found`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
+  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at nineteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found` and `queue_backlog_full`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
 
   Type: [`RouterErrorType`](#routererrortype)
+</ResponseField>
+
+<ResponseField name="upstream_detail" type="string">
+  A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - i.e. the provider refused the request as malformed and said why. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
+</ResponseField>
+
+<ResponseField name="refusal_subject" type="string">
+  Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.
 </ResponseField>
 
 ### RouterErrorType
@@ -1045,6 +1284,12 @@ The half of `RouterQueueSubmitResponse` that is not the URL block: the new reque
   How many requests are ahead of this one in the queue, at the instant the response was composed. Zero means this request is at the front.
 
   Type: [`RouterQueuePosition`](#routerqueueposition) -- At least 0
+</ResponseField>
+
+<ResponseField name="estimate" type="RouterCostEstimate">
+  The pre-flight cost estimate for this request, present on a fresh admission when the cost estimate is enabled for the caller. It quotes the provider leg this request was pinned to (the queue has no fallback loop, so `fallback_provider` never changes the leg that runs). When no figure can be given it is still present, with `source: unknown`; the submission never fails because of the estimate. Omitted on an idempotent replay (`Idempotent-Replayed: true`), because the original quote is not stored. It is not a price lock: the run is charged at the rates in force when it is rated.
+
+  Type: [`RouterCostEstimate`](#routercostestimate)
 </ResponseField>
 
 ### RouterQueueSubmitResponse

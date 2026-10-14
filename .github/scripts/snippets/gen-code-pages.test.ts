@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   isOpaqueBody,
   loadModelSchema,
+  modalityCell,
+  modalityLine,
   modelPageRedirects,
   modelsNav,
   opaqueOutputExample,
@@ -11,13 +13,13 @@ import {
   outputSchemaFields,
   providerCoverage,
   providerRelationRows,
+  readModalities,
   readRelations,
+  renderDerivedPage,
   renderDocsJson,
+  renderModelsIndex,
   renderProvidersPage,
   servingProvidersSection,
-  swiftLiteral,
-  swiftQueueSnippet,
-  swiftSnippet,
 } from "./gen-code-pages.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
@@ -179,98 +181,34 @@ describe("modelPageRedirects: a pruned page keeps answering on its URL", () => {
   });
 });
 
-describe("swiftLiteral: the [String: Any] input literal", () => {
-  const f = (v: unknown, files: any[] = [], topKey?: string) => swiftLiteral(v, 0, files, topKey);
+describe("generated model pages omit Swift examples", () => {
+  const page = readFileSync(join(ROOT, "development/comfy-router/models/black-forest-labs/flux-1-kontext/code.mdx"), "utf8");
 
-  test("scalars: strings quoted, numbers and bools bare", () => {
-    expect(f("a cat")).toBe('"a cat"');
-    expect(f(1024)).toBe("1024");
-    expect(f(0.5)).toBe("0.5");
-    expect(f(true)).toBe("true");
-    expect(f(false)).toBe("false");
+  test("every delivery mode has Python, TypeScript, and cURL tabs", () => {
+    const python = [...page.matchAll(/^```python Python\n/gm)].length;
+    const typescript = [...page.matchAll(/^```typescript TypeScript\n/gm)].length;
+    const curl = [...page.matchAll(/^```bash cURL\n/gm)].length;
+
+    expect(python).toBeGreaterThan(0);
+    expect(typescript).toBe(python);
+    expect(curl).toBe(python);
   });
 
-  test("JSON null is NSNull(), the [String: Any] stand-in", () => {
-    expect(f(null)).toBe("NSNull()");
+  test("the page has no Swift snippets or setup copy", () => {
+    expect(page).not.toContain("Swift");
+    expect(page).not.toContain("ComfySwiftSDK");
+    expect(page).not.toContain("```swift");
   });
 
-  test("an empty object is [:], where a Swift dictionary literal differs from JSON", () => {
-    // Verified against Swift 6.1: in [String: Any] value position an empty [] infers
-    // Array<Any> and an empty [:] infers Dictionary<AnyHashable, Any>, and both BUILD.
-    // An explicit [Any]() / [String: Any]() is therefore not needed here.
-    expect(f({})).toBe("[:]");
-    expect(f([])).toBe("[]");
-  });
-
-  test("a primitive array is inline; a string never leaks a raw \\u escape", () => {
-    expect(f([1, 2, 3])).toBe("[1, 2, 3]");
-    // U+0007 (bell): JSON would spell it , which swiftc -parse rejects; Swift needs \u{7}.
-    expect(f(`bell ${String.fromCharCode(7)} here`)).toBe('"bell \\u{7} here"');
-    // A double quote inside the value is escaped for Swift, not left to close the literal early.
-    expect(f('say "hi"')).toBe('"say \\"hi\\""');
-  });
-
-  test("nested objects and arrays render as nested Swift literals", () => {
-    expect(f({ input: { prompt: "a cat" }, sizes: [1, 2] })).toBe(
-      '[\n    "input": [\n        "prompt": "a cat",\n    ],\n    "sizes": [1, 2],\n]'
-    );
-  });
-
-  test("a file input is substituted by its camelCased variable name, not its value", () => {
-    const files = [{ key: "input_image", path: "input.jpg", varName: "input_image" }];
-    expect(f("@file:input.jpg", files, "input_image")).toBe("inputImage");
-    // Only the matching top-level key is substituted; a plain string is still a literal.
-    expect(f("@file:input.jpg", files, "prompt")).toBe('"@file:input.jpg"');
-  });
-});
-
-describe("swiftSnippet / swiftQueueSnippet: both delivery modes", () => {
-  const example = { prompt: "a cat", input_image: "@file:input.jpg", width: 1024 };
-  const files = [{ key: "input_image", path: "input.jpg", varName: "input_image" }];
-
-  test("synchronous: run(), the [String: Any] input, a file read, and a field read via result.output", () => {
-    const s = swiftSnippet("bfl/flux-1-kontext", example, files, "result.sample", "image");
-    expect(s).toContain("import Foundation");
-    expect(s).toContain("import ComfySwiftSDK");
-    // The file input is read and base64-encoded once, then referenced by name in the body.
-    expect(s).toContain('let inputImage = try Data(contentsOf: URL(fileURLWithPath: "input.jpg")).base64EncodedString()');
-    expect(s).toContain('let result = try await client.models.run(\n    "bfl/flux-1-kontext",\n    input: [');
-    expect(s).toContain('"input_image": inputImage,');
-    expect(s).toContain('print("image:", result.output["result"]["sample"].stringValue ?? "")');
-    expect(s).not.toContain("models.submit");
-  });
-
-  test("queued: submit(), the poll loop over events(), and result() collect the same body", () => {
-    const q = swiftQueueSnippet("bfl/flux-1-kontext", example, files, "result.sample", "image");
-    expect(q).toContain('let handle = try await client.models.submit(');
-    expect(q).toContain("print(\"requestId:\", handle.requestId)");
-    expect(q).toContain("for try await update in handle.events() {");
-    // queuePosition is Int?, and the SDK is explicit that "nil is not position zero",
-    // so an absent position must not be reported as a real place in line.
-    expect(q).toContain('print(update.state.rawValue, update.queuePosition.map(String.init) ?? "unknown")');
-    expect(q).not.toContain("update.queuePosition ?? 0");
-    expect(q).toContain("let result = try await handle.result()");
-    expect(q).toContain('print("image:", result.output["result"]["sample"].stringValue ?? "")');
-  });
-
-  test("an empty result path (a derived page) prints the whole payload in both modes", () => {
-    const body = { prompt: "a cat" };
-    expect(swiftSnippet("m/x", body, [], "", "")).toContain("\nprint(result.output)");
-    expect(swiftQueueSnippet("m/x", body, [], "", "")).toContain("\nprint(result.output)");
-  });
-});
-
-describe("the generated pages carry a Swift tab in both delivery modes", () => {
-  test("a curated page emits two Swift fences (synchronous and queued), running client.models", () => {
-    const mdx = readFileSync(join(ROOT, "development/comfy-router/models/black-forest-labs/flux-1-kontext/code.mdx"), "utf8");
-    const fences = [...mdx.matchAll(/```swift Swift\n/g)];
-    // A synchronous and a queued Swift fence per variant (this page carries more than one model).
-    expect(fences.length).toBeGreaterThanOrEqual(2);
-    expect(fences.length % 2).toBe(0);
-    expect(mdx).toContain('try await client.models.run(');
-    expect(mdx).toContain('try await client.models.submit(');
-    // The file input the spec declares is read in the Swift snippet too.
-    expect(mdx).toContain('URL(fileURLWithPath: "input.jpg")).base64EncodedString()');
+  test("Python examples use the async SDK for both delivery modes", () => {
+    expect(page).toContain("from comfy_sdk import AsyncComfy");
+    expect(page).toContain("async with AsyncComfy() as client:");
+    expect(page).toContain("await client.models.run(");
+    expect(page).toContain("await client.models.submit(");
+    expect(page).toContain("async for update in handle.iter_events():");
+    expect(page).toContain("result = await handle.get()");
+    expect(page).toContain("asyncio.run(main())");
+    expect(page).not.toContain("from comfy_sdk import Comfy");
   });
 });
 
@@ -434,22 +372,18 @@ describe("the Providers page", () => {
     expect(grouped[0].rows.map((r) => r.aliasId)).toEqual(["fal/fal-nano-banana-pro", "fal/fal-gpt-image-2"]);
   });
 
-  test("every row links the NATIVE model's page and names the alias id and the query parameter", () => {
+  test("models are rows and providers are columns", () => {
     const page = renderProvidersPage(rows);
-    expect(page).toContain(
-      `- [Nano Banana Pro](/${NATIVE_PAGE}): \`${NATIVE}\`, served as \`${FAL_LEG.model_id}\` with \`?model_provider=fal\``
-    );
-    expect(page).toContain("## fal");
-    expect(page).toContain("## WaveSpeed");
-    // No alias page exists to link, so no row may point at one.
-    expect(page).not.toContain("(/development/comfy-router/models/fal/fal-nano-banana-pro/code)");
+    expect(page).toContain("| Model / provider | **Comfy (default)** | **fal** | **WaveSpeed** |");
+    expect(page).toContain(`| [Nano Banana Pro](/${NATIVE_PAGE}) | ✓ | ✓ | ✓ |`);
+    expect(page).not.toContain(FAL_LEG.model_id);
+    expect(page).not.toContain(WAVESPEED_LEG.model_id);
+    expect(page).not.toContain("## fal");
   });
 
   test("Comfy is listed first, as the default that covers the whole catalog", () => {
     const page = renderProvidersPage(rows);
-    expect(page).toContain("## Comfy (direct)");
-    expect(page).toContain("Every model in the [model catalog](/development/comfy-router/models) is served by Comfy Router directly");
-    expect(page.indexOf("## Comfy (direct)")).toBeLessThan(page.indexOf("## fal"));
+    expect(page).toContain("**Comfy (default)**");
   });
 
   test("its frontmatter follows the repo's title/description rules", () => {
@@ -463,18 +397,30 @@ describe("the Providers page", () => {
   });
 });
 
-describe("modelsNav: the Providers page sits beside the catalog index", () => {
+describe("modelsNav: pricing and provider indexes sit beside the catalog", () => {
   const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
 
-  test("with legs, it is the second entry of the Models group, ahead of every provider sub-group", () => {
-    expect(modelsNav(live, true).pages.slice(0, 2)).toEqual([
+  test("with legs, pricing and provider indexes precede the All Models group", () => {
+    const pages = modelsNav(live, true).pages;
+    expect(pages.slice(0, 3)).toEqual([
       "development/comfy-router/models",
+      "development/comfy-router/pricing",
       "development/comfy-router/providers",
     ]);
+    expect(pages[3]).toEqual({
+      group: "All Models",
+      pages: [{
+        group: "Kling",
+        pages: ["development/comfy-router/models/kling/kling-v3/code"],
+      }],
+    });
   });
 
-  test("with no legs the nav is exactly what it is today", () => {
-    expect(modelsNav(live, false)).toEqual(modelsNav(live));
+  test("without legs, pricing remains available and providers are omitted", () => {
+    expect(modelsNav(live, false).pages.slice(0, 2)).toEqual([
+      "development/comfy-router/models",
+      "development/comfy-router/pricing",
+    ]);
     expect(JSON.stringify(modelsNav(live))).not.toContain("providers");
   });
 });
@@ -596,5 +542,135 @@ describe("resolving the alt-provider relationship to Providers rows", () => {
       new Map()
     );
     expect(problems).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Modalities: `x-comfy-router-input-modalities` / `-output-modalities` on the
+// schema document root. Fixtures are inline for the same reason as above.
+// ---------------------------------------------------------------------------
+
+/** The minimax-h3 shape: text and image in, a video with its own soundtrack out. */
+const WITH_MODALITIES = {
+  paths: {},
+  "x-comfy-router-input-modalities": ["text", "image"],
+  "x-comfy-router-output-modalities": ["video", "audio"],
+};
+/** A document synced before the extensions existed. */
+const WITHOUT_MODALITIES = { paths: {} };
+
+const H3 = "minimax/minimax-h3";
+const H3_PAGE = "development/comfy-router/models/minimax/minimax-h3/code";
+const OLD = "minimax/minimax-old";
+const OLD_PAGE = "development/comfy-router/models/minimax/minimax-old/code";
+
+const indexPages = () => {
+  const h3 = readModalities(WITH_MODALITIES);
+  const old = readModalities(WITHOUT_MODALITIES);
+  return [
+    { model: H3, page: H3_PAGE, title: "MiniMax H3", input: h3.inputModalities, output: h3.outputModalities },
+    { model: OLD, page: OLD_PAGE, title: "MiniMax Old", input: old.inputModalities, output: old.outputModalities },
+    { model: "openai/gpt-image-2", page: "development/comfy-router/models/openai/gpt-image-2/code", title: "GPT Image 2", input: ["text", "image"], output: ["image"] },
+  ];
+};
+
+describe("readModalities", () => {
+  test("copies both lists through in the published order", () => {
+    expect(readModalities(WITH_MODALITIES)).toEqual({ inputModalities: ["text", "image"], outputModalities: ["video", "audio"] });
+  });
+
+  test("a document that predates the extensions has neither", () => {
+    expect(readModalities(WITHOUT_MODALITIES)).toEqual({ inputModalities: undefined, outputModalities: undefined });
+  });
+
+  test("a malformed or empty list is unknown, not rendered", () => {
+    const bad = readModalities({ paths: {}, "x-comfy-router-input-modalities": "text" as unknown as string[], "x-comfy-router-output-modalities": [] });
+    expect(bad).toEqual({ inputModalities: undefined, outputModalities: undefined });
+  });
+});
+
+describe("modalityCell and modalityLine", () => {
+  test("output joins secondaries onto the primary, input is a plain list", () => {
+    expect(modalityCell(["video", "audio"], "output")).toBe("Video + Audio");
+    expect(modalityCell(["text", "image"], "input")).toBe("Text, Image");
+    expect(modalityCell(["3d"], "output")).toBe("3D");
+  });
+
+  test("an unknown list renders as an em dash", () => {
+    expect(modalityCell(undefined, "input")).toBe("\u2014");
+  });
+
+  test("the page line needs both lists", () => {
+    expect(modalityLine(["text", "image"], ["video", "audio"])).toBe("**Input:** Text, Image \u00b7 **Output:** Video + Audio");
+    expect(modalityLine(["text"], undefined)).toBe("");
+    expect(modalityLine(undefined, ["video"])).toBe("");
+  });
+});
+
+describe("renderModelsIndex: modality columns and Find by output", () => {
+  const index = renderModelsIndex(indexPages(), false);
+
+  test("each provider section is a Model | ID | Input | Output table", () => {
+    expect(index).toContain("## MiniMax\n\n| Model | ID | Input | Output |\n| --- | --- | --- | --- |\n");
+    expect(index).toContain(`| [MiniMax H3](/${H3_PAGE}) | \`${H3}\` | Text, Image | Video + Audio |`);
+  });
+
+  test("a model with no published modalities shows the fallback in both cells", () => {
+    expect(index).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | \u2014 | \u2014 |`);
+  });
+
+  test("a modality containing a pipe is escaped so it cannot split the row", () => {
+    const piped = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old", input: ["text|image"], output: ["audio|video"] }], false);
+    expect(piped).toContain(`| [MiniMax Old](/${OLD_PAGE}) | \`${OLD}\` | Text\\|image | Audio\\|video |`);
+  });
+
+  test("a video+audio model is listed under both Video and Audio", () => {
+    const accordion = (title: string) => index.match(new RegExp(`<Accordion title="${title}">([\\s\\S]*?)</Accordion>`))?.[1] ?? "";
+    expect(accordion("Video \\(1\\)")).toContain(`\`${H3}\``);
+    expect(accordion("Audio \\(1\\)")).toContain(`\`${H3}\``);
+    expect(accordion("Image \\(1\\)")).toContain("`openai/gpt-image-2`");
+    expect(accordion("Image \\(1\\)")).not.toContain(`\`${H3}\``);
+  });
+
+  test("the jump list sits above the provider groups, in the fixed modality order, skipping empty ones", () => {
+    const find = index.indexOf("## Find by output");
+    expect(find).toBeGreaterThan(-1);
+    expect(find).toBeLessThan(index.indexOf("## MiniMax"));
+    const titles = [...index.matchAll(/<Accordion title="([^"]+)">/g)].map((m) => m[1]);
+    expect(titles).toEqual(["Video (1)", "Image (1)", "Audio (1)"]);
+    expect(index).not.toContain(`[MiniMax Old](/${OLD_PAGE}): `);
+  });
+
+  test("accordion tags start at column 0 so MDX does not fold a closing tag into the last list item", () => {
+    expect(index).toMatch(/^<Accordion title="Video \(1\)">$/m);
+    expect(index).toMatch(/^<\/Accordion>$/m);
+    expect(index).not.toMatch(/^[ \t]+<\/?Accordion[ >]/m);
+  });
+
+  test("with no model publishing an output list there is no empty jump section", () => {
+    const bare = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old" }], false);
+    expect(bare).not.toContain("Find by output");
+    expect(bare).not.toContain("AccordionGroup");
+  });
+
+  test("the description names the modality columns", () => {
+    expect(index).toContain('description: "Every model available through Comfy Router, grouped by provider, with the input and output modality of each."');
+  });
+});
+
+describe("renderDerivedPage: the modality line under the intro", () => {
+  const page = (doc: typeof WITH_MODALITIES | typeof WITHOUT_MODALITIES) =>
+    renderDerivedPage(H3, { authored: false, components: {}, altProviders: [], ...readModalities(doc) });
+
+  test("follows the intro line when both lists are published", () => {
+    expect(page(WITH_MODALITIES)).toContain(
+      `API Reference for \`${H3}\`, served by Comfy Router from MiniMax.\n\n**Input:** Text, Image \u00b7 **Output:** Video + Audio\n`
+    );
+  });
+
+  test("is omitted entirely on a document that predates the extensions", () => {
+    const text = page(WITHOUT_MODALITIES);
+    expect(text).not.toContain("**Input:**");
+    expect(text).not.toContain("**Output:**");
   });
 });

@@ -1,127 +1,195 @@
 ---
 title: "Comfy Router 快速入门"
 sidebarTitle: "快速入门"
-description: "从零开始，大约五分钟内，使用 Python 和 TypeScript，通过 Comfy Router 生成一张图像。"
-translationSourceHash: b61cb0b2
+description: "在几分钟内使用最新前沿媒体模型生成图像和视频。"
+translationSourceHash: fd6c0aee
 translationFrom: development/comfy-router/quickstart.mdx
 translationBlockHashes:
-  "_intro": d56c4f95
-  "Queue instead of waiting": 7b200e0e
-  "Choose a model": 34559ae1
+  "_intro": f2205e95
+  "Image-to-video and reference-to-video": 8ac90191
+  "Next steps": ed466781
 ---
-
 <div className="router-quickstart-marker" />
 
-Comfy Router 让您用一个 Comfy API 密钥，通过 `https://api.comfy.org` 调用合作伙伴模型。将模型的输入发送到 `POST /v2/models/{provider}/{model}`，然后等待已完成的结果。本示例使用 `bfl/flux-2-pro` 生成一张图像。
+Comfy Router 为你提供一套用于托管图像和视频模型的 API，地址为 `https://api.comfy.org`。请在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建 API 密钥，然后使用官方 [Python 和 TypeScript SDK](/zh/development/api-development/sdks) 或直接通过 HTTP 调用任意模型。计费方式为按使用量付费：每次请求都会从你的工作区余额中扣除积分，无需订阅。
 
-<Steps>
+<Note>
+  **使用 Higgsfield？** 保存你自己的 Higgsfield 密钥后，这些生成将计入你的 Higgsfield 账户，而不是你的 Comfy 积分。端点相同，请求体也相同。请参阅[使用你自己的密钥的 Higgsfield](/zh/development/comfy-router/higgsfield-byok)。
+</Note>
+
+<Note>
+  **用 LiteLLM 追踪支出？** Router 会在 LiteLLM 读取的响应头中报告同步运行的美元成本，因此你无需维护价格表。请参阅[将 Comfy Router 与 LiteLLM 搭配使用](/zh/development/comfy-router/litellm)。
+</Note>
+
+<Steps titleSize="h2">
   <Step title="创建 API 密钥">
-    在[您的 Comfy 工作区](https://platform.comfy.org/profile/api-keys)中创建一个密钥。在兼容 Bash 的终端中，设置：
+    在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建密钥。在兼容 Bash 的终端中，设置：
 
     ```bash
     export COMFY_API_KEY="comfyui-..."
     ```
 
-    请将 API 密钥保存在您的服务器或本地环境中。这些示例面向终端或服务器，而不是浏览器 JavaScript。
+    请将 API 密钥保存在你的服务器上或本地环境中。这些示例面向终端或服务器，不适用于浏览器 JavaScript。
+
+    Router 按请求扣除积分。如果你的工作区没有积分余额，首次实际调用会返回 `402`，并带有 `error_type: insufficient_credits`。该检查在请求体验证之前执行，因此未充值的工作区即使请求无效也可能返回 `402`。在调试请求体之前，请先到[工作区计费](https://platform.comfy.org)添加积分。
   </Step>
 
-  <Step title="为本次请求保存一个密钥">
-    为这张图像生成一次该值。如果重试同一个请求，请复用它。
-
-    ```bash
-    export COMFY_REQUEST_KEY="$(uuidgen)"
-    ```
-
-    如果 `uuidgen` 不可用，请使用其他 UUID 生成器。开始生成新图像时，请使用新的密钥。
-  </Step>
-
-  <Step title="生成一张图像">
-    选择您的语言并运行示例。图像生成可能需要几分钟。
+  <Step title="将请求加入队列">
+    选择你的语言并运行示例。生成可能需要几分钟。
 
     <CodeGroup>
 
-    ```bash cURL
-    curl --max-time 660 \
-      https://api.comfy.org/v2/models/bfl/flux-2-pro \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Idempotency-Key: $COMFY_REQUEST_KEY" \
-      -H "Content-Type: application/json" \
-      -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+    ```python Python
+    # 需要 Python 3.10+
+    # 安装：python -m pip install "comfy-sdk>=0.3.0"
+    # 保存为 quickstart.py，然后运行：python quickstart.py
+
+    import asyncio
+
+    from comfy_sdk import AsyncComfy
+
+    # AsyncComfy 会从环境变量中读取 COMFY_API_KEY。
+    async def main():
+        async with AsyncComfy() as client:
+            handle = await client.models.submit(
+                "byteplus/dreamina-seedance-2-5-260628",
+                {
+                    "content": [
+                        {
+                            "text": "A red fox trotting through a snowy pine forest",
+                            "type": "text",
+                        },
+                    ],
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                },
+            )
+            print("request_id:", handle.request_id)
+
+            # 轮询直到请求完成，每次等待服务器指定的 Retry-After。
+            async for update in handle.iter_events():
+                print(update.status, update.queue_position)
+
+            result = await handle.get()
+
+        print("result:", result)
+
+    asyncio.run(main())
     ```
 
-    ```python Python
-    # Python 3.10+
-    # Install: python -m pip install "comfy-sdk>=0.3.0"
-    # Save as quickstart.py, then run: python quickstart.py
+    ```bash cURL
+    # 1. 提交请求。保存 201 响应中的 request_id。
+    curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
 
-    import os
+    # 2. 轮询直到状态为 COMPLETED，每次都等待 Retry-After 指定的时长。
+    REQUEST_ID="paste-request-id-from-201-response"
+    curl -i "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID/status" \
+      -H "X-API-Key: $COMFY_API_KEY"
 
-    from comfy_sdk import Comfy
-
-    # Comfy reads COMFY_API_KEY from the environment.
-    with Comfy() as client:
-        result = client.models.run(
-            "bfl/flux-2-pro",
-            {"prompt": "a red teapot on a windowsill, morning light"},
-            idempotency_key=os.environ["COMFY_REQUEST_KEY"],
-            timeout=660.0,
-        )
-
-    print("image:", result["result"]["sample"])
+    # 3. 获取模型结果。
+    curl "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID" \
+      -H "X-API-Key: $COMFY_API_KEY"
     ```
 
     ```typescript TypeScript
-    // Node.js 22+
-    // Install: npm install @comfyorg/sdk@^0.3.0 --save-dev tsx
-    // Save as quickstart.mts, then run: npx tsx quickstart.mts
+    // 需要 Node.js 22+
+    // 安装：npm install "@comfyorg/sdk@>=0.4.0" --save-dev tsx
+    // 保存为 quickstart.mts，然后运行：npx tsx quickstart.mts
 
     import { comfy } from "@comfyorg/sdk";
 
-    // Comfy reads COMFY_API_KEY from the environment.
-    type FluxResult = { result: { sample: string } };
-    const idempotencyKey = process.env.COMFY_REQUEST_KEY;
-    if (!idempotencyKey) throw new Error("Set COMFY_REQUEST_KEY first.");
-
-    const { data } = await comfy.models.run<FluxResult>(
-      "bfl/flux-2-pro",
-      { prompt: "a red teapot on a windowsill, morning light" },
-      { idempotencyKey, timeoutMs: 660_000 },
+    // Comfy 会从环境变量中读取 COMFY_API_KEY。
+    const handle = await comfy.models.submit(
+      "byteplus/dreamina-seedance-2-5-260628",
+      {
+        content: [
+          {
+            text: "A red fox trotting through a snowy pine forest",
+            type: "text",
+          },
+        ],
+        duration: 5,
+        ratio: "16:9",
+        resolution: "720p",
+      },
     );
+    console.log("requestId:", handle.requestId);
 
-    console.log("image:", data.result.sample);
+    // 轮询直到请求完成，每次等待服务器指定的 Retry-After。
+    for await (const update of handle.events()) {
+      console.log(update.status, update.queuePosition);
+    }
+
+    const result = await handle.get();
+
+    console.log("result:", result.data);
     ```
 
     </CodeGroup>
 
-    两个 SDK 都会从环境中读取 `COMFY_API_KEY`。
-  </Step>
-
-  <Step title="读取并保存结果">
-    对于该模型，图片网址位于响应体中的 `result.sample`。简略的响应如下所示；下面的网址仅作示意：
-
-    ```json
-    {
-      "status": "Ready",
-      "result": { "sample": "https://example.com/generated-image.jpeg" }
-    }
-    ```
-
-    打开返回的网址，或将其下载：
-
-    ```bash
-    curl --fail --location "PASTE_IMAGE_URL_HERE" --output teapot.jpg
-    ```
-
-    请及时下载。Router 可以将 BFL 资产转存到 Comfy 存储上，但网址会过期，重放并不会为其续期。转存失败可能留下一个有效期更短的提供商网址。参见[结果资产](/zh/development/comfy-router/reference#结果资产)。
+    每次 SDK 提交调用都会创建一个幂等键，并在自动重试时复用它。cURL 示例使用 `uuidgen` 创建一个幂等键。如果该命令不可用，请改用其他 UUID 生成工具。关于状态查询、取消和结果获取的详情，请参阅[队列投递](/zh/development/comfy-router/queue)。
   </Step>
 </Steps>
 
-## 无需等待，使用队列
+## 图生视频与参考生视频
 
-`run` 会保持连接直到图像就绪。若想立即拿回 `request_id`，并在之后从当前进程或其他进程收集结果，请改为调用 `submit`（第 3 步安装的 SDK 版本已包含该功能），或通过 HTTP 将相同的请求体发送到 `POST /v2/models/{provider}/{model}/requests`。调用时请像第 2 步那样一并发送 `Idempotency-Key`：这样，在连接中断后重试的 submit 会返回原始请求，而不会再次入队并被重复计费。各 SDK 每调用一次 `submit` 都会生成一个。每个模型页面在同步代码片段旁都有一个 **Queue and collect later** 标签页，[队列投递](/zh/development/comfy-router/queue)详细介绍了状态、取消与结果收集。
+同一个 Seedance 请求可以接受图像、视频和音频输入。向 `content` 添加条目，并为每个条目设置 `role`。你发送的 role 决定 Router 执行哪种操作。计费依据 `content` 中的媒体种类，而不是 role：只要包含视频输入，就按视频到视频计费；否则只要包含图像，就按图生视频计费；只有文本的请求按文生视频计费。有些模型对文生视频和图生视频收取相同的费用。
 
-队列投递的作用范围限于你的密钥所对应的工作区，而在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys)中创建的密钥会携带该工作区。
+| 操作 | `content` 条目 |
+|---|---|
+| 文生视频 | 一个 `text` 条目 |
+| 图生视频 | 一个 `text` 条目，加上一个 `role: first_frame` 的 `image_url` 条目 |
+| 首尾帧 | 上述内容再加上一个 `role: last_frame` 的 `image_url` 条目 |
+| 参考生视频 | 一个 `text` 条目，加上若干个 `role: reference_image` 的 `image_url` 条目；在 Seedance 2.0 和 2.5 上还包括 `role: reference_video` 的 `video_url` 条目和 `role: reference_audio` 的 `audio_url` 条目 |
 
-## 选择模型
+图像 `url` 可以是公开 URL，也可以是 `data:image/<format>;base64,<content>` 字符串。提交、轮询和收集结果的方式与上面的快速上手完全一致，只有请求体不同。
 
-[浏览 Comfy Router 提供的模型](/zh/development/comfy-router/models)，查看它们的输入，然后替换本示例中的模型 ID。
+```bash Image-to-video
+curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": [
+      {"type": "text", "text": "The fox turns and runs into the trees"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/fox.png"}, "role": "first_frame"}
+    ],
+    "duration": 5,
+    "resolution": "720p"
+  }'
+```
+
+```bash Reference-to-video
+curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": [
+      {"type": "text", "text": "The character from the reference walks through a neon-lit market"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/character.png"}, "role": "reference_image"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/outfit.png"}, "role": "reference_image"}
+    ],
+    "duration": 5,
+    "ratio": "16:9",
+    "resolution": "720p"
+  }'
+```
+
+在 Seedance 2.5 上，首帧请求和首尾帧请求会从首帧获取输出的宽高比。请省略 `ratio` 或传入 `adaptive`，因为传入具体比例会被拒绝并返回 `400`。请求 schema 在 Seedance 系列之间共用，可能会列出模型忽略的 role，因此请查看每个模型的[输入 schema](/zh/development/comfy-router/models) 中的 `x-comfy-router-input-modalities` 字段，了解该模型接受哪些输入种类。例如，`reference_video` 和 `reference_audio` 需要模型在其中列出 `video` 或 `audio`。
+
+## 下一步
+
+<CardGroup cols={2}>
+  <Card title="浏览模型" icon="grid-2" href="/zh/development/comfy-router/models">
+    探索可用的模型，并查找针对具体模型的请求示例。
+  </Card>
+  <Card title="使用 Router API" icon="code" href="/zh/development/comfy-router/api">
+    了解模型发现、schema、排队请求、错误以及计费。
+  </Card>
+</CardGroup>
