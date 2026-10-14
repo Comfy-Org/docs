@@ -815,7 +815,9 @@
   }
 
   function getMappedDiscussionNumber(pathname) {
-    const term = normalizeGiscusPath(pathname);
+    // Strip trailing slash for map lookup only; unmapped pages keep raw pathname
+    // so giscus pathname+strict behavior is unchanged when creating new threads.
+    const term = normalizeGiscusPath(pathname).replace(/\/$/, '');
     const direct = GISCUS_PATH_MAP[term];
     if (direct) return direct;
     // Legacy zh-CN discussions when visiting /zh/...

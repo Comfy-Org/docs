@@ -7,8 +7,10 @@ appear on their docs pages (#1468). Looking up discussions by number bypasses
 search. This script lists Announcements discussions via GraphQL (not search)
 and rewrites the map in giscus-comments.js.
 
-Usage (requires gh auth with repo read):
+Usage (requires gh auth that can read Discussions):
   python3 scripts/generate-giscus-path-map.py
+
+Also run weekly via .github/workflows/giscus-path-map-update.yml.
 """
 
 from __future__ import annotations
@@ -30,7 +32,13 @@ def gh_graphql(query: str, **variables):
     args = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         args.extend(["-F", f"{key}={value}"])
-    return json.loads(subprocess.check_output(args, text=True))
+    try:
+        output = subprocess.check_output(args, text=True, timeout=60)
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(
+            f"gh api graphql timed out after {exc.timeout}s"
+        ) from exc
+    return json.loads(output)
 
 
 def fetch_announcement_discussions():
@@ -149,7 +157,7 @@ def main() -> int:
     pattern = re.compile(
         re.escape(MARKER_START) + r"[\s\S]*?" + re.escape(MARKER_END) + r"\n"
     )
-    new_text, count = pattern.subn(block, text, count=1)
+    new_text, count = pattern.subn(lambda _match: block, text, count=1)
     if count != 1:
         print("failed to rewrite path-map block", file=sys.stderr)
         return 1
