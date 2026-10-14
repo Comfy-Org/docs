@@ -1,0 +1,192 @@
+---
+title: "Comfy Router quickstart"
+sidebarTitle: "Quickstart"
+description: "Generate images and videos using the latest frontier media models in minutes."
+---
+
+<div className="router-quickstart-marker" />
+
+Comfy Router gives you one API for hosted image and video models at `https://api.comfy.org`. Create an API key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router), then call any model with the official [Python and TypeScript SDKs](/development/api-development/sdks) or over plain HTTP. Billing is pay per use: each request draws credits from your workspace balance, with no subscription.
+
+<Note>
+  **Using Higgsfield?** Save your own Higgsfield key and those generations bill to your Higgsfield account instead of your Comfy credits — same endpoint, same request body. See [Higgsfield with your own key](/development/comfy-router/higgsfield-byok).
+</Note>
+
+<Note>
+  **Tracking spend with LiteLLM?** Router reports a synchronous run's USD cost in the header LiteLLM reads, so you don't maintain a price table. See [Using Comfy Router with LiteLLM](/development/comfy-router/litellm).
+</Note>
+
+<Steps titleSize="h2">
+  <Step title="Create an API key">
+    Create a key in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router). In a Bash-compatible terminal, set:
+
+    ```bash
+    export COMFY_API_KEY="comfyui-..."
+    ```
+
+    Keep API keys on your server or in your local environment. These examples are for a terminal or server, not browser JavaScript.
+
+    Router charges credits per request. If your workspace has no credit balance, the first live call returns `402` with `error_type: insufficient_credits`. This check runs before body validation, so an unfunded workspace can return `402` even for an invalid request. Add credits at [workspace billing](https://platform.comfy.org) before debugging the request body.
+  </Step>
+
+  <Step title="Queue a request">
+    Choose your language and run the example. Generation can take a few minutes.
+
+    <CodeGroup>
+
+    ```python Python
+    # Python 3.10+
+    # Install: python -m pip install "comfy-sdk>=0.3.0"
+    # Save as quickstart.py, then run: python quickstart.py
+
+    import asyncio
+
+    from comfy_sdk import AsyncComfy
+
+    # AsyncComfy reads COMFY_API_KEY from the environment.
+    async def main():
+        async with AsyncComfy() as client:
+            handle = await client.models.submit(
+                "byteplus/dreamina-seedance-2-5-260628",
+                {
+                    "content": [
+                        {
+                            "text": "A red fox trotting through a snowy pine forest",
+                            "type": "text",
+                        },
+                    ],
+                    "duration": 5,
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                },
+            )
+            print("request_id:", handle.request_id)
+
+            # Poll until the request completes, waiting the Retry-After the server names.
+            async for update in handle.iter_events():
+                print(update.status, update.queue_position)
+
+            result = await handle.get()
+
+        print("result:", result)
+
+    asyncio.run(main())
+    ```
+
+    ```bash cURL
+    # 1. Submit the request. Save the request_id from the 201 response.
+    curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Idempotency-Key: $(uuidgen)" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+
+    # 2. Poll until the status is COMPLETED, waiting the Retry-After value each time.
+    REQUEST_ID="paste-request-id-from-201-response"
+    curl -i "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID/status" \
+      -H "X-API-Key: $COMFY_API_KEY"
+
+    # 3. Collect the model result.
+    curl "https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests/$REQUEST_ID" \
+      -H "X-API-Key: $COMFY_API_KEY"
+    ```
+
+    ```typescript TypeScript
+    // Node.js 22+
+    // Install: npm install "@comfyorg/sdk@>=0.4.0" --save-dev tsx
+    // Save as quickstart.mts, then run: npx tsx quickstart.mts
+
+    import { comfy } from "@comfyorg/sdk";
+
+    // Comfy reads COMFY_API_KEY from the environment.
+    const handle = await comfy.models.submit(
+      "byteplus/dreamina-seedance-2-5-260628",
+      {
+        content: [
+          {
+            text: "A red fox trotting through a snowy pine forest",
+            type: "text",
+          },
+        ],
+        duration: 5,
+        ratio: "16:9",
+        resolution: "720p",
+      },
+    );
+    console.log("requestId:", handle.requestId);
+
+    // Poll until the request completes, waiting the Retry-After the server names.
+    for await (const update of handle.events()) {
+      console.log(update.status, update.queuePosition);
+    }
+
+    const result = await handle.get();
+
+    console.log("result:", result.data);
+    ```
+
+    </CodeGroup>
+
+    Each SDK submit call creates an idempotency key and reuses it for automatic retries.
+    The cURL example creates one with `uuidgen`. If it is unavailable, use another UUID generator.
+    For status, cancellation, and collection details, see [Queued delivery](/development/comfy-router/queue).
+  </Step>
+</Steps>
+
+## Image-to-video and reference-to-video
+
+The same Seedance request takes image, video, and audio inputs. Add items to `content` and set each one's `role`. The roles you send decide the operation Router runs. Pricing follows the media kinds in `content`, not the roles: a request with any video input bills as video-to-video, otherwise one with any image bills as image-to-video, and a text-only request bills as text-to-video. Some models charge the same rate for text-to-video and image-to-video.
+
+| Operation | `content` items |
+|---|---|
+| Text-to-video | one `text` item |
+| Image-to-video | a `text` item plus an `image_url` item with `role: first_frame` |
+| First-and-last-frame | the above plus a second `image_url` item with `role: last_frame` |
+| Reference-to-video | a `text` item plus `image_url` items with `role: reference_image`, and on Seedance 2.0 and 2.5, `video_url` items with `role: reference_video` and `audio_url` items with `role: reference_audio` |
+
+An image `url` can be a public URL or a `data:image/<format>;base64,<content>` string. Submit, poll, and collect exactly as in the quickstart above. Only the body changes.
+
+```bash Image-to-video
+curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": [
+      {"type": "text", "text": "The fox turns and runs into the trees"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/fox.png"}, "role": "first_frame"}
+    ],
+    "duration": 5,
+    "resolution": "720p"
+  }'
+```
+
+```bash Reference-to-video
+curl https://api.comfy.org/v2/models/byteplus/dreamina-seedance-2-5-260628/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": [
+      {"type": "text", "text": "The character from the reference walks through a neon-lit market"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/character.png"}, "role": "reference_image"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/outfit.png"}, "role": "reference_image"}
+    ],
+    "duration": 5,
+    "ratio": "16:9",
+    "resolution": "720p"
+  }'
+```
+
+On Seedance 2.5, first-frame and first-and-last-frame requests take the output aspect ratio from the first frame. Leave `ratio` out or send `adaptive`, because a concrete ratio is refused with a `400`. The request schema is shared across the Seedance family and can list roles a model ignores, so check the `x-comfy-router-input-modalities` field in each model's [input schema](/development/comfy-router/models) for the input kinds that model accepts. For example, `reference_video` and `reference_audio` need a model that lists `video` or `audio` there.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Browse models" icon="grid-2" href="/development/comfy-router/models">
+    Explore available models and find model-specific request examples.
+  </Card>
+  <Card title="Using the Router API" icon="code" href="/development/comfy-router/api">
+    Learn about model discovery, schemas, queued requests, errors, and billing.
+  </Card>
+</CardGroup>

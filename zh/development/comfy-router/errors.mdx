@@ -1,0 +1,191 @@
+---
+title: "Comfy Router 错误与重试"
+sidebarTitle: "错误与重试"
+description: "了解 Comfy Router 的错误响应与验证详情，使用相同的 Idempotency-Key 重试，并在超时之后恢复。"
+translationSourceHash: 4aa30beb
+translationFrom: development/comfy-router/errors.mdx
+translationBlockHashes:
+  "_intro": c6490339
+  "Read errors defensively": 65a4930f
+  "Validation errors": 24eacd50
+  "Retry safely": e9469646
+  "Retry outcomes": 4ce558e5
+  "Timeouts and collection": cb83f8f6
+  "Next": 2ae95bd4
+---
+一次失败的 Router 调用会携带其 HTTP 状态码、`X-Comfy-Error-Type` 中的错误分类，以及 `X-Comfy-Request-Id` 中的请求 ID。在决定是否重试之前，请保留这三项，并保留你发送的 `Idempotency-Key`。
+
+## 防御性地读取错误
+
+失败的请求可能返回代理的 HTML 错误页面、被截断的 JSON 或纯文本。不要让 JSON 解析错误掩盖 HTTP 状态码或请求 ID。这些辅助函数在 Python 中使用 `httpx.Response`，在 TypeScript 中使用 Fetch `Response`；对于常规 SDK 调用，SDK 已经暴露了错误字段。
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+```swift
+// 添加到你的 Package.swift：
+//   .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
+import ComfySwiftSDK
+
+// SDK 会为你防御性地读取响应：Router 失败会以 ComfyError.router 抛出，
+// 其中已经提取了 HTTP 状态码、请求 ID、错误分类以及任何逐字段的
+// 验证详情，即使响应体是 HTML 错误页面或被截断的 JSON。
+// 可在任何 client.models 调用中捕获它。
+struct RouterErrorInfo {
+    let status: Int
+    let requestId: String?
+    let errorType: String
+    let message: String
+    let validation: [RouterValidationErrorDetail]
+}
+
+// `client.models.run` 是 `async throws`，因此未指定类型的 `catch` 会绑定 `Error`。
+// 这里接收 `Error`，这样捕获到的值就能直接传入。
+func readRouterError(_ error: Error) -> RouterErrorInfo? {
+    guard let comfyError = error as? ComfyError,
+          case .router(let router) = comfyError else { return nil }
+    return RouterErrorInfo(
+        status: router.httpStatus,
+        requestId: router.requestId,
+        errorType: router.errorType.rawValue,
+        message: router.detail,
+        validation: router.validationErrors
+    )
+}
+```
+
+</CodeGroup>
+
+## 验证错误
+
+Router `422` 表示在调用提供商之前验证失败，且不会计费。其响应体包含一个 `detail[]` 数组，每个被拒绝的字段对应一个条目。错误类别位于 `X-Comfy-Error-Type` 中，而不在响应体里。例如：
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+这是一个示例形状。输入 schema 较为宽松的模型可能会将缺失字段转发给提供商，而不是返回 Router `422`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `loc` | 被拒绝字段的路径，最外层片段在前。 |
+| `msg` | 人类可读的失败原因。 |
+| `type` | 提供商特定的原因，例如 `missing`、`greater_than` 或 `image_too_small`。 |
+| `ctx` | 该提供商错误可选的边界值或额外数据。 |
+
+`400` 描述的是请求级问题，例如格式错误的游标，而不是这种逐字段的验证响应体。[错误参考](/zh/development/comfy-router/reference#错误分类桶) 列出了支持的分类。在控制流中请将未知类别视为 `internal_error`，但在诊断时保留原始值。不要硬性拒绝新的错误值，也不要将预测的错误类别当作已经发生来实现。
+
+## 安全重试
+
+在**发送之前**，将 key 连同模型 ID 和请求体一并持久化保存。对于该逻辑调用的每次尝试，都复用它。Router 不会在其响应中向你返回 `Idempotency-Key`。Python SDK 会在抛出的异常中包含其 key；在 TypeScript 中，请自行保存你提供的 key。
+
+Key 在凭据所携带的工作区内共享；凭据不携带工作区时，作用域限定为该用户。使用在该作用域内唯一的 UUID，并使用同一凭据重试。重用另一个工作区成员的 key 可能会返回其记录的结果或导致冲突；更改凭据可能会发起一次单独的、计费的调用。
+
+Router 会将带 key 的响应或集合状态保留 24 小时；重试不会开启新的保留窗口。一旦该状态过期，不要指望旧 key 能恢复结果或阻止新的派发。key 也无法让已过期的资产 URL 再次可用。
+
+## 重试结果
+
+| 状态 | 分类 | 含义 | 应对方式 |
+| --- | --- | --- | --- |
+| `200` | `Idempotent-Replayed: true` 响应头 | Router 重放了一个结果，或返回了一个已收集的生成结果。 | 直接使用该结果；重放不会产生第二次 Comfy 计费。 |
+| `409` | `concurrency_limit_exceeded` | 该 key 的原始调用仍在运行。 | 等待 `Retry-After`，然后重新发送同一个 key。 |
+| `504` | `deadline_exceeded`，并带有 `Retry-After` | Router 保留了一个句柄，指向已接受的提供商工作。 | 等待所述的时间间隔，然后重新发送相同的请求和 key 以收取结果。该工作可能仍在运行。 |
+| `429` | `rate_limited` | 请求额度已耗尽。 | 等待 `Retry-After`，然后使用同一个 key 重试。 |
+| `429` | `concurrency_limit_exceeded` | 并发调用或已承诺支出的限额拒绝了该请求。 | 降低并发量，并使用同一个 key 重试。检查支出相关的响应头。 |
+| `409` | `invalid_input` | 该请求与该 key 的原始请求不同，或其记录无法重放。 | 检查冲突。如果原始请求发生了变化，请将其恢复。只有在你确实要发起一次新的、可能产生费用的调用时，才启用新的 key。 |
+| 不带收集提示的 `504`、其他 `5xx`，或无响应 | 视情况而定 | 仅凭状态无法判断工作是被接受、保留还是释放。 | 保留相同的 key 和请求。使用有边界的重试策略；不保证能够恢复。 |
+
+冲突会比较方法、模型路径、查询参数和请求体。在响应过大、响应写入失败，或存在无法安全重放的资源之后，key 可能会变得无法重放。等待并不会恢复已被消费的结果。新的 key 会发起一次新的调用；它不会取回旧的输出。
+
+在提供商分发之前发生的拒绝会释放该 key。已分发的调用可能会保留提供商句柄，或变得无法重放。不要仅凭状态码推断 key 的状态或计费情况。
+
+不要仅仅因为调用超时或连接中断就创建一个全新的 key。如果 Router 已经接受了该生成任务，新的 key 可能会创建第二次逻辑运行，从而产生第二次可计费的执行结果。请重复使用同一个 key，直到你确认原始调用无法恢复。
+
+## 超时与收集
+
+一次 Router 调用默认可能会将连接保持 10 分钟。请把客户端超时设置在该上限之上，这样你收到的就是带类型的 `504` 和请求 ID，而不是一个无从判断的本地中止。如果你的应用无法保持这么长时间的连接，[排队交付](/zh/development/comfy-router/queue) 会立即返回 `request_id`，让你稍后再收集结果。
+
+`deadline_exceeded` 是 Router 的等待上限；`provider_timeout` 是提供商的截止时间。即使调用方收到超时或已断开连接，提供商已完成的生成仍可能被计费。客户端取消会停止等待和 SDK 重试，但不一定会取消提供商已接受的工作。
+
+对于提交并轮询的提供商，保留的句柄可以让使用相同键的请求继续收集原始生成结果。被切断且没有可恢复句柄的已派发调用，可能会消耗该键却没有可重放的结果；此时用相同键重试会返回 `409`。未捕获到成功结果的提供商侧瞬时故障，仍可能释放该键以便再次尝试。仅凭句柄缺失，无法判断适用哪种结果。
+
+SDK 会在有限的预算内重试部分失败。一旦它们返回错误，请保留该请求和键，而不要生成新的。对于原始 HTTP，下面的示例只对两种明确的收集提示进行重试：
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+传入原始的模型、请求体和保存的键。这限制的是尝试次数，而不是总耗时：每次调用最长可达客户端超时时间，每次等待都遵循 `Retry-After`。HTTP 错误会保留响应以供检查；传输错误会直接抛出，且不会替换该键。如果你的应用需要更长的恢复窗口，请用保存的键安排稍后收集。
+
+## 下一步
+
+- [计费](/zh/development/comfy-router/billing)：拒绝、超时或重放的代价。
+- [请求头](/zh/development/comfy-router/headers)：幂等性、请求 ID 与重试节奏相关的请求头。
+- [API 参考](/zh/development/comfy-router/reference#错误分类桶)：Router 返回的每一个错误分类。

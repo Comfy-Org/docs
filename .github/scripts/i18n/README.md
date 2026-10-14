@@ -24,6 +24,107 @@ changelog/index.mdx
 - Do **not** commit `.github/i18n-logs/`.
 - Do commit translated docs (`zh/`, `ja/`, `ko/`) after a translation run.
 - Prose style for English MDX: see [AGENTS.md](../../../AGENTS.md#prose-style-english-mdx).
+- **Code in translations**: code lines must stay byte-for-byte identical to the
+  English source; the comment text inside a fenced block **is** translated, as
+  it is documentation prose. See [Code and comments in translations](#code-and-comments-in-translations).
+- **Values in translations**: a value the caller sends (booleans, enums, JSON
+  keys, model ids, endpoint paths) stays byte-for-byte identical, in code blocks
+  and in prose labels alike. See [Values, headings and punctuation](#values-headings-and-punctuation).
+- **Headings**: translate the heading text the way the target language's own
+  pages do, and keep any `{#anchor}` exactly as the English source has it.
+
+## Structure parity (`check-structure-parity.ts`)
+
+A localized page must carry the same MDX structure as its English source. The
+check compares, for every localized file with an English counterpart:
+
+| Compared | Detail |
+|----------|--------|
+| Components | every capitalized JSX tag, counted by name, so a new component is covered without editing the check; plus h2/h3/h4 counts |
+| Images | `<img ...>` and `![alt](...)` counted separately, so a form swap shows up |
+| Asset links | `raw.githubusercontent.com`, `github.com/Comfy-Org/*`, `cloud.comfy.org` (normalized, so embedded-docs locale paths compare equal) |
+
+Missing elements and links fail; extra elements warn, because a locale may add
+something on purpose (the zh home page carries an extra social icon). Frontmatter
+and fenced code blocks are stripped first (CommonMark fence rules: the closer must
+match the opener's character, be at least as long, and carry nothing else), so a
+`<Card>` shown inside a code sample is never counted. Deleted or renamed localized
+pages are skipped instead of crashing the run.
+
+```bash
+bun .github/scripts/i18n/check-structure-parity.ts              # changed files, both directions
+bun .github/scripts/i18n/check-structure-parity.ts --all        # whole repo, backlog report
+bun .github/scripts/i18n/check-structure-parity.ts --base=<ref> # explicit base
+bun .github/scripts/i18n/check-structure-parity.ts --json       # machine readable
+```
+
+Changed-file mode covers both directions:
+
+- a **localized page changed** -> compared with its English source, blocking;
+- an **English page changed** -> every existing ja/zh/ko counterpart is compared
+  with the updated English page. This direction only fails when the counterpart
+  matched the English page *before* the change, so pre-existing debt in untouched
+  pages is reported as a warning and never blocks a pull request.
+
+That keeps it a ratchet: the check bites the area a pull request touches, and the
+backlog is burned down with `--all` (131 files when the gate landed).
+
+Exemptions live in `EXEMPT_PATTERNS`: `pricing.mdx` (hand translated),
+`api-reference/**` (generated), `snippets/**` (imported), root
+`comfy-router-*.mdx` orphans, `changelog/**` (a separate pipeline) and
+`docs.json` (navigation). Workflow:
+[`.github/workflows/structure-parity.yml`](../../workflows/structure-parity.yml).
+
+## Values, headings and punctuation
+
+| Part | Rule |
+|------|------|
+| Booleans, enums and other values the caller sends (`true`, `false`, `auto`, `disabled`, `standard`, `fast`, `mp4`, `mov`) | byte-for-byte identical to the English source, including the label punctuation (`true:` stays `true:`, `standard =` stays `standard =`) and its own line |
+| JSON keys and values, model ids, endpoint paths (`seedream-5.0-pro`, `POST /v2/models/byteplus/{model}`) | byte-for-byte identical, also inside prose |
+| Explanation that follows a label (`true: Returns the last frame`) | translated; the label itself is untouched |
+| Heading text (`## Schema`, `### Input`, `### Output`, `## Examples`) | translated as the target language's pages do it: ja スキーマ / 入力 / 出力, ko 스키마 / 입력 / 출력, zh 输入 / 输出. zh model pages keep `## Schema` in English |
+| `{#anchor}` inside a heading | identical to the English source, never localized, never dropped |
+| Chinese prose punctuation | full-width (，。：；（）), not ASCII commas or colons |
+| Terminology | the glossary (`glossary.mjs` plus the per-language overrides) is authoritative; the same term is rendered the same way inside a file; no invented words (fixed is 固定, not 顶固), and senses kept apart: a URL or document hyperlink is a 链接, a link between nodes in a graph (LLink, node connections) is a 连线 |
+| Sentence polarity | unchanged from the English: a consequence such as `so it applies here` must never read as `so it does not apply here` |
+
+These are also enforced in the prompts: `buildTranslationInstructions` in
+`translate-i18n.ts` tells the translator, and the judge prompt in `review-i18n.ts`
+reports a translated literal, an English heading, ASCII punctuation in Chinese
+prose or a reversed polarity as an issue.
+
+## Code and comments in translations
+
+A fenced code block splits into two halves that are treated differently:
+
+| Part | Rule |
+|------|------|
+| Code lines: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag, the closing fence | byte-for-byte identical to the English source |
+| Comment text: whole-line comments and trailing comments after code | translated into the target language, kept on the same line and position |
+| Python docstrings: a standalone triple-quoted string that is the first statement of a `def`, `class` or module | translated, like a comment (a triple-quoted string used as a value in code stays code) |
+
+`validateTranslatedBlock` in `chunked-translate.ts` compares code with
+`codeBlocksMatch()`, which strips comments (per the fence's language tag) and
+Python docstrings before comparing. A translated comment passes; a changed,
+dropped or commented-out code line still fails, and the block is rejected and retried.
+
+Boundary rules keep the comparison honest:
+
+- shebang lines (`#!...`) are code, never comments
+- Python-style `#` and `//` open a comment outside a string or regex literal,
+  so `value=1# note` and `run();// note` are recognized too
+- shell-style `#` and every `--` need a word boundary, so a CLI flag such as
+  `--deployment` is never mistaken for a comment
+- C-style block comments are tracked across lines, and a generator method that
+  starts with `*` stays code; comment markers inside quoted strings or JavaScript
+  regex and multiline template literals stay code
+- a docstring is only a standalone triple-quoted string that opens a suite (first statement
+  after a `def`, `class` or module): a triple-quoted value inside an expression
+  or conditional stays code; a line with other executable code stays code too
+- opening and closing fence lines must match the English source exactly
+
+When editing a translation by hand, translate the comments and docstrings too,
+and keep every code line untouched.
 
 ## How translation works
 
@@ -72,6 +173,29 @@ pnpm translate:repair-truncated -- --lang ko # re-translate via API when content
 `repair-fences` is a **structural** fix (adds `\`\`\`` at the end). It does not
 restore code lines lost inside the block. Use `repair-truncated` when the block
 body itself was truncated.
+
+### Anchor fragments (automatic)
+
+Translation localizes heading text, and Mintlify derives heading slugs from the
+**localized** text. Links inside translated files keep the English anchor
+fragment: the link text is translated but the `#...` fragment still points at
+the English slug (e.g. `#feedback` while the heading is `## フィードバック`,
+whose real anchor is `#フィードバック`). Those anchors are dead on the
+translated page and make the `check-anchors` CI job fail. `translate` therefore
+**automatically rewrites anchor fragments after every run** to the localized
+slug of the target page (English-order alignment against the source page, with
+a hyphen/underscore fallback; links whose target structure drifted are reported
+for manual review).
+
+```bash
+pnpm translate:fix-anchors                 # fix all translated pages + snippets
+pnpm translate:fix-anchors -- --lang ko    # one language
+pnpm translate:fix-anchors -- --dry-run    # report only (no writes)
+pnpm translate:fix-anchors -- path/to/page.mdx
+```
+
+`fix-anchor-slugs.ts` mirrors `check-anchors.py`'s slug rules and fence
+handling, so it never rewrites links the checker would consider valid.
 
 ### Long pages (chunked translation)
 
@@ -131,6 +255,27 @@ pnpm translate -- tutorials/partner-nodes/pricing.mdx --lang ko
 pnpm translate:check-truncation -- --lang ko
 pnpm translate:repair-truncated -- --lang ko   # force re-translate flagged files
 ```
+
+### Router pricing page
+
+`pnpm router-pricing:gen` renders the English, Japanese, Simplified Chinese,
+and Korean Comfy Router pricing pages from one shared renderer. Public labels,
+options, and rate units are localized. Model names, provider names, Router IDs,
+technical keys, and numeric rate amounts stay unchanged.
+Internal links use a localized target when it exists and fall back to the English
+page when that page has no translation yet.
+Translation hashes are synced so `pnpm translate` skips these pages when their
+English source has not changed. This path does not need the translation API key.
+
+`pnpm router-pricing:check` checks the English page against the renderer and all
+three localized pages, including their translation metadata, without writing files. Pricing
+page edits trigger this check on both same-repository and fork pull requests.
+
+The localized files are regular translation outputs under `ja/`, `zh/`, and
+`ko/`. For same-repository pull requests, the Router pricing workflow runs this
+generation automatically and commits the locale files to the PR branch. For
+fork pull requests, run the command locally and commit the locale files with
+the English page.
 
 ### Sync hashes after manual edits
 
@@ -238,9 +383,10 @@ pnpm glossary:sync -- --lang ko    # one language
 pnpm glossary:sync:dry-run         # report counts without writing
 ```
 
-Frontend path resolves in order: `--frontend <path>` → `FRONTEND_LOCALES_PATH`
-env → `frontend_locales_path` in `translation-config.json` →
-`../ComfyUI_frontend/src/locales`.
+Frontend path resolves in order:
+
+- **Remote (default):** `frontend_locales_url` in `translation-config.json` (GitHub raw `main` branch). Override with `FRONTEND_LOCALES_URL` or `--frontend-url <url>`.
+- **Local (optional):** `--frontend <path>` or `FRONTEND_LOCALES_PATH` when you need an offline or forked checkout.
 
 ### Design notes
 
