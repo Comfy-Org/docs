@@ -8,7 +8,7 @@ English is the source of truth. **Docs translation**, **CMS changelog sync**, an
 |-------|------|----------|
 | **docs-i18n-translate** | [.cursor/skills/docs-i18n-translate/SKILL.md](.cursor/skills/docs-i18n-translate/SKILL.md) | Translating MDX to ja/zh/ko, `pnpm translate`, glossary |
 | **docs-i18n-review** | [.cursor/skills/docs-i18n-review/SKILL.md](.cursor/skills/docs-i18n-review/SKILL.md) | Reviewing translation quality, `pnpm translate:review` |
-| **cms-changelog-sync** | [.cursor/skills/cms-changelog-sync/SKILL.md](.cursor/skills/cms-changelog-sync/SKILL.md) | Strapi release notes, `pnpm cms:prepare`, `pnpm cms:sync` |
+| **cms-changelog-sync** | [.cursor/skills/cms-changelog-sync/SKILL.md](.cursor/skills/cms-changelog-sync/SKILL.md) | Strapi release notes, `pnpm cms:prepare`, `pnpm cms:sync` / `cms:publish`. **Cloud hard gate:** before any Cloud push/publish, ask the user to confirm Cloud; default is comfyui only |
 
 Load the matching skill and its README before changing that pipeline.
 

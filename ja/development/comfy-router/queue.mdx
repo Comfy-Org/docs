@@ -1,83 +1,83 @@
 ---
-title: "キューによる配信"
-sidebarTitle: "キューによる配信"
-description: "Comfy Router にリクエストを送信すると、すぐにリクエスト ID が返ります。その後はステータスを追跡し、結果を取得するかキャンセルできます。Python、TypeScript、cURL に対応し、各 SDK の submit、subscribe、handle を使用します。"
-translationSourceHash: fd615e57
+title: "Comfy Router リクエストのキューイング"
+sidebarTitle: "キューのリクエスト"
+description: "Comfy Router の実行を送信してステータスをポーリングし、後からキューのルートまたは Python / TypeScript SDK で結果を収集またはキャンセルします。"
+translationSourceHash: 2d60a78d
 translationFrom: development/comfy-router/queue.mdx
 translationBlockHashes:
-  "_intro": fbfae216
-  "Two delivery modes, one request": c4e5e326
-  "The four routes": c1baed5a
-  "Queue a request": 5afd30d4
-  "What the responses look like": 67d7093a
+  "_intro": bb9adff0
+  "Choose a delivery mode": 04a18c01
+  "Queue routes": e666df87
+  "Submit and collect a request": 8e776a91
+  "Queue response shapes": 5d24692b
   "Idempotency and billing": b03b4156
-  "Errors": 3ce9124d
-  "Next": f52db897
+  "Queue error responses": 01118a93
+  "Next": af716b3d
 ---
 
 `POST /v2/models/{provider}/{model}` は、モデルの処理が完了するまで接続を保持します。キュー経由の配信は同じモデル ID と同じネイティブなリクエストボディを使用しますが、Router が実行を受理した時点で応答を返します。`request_id` をすぐに受け取り、準備ができたときに同じプロセスまたは別のプロセスから結果を取得します。
 
-**同期ルートには 10 分の上限があります。** この上限こそがこのページが存在する理由です。Router のデフォルトのデッドラインは 10 分（デプロイごとに設定可能）であり、同期呼び出しがそこに達すると、プロバイダーがまだ処理を続けていても `504` / `deadline_exceeded` で切断されます。それより長く実行される可能性がある生成や、10 分間接続を開いたままにできない呼び出し元は、キューを使用する必要があります。デッドラインが課金について何を伝え、何を伝えないかについては、[サーバーのデッドラインで呼び出しが切断される](/ja/development/comfy-router/limitations#サーバーのデッドラインで呼び出しが打ち切られます) を参照してください。
+**同期ルートには 10 分の上限があります。** Router のデフォルトのデッドラインはデプロイごとに設定できます。同期呼び出しがこのデッドラインに達すると、プロバイダーがまだ処理を続けていても `504` / `deadline_exceeded` で切断されます。実行がデッドラインを超える可能性がある場合、または呼び出し元がそれほど長く接続を開いたままにできない場合は、その実行をキューに入れてください。デッドラインが課金について何を伝え、何を伝えないかについては、[サーバーのデッドラインで呼び出しが打ち切られます](/ja/development/comfy-router/limitations#サーバーのデッドラインで呼び出しが打ち切られます) を参照してください。
 
-キューは、1 回の生成が自分が保持できる接続時間より長引く可能性がある場合、Web リクエストが今すぐ応答を返す必要がある場合、あるプロセスで送信して別のプロセスで結果を取得する場合、あるいは多数の生成を同時に進行させたい場合に使用します。順序付け、受付、リトライ、タイムアウト、課金、有効期限はすべてサーバー側で決定されます。SDK はその上にポーリングと使いやすさを追加するだけで、それ以外は何も行いません。
+キューは、1 回の生成が自分が保持できる接続より長引く可能性がある場合、Web リクエストが今すぐ応答を返す必要がある場合、あるプロセスで送信して別のプロセスで結果を取得する場合、あるいは多数の生成を同時に進行させたい場合に使用します。順序付け、受付、リトライ、タイムアウト、課金、有効期限はすべてサーバー側で決定されます。SDK はその上にポーリングと使いやすさを追加するだけで、それ以外は何も行いません。
 
-## 2つの配信モード、1つのリクエスト
+## 配信モードを選択する
 
 | | 同期 | キュー中 |
 | --- | --- | --- |
 | ルート | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
-| 応答 | モデルのネイティブ出力を含む `200` | `request_id` と3つのURLを含む `201` |
-| 結果 | レスポンス内 | 後で収集され、バイト単位で同一の出力 |
-| 時間制限 | Router の [10分のデッドライン](/ja/development/comfy-router/limitations#サーバーのデッドラインで呼び出しが打ち切られます)、その後 `504` / `deadline_exceeded` | 実行には制限なし。完了した結果は [24時間保持されます](#idempotency-and-billing) |
+| 応答 | モデルのネイティブ出力を含む `200` | `request_id` と 3 つの URL を含む `201` |
+| 結果 | レスポンス内 | 後で収集される。バイト単位で同一の出力 |
+| 時間制限 | Router の[10 分のデッドライン](/ja/development/comfy-router/limitations#サーバーのデッドラインで呼び出しが打ち切られます)、その後 `504` / `deadline_exceeded` | 実行には制限なし。完了した結果は[24 時間保持されます](#冪等性と課金) |
 
-SDK（`comfy-sdk` および `@comfyorg/sdk`、0.3.0 以降）は、`run` の隣にキューを3つのメソッドとして公開しています:
+SDK（`comfy-sdk` と `@comfyorg/sdk`、0.3.0 以降）は、キューを `run` の隣にある 3 つのメソッドとして公開しています：
 
-- **`submit(model, body)`** はリクエストを送信し、すぐにハンドルを返します。ハンドルは `status()`、`get()`、`cancel()`、そしてイベントイテレータ（Python では `iter_events()`、TypeScript では `events()`）を備えています。
-- **`subscribe(model, body, ...)`** は送信、ポーリング、収集を1回の呼び出しで行い、進捗コールバックを備えています。
-- **`handle(model, request_id)`** は2つのIDから別のプロセスでハンドルを再構築します。呼び出しは発生しません。
+- **`submit(model, body)`** はリクエストを送信し、すぐにハンドルを返します。ハンドルは `status()`、`get()`、`cancel()` とイベントイテレータ（Python では `iter_events()`、TypeScript では `events()`）を備えています。
+- **`subscribe(model, body, ...)`** は送信、ポーリング、収集を 1 回の呼び出しにまとめたもので、進捗コールバックを備えています。
+- **`handle(model, request_id)`** は 2 つの ID から別のプロセスでハンドルを再構築します。呼び出しは行われません。
 
-両方の ID がリクエストの指定に関わるため、どの場面でも両方の ID が必要です。ルートは `/v2/models/{provider}/{model}/requests/{request_id}` です。
+どちらの ID もリクエストを指定するために使われるため、どこでも両方の ID が必要です。ルートは `/v2/models/{provider}/{model}/requests/{request_id}` です。
 
 <Note>
-  ここでの `events()` は、Comfy Cloud クライアントの `job.events()` では**ありません**。こちらはステータスルートをポーリングし、Router リクエストのキューの観測結果（ステータスとキュー位置）を返します。Cloud の方は、ComfyUI ワークフロージョブの進行状況、プレビュー、出力を運ぶライブ SSE ストリームです。`subscribe()` はまた別のもので、イテレータではなく、送信、ポーリング、収集を1回の呼び出しにまとめたものです。詳しくは [`events()` is not `subscribe()`](/ja/development/api-development/sdks#events-は-subscribe-ではない) を参照してください。
+  ここでの `events()` は、Comfy Cloud クライアントの `job.events()` では**ありません**。こちらはステータスルートをポーリングし、Router リクエストのキューの観測値（ステータスとキュー位置）を返します。Cloud の方は、進捗、プレビュー、出力を伴う ComfyUI ワークフロージョブのライブ SSE ストリームです。`subscribe()` はまた別のもので、イテレータでは一切なく、送信、ポーリング、収集を 1 回の呼び出しにまとめたものです。詳しくは [`events()` is not `subscribe()`](/ja/development/api-development/sdks#events-は-subscribe-ではない) を参照してください。
 </Note>
 
-## 4つのルート
+## キュールート
 
 | ルート | 応答 |
 | --- | --- |
-| `POST /v2/models/{provider}/{model}/requests` | `request_id`、`status`、`queue_position`、`status_url`、`response_url`、`cancel_url` を含む `201` |
-| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | 現在の `status` と `queue_position`、および `Retry-After` ヒントを含む `200` |
-| `GET /v2/models/{provider}/{model}/requests/{request_id}` | 完了後はモデルネイティブの出力を含む `200`、未完了の間はステータスボディを含む `202` |
+| `POST /v2/models/{provider}/{model}/requests` | `201` と `request_id`、`status`、`queue_position`、`status_url`、`response_url`、`cancel_url` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200` と現在の `status` および `queue_position`、さらに `Retry-After` ヒント |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | 完了時はモデルのネイティブ出力とともに `200`、未完了時はステータスボディとともに `202` |
 | `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED`、または `409` `ALREADY_COMPLETED` |
 
-`status` は `IN_QUEUE`、`IN_PROGRESS`、`COMPLETED` のいずれかです。失敗やキャンセル済みを表す独立したステータスはありません。成功しなかったリクエストは `error_type` を持つ `COMPLETED` になるため、4つ目のステータス値ではなく、このフィールドの有無で分岐してください。SDK はこれを自動で処理します。`get()` は失敗を結果として返すのではなく、型付きの Router エラーを送出または reject します。
+`status` は `IN_QUEUE`、`IN_PROGRESS`、`COMPLETED` のいずれかです。失敗やキャンセル済みという独立したステータスはありません。成功しなかったリクエストは `error_type` を持つ `COMPLETED` となるため、4 つ目のステータス値ではなく、このフィールドの有無で分岐してください。SDK はこれを自動で処理します。`get()` は失敗を結果として返すのではなく、型付きの Router エラーを発生させるか reject します。
 
-進捗イベント、webhook、優先度レベルはありません。リクエストを追跡する手段はステータスルートです。[API リファレンス](/ja/development/comfy-router/reference#エンドポイント)に、各ルートの完全なコントラクトが記載されています。
+進捗イベント、Webhook、優先度レベルはありません。リクエストを追跡する方法はステータスルートです。[API リファレンス](/ja/development/comfy-router/reference#エンドポイント) に各ルートの完全なコントラクトが記載されています。
 
-## リクエストをキューに登録する
+## リクエストの送信と収集
 
-[クイックスタート](/ja/development/comfy-router/quickstart)が送信するのと同じリクエストをキューに登録し、画像を収集します。まずキーを `COMFY_API_KEY` としてエクスポートしてください。
+これは、[クイックスタート](/ja/development/comfy-router/quickstart)が送信するのと同じリクエストをキューに入れ、画像を収集します。まず、キーを `COMFY_API_KEY` としてエクスポートしてください。
 
 <CodeGroup>
 ```python Python
 from comfy_sdk import Comfy
 
-# 環境変数 COMFY_API_KEY を読み取ります。
-# 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動リトライで再利用します。
+# 環境変数から COMFY_API_KEY を読み取ります。
+# 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動リトライのために再利用します。
 with Comfy() as client:
     handle = client.models.submit(
         "bfl/flux-2-pro",
         {"prompt": "a red teapot on a windowsill, morning light"},
     )
-    print("request_id:", handle.request_id)  # モデル ID と合わせれば、別プロセスが必要とする情報はこれだけです
+    print("request_id:", handle.request_id)  # モデル ID と合わせて、別のプロセスが必要とするすべてです
 
-    # リクエストが完了するまでポーリングし、サーバーが示す Retry-After の秒数だけ待機します。
+    # リクエストが完了するまでポーリングし、サーバーが指定する Retry-After を待ちます。
     for update in handle.iter_events():
         print(update.status, update.queue_position)
 
     # プロバイダー自身のペイロードで、models.run() が返すのと同じ値です。
-    # 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを送出します。
+    # 失敗またはキャンセル済みのリクエストは、ここで型付きの Router エラーを発生させます。
     result = handle.get()
 
 print("image:", result["result"]["sample"])
@@ -86,20 +86,20 @@ print("image:", result["result"]["sample"])
 ```typescript TypeScript
 import { comfy } from "@comfyorg/sdk";
 
-// 環境変数 COMFY_API_KEY を読み取ります。
-// 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動リトライで再利用します。
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動リトライのために再利用します。
 type FluxResult = { result: { sample: string } };
 const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
   prompt: "a red teapot on a windowsill, morning light",
 });
-console.log("requestId:", handle.requestId); // モデル ID と合わせれば、別プロセスが必要とする情報はこれだけです
+console.log("requestId:", handle.requestId); // モデル ID と合わせて、別のプロセスが必要とするすべてです
 
-// リクエストが完了するまでポーリングし、サーバーが示す Retry-After の秒数だけ待機します。
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After を待ちます。
 for await (const update of handle.events()) {
   console.log(update.status, update.queuePosition);
 }
 
-// models.run() が返すのと同じ結果です。失敗またはキャンセルされたリクエストは、ここで reject されます。
+// models.run() が返すのと同じ結果です。失敗またはキャンセル済みのリクエストは、ここで reject されます。
 const result = await handle.get();
 if (result.kind !== "json") throw new Error("expected a JSON result");
 
@@ -116,23 +116,23 @@ curl "$BASE/requests" \
   -H "Content-Type: application/json" \
   -d '{"prompt": "a red teapot on a windowsill, morning light"}'
 
-# 2. status が COMPLETED になるまでポーリングし、各レスポンスが示す Retry-After 秒だけ待機します。
+# 2. ステータスが COMPLETED になるまでポーリングし、各レスポンスが指定する Retry-After 秒を待ちます。
 REQUEST_ID="<request_id from the 201 body>"
 curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
 
-# 3. 収集。完了時はモデルネイティブの出力とともに 200、まだ実行中はステータスボディとともに 202 を返します。
+# 3. 収集。モデルのネイティブ出力で 200、まだ実行中の場合はステータスボディで 202。
 curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
 
-# 4. 完了していないリクエストをキャンセルします。あくまでリクエストであり、保証ではありません。
+# 4. 完了していないリクエストをキャンセルします。要求であり、保証ではありません。
 curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
 ```
 </CodeGroup>
 
-各[モデルページ](/ja/development/comfy-router/models)では、同期スニペットの隣にある **Queue and collect later** タブに、そのモデル向けのこの形が記載されています。
+すべての[モデルページ](/ja/development/comfy-router/models)には、**後でキューに入れて収集** の下に、同期スニペットと並んでそのモデル用の同じ構成が掲載されています。
 
-### 進捗を追跡して 1 回の呼び出しで収集する
+### 進捗の追跡と1回の呼び出しでの収集
 
-待機しつつ進捗も表示したい場合は、`subscribe` が送信、ポーリング、収集を 1 回の呼び出しにまとめます:
+待機しつつ進捗も表示したい場合は、`subscribe` が送信、ポーリング、収集を1回の呼び出しにまとめます。
 
 <CodeGroup>
 ```python Python
@@ -159,11 +159,11 @@ const result = await comfy.models.subscribe<FluxResult>(
 ```
 </CodeGroup>
 
-タイムアウトはクライアント側の制限であり、サーバー側の意味はありません。タイムアウトすると、`subscribe` は例外を送出する前にベストエフォートのキャンセルを 1 回行います。キャンセルは、まだ実行が始まっていないリクエストにのみ効果があります。パートナー側ですでに実行中の生成は、誰が収集するかに関わらず完了し、課金されます。呼び出し元より長く存続すべきリクエストには `submit` を使用してください。
+タイムアウトはクライアント側の制限であり、サーバー側の意味はありません。タイムアウトになると、`subscribe` は例外を発生させる前に一度ベストエフォートのキャンセルを行います。キャンセルは、まだ実行が開始されていないリクエストにのみ効果があります。パートナーですでに実行中の生成は、誰かが収集するかどうかに関わらず完了し、課金されます。リクエストが呼び出し元より長く存続すべき場合は、`submit` を使用してください。
 
-### 別のプロセスから収集する
+### 別のプロセスからの収集
 
-`request_id` はモデル ID の隣に保存してください。ハンドルを再構築するには両方が必要で、実際に使うまで呼び出しは行われません。
+`request_id` をモデル ID と一緒に保存します。ハンドルを再構築するには両方が必要で、使用するまで呼び出しは行われません。
 
 <CodeGroup>
 ```python Python
@@ -179,7 +179,7 @@ const result = await handle.get();
 
 ### ステータスの確認またはキャンセル
 
-`status()` は 1 回のポーリングで、現在の状態を返します。`cancel()` は、まだ完了していないリクエストを停止するようサーバーに要求します。これはリクエストであり、保証ではありません。パートナー側ですでに処理中の実行はそのまま完了する可能性があり、次に `status()` が返す内容が真実です。
+`status()` は1回のポーリングで、現在の状態を返します。`cancel()` は、完了していないリクエストを停止するようサーバーに要求します。これは要求であり、保証ではありません。パートナーですでに送信中の実行はそのまま完了する可能性があり、次に `status()` が返すものが真実です。
 
 <CodeGroup>
 ```python Python
@@ -199,7 +199,7 @@ await handle.cancel();
 
 ### 非同期 Python
 
-`AsyncComfy` はすべての名前、引数、引数の順序をミラーします。`run_async` が存在しないのと同じ理由で、`submit_async` も存在しません。
+`AsyncComfy` はすべての名前、引数、引数の順序を反映しています。`run_async` が存在しないのと同じ理由で、`submit_async` も存在しません。
 
 ```python
 from comfy_sdk import AsyncComfy
@@ -214,13 +214,13 @@ async with AsyncComfy() as client:
     result = await handle.get()
 ```
 
-### SDK が送出するエラー
+### SDK が発生させるエラー
 
-成功せずに終了したリクエストは、`error_type` を持つ `COMPLETED` として報告されます。`get()` と `subscribe()` はそれをバケットごとの型付き Router エラーに変換します。Python では `comfy_sdk.router_exceptions` のクラス、TypeScript では `routerErrors.*` です。イベントイテレーターはこのケースでは例外を送出しません。これはキューの進捗を映すビューだからです。`error_type` を持つ完了は最後の観測として yield され、収集を行うのは `get()` です。送信時の `403` `not_enabled` は `NotEnabled` として届き、終端となるため、SDK はリトライしません。
+成功せずに完了したリクエストは、`error_type` 付きの `COMPLETED` として報告されます。`get()` と `subscribe()` はそれを該当するバケットの型付き Router エラーに変換します。Python では `comfy_sdk.router_exceptions` のクラス、TypeScript では `routerErrors.*` です。イベントイテレーターはこのケースでは例外を発生させません。これはキュー進捗のビューであるためです。`error_type` を持つ完了は最後の観察として yield され、収集するのは `get()` です。送信時の `403` `not_enabled` は `NotEnabled` として届き、ターミナルであるため、SDK はそれをリトライしません。
 
-## レスポンスの形式
+## キューレスポンスの形状
 
-**送信、`201`。** この時点で `status` は常に `IN_QUEUE` です。3 つの URL は絶対 URL で、送信時と同じキーで認証されます。
+**送信、`201`。** この時点で `status` は常に `IN_QUEUE` です。3つの URL は絶対 URL で、送信時と同じキーで認証されます。
 
 ```json
 {
@@ -233,9 +233,9 @@ async with AsyncComfy() as client:
 }
 ```
 
-`request_id` は送信時の `X-Comfy-Request-Id` ヘッダーの値でもあります。モデル ID も一緒に控えておいてください。リクエストはその両方で指定されます。
+`request_id` は送信時の `X-Comfy-Request-Id` ヘッダーの値でもあります。モデル ID をその隣に保持してください。リクエストはこの両方で指定されます。
 
-**ステータス、`200`。** 同じ形状で、現在の状態が入ります。`queue_position` は自分の前にあるリクエストを数え、実行が先頭に来ると `0` になります。このレスポンスの `Retry-After` は、再度ポーリングする価値があるのはいつかについての Router の推定値です。これはヒントであり制約ではなく、キューの後方にあるリクエストはすでに実行中のものよりも長く待つよう通知されます。より速くポーリングしても早く何かが分かるわけではなく、自身のレート制限の許容量を消費するだけです。
+**ステータス、`200`。** 同じ形状で、現在の状態が入ります。`queue_position` は自分の前に並んでいるリクエスト数を数えたもので、実行が先頭に到達すると `0` になります。このレスポンスの `Retry-After` は、再度ポーリングする価値があるタイミングについての Router の見積もりです。これは目安であり、上限ではありません。キューの最後尾にあるリクエストには、すでに実行中のものより長く待つよう指示されます。より速くポーリングしても早く分かることはなく、自分のレート制限の枠を消費するだけです。
 
 ```json
 {
@@ -248,7 +248,7 @@ async with AsyncComfy() as client:
 }
 ```
 
-成功せずに完了したリクエストは `COMPLETED` で、`error_type` を持ち、結果の読み取りが `X-Comfy-Error-Type` に付けるのと同じ粗いバケットを運びます。このフィールドは成功時には `null` ではなく存在しません。
+成功せずに完了したリクエストは、`error_type` を伴う `COMPLETED` となり、結果の読み取りが `X-Comfy-Error-Type` に付けるのと同じ大まかなバケットを持ちます。このフィールドは成功時には `null` ではなく存在しません。
 
 ```json
 {
@@ -261,46 +261,34 @@ async with AsyncComfy() as client:
 }
 ```
 
-**結果。** `200` はモデル自身のネイティブ出力を、同じモデルと入力に対して同期ルートが返すものとバイト単位で完全に同一のまま、プロバイダー自身の `Content-Type` で返します。リクエストが未完了の間、読み取りは上記のステータスボディを伴う `202` を返すため、結果 URL だけをポーリングするクライアントは 1 つの型だけを解析します。失敗したリクエストは、`X-Comfy-Error-Type` が設定されたエラーレスポンスとして返り、同期ルートと同じバケットです。
+**結果。** `200` はモデル自身のネイティブな出力を返します。同じモデルと入力に対して同期ルートが返すものとバイト単位で同一で、プロバイダー自身の `Content-Type` が付きます。リクエストが完了していない間、この読み取りは上記のステータスボディとともに `202` を返すため、結果 URL だけをポーリングするクライアントは 1 つの型だけをパースすれば済みます。失敗したリクエストは、`X-Comfy-Error-Type` が設定されたエラーレスポンスとして返り、バケットは同期ルートと同じです。
 
-**キャンセル。** `CANCELLATION_REQUESTED` を伴う `202` は、要求が受け付けられたことを意味し、実行が停止したことを意味するものではありません。パートナー側ですでに実行中のランはそのまま完了する可能性があり、完了したパートナー生成は、誰かがそれを取得するかどうかに関わらず課金されます。その後ステータスを読み取ってください。有効になったキャンセルは `error_type: cancelled` を伴う `COMPLETED` として表示されます。実行される前に期限切れになったリクエストも同様に `queue_timeout` を表示します。すでに完了していたリクエストは `ALREADY_COMPLETED` を伴う `409` を返します。
+**キャンセル。** `CANCELLATION_REQUESTED` を伴う `202` は、要求が受け付けられたことを意味するのであり、実行が停止したことを意味するわけではありません。すでにパートナー側で処理中の実行はそのまま完了する可能性があり、完了したパートナーでの生成は、誰かが受け取るかどうかに関わらず課金されます。その後でステータスを読み取ってください。効果があったキャンセルは `error_type: cancelled` を伴う `COMPLETED` として現れます。実行される前に期限切れになったリクエストも、同じように `queue_timeout` を示します。すでに完了していたリクエストは `ALREADY_COMPLETED` を伴う `409` を返します。
 
-## 冪等性と課金 {#idempotency-and-billing}
+## 冪等性と課金
 
-- **同期ルートと同じ課金。** 課金はプロバイダーが Comfy に課金したタイミングで発生します。キューでの待機に費やした時間は課金されません。
-- **送信ごとに 1 つの `Idempotency-Key`。** SDK は `submit` 呼び出しごとに新しいキーを生成するため、同じ入力に対する意図的な 2 回の送信は 2 つのリクエストになります。同じキーでの同じ呼び出しの再試行は、2 回目の実行をキューに入れません。オリジナルのハンドルを `Idempotent-Replayed: true` とともに返します。レスポンスの消失によって `request_id` を失う可能性がある場合は、独自のキーを渡してください。[Headers](/ja/development/comfy-router/headers) を参照してください。
-- **結果は失効します。** 完了したリクエストは、完了後 24 時間保持されます。その後、ステータスと結果の読み取りは `410` を返し、結果は失われます。速やかに収集し、出力が持つアセット URL をダウンロードしてください。
-- **ポーリングもリクエストです。** ステータスと結果の読み取りも、[呼び出し元ごとのリクエストレート](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)にカウントされます。固定の短い間隔でポーリングするのではなく、`Retry-After` に従ってください。
+- **同期ルートと同じ課金。** 課金はプロバイダーが Comfy に課金した時点で発生します。キューで待機している時間は課金されません。
+- **`Idempotency-Key` は送信ごとに 1 つ。** SDK は `submit` 呼び出しごとに新しいキーを発行するため、同じ入力を意図的に 2 回送信すると 2 つのリクエストになります。同じキーで同じ呼び出しを再試行しても 2 回目の実行はキューに入りません。元のハンドルを `Idempotent-Replayed: true` とともに返します。応答を取りこぼすと `request_id` を失いかねない場合は、独自のキーを渡してください。詳しくは [ヘッダー](/ja/development/comfy-router/headers) を参照してください。
+- **結果は失効します。** 完了したリクエストは、完了後 24 時間保持されます。その後はステータスおよび結果の読み取りが `410` を返し、結果は失われます。速やかに回収し、出力に含まれるアセット URL はダウンロードしてください。
+- **ポーリングもリクエストです。** ステータスと結果の読み取りは、[呼び出し元ごとのリクエストレート](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)にカウントされます。固定の短い間隔でポーリングするのではなく、`Retry-After` に従ってください。
 
-## エラー
+## キューのエラー応答
 
 | Status | `X-Comfy-Error-Type` | 意味 |
 | --- | --- | --- |
-| `402` | `insufficient_credits` | ワークスペースがこの実行を賄えない。何もキューに入らず、課金もされない。資金が確保されれば、同じ `Idempotency-Key` を再送できる。 |
-| `403` | `not_enabled` | この呼び出し元はキューを使用できない。背後にワークスペースが存在しないキー（ワークスペース以前のレガシーキー）、独自キーを持ち込むリクエスト、またはキューで実行できないモデルのいずれかである。そのリクエストはターミナルエラーであり、再試行しないこと。 |
-| `404` | `model_not_found` | `{provider}/{model}` ID がどの Router モデルにも解決されない。 |
-| `404` | `request_not_found` | この呼び出し元とモデルに対して、その ID のリクエストは存在しない。 |
-| `409` | `concurrency_limit_exceeded` | 同じ `Idempotency-Key` がまだ受け付け処理中である。`Retry-After` の時間だけ待ち、同じキーを再送してオリジナルのハンドルを取得すること。 |
-| `409` | `invalid_input` | その `Idempotency-Key` は別のリクエストによって保持されている。このリクエストは新しいキーで送信すること。 |
-| `409` | ボディ内の `ALREADY_COMPLETED` | キャンセルルートのみ: リクエストはすでに完了していたため、キャンセルするものは何もなかった。 |
-| `410` | | リクエストは存在していたが、保持ウィンドウを過ぎている。完了から 24 時間後。その ID に対しては恒久的なもの。 |
-| `422` | `invalid_input` | モデルが入力を受け付けなかった。ボディには、同期ルートとまったく同じように、フィールドごとの詳細が含まれる。 |
+| `402` | `insufficient_credits` | ワークスペースがこの実行の費用を賄えません。何もキューに入らず、課金もされません。資金が用意できたら、同じ `Idempotency-Key` を再送できます。 |
+| `403` | `not_enabled` | この呼び出し元はキューを使用できません。背後にワークスペースが存在しないキー（ワークスペースより前のレガシーキー）、bring-your-own-key リクエスト、またはキューが実行できないモデルが該当します。そのリクエストにとってはターミナルであり、再試行しないでください。 |
+| `404` | `model_not_found` | `{provider}/{model}` ID が解決する Router モデルが存在しません。 |
+| `404` | `request_not_found` | その ID のリクエストは、この呼び出し元とモデルには存在しません。 |
+| `409` | `concurrency_limit_exceeded` | 同じ `Idempotency-Key` がまだ受け付け処理中です。`Retry-After` だけ待ってから同じキーを再送すると、オリジナルのハンドルを取得できます。 |
+| `409` | `invalid_input` | `Idempotency-Key` が別のリクエストに対して保持されています。これは新しいキーで送信してください。 |
+| `409` | ボディ内の `ALREADY_COMPLETED` | キャンセルルートのみ：リクエストはすでに完了していたため、キャンセルするものはありませんでした。 |
+| `410` | | リクエストは存在していましたが、完了から 24 時間の保持ウィンドウを過ぎています。その ID に対しては永続的です。 |
+| `422` | `invalid_input` | モデルが入力を拒否しました。ボディには、同期ルートとまったく同じ形式で、フィールドごとの詳細が含まれます。 |
 
-すべてのエラーレスポンスには `X-Comfy-Request-Id` が含まれる。サポートに連絡する際はこれを伝えること。
+すべてのエラー応答には `X-Comfy-Request-Id` が含まれます。サポートに連絡する際はこれを伝えてください。
 
-## Next {#next}
+## 次のステップ
 
-<CardGroup cols={2}>
-  <Card title="クイックスタート" icon="rocket" href="/ja/development/comfy-router/quickstart">
-    同じモデルに対する同期呼び出しを、ゼロから画像生成まで。
-  </Card>
-  <Card title="モデル" icon="grid" href="/ja/development/comfy-router/models">
-    各モデルのページには、そのモデルとボディに対応するキュー用スニペットがあります。
-  </Card>
-  <Card title="ヘッダー" icon="list" href="/ja/development/comfy-router/headers">
-    認証、冪等性、リクエスト ID、エラーバケット、リトライのペーシング。
-  </Card>
-  <Card title="API リファレンス" icon="book" href="/ja/development/comfy-router/reference#エンドポイント">
-    4 つのキュールートを、フィールドごとに解説します。
-  </Card>
-</CardGroup>
+- [エラーと再試行](/ja/development/comfy-router/errors): エラーレスポンスの読み方と、二重に課金されずに再試行する方法。
+- [API リファレンス](/ja/development/comfy-router/reference#エンドポイント): 各キュールートの完全なコントラクト。
