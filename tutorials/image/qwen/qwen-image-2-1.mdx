@@ -214,3 +214,17 @@ The `Patch Sage Attention KJ` node from [KJNodes](https://github.com/kijai/Comfy
 The stock Qwen-Image-2.1 VAE can leave a fine checkerboard texture in detailed photo-style output. The artifact comes from the decoder rather than from sampling, so raising the step count does not clear it.
 
 [texture_fix_vae_for_qwen_image_2.1_bf16.safetensors](https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1/blob/main/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors) is an unofficial finetune of the same decoder that decodes identical latents with cleaner texture. Put it in `ComfyUI/models/vae/` and select it on the `Load VAE` node instead of [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors). It trades a little reconstruction accuracy for cleaner texture.
+
+## Faster sampling with the Lightning LoRA
+
+The base workflows sample in 25 steps. [Qwen-Image-2.1-Lightning](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning) is an unofficial 4-step distilled LoRA for the same base checkpoint. Download [pytorch_lora_weights.safetensors](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning/blob/main/pytorch_lora_weights.safetensors) into `ComfyUI/models/loras/` and load it with a `LoraLoaderModelOnly` node on the model line that feeds the sampler.
+
+The LoRA runs at `cfg` 1 with a four-step schedule. Its card lists a `1.0, 0.75, 0.5, 0.25` grid, which is the grid before the exponential time shift the schedule is built with, not the values the sampler runs on. ComfyUI's Qwen-Image-2.1 sampling settings carry the same shift, fitted at 1024x1024, so `steps` 4 with the template's `euler` and `simple` reproduces the distilled schedule there: about `1.0, 0.857, 0.667, 0.4`. Set `steps` to 4 on the `KSampler` and leave the scheduler as it ships.
+
+A `ManualSigmas` node is marked experimental and passes its numbers through unchanged, so a hand-written schedule has to start from the shifted values. ComfyUI fits its shift at 1024x1024, so the match loosens at other output sizes.
+
+## Alpha channel output
+
+The Qwen-Image-2.1 VAE decodes four channels, so a decoded image carries alpha as well as RGB. The background removal workflow depends on this: the transparent background is generated into the alpha channel rather than cut out afterwards.
+
+Nodes and custom nodes written for three-channel images can fail on that output, and the error surfaces in the node that receives the image rather than on the Qwen-Image-2.1 nodes. Insert a `SplitImageWithAlpha` node after the decode and feed those nodes from its RGB output. Both nodes use the mask convention where `1` marks transparent pixels, so the mask output of one feeds the alpha input of `JoinImageWithAlpha` directly.

@@ -2,7 +2,7 @@
 title: "Qwen-Image-2.1 ComfyUI 네이티브 워크플로 예시"
 description: "ComfyUI에서 Qwen-Image-2.1을 실행해 보세요. 이미지 생성과 편집을 하나의 모델로 처리하고, 네이티브 2K 출력, 전문적인 타이포그래피, 알파 채널 지원을 제공합니다."
 sidebarTitle: "Qwen-Image-2.1"
-translationSourceHash: f4e613fa
+translationSourceHash: 03dc547a
 translationFrom: tutorials/image/qwen/qwen-image-2-1.mdx
 translationBlockHashes:
   "_intro": 1aac4055
@@ -12,6 +12,8 @@ translationBlockHashes:
   "Latent format": ea6f9cd4
   "Attention backends": 3870700f
   "VAE decoding artifacts": 8c94f042
+  "Faster sampling with the Lightning LoRA": 62588fb8
+  "Alpha channel output": d52c962c
 ---
 import UpdateReminder from "/snippets/ko/tutorials/update-reminder.mdx"
 
@@ -223,3 +225,17 @@ ComfyUI 기본 제공 [Sage Attention](https://github.com/woct0rdho/SageAttentio
 Qwen-Image-2.1 기본 VAE는 디테일이 많은 사실적인 출력에 미세한 체커보드 텍스처를 남길 수 있습니다. 이 아티팩트는 샘플링이 아니라 디코더에서 비롯되므로 스텝 수를 늘려도 사라지지 않습니다.
 
 [texture_fix_vae_for_qwen_image_2.1_bf16.safetensors](https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1/blob/main/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors)는 같은 디코더의 비공식 파인튜닝 버전으로, 동일한 latent를 더 깨끗한 텍스처로 디코딩합니다. `ComfyUI/models/vae/`에 넣고 `Load VAE` 노드에서 [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors) 대신 선택하세요. 복원 정확도를 조금 희생하고 텍스처를 개선합니다.
+
+## Lightning LoRA로 더 빠르게 샘플링하기
+
+기본 워크플로는 25 스텝으로 샘플링합니다. [Qwen-Image-2.1-Lightning](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning)은 같은 기본 체크포인트용 비공식 4스텝 증류 LoRA입니다. [pytorch_lora_weights.safetensors](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning/blob/main/pytorch_lora_weights.safetensors)를 `ComfyUI/models/loras/`에 내려받고 `LoraLoaderModelOnly` 노드로 샘플러에 들어가는 모델 라인에 불러옵니다.
+
+이 LoRA는 `cfg` 1, 4스텝 스케줄로 동작합니다. 모델 카드에 적힌 `1.0, 0.75, 0.5, 0.25` 그리드는 스케줄에 적용되는 지수 시프트(exponential shift)를 거치기 전 값이며, 샘플러가 실제로 사용하는 값이 아닙니다. ComfyUI의 Qwen-Image-2.1 샘플링 설정에는 같은 시프트가 1024x1024 기준으로 들어 있어, `steps`를 4로 두고 템플릿의 `euler`와 `simple`을 그대로 쓰면 증류 시의 스케줄(약 `1.0, 0.857, 0.667, 0.4`)이 재현됩니다. `KSampler`에서 `steps`를 4로 설정하고 스케줄러는 템플릿 그대로 두세요.
+
+`ManualSigmas` 노드는 실험적이며 입력한 숫자를 그대로 전달하므로, 손으로 만든 스케줄에는 시프트 후 값을 처음부터 넣어야 합니다. ComfyUI의 시프트는 1024x1024 기준으로 맞춰져 있어 출력 크기가 멀어질수록 일치도가 떨어집니다.
+
+## 알파 채널 출력
+
+Qwen-Image-2.1 VAE는 4개 채널을 디코딩하므로 디코딩된 이미지는 RGB와 함께 알파를 가집니다. 배경 제거 워크플로가 여기에 의존합니다. 투명한 배경은 나중에 잘라내는 것이 아니라 알파 채널에 생성됩니다.
+
+3채널 이미지를 전제로 한 노드와 커스텀 노드는 이 출력에서 실패할 수 있고, 오류는 Qwen-Image-2.1 노드가 아니라 이미지를 받는 노드에서 나타납니다. 디코딩 뒤에 `SplitImageWithAlpha` 노드를 넣고 그 RGB 출력을 해당 노드에 연결하세요. 두 노드 모두 `1`이 투명 픽셀을 뜻하는 마스크 규칙을 따르므로, 한쪽의 마스크 출력을 `JoinImageWithAlpha`의 알파 입력에 그대로 연결할 수 있습니다.

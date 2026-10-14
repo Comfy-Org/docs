@@ -2,7 +2,7 @@
 title: "Qwen-Image-2.1 ComfyUI ネイティブワークフロー例"
 description: "ComfyUI で Qwen-Image-2.1 を実行: 画像生成と編集を 1 つのモデルで行い、ネイティブ 2K 出力、プロフェッショナルなタイポグラフィ、アルファチャンネルのサポートを実現します。"
 sidebarTitle: "Qwen-Image-2.1"
-translationSourceHash: f4e613fa
+translationSourceHash: 03dc547a
 translationFrom: tutorials/image/qwen/qwen-image-2-1.mdx
 translationBlockHashes:
   "_intro": 1aac4055
@@ -12,6 +12,8 @@ translationBlockHashes:
   "Latent format": ea6f9cd4
   "Attention backends": 3870700f
   "VAE decoding artifacts": 8c94f042
+  "Faster sampling with the Lightning LoRA": 62588fb8
+  "Alpha channel output": d52c962c
 ---
 import UpdateReminder from "/snippets/ja/tutorials/update-reminder.mdx"
 
@@ -223,3 +225,17 @@ ComfyUI 標準の [Sage Attention](https://github.com/woct0rdho/SageAttention) �
 Qwen-Image-2.1 標準の VAE は、ディテールの多い写実的な出力に細かいチェッカーボード状のテクスチャを残すことがあります。これはサンプリングではなくデコーダーに起因するため、ステップ数を増やしても解消しません。
 
 [texture_fix_vae_for_qwen_image_2.1_bf16.safetensors](https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1/blob/main/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors) は同じデコーダーの非公式なファインチューンで、同じ latent をよりクリーンなテクスチャでデコードします。`ComfyUI/models/vae/` に配置し、`Load VAE` ノードで [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors) の代わりに選択してください。再構成精度を少し犠牲にしてテクスチャを改善します。
+
+## Lightning LoRA で高速にサンプリングする
+
+ベースのワークフローは 25 ステップでサンプリングします。[Qwen-Image-2.1-Lightning](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning) は、同じベースチェックポイント向けの非公式な 4 ステップ蒸留 LoRA です。[pytorch_lora_weights.safetensors](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning/blob/main/pytorch_lora_weights.safetensors) を `ComfyUI/models/loras/` にダウンロードし、`LoraLoaderModelOnly` ノードでサンプラーへ渡すモデルラインに読み込みます。
+
+この LoRA は `cfg` 1、4 ステップのスケジュールで動作します。モデルカードに記載されている `1.0, 0.75, 0.5, 0.25` のグリッドは、スケジュールに適用される指数シフト（exponential shift）を通す前の値で、サンプラーが実際に使う値ではありません。ComfyUI の Qwen-Image-2.1 のサンプリング設定には同じシフトが 1024x1024 に合わせて組み込まれているため、`steps` を 4 にしてテンプレートの `euler` と `simple` をそのまま使うと、蒸留時のスケジュール（およそ `1.0, 0.857, 0.667, 0.4`）が再現されます。`KSampler` の `steps` を 4 に設定し、スケジューラはテンプレートのままにしてください。
+
+`ManualSigmas` ノードは実験的とされており、入力した数値をそのまま渡すため、手書きのスケジュールにはシフト後の値を最初から入れる必要があります。ComfyUI のシフトは 1024x1024 に合わせてあるので、出力サイズが離れるほど一致度は下がります。
+
+## アルファチャンネル出力
+
+Qwen-Image-2.1 の VAE は 4 チャンネルをデコードするため、デコード後の画像は RGB に加えてアルファを持ちます。背景除去ワークフローはこれに依存しています。透明な背景は後から切り抜くのではなく、アルファチャンネルに生成されます。
+
+3 チャンネル画像を前提としたノードやカスタムノードは、この出力で失敗することがあります。エラーは Qwen-Image-2.1 のノードではなく、画像を受け取る側のノードに表示されます。デコードの後に `SplitImageWithAlpha` ノードを挿入し、その RGB 出力をそれらのノードに接続してください。どちらのノードも `1` が透明ピクセルを表すマスクの約束に従うため、一方のマスク出力はそのまま `JoinImageWithAlpha` のアルファ入力に接続できます。
