@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assetLinks,
   changedEnglishFiles,
+  classifyFinding,
   compare,
   componentCounts,
   diffRanges,
@@ -11,6 +12,9 @@ import {
   localizedCounterparts,
   normalizeAssetUrl,
   strippedBody,
+  syncOwnedNote,
+  warningDetail,
+  type Finding,
 } from "./check-structure-parity.ts";
 
 const EN = `---
@@ -250,5 +254,57 @@ describe("diffRanges", () => {
       "base-sha...head-sha",
       "head-sha~1...head-sha",
     ]);
+  });
+});
+
+describe("sync-owned Router pages", () => {
+  test("syncOwnedNote names the rule for localized copies of sync-owned pages", () => {
+    expect(syncOwnedNote("ja/development/comfy-router/models/kling/kling-v3/code.mdx")).toContain(
+      "(model-code-page)"
+    );
+    expect(syncOwnedNote("zh/development/comfy-router/models.mdx")).toContain("(models-index)");
+    expect(syncOwnedNote("ko/development/comfy-router/reference.mdx")).toContain("(reference)");
+  });
+
+  test("syncOwnedNote is null for hand-curated inputs and ordinary pages", () => {
+    expect(syncOwnedNote("ja/development/comfy-router/models/kling/kling-v3/code.yaml")).toBeNull();
+    expect(syncOwnedNote("ja/tutorials/basic/text-to-image.mdx")).toBeNull();
+  });
+
+  const gap = (file: string, source: Finding["source"]): Finding => ({
+    file,
+    source,
+    missingComponents: [{ label: "ParamField", en: 29, localized: 28 }],
+    extraComponents: [],
+    missingLinks: [],
+    extraLinks: [],
+  });
+  const routerPage = "ja/development/comfy-router/models/kling/kling-v3/code.mdx";
+
+  test("an English-direction gap on a sync-owned page is a warning carrying the note", () => {
+    const finding = gap(routerPage, "english");
+    expect(classifyFinding(finding, true)).toBe("warning");
+    expect(finding.note).toContain("(model-code-page)");
+  });
+
+  test("a localized-direction gap on a sync-owned page still fails", () => {
+    const finding = gap(routerPage, "localized");
+    expect(classifyFinding(finding, true)).toBe("failure");
+    expect(finding.note).toBeUndefined();
+  });
+
+  test("an English-direction gap on an ordinary page still fails", () => {
+    expect(classifyFinding(gap("ja/tutorials/basic/text-to-image.mdx", "english"), true)).toBe("failure");
+  });
+
+  test("externally generated pages warn in both directions, as before", () => {
+    expect(classifyFinding(gap("ja/built-in-nodes/APG.mdx", "localized"), true)).toBe("warning");
+    expect(classifyFinding(gap("ja/built-in-nodes/APG.mdx", "english"), true)).toBe("warning");
+  });
+
+  test("warningDetail lists missing links so a link-only gap names the link to restore", () => {
+    const finding: Finding = { ...gap(routerPage, "english"), missingComponents: [], missingLinks: ["/images/a.png"] };
+    expect(classifyFinding(finding, true)).toBe("warning");
+    expect(warningDetail(finding)).toBe("missing link /images/a.png");
   });
 });
