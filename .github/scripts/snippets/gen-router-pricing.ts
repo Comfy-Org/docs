@@ -6,6 +6,8 @@ import { formatAmount, formatDate, formatOption, formatUnit, pricingCopy, type P
 
 const ROOT = join(import.meta.dir, "../../..");
 const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
+const WAIVER_PATH = "router-pricing/unpriced-waivers.json";
+const WAIVER_FILE = join(ROOT, WAIVER_PATH);
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
@@ -71,6 +73,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   moonvalley: "Moonvalley",
   openai: "OpenAI",
   openrouter: "OpenRouter",
+  pika: "Pika",
   pruna: "Pruna",
   qwen: "Qwen",
   recraft: "Recraft",
@@ -519,7 +522,8 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const oneImagePerGeneration = item.unit === "per image"
             && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(item.modelId.slice(1, -1));
           const unitCanBeShortened = headerUnit === item.unit
-            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration));
+            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration
+              || (category === "images" && ["per image", "per output image"].includes(item.unit))));
           const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
@@ -555,7 +559,10 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => rateHeader("", ` / ${formatUnit(unit, locale)}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
-        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
+        // A model with several output-image prices keeps one row per price; its
+        // amounts are still generations, like the matrix above.
+        const fallbackUnit = fallbackRows.every((row) => row.kind !== "usage" && unitForRow(row) === "per generation") ? "per generation" : undefined;
+        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true, fallbackUnit) : ""].filter(Boolean).join("\n\n");
       };
       const ordinaryGroups = new Map<string, typeof ordinaryRows>();
       for (const row of ordinaryRows) {
@@ -919,6 +926,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         const { group } = row;
         const unit = group.tiers.values().next().value!.rate.unit;
         const optionHeader = row.option === "-" ? copy.option
+          : /^\d+s$/.test(row.option) ? copy.duration
           : group.conditions.includes("draft=") ? copy.mode
           : /generate_?Audio=|generate_audio=/.test(group.conditions) ? copy.audio
           : group.conditions.includes("video_type=") ? copy.inputType
@@ -1118,9 +1126,93 @@ ${copy.updated}: ${formatDate(data.snapshot_at, locale)}.
 `;
 }
 
+export type UnpricedRoute = { model_id: string; provider: string };
+export const WAIVABLE_STATUSES = ["embargoed", "catalog_only_not_dispatchable"] as const;
+export type UnpricedWaiver = UnpricedRoute & { reason: string; status: string; evidence: string };
+
+const routeKey = (route: UnpricedRoute) => `${route.model_id} @ ${route.provider}`;
+
+/**
+ * Every model/provider route the page lists that has no rate, i.e. every row
+ * that would render the "Not published" value. Mirrors renderCurrencyView: one
+ * row per model and per serving provider on its page, priced by the rates that
+ * map to that provider.
+ */
+function findUnpricedRoutes(models: CatalogModel[], rates: MetronomeRate[]): UnpricedRoute[] {
+  const priced = new Set<string>();
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  for (const rate of rates) {
+    const model = modelsById.get(rate.model_id);
+    if (!model) continue;
+    priced.add(routeKey({ model_id: model.id, provider: displayProvider(model.id, model.providers, rate.serving_provider) }));
+  }
+  return models.flatMap((model) => model.providers
+    .map((provider) => ({ model_id: model.id, provider }))
+    .filter((route) => !priced.has(routeKey(route))));
+}
+
+function loadUnpricedWaivers(): UnpricedWaiver[] {
+  if (!existsSync(WAIVER_FILE)) return [];
+  const data = JSON.parse(readFileSync(WAIVER_FILE, "utf8")) as { waivers?: UnpricedWaiver[] };
+  if (!Array.isArray(data.waivers)) throw new Error(`${WAIVER_FILE}: expected a "waivers" array`);
+  return data.waivers;
+}
+
+/**
+ * A published, billable Router route must show a price. Returns one message per
+ * problem: an unwaived unpriced route, a waiver without a reason or evidence, a duplicate
+ * waiver, or a stale waiver (its route is now priced or no longer listed), so
+ * the waiver list can only shrink.
+ */
+function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver[]): string[] {
+  const errors: string[] = [];
+  const unpricedKeys = new Set(unpriced.map(routeKey));
+  const waived = new Set<string>();
+  for (const waiver of waivers) {
+    if (waiver === null || typeof waiver !== "object" || Array.isArray(waiver) || !waiver.model_id || !waiver.provider) {
+      errors.push(`${WAIVER_PATH}: every waiver must be an object with a model_id and a provider (got ${JSON.stringify(waiver)})`);
+      continue;
+    }
+    const key = routeKey(waiver);
+    if (typeof waiver.reason !== "string" || !waiver.reason.trim()) {
+      errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no reason; say why this route has no published price`);
+    }
+    if (typeof waiver.evidence !== "string" || !waiver.evidence.trim()) {
+      errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no evidence; cite the Comfy-Org/cloud file and line that shows its status`);
+    }
+    if (!(WAIVABLE_STATUSES as readonly string[]).includes(waiver.status)) {
+      errors.push(waiver.status === "live"
+        ? `${WAIVER_PATH}: ${waiver.model_id} (provider ${waiver.provider}) is live on Router, and a live route cannot be waived; publish its price in router-pricing/metronome-rates.json`
+        : `${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) needs a status of ${WAIVABLE_STATUSES.join(" or ")} (got ${JSON.stringify(waiver.status)})`);
+    }
+    if (waived.has(key)) errors.push(`${WAIVER_PATH}: duplicate waiver for ${waiver.model_id} (provider ${waiver.provider})`);
+    waived.add(key);
+    if (!unpricedKeys.has(key)) {
+      errors.push(`${WAIVER_PATH}: stale waiver for ${waiver.model_id} (provider ${waiver.provider}); the page no longer shows it as unpriced, so remove the waiver`);
+    }
+  }
+  for (const route of unpriced) {
+    if (waived.has(routeKey(route))) continue;
+    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or, only if Router does not dispatch it (embargoed or catalog-only), add a waiver with a status, reason and evidence to ${WAIVER_PATH}`);
+  }
+  return errors;
+}
+
+function pricingCoverageErrors(): string[] {
+  const data = loadMetronomeData();
+  return checkPricingCoverage(findUnpricedRoutes(loadCatalog(), data.rates), loadUnpricedWaivers());
+}
+
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   const output = render();
+  const coverageErrors = pricingCoverageErrors();
+  if (coverageErrors.length) {
+    for (const error of coverageErrors) console.error(error);
+    // Generation still writes the page so a contributor can see the gap;
+    // --check (CI) fails until every listed route is priced or waived.
+    if (check) process.exit(1);
+  }
   if (check) {
     if (!existsSync(OUTPUT_FILE) || readFileSync(OUTPUT_FILE, "utf8") !== output) {
       console.error(`${OUTPUT_FILE}: stale or missing, run pnpm router-pricing:gen`);
@@ -1133,4 +1225,4 @@ if (import.meta.main) {
   }
 }
 
-export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
+export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
