@@ -88,7 +88,7 @@ ComfyUI 现在为内置节点和自定义节点都增加了内置的节点帮助
 
 需要其它语言版本？[提交 Issue](https://github.com/Comfy-Org/docs/issues/new) 说明所需语言（例如法语、德语或巴西葡萄牙语）。维护者会将其加入 `translation-config.json` 和 `docs.json`，并**批量翻译全部内容**。你只需发起请求，无需自行提交完整译文的 PR。
 
-文件编辑规范见 [Mintlify](https://mintlify.com/docs/page) 文档 Writing Content 部分。
+文件编辑规范见 [Mintlify](https://www.mintlify.com/docs/pages) 文档 Writing Content 部分。
 
 > **说明**：`built-in-nodes/` 由 [embedded-docs](https://github.com/Comfy-Org/embedded-docs) 仓库维护，翻译脚本会**自动跳过**该目录。
 
@@ -180,11 +180,14 @@ npm run glossary:sync -- --lang ko    # 单一语言
 npm run glossary:sync:dry-run         # 仅报告数量，不写入
 ```
 
-前端 locale 路径按以下顺序解析：`--frontend <path>` → `FRONTEND_LOCALES_PATH` 环境变量 → `translation-config.json` 中的 `frontend_locales_path` → `../ComfyUI_frontend/src/locales`。
+前端 locale 来源按以下顺序解析：
+
+- **在线（默认）：** `translation-config.json` 中的 `frontend_locales_url`（GitHub raw `main` 分支）。可用 `FRONTEND_LOCALES_URL` 或 `--frontend-url <url>` 覆盖。
+- **本地（可选）：** `--frontend <path>` 或 `FRONTEND_LOCALES_PATH`，用于离线或 fork 的 checkout。
 
 #### 添加新语言
 
-见上文 [申请新增语言](#申请新增语言) — 请通过 Issue 申请，勿自行在 PR 中添加语言。
+见上文 [申请新增语言](#添加新语言) — 请通过 Issue 申请，勿自行在 PR 中添加语言。
 
 维护者：在 `.github/scripts/i18n/translation-config.json` 的 `languages` 下新增一条（`code`、`name`、`dir`、`snippets_dir`）。路径排除、链接本地化与英文文件扫描由同目录的 `i18n-config.mjs` 自动推导，添加新语言时无需修改翻译脚本。随后在 `docs.json` 中添加导航（见 [Mintlify 本地化](https://mintlify.com/docs/navigation/localization)），并批量翻译：
 
