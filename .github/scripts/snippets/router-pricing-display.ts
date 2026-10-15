@@ -225,7 +225,7 @@ export function formatOption(conditions: string | undefined, locale: PricingLoca
       ? ["Audio", "音声", "音频", "오디오"][index]
       : ["No audio", "音声なし", "无音频", "오디오 없음"][index];
     if (key === "draft") return value === "true" ? ["Draft", "ドラフト", "草稿", "초안"][index] : ["Standard", "標準", "标准", "표준"][index];
-    if (key === "quality") return ({ low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
+    if (key === "quality") return ({ very_low: ["Very low", "最低", "极低", "매우 낮음"], low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "video_type" || key === "feature") return translate(value);
     if (key === "type") return value === "image_edit" ? translate("Edit") : ["Image generation", "画像生成", "图像生成", "이미지 생성"][index];
     if (key === "endpoint") return value.includes("dialogue") ? ["Dialogue", "対話", "对话", "대화"][index] : ["Text to speech", "音声合成", "语音合成", "음성 합성"][index];
