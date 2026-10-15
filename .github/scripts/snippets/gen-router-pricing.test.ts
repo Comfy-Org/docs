@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -196,8 +197,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(622);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(591);
+    expect(snapshot.rates).toHaveLength(653);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(622);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -688,5 +689,111 @@ describe("public Router pricing", () => {
     const description = page.match(/^description: "(.+)"$/m)![1];
     expect(description.length).toBeGreaterThanOrEqual(40);
     expect(description.length).toBeLessThanOrEqual(160);
+  });
+});
+
+describe("Router pricing coverage guard", () => {
+  const route = { model_id: "acme/video-1", provider: "Pika" };
+  const reason = "Router refuses dispatch: no classification row.";
+  const status = "catalog_only_not_dispatchable";
+  const evidence = "Comfy-Org/cloud@abc1234 routerresult/classification.go (no row)";
+
+  test("fails on an unpriced route that has no waiver, naming the model, provider, and fix", () => {
+    const errors = checkPricingCoverage([route], []);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("acme/video-1");
+    expect(errors[0]).toContain("provider Pika");
+    expect(errors[0]).toContain("Not published");
+    expect(errors[0]).toContain("router-pricing/metronome-rates.json");
+    expect(errors[0]).toContain("add a waiver with a status, reason and evidence");
+  });
+
+  test("passes when every unpriced route is waived with a reason", () => {
+    expect(checkPricingCoverage([route], [{ ...route, reason, status, evidence }])).toEqual([]);
+  });
+
+  test("a waiver covers only its own provider leg", () => {
+    const errors = checkPricingCoverage([route, { ...route, provider: "Comfy" }], [{ ...route, reason, status, evidence }]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("provider Comfy");
+  });
+
+  test("fails on a waiver with an empty or missing reason", () => {
+    for (const badReason of ["", "   ", undefined]) {
+      const errors = checkPricingCoverage([route], [{ ...route, status, evidence, reason: badReason as unknown as string }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("has no reason");
+      expect(errors[0]).toContain("acme/video-1");
+    }
+  });
+
+  test("fails on a waiver with empty or missing evidence", () => {
+    for (const badEvidence of ["", "   ", undefined]) {
+      const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence: badEvidence as unknown as string }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("has no evidence");
+      expect(errors[0]).toContain("acme/video-1");
+    }
+  });
+
+  test("rejects a waiver for a live route or with an unknown status", () => {
+    const live = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "live" }]);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toContain("live route cannot be waived");
+    const unknown = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "" }]);
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]).toContain("needs a status");
+    expect(checkPricingCoverage([route], [{ ...route, reason, evidence, status: "embargoed" }])).toEqual([]);
+  });
+
+  test("fails on a stale waiver whose route now has a price, so the list can only shrink", () => {
+    const errors = checkPricingCoverage([], [{ ...route, reason, status, evidence }]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("stale waiver");
+    expect(errors[0]).toContain("acme/video-1");
+  });
+
+  test("reports a null, primitive or array waiver entry instead of throwing", () => {
+    for (const bad of [null, "acme/video-1", 42, [route]]) {
+      const errors = checkPricingCoverage([route], [bad as unknown as UnpricedWaiver]);
+      expect(errors.some((error) => error.includes("must be an object with a model_id and a provider"))).toBe(true);
+      expect(errors.some((error) => error.includes("acme/video-1 (provider Pika) would render"))).toBe(true);
+    }
+  });
+
+  test("fails on a duplicate waiver", () => {
+    const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence }, { ...route, reason, status, evidence }]);
+    expect(errors.some((error) => error.includes("duplicate waiver"))).toBe(true);
+  });
+
+  test("finds every route the page renders as unavailable, per provider leg", () => {
+    const models = [
+      { id: "openai/gpt-image-2", title: "GPT Image 2", page: "p", providers: ["Comfy", "Pika"], category: "images" as const },
+      { id: "pika/pika-2.5-text-to-video", title: "Pika", page: "p", providers: ["Comfy"], category: "video" as const },
+    ];
+    const rate = { kind: "metered" as const, unit: "per second", price_usd: "0.04", credits: "8.44", effective_from: "2026-10-10" };
+    expect(findUnpricedRoutes(models, [])).toEqual([
+      { model_id: "openai/gpt-image-2", provider: "Comfy" },
+      { model_id: "openai/gpt-image-2", provider: "Pika" },
+      { model_id: "pika/pika-2.5-text-to-video", provider: "Comfy" },
+    ]);
+    expect(findUnpricedRoutes(models, [
+      { ...rate, model_id: "openai/gpt-image-2", serving_provider: "pika" },
+      { ...rate, model_id: "pika/pika-2.5-text-to-video", serving_provider: "Pika" },
+    ])).toEqual([{ model_id: "openai/gpt-image-2", provider: "Comfy" }]);
+  });
+
+  test("every checked-in waiver is current, reasoned, and for a route Router does not dispatch", () => {
+    const unpriced = findUnpricedRoutes(catalog, snapshot.rates);
+    // Unwaived live routes are reported by router-pricing:check, not here.
+    expect(checkPricingCoverage(unpriced, loadUnpricedWaivers()).filter((error) => error.startsWith("router-pricing/unpriced-waivers.json:"))).toEqual([]);
+    const unavailableRows = (creditsPage.match(/\| Not published \|/g) ?? []).length;
+    expect(unavailableRows).toBe(unpriced.length);
+  });
+
+  test("publishes every Pika route", () => {
+    const unpriced = findUnpricedRoutes(catalog, snapshot.rates);
+    expect(unpriced.filter((candidate) => candidate.provider === "Pika" || candidate.model_id.startsWith("pika/"))).toEqual([]);
+    expect(loadUnpricedWaivers().filter((waiver) => waiver.provider === "Pika" || waiver.model_id.startsWith("pika/"))).toEqual([]);
   });
 });
