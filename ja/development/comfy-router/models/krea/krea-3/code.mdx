@@ -1,0 +1,256 @@
+---
+title: "Comfy Router で Krea 3 を使う"
+description: "Comfy Router 経由で krea/krea-3 を呼び出す: エンドポイント、リクエストの形状、Router が返すレスポンス。"
+sidebarTitle: "Krea 3"
+translationSourceHash: 58fe222f
+translationFrom: development/comfy-router/models/krea/krea-3/code.mdx
+translationBlockHashes:
+  "_intro": ac71b80c
+  "Quick start": c94638c6
+  "Schema": 714038e3
+  "Examples": 7697cc23
+---
+{/* 生成済みファイル。`pnpm code-pages:gen` により router-schemas/krea/krea-3.json から生成されました。 */}
+
+import RouterCodeFooter from "/snippets/ja/comfy-router/model-code-footer.mdx";
+
+Krea から提供され、Comfy Router が配信する `krea/krea-3` の API リファレンス。
+
+**入力:** テキスト、画像 · **出力:** 画像
+
+## クイックスタート
+
+[Comfy ワークスペース](https://platform.comfy.org/profile/api-keys?onboarding=router)でキーを作成し、`COMFY_API_KEY` としてエクスポートします。Python と TypeScript のスニペットは Comfy SDK（`pip install comfy-sdk` と `npm install @comfyorg/sdk`）を使用します。cURL のスニペットは、生の HTTP で同じ呼び出しを行います。
+
+**モデル ID:** `krea/krea-3`
+
+**エンドポイント:** `POST https://api.comfy.org/v2/models/krea/krea-3`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="結果を待つ">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# SDK は自動的に冪等性キーを作成し、自動再試行のために再利用します。
+with Comfy() as client:
+    result = client.models.run(
+        "krea/krea-3",
+        {
+            "image_urls": ["https://example.com/reference.png"],
+            "prompt": "Place the product on a clean studio background",
+            "resolution": "1k",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// SDK は自動的に冪等性キーを作成し、自動再試行のために再利用します。
+const { data } = await comfy.models.run("krea/krea-3", {
+  image_urls: ["https://example.com/reference.png"],
+  prompt: "Place the product on a clean studio background",
+  resolution: "1k",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/krea/krea-3 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"image_urls\": [\"https://example.com/reference.png\"], \"prompt\": \"Place the product on a clean studio background\", \"resolution\": \"1k\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="キューに送信して後で収集">
+同じボディを `POST https://api.comfy.org/v2/models/krea/krea-3/requests` に送信します。Router は実行が受け付けられるとすぐに `201` と `request_id` を返し、結果は準備ができ次第、このプロセスまたは別のプロセスから収集されます。[キュー配信](/ja/development/comfy-router/queue) では、ステータス、キャンセル、収集の流れを説明します。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動再試行のために再利用します。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "krea/krea-3",
+            {
+                "image_urls": ["https://example.com/reference.png"],
+                "prompt": "Place the product on a clean studio background",
+                "resolution": "1k",
+            },
+        )
+        print("request_id:", handle.request_id)  # モデル ID と合わせれば、別のプロセスに必要な情報はこれだけです
+
+        # リクエストが完了するまでポーリングし、サーバーが指定する Retry-After の秒数だけ待機します。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # プロバイダー自身のペイロードで、models.run() が返すのと同じ値です。
+        # 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを発生させます。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動再試行のために再利用します。
+const handle = await comfy.models.submit("krea/krea-3", {
+  image_urls: ["https://example.com/reference.png"],
+  prompt: "Place the product on a clean studio background",
+  resolution: "1k",
+});
+console.log("requestId:", handle.requestId); // モデル ID と合わせれば、別のプロセスに必要な情報はこれだけです
+
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After の秒数だけ待機します。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// models.run() が返すのと同じ結果です。失敗またはキャンセルされたリクエストは、ここで reject されます。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 送信します。Router は request_id、status_url、response_url、cancel_url を含む 201 を返します。
+curl https://api.comfy.org/v2/models/krea/krea-3/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"image_urls\": [\"https://example.com/reference.png\"], \"prompt\": \"Place the product on a clean studio background\", \"resolution\": \"1k\"}"
+
+# 2. ステータスが COMPLETED になるまでポーリングし、各レスポンスが指定する Retry-After の秒数だけ待機します。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/krea/krea-3/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 収集します。200 はモデルのネイティブ出力、202 はまだ実行中の場合はステータスボディです。
+curl https://api.comfy.org/v2/models/krea/krea-3/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## スキーマ
+
+### 入力
+
+<ParamField body="aspect_ratio" type="string">
+  1:1、4:5、3:4、2:3、9:16、5:4、4:3、3:2、16:9、21:9。解像度と併用します。省略すると自動フレーミングになります。
+</ParamField>
+
+<ParamField body="image_urls" type="string[]">
+  入力画像の URL で、最大8つまで指定できます。POST /proxy/krea/assets の image_url 値を使用してください。省略するとテキストから画像への生成になります。
+</ParamField>
+
+<ParamField body="model" type="string">
+  berry（デフォルト、品質）または jam（速度）。
+</ParamField>
+
+<ParamField body="negative_prompt" type="string">
+   
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  編集指示。何を変更し、何を維持するかを記述してください。
+</ParamField>
+
+<ParamField body="regional_edit" type="boolean">
+  画像の残りの部分を保持するローカル編集では true を設定します。model に berry、image_urls に少なくとも1つの画像が必要です。
+</ParamField>
+
+<ParamField body="resolution" type="string" required>
+  1k または 2k。
+</ParamField>
+
+<ParamField body="seed" type="integer">
+   
+</ParamField>
+
+<ParamField body="thinking_mode" type="string">
+  fast（デフォルト）、high または ultra。high と ultra は複雑な編集をより詳細に計画するため、時間がかかります。ultra には解像度 2k が必要です。
+</ParamField>
+
+Router が `GET /v2/models/krea/krea-3/openapi.json` で提供するスキーマから生成されています。これは、リクエストがプロバイダーに到達する前に Router が呼び出しを検証する際に使うものと同じドキュメントです。
+
+### 出力
+
+<ResponseField name="completed_at" type="string (date-time)" required>
+  形式: `date-time`
+</ResponseField>
+
+<ResponseField name="created_at" type="string (date-time)" required>
+  形式: `date-time`
+</ResponseField>
+
+<ResponseField name="job_id" type="string (uuid)" required>
+  形式: `uuid`
+</ResponseField>
+
+<ResponseField name="result" type="object" required>
+  完了した生成結果。`KreaJob` とは異なり、ここでは null を許容しません。`result` に `urls` が含まれないターミナルジョブは Comfy Router のエラーとして応答されるため、`200` には常にこれが含まれます。
+</ResponseField>
+
+<ResponseField name="result.style_id" type="string">
+  生成ではなく loraTraining ジョブによって設定されます。これらのモデルの `200` には `urls` が含まれます。
+</ResponseField>
+
+<ResponseField name="result.urls" type="string (uri)[]" required>
+  生成済みの画像をダウンロード可能なリンクとして示します。`urls` が空の `completed` ジョブは `success_without_output` となり、このドキュメントには決して到達しないため、少なくとも1つ含まれます。
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  このドキュメントでは常に `completed` です。Router が成功として報告する唯一のステータスであり、Krea の語彙は大文字小文字を変換せずに照合されます。
+
+  指定可能な値: `completed`
+</ResponseField>
+
+## 例
+
+### 入力
+
+```json
+{
+  "image_urls": [
+    "https://example.com/reference.png"
+  ],
+  "prompt": "Place the product on a clean studio background",
+  "resolution": "1k"
+}
+```
+
+### 出力
+
+```json
+{
+  "completed_at": "2027-01-01T00:00:37Z",
+  "created_at": "2027-01-01T00:00:00Z",
+  "job_id": "7f1c2e84-5b90-4a37-8d61-2c0f9ab4e153",
+  "result": {
+    "urls": [
+      "https://example.invalid/krea/krea-2/generated.png"
+    ]
+  },
+  "status": "completed"
+}
+```
+
+<RouterCodeFooter />
