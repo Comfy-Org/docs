@@ -66,12 +66,64 @@ export async function writeStagingCheckpoint(
   return output;
 }
 
+const MD_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+function markdownLinksByText(md: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const match of md.matchAll(MD_LINK_RE)) {
+    map.set(match[1]!, match[2]!);
+  }
+  return map;
+}
+
+function isProjectTrackingUrl(url: string): boolean {
+  return url.includes("links.comfy.org") || url.includes("cloud.comfy.org");
+}
+
+/** Map source-EN URLs onto dest-EN URLs for the same markdown link text. */
+export function trackingUrlMap(fromEnBlock: string, toEnBlock: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const fromLinks = markdownLinksByText(fromEnBlock);
+  const toLinks = markdownLinksByText(toEnBlock);
+  for (const [text, fromUrl] of fromLinks) {
+    const toUrl = toLinks.get(text);
+    if (toUrl && toUrl !== fromUrl) map.set(fromUrl, toUrl);
+  }
+  if (map.size === 0) {
+    const fromTrack = [...fromLinks.values()].filter(isProjectTrackingUrl);
+    const toTrack = [...toLinks.values()].filter(isProjectTrackingUrl);
+    if (fromTrack.length === 1 && toTrack.length === 1 && fromTrack[0] !== toTrack[0]) {
+      map.set(fromTrack[0]!, toTrack[0]!);
+    }
+  }
+  return map;
+}
+
+export function applyUrlMap(md: string, map: Map<string, string>): string {
+  if (map.size === 0) return md;
+  let out = md;
+  const fromUrls = [...map.keys()].sort((a, b) => b.length - a.length);
+  for (const from of fromUrls) {
+    out = out.split(from).join(map.get(from)!);
+  }
+  return out;
+}
+
+export function remapBlockUsingEnglishUrlMap(
+  incomingBlock: string,
+  sourceEnBlock: string | null,
+  destEnBlock: string | null
+): string {
+  if (!sourceEnBlock || !destEnBlock) return incomingBlock;
+  return applyUrlMap(incomingBlock, trackingUrlMap(sourceEnBlock, destEnBlock));
+}
+
 /**
  * Merge selected version blocks from one project's staging into another.
  *
- * Never replaces whole locale files: cloud may keep project-specific tracking
- * shortlinks on older versions (e.g. clo* vs rel*). Only upsert the versions
- * prepared in this run.
+ * Never replaces whole locale files. Snapshot dest EN first and rewrite
+ * incoming tracking shortlinks to match dest EN (cloud vs local campaign
+ * URLs). Older dest-only versions stay untouched.
  */
 export async function copyProjectStaging(
   baseConfig: CmsConfig,
@@ -88,6 +140,20 @@ export async function copyProjectStaging(
 
   const fromConfig = configForProject(baseConfig, fromProject);
   const toConfig = configForProject(baseConfig, toProject);
+  const fromEnPath = fromConfig.locales.find((l) => l.code === "en")?.changelog;
+  const toEnPath = toConfig.locales.find((l) => l.code === "en")?.changelog;
+  const fromEnContent = fromEnPath ? await readStaging(fromEnPath) : "";
+  const toEnContent = toEnPath ? await readStaging(toEnPath) : "";
+
+  const urlMaps = new Map<string, Map<string, string>>();
+  for (const version of versionList) {
+    const sourceEn = blockForVersion(fromEnContent, version);
+    const destEn = blockForVersion(toEnContent, version);
+    if (!sourceEn || !destEn) continue;
+    const map = trackingUrlMap(sourceEn.updateBlock, destEn.updateBlock);
+    if (map.size > 0) urlMaps.set(version, map);
+  }
+
   let copied = 0;
 
   for (const locale of fromConfig.locales) {
@@ -102,7 +168,9 @@ export async function copyProjectStaging(
     for (const version of versionList) {
       const block = blockForVersion(fromContent, version);
       if (!block) continue;
-      blocksToMerge.push({ label: block.label, content: block.updateBlock });
+      const map = urlMaps.get(version);
+      const content = map ? applyUrlMap(block.updateBlock, map) : block.updateBlock;
+      blocksToMerge.push({ label: block.label, content });
     }
     if (blocksToMerge.length === 0) continue;
 
