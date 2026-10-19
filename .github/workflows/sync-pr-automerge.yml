@@ -1,0 +1,93 @@
+name: Sync PR Auto-merge
+
+# Merge the Comfy API spec sync pull request (branch chore/sync-comfy-api-v2-spec,
+# opened by cloud-code-bot from Comfy-Org/cloud push-v2-spec-to-sdks.yml) once its
+# checks are green. Off unless the repository variable DOCS_SYNC_AUTOMERGE is
+# 'true'. Only that branch and author are ever merged; every other pull request
+# is untouched, so this needs no ruleset on main.
+#
+# "Green" is decided here rather than by required checks, because most checks
+# are path-filtered and a given sync may not start them. The rule: every check
+# run on the head commit has finished, none failed, and mint-checks (no path
+# filter, so it runs on every sync) passed. provider-schemas is exempt: it
+# fetches live provider specs, so an upstream spec change can fail it with no
+# fault in the pull request.
+#
+# Each finished pull_request workflow re-evaluates; the schedule covers checks
+# from apps (Mintlify, Socket) that do not raise workflow_run.
+
+on:
+  workflow_run:
+    workflows:
+      - 'AGENTS.md Integrity'
+      - 'Anchor Check'
+      - 'Code Pages Freshness'
+      - 'Documentation Checks'
+      - 'External Link Tracking'
+      - 'Generate Router pricing translations'
+      - 'i18n Translation Sync Check'
+      - 'Link Validation'
+      - 'Redirect Check'
+      - 'Structure Parity'
+      - 'Sync-Owned Files Check'
+    types: [completed]
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: sync-pr-automerge
+  cancel-in-progress: false
+
+env:
+  SYNC_BRANCH: chore/sync-comfy-api-v2-spec
+  SYNC_AUTHOR: cloud-code-bot
+  ANCHOR_CHECK: mint-checks
+  EXEMPT_CHECKS: provider-schemas
+
+jobs:
+  automerge:
+    if: >-
+      vars.DOCS_SYNC_AUTOMERGE == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'chore/sync-comfy-api-v2-spec')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Merge the sync pull request if its checks are green
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # gh reports an App author as "app/<slug>" or "<slug>[bot]" depending on the API; accept both.
+          pr=$(gh pr list --head "$SYNC_BRANCH" --base main --state open \
+            --json number,author,isDraft,headRefOid \
+            --jq "[.[] | select(.author.login | IN(\"$SYNC_AUTHOR\", \"app/$SYNC_AUTHOR\", \"${SYNC_AUTHOR}[bot]\")) | select(.isDraft | not)][0] // empty")
+          if [ -z "$pr" ]; then echo "No open sync pull request by $SYNC_AUTHOR."; exit 0; fi
+          number=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
+          echo "Sync pull request #$number at $sha"
+
+          runs=$(gh api --paginate "repos/$GH_REPO/commits/$sha/check-runs?per_page=100" \
+            --jq '.check_runs[] | {name, status, conclusion}' | jq -s .)
+          jq -r '.[] | "  \(.name): \(.status) \(.conclusion // "")"' <<<"$runs"
+
+          # This job's own check run is in progress while it evaluates, so leave it out.
+          pending=$(jq '[.[] | select(.name != "automerge" and .status != "completed")] | length' <<<"$runs")
+          if [ "$pending" -gt 0 ]; then echo "$pending check(s) still running; waiting."; exit 0; fi
+
+          failed=$(jq -r --arg exempt "$EXEMPT_CHECKS" '[.[] | select(.name != "automerge")
+            | select(.name as $n | $exempt | split(",") | index($n) | not)
+            | select(.conclusion as $c | ["success", "neutral", "skipped"] | index($c) | not) | .name] | join(", ")' <<<"$runs")
+          if [ -n "$failed" ]; then echo "::notice::Not merging #$number: $failed did not pass."; exit 0; fi
+
+          anchor=$(jq --arg n "$ANCHOR_CHECK" '[.[] | select(.name == $n and .conclusion == "success")] | length' <<<"$runs")
+          if [ "$anchor" -eq 0 ]; then echo "$ANCHOR_CHECK has not passed on $sha yet; waiting."; exit 0; fi
+
+          # --match-head-commit refuses the merge if the bot pushed again since the checks above ran.
+          gh pr merge "$number" --squash --match-head-commit "$sha"
+          echo "::notice::Merged sync pull request #$number at $sha."
