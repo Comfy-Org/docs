@@ -145,7 +145,8 @@ async function providerShapes(ps: ProviderSpec): Promise<{ input: any; output: a
   }
   if (!ps.operation) throw new Error(`provider_spec.operation is required: ${ps.url} is an OpenAPI document, which names operations rather than schemas`);
   const op = findOperation(doc, ps.operation);
-  const req = op.requestBody?.content?.["application/json"]?.schema;
+  // Multipart-only operations (e.g. Ideogram 4 generate) carry the same field set as a form schema.
+  const req = op.requestBody?.content?.["application/json"]?.schema ?? op.requestBody?.content?.["multipart/form-data"]?.schema;
   const resOp = ps.response_operation ? findOperation(doc, ps.response_operation) : op;
   const res = resOp.responses?.["200"]?.content?.["application/json"]?.schema;
   return { input: norm(req), output: norm(res) };
