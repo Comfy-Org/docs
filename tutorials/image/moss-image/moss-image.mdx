@@ -98,6 +98,10 @@ The same graph with the Base checkpoint loaded. Use it to compare raw output aga
 
 Generate an image from a prompt plus a layout you draw. Open `Create Bounding Boxes` and drag a box for each element; each box carries its own caption, and boxes marked as text render that text inside them. `MOSS-Image Layout Prompt` turns the boxes into the layout prompt the model reads, so the caption in the box and your scene prompt are both used.
 
+Draw the background box first and the foreground elements last: boxes are emitted in the order you draw them. Each box is labelled `text` if you mark it as text, otherwise `object`. To label a box that holds a person as a character, list its number from the `Create Bounding Boxes` preview in `character_boxes` on `MOSS-Image Layout Prompt`, for example `1, 3`. Numbers that point at a text box have no effect. Both layout templates ship this field filled in (`2` in SFT, `1` in Base), so check it against your own boxes before queueing.
+
+With at least one box connected, `MOSS-Image Layout Prompt` outputs a JSON prompt: a scene caption plus one item per box. The layout templates ship `enable_prompt_enhancer` off, so that JSON reaches the model unchanged. Turning it on lets the upsampler rewrite the text, which can drop the boxes.
+
 <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_moss_image_t2i_bboxes-1.webp" alt="MOSS-Image layout-guided text to image workflow preview" />
 
 <CardGroup cols={2}>
@@ -190,11 +194,29 @@ The bf16 builds `moss_image_sft_bf16.safetensors` and `moss_image_base_bf16.safe
 ## Prompting tips
 
 - **Describe the finished image, not the request.** The model was trained on captions, so write what the picture looks like rather than an instruction like "make me a poster". The upsampler follows the same rule, which is why a short prompt still works.
-- **Turn the upsampler off to control the wording.** Set `enable_prompt_upsampler` to `false` on the subgraph node and your prompt goes to the model unchanged. Both settings show the result in `Preview Any`, so you can compare.
+- **Turn the upsampler off to control the wording.** Set `enable_prompt_enhancer` to `false` on the subgraph node and your prompt goes to the model unchanged. Both settings show the result in `Preview Any`, so you can compare.
 - **Control line breaks yourself.** Automatic breaks may not land where you want them. Put real newlines or `\n` in the text you want rendered when the position of a break matters.
 - **Use the layout workflow when placement matters.** Boxes give the model an explicit position for each element and each block of text, which is more reliable than describing positions in prose.
-- **Keep the canvas in the recommended range.** `ResolutionSelector` picks the aspect ratio and the megapixel count (1 MP by default). MOSS-Image is trained for 1 MP to 2 MP and extrapolates from about 0.25 MP to 4 MP; width and height must be multiples of 16.
+- **Keep the canvas in the recommended range.** `ResolutionSelector` picks the aspect ratio and the megapixel count (1 MP by default). 1 MP to 2 MP is the recommended output range and the model extrapolates from about 0.25 MP to 4 MP; width and height must be multiples of 16.
 - **Start from the template settings, then go slower for the official look.** The templates run 25 steps at CFG 2.5 with the `er_sde` sampler for speed. The official settings are 50 steps at CFG 3, so try those if a result is undercooked.
 - **Keep the negative prompt short.** The templates ship `nsfw, worst quality, bad anatomy, watermark, jpeg artifact`.
-- **Skip layer guidance is on at layer 22.** The subgraph node carries an `SLG` toggle, and the guidance runs at the official layer 22. Turning it off can look more realistic but may collapse detail; other layers are only reachable inside the subgraph.
+- **Skip layer guidance runs at layer 22.** The subgraph node carries an `SLG` toggle, and 22 is the official layer. Turning it off can look more realistic but may collapse detail; other layers are only reachable inside the subgraph.
 - **Base is for fine-tuning.** When you train a LoRA on MOSS-Image, freeze the text encoder.
+
+## Going above 2 MP
+
+The recommended output range is 1 MP to 2 MP, and the model extrapolates to about 4 MP. Anything larger is outside that range, so build large images from successive passes instead of one big canvas.
+
+The templates feed a fixed `Empty Flux 2 Latent` to the sampler, so this needs an edit inside the subgraph:
+
+1. Render the first pass at 1 MP or 2 MP.
+2. Decode the result, resize it in pixel space with `Upscale Image`, then encode it again with `VAE Encode`. Upscaling the latent resamples it directly and loses detail the second pass cannot recover.
+3. Feed the encoded latent to the sampler in place of `Empty Flux 2 Latent` and set `denoise` to about 0.6 for a 1.5x step. Lower keeps the first pass intact, higher reworks the composition.
+
+Repeat the resize and re-render instead of jumping to the final size. A single jump from 2 MP to 8K tends to repeat detail rather than add it, and an 8K canvas needs `VAE Decode (Tiled)`.
+
+## Reference images and the prompt upsampler
+
+The subgraph node has an optional `ref_image (for llm)` input. It reaches the upsampler, not the diffusion model: MOSS-Image has no image input, so it cannot copy a reference. With the upsampler on, the image shapes the caption it writes; with the upsampler off, the image is ignored.
+
+The upsampler runs on the Qwen3.5 text encoder the model already loads, through `Generate Text`, with a system prompt written from the official MOSS-Image prompt enhancer skill. Its output length is `max_length`, 4096 tokens in the templates. In the text to image templates `prompt_enhancer_seed` reproduces a caption, and `Preview Any` shows the text that actually reaches the sampler.
