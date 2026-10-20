@@ -1,0 +1,118 @@
+---
+title: "PiD 潜空间放大 ComfyUI 工作流示例"
+sidebarTitle: "PiD Latent Upscale"
+description: "PiD（Pixel Diffusion Decoder）只需 4 步蒸馏的像素空间采样，即可把扩散模型的 latent 直接解码为 4 倍超分辨率图像，无需单独的 VAE 解码。"
+translationSourceHash: 9df399bf
+translationFrom: tutorials/image/nvidia/pid-latent-upscale.mdx
+translationBlockHashes:
+  "_intro": 633ab8c1
+  "How PiD works": 717289ef
+  "Model downloads": 72f908ce
+---
+
+import UpdateReminder from '/snippets/zh/tutorials/update-reminder.mdx'
+
+**PiD（Pixel Diffusion Decoder）** 只需 4 步蒸馏的像素空间采样，即可把扩散模型的 **latent** 转换为 **4 倍超分辨率图像**，无需单独的 VAE 解码。本工作流演示如何使用 PiD 将 Z-Image-Turbo 的 latent 从 **1024px 放大到 4096px**。
+
+**相关链接**：
+- [Comfy-Org/PixelDiT on Hugging Face](https://huggingface.co/Comfy-Org/PixelDiT)
+- [nvidia/PixelDiT-1300M-1024px（官方发布）](https://huggingface.co/nvidia/PixelDiT-1300M-1024px)
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_pid_latent_upscale_dit-1.webp" alt="PiD 潜空间放大工作流" />
+
+<UpdateReminder />
+
+<CardGroup cols={1}>
+  <Card title="下载工作流" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_pid_latent_upscale_dit.json">
+    下载 JSON，或在模板库中搜索 "Image Upscale: PiD Latent Decode"
+  </Card>
+</CardGroup>
+
+## PiD 的工作原理
+
+PiD 根据上游模型的 **VAE / latent 空间**（编码器一侧）来匹配 checkpoint，而不只是看扩散模型的名称。你需要选择与初始生成所用模型的 latent 空间相对应的 PiD checkpoint。
+
+本工作流使用 **Z-Image-Turbo**（1024px latent 输出 4096px），它与 Flux.1 共用 16 通道 VAE。
+
+<Card title="了解子图" icon="book-open" href="/zh/interface/features/subgraph">
+  本工作流使用子图节点进行模块化处理。查看子图文档，了解如何自定义和扩展工作流。
+</Card>
+
+### 可用的 PiD checkpoint
+
+所有 checkpoint 均从 [Comfy-Org/PixelDiT](https://huggingface.co/Comfy-Org/PixelDiT) 下载到 `models/diffusion_models/`。
+
+| Checkpoint | 输入到输出 | 兼容的 latent（VAE 主干） |
+|---|---|---|
+| [`pid_flux1_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_512_to_2048_4step_bf16.safetensors) | 512 to 2048 | Flux1-dev 16-ch VAE (Flux.1, Z-Image) |
+| [`pid_flux1_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_1024_to_4096_4step_bf16.safetensors) | 1024 to 4096 | Flux1-dev 16-ch VAE (Flux.1, Z-Image) **(本工作流)** |
+| [`pid_flux2_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux2_512_to_2048_4step_bf16.safetensors) | 512 to 2048 | Flux2-dev 128-ch VAE (Flux.2) |
+| [`pid_flux2_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux2_1024_to_4096_4step_bf16.safetensors) | 1024 to 4096 | Flux2-dev 128-ch VAE (Flux.2) |
+| [`pid_sd3_512_to_2048_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_sd3_512_to_2048_4step_bf16.safetensors) | 512 to 2048 | SD3 medium 16-ch VAE |
+| [`pid_sd3_1024_to_4096_4step_bf16`](https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_sd3_1024_to_4096_4step_bf16.safetensors) | 1024 to 4096 | SD3 medium 16-ch VAE |
+
+### 子图设置
+
+在 **Latent Upscale Decode (PiD)** 子图上配置以下参数：
+
+| 设置 | 值 | 说明 |
+|---|---|---|
+| `latent_format` | `flux` | Flux.1/Flux.2/Z-Image 使用 `flux`，SD3 使用 `sd3`（Flux.2 会根据 128 通道自动识别） |
+| `degrade_sigma` | `0.0` | 输入 latent 的"完成"程度。完全去噪用 `0.0`（默认），部分去噪用 `0.1–0.8`，纯噪声用 `1.0` |
+
+### 运行步骤
+
+1. **生成 latent**。使用文生图工作流（如 Z-Image-Turbo）生成 latent 图像。
+2. **连接 PiD**。将 latent 输入 **Latent Upscale Decode (PiD)** 子图节点。
+3. **选择 checkpoint**。选择与上游模型 VAE latent 空间匹配的 PiD checkpoint。
+4. **设置输出尺寸**。将 PiD 输出尺寸设为输入 latent 分辨率的 **4 倍**。
+5. **运行**。子图会在一次 4 步过程中完成解码和放大。
+
+## 模型下载
+
+PiD 属于 PixelDiT 模型系列。本工作流还需要 Z-Image-Turbo 模型进行初始生成。
+
+<CardGroup cols={2}>
+  <Card title="PiD Flux.1 1024 to 4096" icon="download" href="https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/diffusion_models/pid_flux1_1024_to_4096_4step_bf16.safetensors">
+    pid_flux1_1024_to_4096_4step_bf16.safetensors：适用于 Flux.1 / Z-Image latent 空间的 PiD checkpoint
+  </Card>
+  <Card title="Z-Image-Turbo diffusion" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors">
+    z_image_turbo_bf16.safetensors：在 PiD 放大之前用于初始生成
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="文本编码器（Z-Image）" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors">
+    qwen_3_4b.safetensors：Z-Image-Turbo 的文本编码器
+  </Card>
+  <Card title="VAE (Z-Image)" icon="download" href="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors">
+    ae.safetensors：Z-Image-Turbo 的 VAE
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="文本编码器（PiD）" icon="download" href="https://huggingface.co/Comfy-Org/PixelDiT/resolve/main/text_encoders/gemma_2_2b_it_elm_fp8_scaled.safetensors">
+    gemma_2_2b_it_elm_fp8_scaled.safetensors：PiD 子图中 CLIPLoader 使用的文本编码器（type: pixeldit）
+  </Card>
+</CardGroup>
+
+> PiD 使用内置的 **pixel_space** VAE，PiD 本身不需要单独的 VAE 文件。
+
+### 模型存放位置
+
+```
+📂 ComfyUI/
+├── 📂 models/
+│   ├── 📂 text_encoders/
+│   │      ├── qwen_3_4b.safetensors
+│   │      └── gemma_2_2b_it_elm_fp8_scaled.safetensors
+│   ├── 📂 diffusion_models/
+│   │      ├── pid_flux1_1024_to_4096_4step_bf16.safetensors
+│   │      └── z_image_turbo_bf16.safetensors
+│   └── 📂 vae/
+│          └── ae.safetensors
+```
+
+### 示例输出
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_pid_latent_upscale_dit-2.webp" alt="PiD 示例输出" />
