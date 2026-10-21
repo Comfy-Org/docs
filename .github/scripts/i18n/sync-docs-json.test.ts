@@ -130,6 +130,37 @@ describe("syncTab", () => {
     expect(syncTab(enTab, existingTab, zh, LANG_DIRS).pages[0].group).toBe("Cloud API 참조");
   });
 
+  test("keeps a localized OpenAPI label after the no-pages group moves under a new parent", () => {
+    const enTab = {
+      tab: "API Reference",
+      pages: [
+        {
+          group: "Cloud",
+          pages: [
+            {
+              group: "Cloud API Reference",
+              openapi: { source: "openapi-cloud.yaml", directory: "api-reference/cloud" },
+            },
+          ],
+        },
+      ],
+    };
+    const existingTab = {
+      tab: "API 参考",
+      pages: [
+        {
+          group: "Cloud API 参考",
+          icon: "cloud",
+          openapi: { source: "openapi-cloud.yaml", directory: "zh/api-reference/cloud" },
+        },
+      ],
+    };
+
+    const group = syncTab(enTab, existingTab, zh, LANG_DIRS).pages[0].pages[0];
+    expect(group.group).toBe("Cloud API 参考");
+    expect(group.openapi.directory).toBe("zh/api-reference/cloud");
+  });
+
   test("allows sibling groups to share the same localized label after a restructure", () => {
     const enTab = {
       tab: "Cloud",
@@ -174,6 +205,32 @@ describe("mergeNavPages", () => {
     );
     expect(merged[0].group).toBe("Brand New Group");
   });
+
+  test("uses the label index when a no-pages OpenAPI group is no longer a sibling", () => {
+    const labelIndex = new Map([["openapi:openapi-cloud.yaml", "Cloud API 参考"]]);
+    const merged = mergeNavPages(
+      [
+        {
+          group: "Cloud",
+          pages: [
+            {
+              group: "Cloud API Reference",
+              openapi: {
+                source: "openapi-cloud.yaml",
+                directory: "zh/api-reference/cloud",
+              },
+            },
+          ],
+        },
+      ],
+      [],
+      LANG_DIRS,
+      labelIndex
+    );
+
+    expect(merged[0].pages[0].group).toBe("Cloud API 参考");
+    expect(merged[0].pages[0].openapi.directory).toBe("zh/api-reference/cloud");
+  });
 });
 
 describe("syncLanguageEntry", () => {
@@ -205,5 +262,52 @@ describe("syncLanguageEntry", () => {
 
     const synced = syncLanguageEntry(enEntry, zhEntry, zh, LANG_DIRS, () => {});
     expect(synced.tabs[0].pages).toEqual(["zh/cloud/import-models"]);
+  });
+
+  test("keeps a locale-only page inside its original group", () => {
+    const enEntry = {
+      language: "en",
+      tabs: [{ tab: "Development", pages: ["cloud/import-models"] }],
+    };
+    const zhEntry = {
+      language: "zh",
+      tabs: [
+        {
+          tab: "开发",
+          pages: [
+            "zh/cloud/import-models",
+            {
+              group: "Tutorials",
+              pages: [
+                {
+                  group: "Demo Apps",
+                  icon: "rocket",
+                  pages: [
+                    "zh/development/samples/overview",
+                    "zh/development/samples/removed",
+                  ],
+                },
+                { group: "Empty", pages: ["zh/development/samples/also-removed"] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const synced = syncLanguageEntry(enEntry, zhEntry, zh, LANG_DIRS, () => {});
+    expect(synced.tabs[0].pages).toEqual([
+      "zh/cloud/import-models",
+      {
+        group: "Tutorials",
+        pages: [
+          {
+            group: "Demo Apps",
+            icon: "rocket",
+            pages: ["zh/development/samples/overview"],
+          },
+        ],
+      },
+    ]);
   });
 });

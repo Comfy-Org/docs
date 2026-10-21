@@ -209,6 +209,26 @@ export function collectPagePaths(nodes, langDirs) {
   return paths;
 }
 
+/**
+ * Keep the original group/subgroup nodes for locale-only pages instead of flattening
+ * them to tab-root strings. Groups with no retained pages are dropped.
+ * @param {unknown} nodes
+ * @param {Set<string>} retainedPaths
+ */
+function collectLocaleOnlyNavNodes(nodes, retainedPaths) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.flatMap((node) => {
+    if (typeof node === "string") {
+      return retainedPaths.has(node) ? [node] : [];
+    }
+    if (node && typeof node === "object" && Array.isArray(node.pages)) {
+      const pages = collectLocaleOnlyNavNodes(node.pages, retainedPaths);
+      return pages.length > 0 ? [{ ...node, pages }] : [];
+    }
+    return [];
+  });
+}
+
 /** @param {unknown} nodes @param {string[]} langDirs */
 function structuralSignature(nodes, langDirs) {
   return collectPagePaths(nodes, langDirs)
@@ -368,10 +388,16 @@ export function mergeNavPages(
     if (typeof newChild === "string") return newChild;
     if (newChild?.openapi != null && !Array.isArray(newChild.pages)) {
       const match = findOpenApiMatch(existingPages, newChild);
-      if (!match) return newChild;
+      const sourceKey = openApiSourceKey(newChild.openapi);
+      // A restructure can move this node under a new parent, so the same-level
+      // match misses. The label index still has the localized group recorded
+      // while walking the previous locale tree.
+      const localizedLabel =
+        match?.group ?? (sourceKey ? labelIndex.get(`openapi:${sourceKey}`) : undefined);
+      if (!match && !localizedLabel) return newChild;
       const merged = { ...newChild };
-      if (match.group) merged.group = match.group;
-      if (match.icon) merged.icon = match.icon;
+      if (localizedLabel) merged.group = localizedLabel;
+      if (match?.icon) merged.icon = match.icon;
       return merged;
     }
     if (!newChild?.pages) return newChild;
@@ -553,7 +579,11 @@ export function syncLanguageEntry(enEntry, langEntry, lang, langDirs, onLocaleOn
         resolvePagePathOnDisk(path)
     );
     if (extra.length > 0) {
-      syncedTabs[i] = { ...tab, pages: [...(tab.pages ?? []), ...extra] };
+      const extraNodes = collectLocaleOnlyNavNodes(
+        langEntry?.tabs?.[i]?.pages ?? [],
+        new Set(extra)
+      );
+      syncedTabs[i] = { ...tab, pages: [...(tab.pages ?? []), ...extraNodes] };
       localeOnlyPages.push(...extra);
     }
   });
