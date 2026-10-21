@@ -111,6 +111,8 @@ paths:
               $ref: '#/components/headers/RouterNoSniffHeader'
             X-Comfy-Router-Fallback-Provider:
               $ref: '#/components/headers/RouterFallbackProviderHeader'
+            X-Comfy-Router-Provider:
+              $ref: '#/components/headers/RouterProviderHeader'
             X-Comfy-Router-Dropped-Params:
               $ref: '#/components/headers/RouterDroppedParamsHeader'
             X-Comfy-Credits-Used:
@@ -328,6 +330,8 @@ paths:
               $ref: '#/components/headers/RouterRequestIdHeader'
             X-Content-Type-Options:
               $ref: '#/components/headers/RouterNoSniffHeader'
+            X-Comfy-Credits-Used:
+              $ref: '#/components/headers/RouterCreditsUsedHeader'
           content:
             application/json:
               schema:
@@ -842,7 +846,7 @@ components:
       - detail
   responses:
     RouterConcurrencyLimited:
-      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in either case and `detail` says which bound was hit: the number of concurrent calls, or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in every case and `detail` says which bound was hit: the number of concurrent calls; the number of concurrent calls to models classed expensive, a quarter of the concurrent-call limit shared with partner-node calls, whose refusal also carries the `X-Model-Concurrency-Limit`, `X-Model-Concurrency-Current` and `X-Model-Concurrency-Remaining` headers; or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes - for the expensive-model bound, one of their calls to an expensive model, which may be a partner-node call. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
       headers:
         X-Comfy-Error-Type:
           $ref: '#/components/headers/RouterErrorTypeHeader'
@@ -854,6 +858,12 @@ components:
           $ref: '#/components/headers/CommittedSpendCurrentHeader'
         X-Committed-Spend-Remaining:
           $ref: '#/components/headers/CommittedSpendRemainingHeader'
+        X-Model-Concurrency-Limit:
+          $ref: '#/components/headers/ModelConcurrencyLimitHeader'
+        X-Model-Concurrency-Current:
+          $ref: '#/components/headers/ModelConcurrencyCurrentHeader'
+        X-Model-Concurrency-Remaining:
+          $ref: '#/components/headers/ModelConcurrencyRemainingHeader'
       content:
         application/json:
           schema:
@@ -1080,6 +1090,30 @@ components:
         format: int64
         minimum: 0
         example: 400
+    ModelConcurrencyCurrentHeader:
+      description: The caller's concurrent calls to models classed expensive, as counted by the gate that refused this call. Present alongside `X-Model-Concurrency-Limit`.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 1
+    ModelConcurrencyLimitHeader:
+      description: The most concurrent calls to models classed expensive the caller may hold at once, a quarter of the concurrent-call limit, shared with partner-node calls. Present on a `429` raised by that bound.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 1
+    ModelConcurrencyRemainingHeader:
+      description: The expensive-model calls the caller may still start; `0` on the `429`. Present alongside `X-Model-Concurrency-Limit`.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 0
     RouterCapacityRetryAfterHeader:
       description: Seconds to wait before re-sending the same request, unchanged. It is present only when Router refused the request body for capacity - the in-flight request-body budget was full, or no slot was free to scan an oversized body - and a capacity refusal submitted nothing and charged nothing, so re-sending the identical call once the interval has passed is the whole remedy. There is no `Idempotency-Key` to collect under and no queued request to poll for; this is the one `Retry-After` on Router that means simply "send it again later". It is absent on the dependency-fault `503`s that share this status - a credential rail, an idempotency store or a policy decision point that could not answer - because none of them knows when it will, and a wrong number is worse than none against a dependency that is already failing.
       required: false
@@ -1123,6 +1157,12 @@ components:
         enum:
         - nosniff
         example: nosniff
+    RouterProviderHeader:
+      description: The provider of the Router leg that served this call, present on every successful run response - the model's own provider on a native run, the alternate provider `model_provider` named, or the provider a `fallback_provider` retry landed on (which `X-Comfy-Router-Fallback-Provider` also names, only in that case) - which is the leg Router dispatched to and not necessarily the vendor that produced the output, since a proxy-level cascade inside a native leg (the `vertexai` Gemini image chain, for one) can hand the call to a different vendor that no header names. Absent on an error response. It is stored with the `Idempotency-Key` record and replayed unchanged on a same-key retry; a retry of a call recorded before this header existed carries none.
+      required: false
+      schema:
+        type: string
+        example: openai
     RouterQueuePollAfterHeader:
       description: Seconds to wait before polling this queued request again. It is Router's own estimate of when asking again is worth the round trip, and it moves with how far the request has actually got - a request at the back of the queue is told to wait longer than one already running.
       required: false
