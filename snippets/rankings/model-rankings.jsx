@@ -214,24 +214,18 @@ export const UseCaseRankings = ({ data }) => {
   const [all, setAll] = useState(false);
   const [ref, W] = useRankingWidth();
   const [tip, show, hide] = useRankingTip();
-  const OTHER = "Other models";
   const weeks = data.weeks;
   const last = weeks.length - 1;
   const uc = data.cases.find((c) => c.name === u) || data.cases[0];
-  const ranked = uc.models
-    .map((m) => ({ name: m.m, s: m.s, last: m.s[last], prev: m.s[last - 1], change: 100 * (m.s[last] - m.s[last - 1]) }))
-    .sort((a, b) => (a.name === OTHER) - (b.name === OTHER) || b.last - a.last);
-  const color = new Map();
-  let ci = 0;
-  ranked.forEach((r) => color.set(r.name, r.name === OTHER ? ["var(--mr-muted)", 1] : rankingColor(ci++)));
-  const top = ranked.filter((r) => r.name !== OTHER && r.last > 0).slice(0, 30);
+  // The data holds weekly ranks only (1 = most spend), never the spend or its shares.
   const rank = new Map();
-  weeks.forEach((w, wi) =>
-    uc.models
-      .filter((m) => m.m !== OTHER && m.s[wi] > 0)
-      .sort((a, b) => b.s[wi] - a.s[wi])
-      .forEach((m, i) => rank.set(wi + "|" + m.m, i + 1))
-  );
+  uc.models.forEach((m) => m.r.forEach((r, wi) => r && rank.set(wi + "|" + m.m, r)));
+  const ranked = uc.models
+    .filter((m) => m.r[last])
+    .map((m) => ({ name: m.m }))
+    .sort((a, b) => rank.get(last + "|" + a.name) - rank.get(last + "|" + b.name));
+  const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
+  const top = ranked.slice(0, 30);
   const N = top.length;
   let maxSeen = N;
   top.forEach((m) => weeks.forEach((w, wi) => (maxSeen = Math.max(maxSeen, rank.get(wi + "|" + m.name) || 0))));
@@ -244,13 +238,18 @@ export const UseCaseRankings = ({ data }) => {
   const y = (r) => 12 + ((r - 1) * (H - 42)) / Math.max(1, maxRank - 1);
   const [hover, setHover] = useState(null);
   const weekEvery = Math.max(1, Math.ceil(52 / Math.max(1, (W - mr - ml - 8) / Math.max(1, last))));
-  const shown = all ? ranked : ranked.slice(0, 10);
+  const rankRows = ranked.map((r) => {
+    const now = rank.get(last + "|" + r.name);
+    const before = rank.get(last - 1 + "|" + r.name);
+    return { name: r.name, now, before, change: before ? before - now : null };
+  });
+  const shown = all ? rankRows : rankRows.slice(0, 10);
   const lastWeek = fmtDay(weeks[last]);
 
   return (
     <section className="mr-sec" id="top-models-by-use-case">
       <h2>Top models by use case</h2>
-      <p className="mr-lead">Share of spend by model within each use case.</p>
+      <p className="mr-lead">Models ranked by share of spend within each use case, week by week.</p>
       <div className="mr-ctrls">
         <RankingSeg
           label="Use case"
@@ -289,7 +288,7 @@ export const UseCaseRankings = ({ data }) => {
                 .reverse()
                 .map((m) => {
                   const k = color.get(m.name);
-                  const pts = weeks.map((w, wi) => ({ wi, r: rank.get(wi + "|" + m.name), s: m.s[wi] }));
+                  const pts = weeks.map((w, wi) => ({ wi, r: rank.get(wi + "|" + m.name) }));
                   let d = "";
                   let pen = false;
                   pts.forEach((p) => {
@@ -314,7 +313,7 @@ export const UseCaseRankings = ({ data }) => {
                             fill={k[0]}
                             fillOpacity={Math.max(0.35, k[1])}
                             className="mr-dot"
-                            onMouseMove={(ev) => show(ev, m.name + " · week of " + fmtDay(weeks[p.wi]), [[k, "Rank", "#" + p.r], [null, "Share of " + u + " spend", fmtPct(p.s)]])}
+                            onMouseMove={(ev) => show(ev, m.name + " · week of " + fmtDay(weeks[p.wi]), [[k, "Rank", "#" + p.r]])}
                           />
                         ))}
                       {end.r && end.r <= maxRank ? (
@@ -339,12 +338,12 @@ export const UseCaseRankings = ({ data }) => {
           colorOf={(r) => color.get(r.name)}
           cols={[
             ["Model", (r) => r.name],
-            ["Share, week of " + lastWeek, (r) => fmtPct(r.last)],
-            ["Week before", (r) => fmtPct(r.prev)],
-            ["Change (pts)", (r) => fmtPts(r.change), changeClass],
+            ["Rank, week of " + lastWeek, (r) => "#" + r.now],
+            ["Week before", (r) => (r.before ? "#" + r.before : "–")],
+            ["Change", (r) => (r.change == null ? "New" : r.change === 0 ? "0" : (r.change > 0 ? "+" : "−") + Math.abs(r.change)), (r) => (r.change ? (r.change > 0 ? "mr-up" : "mr-down") : "")],
           ]}
         />
-        <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} noun="models" />
+        <RankingMore total={rankRows.length} open={all} onToggle={() => setAll(!all)} noun="models" />
       </div>
       <p className="mr-note">
         Spend is the Comfy credits charged for each call to an API model. Use case comes from each call's request (its endpoint, video mode, or whether an input image was sent) for 92% of spend, and from the model name for the rest. Text to video is mostly inferred from the model name, so some of it may be image to video. Models with fewer than 200 calls over 8 weeks are grouped as Other models, which is left out of the ranking. Weeks are Monday-start UTC weeks from Aug 24 to Oct 18, 2026.

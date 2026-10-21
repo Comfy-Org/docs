@@ -9,18 +9,23 @@ B = sys.argv[1]; OUT = sys.argv[2]
 rd = lambda f: list(csv.DictReader(open(f"{B}/{f}.csv")))
 R = lambda v: round(v, 5)
 
-# 1. Use case: share of spend per week, never credits
+# 1. Use case: weekly rank by spend, never credits or shares
 uc = rd('usecase_spend')
 weeks = sorted({r['week'] for r in uc})
 tot = collections.Counter(); case_tot = collections.Counter(); cell = collections.defaultdict(float)
 for r in uc:
     c = float(r['credits']); tot[(r['use_case'], r['week'])] += c; case_tot[r['use_case']] += c
     cell[(r['use_case'], r['model'], r['week'])] += c
+# Only the weekly rank is kept (1 = most spend); "Other models" is left out.
 cases = []
 for u, _ in case_tot.most_common():
-    models = sorted({m for (uu, m, w) in cell if uu == u})
-    ms = [{"m": m, "s": [R(cell[(u, m, w)] / tot[(u, w)]) if tot[(u, w)] else 0 for w in weeks]} for m in models]
-    cases.append({"name": u, "models": ms})
+    models = sorted({m for (uu, m, w) in cell if uu == u and m != 'Other models'})
+    ranks = {m: [None] * len(weeks) for m in models}
+    for wi, w in enumerate(weeks):
+        live = sorted((m for m in models if cell[(u, m, w)] > 0), key=lambda m: -cell[(u, m, w)])
+        for i, m in enumerate(live):
+            ranks[m][wi] = i + 1
+    cases.append({"name": u, "models": [{"m": m, "r": ranks[m]} for m in models]})
 usecase = {"weeks": weeks, "cases": cases}
 
 # 2. Hardware: share of each month's installs, never counts
