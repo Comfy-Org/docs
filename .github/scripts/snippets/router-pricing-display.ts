@@ -160,6 +160,8 @@ const phrases: Record<string, Translation> = {
   "Input duration, capped at 5 seconds per request": ["Input video (max 5s)", "入力動画（最大 5 秒）", "输入视频（最多 5 秒）", "입력 동영상(최대 5초)"],
   "Background removal": ["Background removal", "背景除去", "背景移除", "배경 제거"],
   "Fibo image editing": ["Image edit", "画像編集", "图像编辑", "이미지 편집"],
+  "Promotional price until 2026-11-07": ["Promo until Nov 7, 2026", "2026年11月7日までのプロモ価格", "促销价（至 2026 年 11 月 7 日）", "2026년 11월 7일까지 프로모션 가격"],
+  "From 2026-11-07": ["From Nov 7, 2026", "2026年11月7日から", "自 2026 年 11 月 7 日起", "2026년 11월 7일부터"],
   "Kling 3 Standard": ["Standard", "標準", "标准", "표준"],
   "text": ["Text only", "テキストのみ", "仅文本", "텍스트만"],
   "style_references": ["Style references", "スタイル参照", "风格参考", "스타일 참조"],
