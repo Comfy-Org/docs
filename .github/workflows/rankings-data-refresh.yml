@@ -1,0 +1,109 @@
+name: Rankings data refresh
+
+# Rebuilds the data behind the Rankings tab (rankings/index.mdx) every day at
+# 9am Pacific from Snowflake, PostHog and Hugging Face, then pushes the new
+# snippets/rankings/rankings-data.jsx to main. The raw exports hold internal
+# spend and counts, so they stay in the runner's temp dir; only ranks, shares
+# and times reach the repo. See scripts/rankings/README.md.
+#
+# Needs these repository secrets: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
+# SNOWFLAKE_PRIVATE_KEY (or SNOWFLAKE_PASSWORD), SNOWFLAKE_WAREHOUSE,
+# SNOWFLAKE_ROLE (optional), POSTHOG_API_KEY. HF_TOKEN is optional.
+# If main rejects the push, the update goes to a pull request instead.
+
+on:
+  schedule:
+    # 9am Pacific is 16:00 UTC in summer time and 17:00 UTC in winter; the
+    # first step skips whichever run isn't 9am in Los Angeles.
+    - cron: "0 16 * * *"
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: rankings-data-refresh
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Only run at 9am Pacific
+        id: clock
+        run: |
+          hour=$(TZ=America/Los_Angeles date +%H)
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$hour" != "09" ]; then
+            echo "It's ${hour}:00 in Los Angeles, skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.clock.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Setup Python
+        if: steps.clock.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Snowflake connector
+        if: steps.clock.outputs.run == 'true'
+        run: pip install "snowflake-connector-python==3.12.3" "cryptography>=42"
+
+      - name: Fetch sources and rebuild the data file
+        if: steps.clock.outputs.run == 'true'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$POSTHOG_API_KEY" ]; then
+            echo "::warning::The rankings refresh secrets aren't set yet, so the data was not refreshed."
+            exit 0
+          fi
+          # Data runs through yesterday (UTC), the last full day.
+          through=$(date -u -d yesterday +%F)
+          python3 scripts/rankings/fetch-rankings-sources.py "$RUNNER_TEMP/rankings" "$through"
+          python3 scripts/rankings/build-rankings-data.py "$RUNNER_TEMP/rankings" snippets/rankings/rankings-data.jsx "$through"
+
+      - name: Push the new data
+        if: steps.clock.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: chore/rankings-data-refresh
+        run: |
+          set -euo pipefail
+          files="snippets/rankings/rankings-data.jsx scripts/rankings/state/hf-downloads.json"
+          if git diff --quiet -- $files; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add $files
+          git commit -m "chore(rankings): refresh rankings data through $(date -u -d yesterday +%F)"
+          if git push origin HEAD:main; then
+            exit 0
+          fi
+          echo "main rejected the push; opening a pull request instead."
+          git push -f origin "HEAD:refs/heads/$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')" ]; then
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(rankings): refresh rankings data" \
+              --body "Daily refresh of the Rankings tab data by the rankings-data-refresh workflow. Only ranks, shares and times are in the diff."
+          fi
