@@ -25,6 +25,10 @@ export const RANKING_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", 
 
 export const fmtDay = (iso) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + +iso.slice(8, 10);
 
+export const fmtDate = (iso) => fmtDay(iso) + ", " + iso.slice(0, 4);
+
+export const addDays = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+
 export const fmtMonthName = (iso) => ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][+iso.slice(5, 7) - 1];
 
 // A period that runs past the snapshot's last day is partial: label it with its cutoff.
@@ -109,6 +113,26 @@ export const RankingMore = ({ total, open, onToggle, noun }) =>
     </button>
   );
 
+// Model pages on the Comfy hub. A row's `h` is its page path under this URL.
+export const HUB_URL = "https://comfy.org/hub/models/";
+
+export const ModelName = ({ name, h }) =>
+  h ? (
+    <a className="mr-link" href={HUB_URL + h + "/"} target="_blank" rel="noopener noreferrer">
+      {name}
+    </a>
+  ) : (
+    name
+  );
+
+// Source and method notes, collapsed by default.
+export const Methodology = ({ children }) => (
+  <details className="mr-method">
+    <summary>Learn more about our methodology</summary>
+    <p className="mr-note">{children}</p>
+  </details>
+);
+
 export const ShareTable = ({ rows, cols, colorOf }) => (
   <div className="mr-tbox">
     <table className="mr-table">
@@ -132,7 +156,7 @@ export const ShareTable = ({ rows, cols, colorOf }) => (
                 return (
                   <td key={i}>
                     {k ? <span className="mr-sw" style={{ background: k[0], opacity: k[1] }} /> : null}
-                    {v}
+                    <ModelName name={v} h={r.h} />
                   </td>
                 );
               }
@@ -228,7 +252,7 @@ export const UseCaseRankings = ({ data }) => {
   uc.models.forEach((m) => m.r.forEach((r, wi) => r && rank.set(wi + "|" + m.m, r)));
   const ranked = uc.models
     .filter((m) => m.r[last])
-    .map((m) => ({ name: m.m }))
+    .map((m) => ({ name: m.m, h: m.h }))
     .sort((a, b) => rank.get(last + "|" + a.name) - rank.get(last + "|" + b.name));
   const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
   const top = ranked.slice(0, 30);
@@ -247,7 +271,7 @@ export const UseCaseRankings = ({ data }) => {
   const rankRows = ranked.map((r) => {
     const now = rank.get(last + "|" + r.name);
     const before = rank.get(last - 1 + "|" + r.name);
-    return { name: r.name, now, before };
+    return { name: r.name, h: r.h, now, before };
   });
   const shown = all ? rankRows : rankRows.slice(0, 10);
   const lastWeek = fmtDay(weeks[last]);
@@ -350,9 +374,9 @@ export const UseCaseRankings = ({ data }) => {
         />
         <RankingMore total={rankRows.length} open={all} onToggle={() => setAll(!all)} noun="models" />
       </div>
-      <p className="mr-note">
-        Spend is the Comfy credits charged for each call to an API model. Use case comes from each call's request (its endpoint, video mode, or whether an input image was sent) for 92% of spend, and from the model name for the rest. Text to video is mostly inferred from the model name, so some of it may be image to video. Models with fewer than 200 calls over 8 weeks are grouped as Other models, which is left out of the ranking. Weeks are Monday-start UTC weeks from Aug 24 to Oct 18, 2026.
-      </p>
+      <Methodology>
+        Spend is the Comfy credits charged for each call to an API model. Use case comes from each call's request (its endpoint, video mode, or whether an input image was sent) for 92% of spend, and from the model name for the rest. Text to video is mostly inferred from the model name, so some of it may be image to video. Models with fewer than 200 calls over 8 weeks are grouped as Other models, which is left out of the ranking. Weeks are Monday-start UTC weeks, here {fmtDay(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}.
+      </Methodology>
     </section>
   );
 };
@@ -429,15 +453,15 @@ export const HardwareRankings = ({ data, through }) => {
         />
         <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} />
       </div>
-      <p className="mr-note">
-        Source: ComfyUI Desktop app telemetry, one count per install per calendar month (UTC), using its latest report that month. October runs to Oct 18. June is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. July counts are inflated by install IDs that changed during the month, so compare shares, not totals. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted. Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the top 30 are left out.
-      </p>
+      <Methodology>
+        Source: ComfyUI Desktop app telemetry, one count per install per calendar month (UTC), using its latest report that month. The latest month runs to {fmtDate(through)}. June 2026 is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. July counts are inflated by install IDs that changed during the month, so compare shares, not totals. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted. Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the top 30 are left out.
+      </Methodology>
     </section>
   );
 };
 
 // Section 3: median to 90th percentile time per Cloud model, log scale.
-export const SpeedRankings = ({ data }) => {
+export const SpeedRankings = ({ data, from }) => {
   const TYPES = ["Image", "Video", "Image tools", "Audio", "3D"];
   const ML = { gen: "generation time", wait: "latency" };
   const [k, setK] = useState("Original");
@@ -447,7 +471,7 @@ export const SpeedRankings = ({ data }) => {
   const [allV, setAllV] = useState(false);
   const [ref, W] = useRankingWidth();
   const [tip, show, hide] = useRankingTip();
-  const rowsAll = data.map((d) => ({ type: d[0], kind: d[1], model: d[2], p50_wait: d[3], p90_wait: d[4], p50_gen: d[5], p90_gen: d[6], share: d[7] }));
+  const rowsAll = data.map((d) => ({ type: d[0], kind: d[1], model: d[2], p50_wait: d[3], p90_wait: d[4], p50_gen: d[5], p90_gen: d[6], share: d[7], h: d[8] }));
   const kr = rowsAll.filter((r) => r.kind === k);
   const have = TYPES.filter((x) => kr.some((r) => r.type === x));
   const type = have.includes(t) ? t : have[0];
@@ -551,9 +575,9 @@ export const SpeedRankings = ({ data }) => {
         />
         <RankingMore total={rows.length} open={allV} onToggle={() => setAllV(!allV)} />
       </div>
-      <p className="mr-note">
-        Source: Comfy Cloud job records, successful jobs only. Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since Aug 24 is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). Community fine-tunes are checkpoints and merges trained on top of them. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Models are ranked by popularity, as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits. GPU time is metered for about 92% of the jobs shown.
-      </p>
+      <Methodology>
+        Source: Comfy Cloud job records, successful jobs only. Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since {fmtDate(from)} is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). Community fine-tunes are checkpoints and merges trained on top of them. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Models are ranked by popularity, as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits. GPU time is metered for about 92% of the jobs shown.
+      </Methodology>
     </section>
   );
 };
@@ -572,7 +596,7 @@ export const DownloadRankings = ({ data, through }) => {
   const ps = grain.periods;
   const last = ps.length - 1;
   const ranked = tp.models
-    .map((mm) => ({ name: mm.m, s: mm.s, last: mm.s[last], prev: mm.s[last - 1], change: 100 * (mm.s[last] - mm.s[last - 1]) }))
+    .map((mm) => ({ name: mm.m, h: mm.h, s: mm.s, last: mm.s[last], prev: mm.s[last - 1], change: 100 * (mm.s[last] - mm.s[last - 1]) }))
     .filter((r) => r.last > 0)
     .sort((a, b) => b.last - a.last);
   const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
@@ -617,9 +641,9 @@ export const DownloadRankings = ({ data, through }) => {
         />
         <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} />
       </div>
-      <p className="mr-note">
-        Source: Hugging Face publisher analytics for the Comfy-Org organization (88 model repos), daily downloads exported Oct 21, 2026. Weeks are Monday-start UTC weeks from Jul 7, 2025 to Oct 18, 2026. Months run from August 2025, and October 2026 only covers Oct 1 to 18. Each repo is one model family and can hold several files (precisions, text encoders, VAEs). A download is one file fetched, so a workflow that pulls three files counts three times. Models published by other organizations, or by their own labs, aren't in this data. Shares are within each output type, which is set by hand from the repo name. Text encoders and VAEs are support files other models load (the Flux Klein VAE and text encoder repos, Qwen3-VL, Gemma 4, SigCLIP).
-      </p>
+      <Methodology>
+        Source: Hugging Face downloads of the Comfy-Org organization's model repos. Up to Oct 18, 2026 the counts come from Hugging Face's publisher analytics. After that they come from the change in each repo's public download total, recorded every morning, so a period is only shown once a recording exists near its start. Weeks are Monday-start UTC weeks and the latest period runs to {fmtDate(through)}. Each repo is one model family and can hold several files (precisions, text encoders, VAEs). A download is one file fetched, so a workflow that pulls three files counts three times. Models published by other organizations, or by their own labs, aren't in this data. Shares are within each output type, which is set by hand from the repo name. Text encoders and VAEs are support files other models load (the Flux Klein VAE and text encoder repos, Qwen3-VL, Gemma 4, SigCLIP).
+      </Methodology>
     </section>
   );
 };
@@ -677,6 +701,11 @@ export const ModelRankings = ({ data }) => (
       .mr-down { color: var(--mr-bad); }
       .mr-more { align-self: flex-start; font: inherit; font-size: 0.8125rem; padding: 4px 12px; border: 1px solid var(--mr-border); border-radius: 14px; background: transparent; color: var(--mr-fg); cursor: pointer; }
       .mr-more:hover { background: var(--mr-grid); }
+      .mr-link { color: inherit; text-decoration: underline; text-decoration-color: var(--mr-muted); text-underline-offset: 2px; }
+      .mr-link:hover { text-decoration-color: currentColor; }
+      .mr-method summary { cursor: pointer; width: fit-content; font-size: 0.8125rem; color: var(--mr-fg); }
+      .mr-method summary:focus-visible { outline: 2px solid var(--mr-fg); outline-offset: 1px; }
+      .mr-method[open] summary { margin-bottom: 0.5rem; }
       .mr-note { margin: 0; font-size: 0.8125rem; color: var(--mr-muted-fg); max-width: 85ch; }
     `}</style>
     <nav className="mr-toc" aria-label="Rankings sections">
@@ -687,7 +716,7 @@ export const ModelRankings = ({ data }) => (
     </nav>
     <UseCaseRankings data={data.usecase} />
     <HardwareRankings data={data.hardware} through={data.through} />
-    <SpeedRankings data={data.speed} />
+    <SpeedRankings data={data.speed} from={data.speedFrom || "2026-08-24"} />
     <DownloadRankings data={data.downloads} through={data.through} />
   </div>
 );
