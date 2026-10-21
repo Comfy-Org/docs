@@ -25,6 +25,11 @@ export const RANKING_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", 
 
 export const fmtDay = (iso) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + +iso.slice(8, 10);
 
+export const fmtMonthName = (iso) => ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][+iso.slice(5, 7) - 1];
+
+// A period that runs past the snapshot's last day is partial: label it with its cutoff.
+export const isPartial = (iso, through) => !!through && iso.slice(0, 7) === through.slice(0, 7) && +through.slice(8, 10) < 28;
+
 export const fmtMonth = (iso, short) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + (short ? "'" + iso.slice(2, 4) : iso.slice(0, 4));
 
 // Rough label width for 12px text, so long names can be clipped to fit.
@@ -353,7 +358,7 @@ export const UseCaseRankings = ({ data }) => {
 };
 
 // Section 2: share of each month's Desktop installs by hardware.
-export const HardwareRankings = ({ data }) => {
+export const HardwareRankings = ({ data, through }) => {
   const [g, setG] = useState(data.groups[0].name);
   const [all, setAll] = useState(false);
   const OTHER = "Other GPUs";
@@ -374,7 +379,8 @@ export const HardwareRankings = ({ data }) => {
     const r = ranked.find((x) => x.name === n);
     return { name: n, color: color.get(n), s: r.s };
   });
-  const monthLabel = (iso) => fmtMonth(iso) + (iso.slice(0, 7) === "2026-10" ? " (to Oct 18)" : "");
+  const monthLabel = (iso) => fmtMonth(iso) + (isPartial(iso, through) ? " (to " + fmtDay(through) + ")" : "");
+  const colLabel = (iso) => (isPartial(iso, through) ? RANKING_MONTHS[+iso.slice(5, 7) - 1] + " 1–" + +through.slice(8, 10) : fmtMonthName(iso));
   const shown = all ? ranked : ranked.slice(0, 10);
 
   return (
@@ -409,15 +415,15 @@ export const HardwareRankings = ({ data }) => {
       </div>
       <div className="mr-card">
         <h3>
-          Values<span className="mr-sub">: {g}, share of installs, October so far vs September</span>
+          Values<span className="mr-sub">: {g}, share of installs, {colLabel(months[last])} vs {colLabel(months[last - 1])}</span>
         </h3>
         <ShareTable
           rows={shown}
           colorOf={(r) => color.get(r.name)}
           cols={[
             ["Setup", (r) => r.name],
-            ["Oct 1–18", (r) => fmtPct(r.last)],
-            ["September", (r) => fmtPct(r.prev)],
+            [colLabel(months[last]), (r) => fmtPct(r.last)],
+            [colLabel(months[last - 1]), (r) => fmtPct(r.prev)],
             ["Change (pts)", (r) => fmtPts(r.change), changeClass],
           ]}
         />
@@ -445,17 +451,17 @@ export const SpeedRankings = ({ data }) => {
   const kr = rowsAll.filter((r) => r.kind === k);
   const have = TYPES.filter((x) => kr.some((r) => r.type === x));
   const type = have.includes(t) ? t : have[0];
-  const rows = kr.filter((r) => r.type === type && r.p50_gen != null).sort((a, b) => b.share - a.share);
   const lo50 = "p50_" + m;
   const hi90 = "p90_" + m;
+  const rows = kr.filter((r) => r.type === type && r[lo50] != null).sort((a, b) => b.share - a.share);
   const showRows = allA ? rows : rows.slice(0, 10);
   const rowH = 26;
   const lw = Math.min(W * 0.38, Math.max(...showRows.map((r) => textWidth(r.model)), 40) + 14);
   const mr = textWidth("00m 00s – 00m 00s") + 12;
   const H = showRows.length * rowH + 22;
   const valid = rows.filter((r) => r[lo50] != null && r[hi90] != null);
-  const lo = Math.max(0.5, Math.min(...valid.map((r) => r[lo50])) * 0.8);
-  const hi = Math.max(lo * 2, Math.max(...valid.map((r) => r[hi90])) * 1.15);
+  const lo = valid.length ? Math.max(0.5, Math.min(...valid.map((r) => r[lo50])) * 0.8) : 1;
+  const hi = valid.length ? Math.max(lo * 2, Math.max(...valid.map((r) => r[hi90])) * 1.15) : 60;
   const x = (v) => lw + ((Math.log(Math.min(hi, Math.max(lo, v))) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * (W - mr - lw);
   const ticks = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200].filter((v) => v >= lo && v <= hi);
   const reset = () => {
@@ -553,7 +559,7 @@ export const SpeedRankings = ({ data }) => {
 };
 
 // Section 4: share of Comfy-Org Hugging Face downloads within each output type.
-export const DownloadRankings = ({ data }) => {
+export const DownloadRankings = ({ data, through }) => {
   const TOPN = 15;
   const OTHER = "Other models";
   const [t, setT] = useState("Image");
@@ -577,7 +583,7 @@ export const DownloadRankings = ({ data }) => {
     .map((r) => ({ name: r.name, color: color.get(r.name), s: r.s }))
     .concat([{ name: OTHER, color: ["var(--mr-muted)", 1], s: otherS }]);
   const unit = g === "Weekly" ? "week" : "month";
-  const pLabel = (p) => (g === "Weekly" ? fmtDay(p) + ", " + p.slice(0, 4) : fmtMonth(p) + (p === "2026-10-01" ? " (to Oct 18)" : ""));
+  const pLabel = (p) => (g === "Weekly" ? fmtDay(p) + ", " + p.slice(0, 4) : fmtMonth(p) + (isPartial(p, through) ? " (to " + fmtDay(through) + ")" : ""));
   const axLabel = (p) => (g === "Weekly" ? fmtDay(p) : fmtMonth(p, true));
   const shown = all ? ranked : ranked.slice(0, 10);
 
@@ -680,8 +686,8 @@ export const ModelRankings = ({ data }) => (
       <a href="#top-open-source-downloads">Top open source downloads</a>
     </nav>
     <UseCaseRankings data={data.usecase} />
-    <HardwareRankings data={data.hardware} />
+    <HardwareRankings data={data.hardware} through={data.through} />
     <SpeedRankings data={data.speed} />
-    <DownloadRankings data={data.downloads} />
+    <DownloadRankings data={data.downloads} through={data.through} />
   </div>
 );

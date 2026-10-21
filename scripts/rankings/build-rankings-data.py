@@ -1,12 +1,18 @@
 # Builds snippets/rankings/rankings-data.jsx from the internal CSV exports behind
 # the Comfy model rankings dashboard. It turns credits, install counts and
 # download counts into shares so no absolute volume is published.
-# Usage: python3 scripts/rankings/build-rankings-data.py <csv dir> snippets/rankings/rankings-data.jsx
+# Usage: python3 scripts/rankings/build-rankings-data.py <csv dir> snippets/rankings/rankings-data.jsx <last day, YYYY-MM-DD>
 # The dir holds usecase_spend.csv, hardware_monthly.csv, cloud_model_speed_all.csv
 # and model_downloads_typed.csv.
 import csv, json, sys, collections
-B = sys.argv[1]; OUT = sys.argv[2]
-rd = lambda f: list(csv.DictReader(open(f"{B}/{f}.csv")))
+B, OUT, THROUGH = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def rd(name):
+    with open(f"{B}/{name}.csv", encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
 R = lambda v: round(v, 5)
 
 # 1. Use case: weekly rank by spend, never credits or shares
@@ -61,9 +67,9 @@ for g in ["Weekly", "Monthly"]:
             types.append({"name": t, "models": [{"m": m, "s": [R(cell[(t, m, p)] / tot[(t, p)]) if tot[(t, p)] else 0 for p in ps]} for m in models]})
     downloads[g] = {"periods": ps, "types": types}
 
-data = {"usecase": usecase, "hardware": hardware, "speed": speed, "downloads": downloads}
-with open(OUT, 'w') as f:
+data = {"through": THROUGH, "usecase": usecase, "hardware": hardware, "speed": speed, "downloads": downloads}
+with open(OUT, 'w', encoding='utf-8') as f:
     f.write("// Static snapshot for the Rankings page. Shares and times only: no call counts,\n")
     f.write("// credits, install counts or download counts. Regenerate from the source exports\n")
     f.write("// rather than editing by hand.\n")
-    f.write("export const RANKINGS_DATA = " + json.dumps(data, separators=(',', ':'), ensure_ascii=False) + ";\n")
+    f.write("export const RANKINGS_DATA = " + json.dumps(data, separators=(',', ':'), ensure_ascii=False, allow_nan=False) + ";\n")
