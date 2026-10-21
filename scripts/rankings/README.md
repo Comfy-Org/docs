@@ -1,6 +1,6 @@
 # Rankings data pipeline
 
-The [Rankings tab](../../rankings/index.mdx) reads one generated file,
+The [Rankings tab](../../rankings/index) reads one generated file,
 `snippets/rankings/rankings-data.jsx`. It holds ranks, shares and times only.
 Raw spend, call counts and install counts never enter the repo.
 
