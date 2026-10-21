@@ -1,0 +1,282 @@
+---
+title: "配合 Comfy Router 使用图像"
+description: "通过 Comfy Router 调用 bria/image：端点、请求形状以及 Router 返回的响应。"
+sidebarTitle: "图像"
+translationSourceHash: efe20bbc
+translationFrom: development/comfy-router/models/bria/image/code.mdx
+translationBlockHashes:
+  "_intro": fc0b60dc
+  "Quick start": 3bbef131
+  "Schema": c66ba446
+  "Examples": 6e5a5b4c
+---
+{/* 已生成文件。由 `pnpm code-pages:gen` 从 router-schemas/bria/image.json 生成。 */}
+
+import RouterCodeFooter from "/snippets/zh/comfy-router/model-code-footer.mdx";
+
+`bria/image` 的 API 参考，由 Comfy Router 从 Bria 提供。
+
+**输入：** 文本、图像 · **输出：** 图像
+
+## 快速开始
+
+在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建一个密钥，并将其导出为 `COMFY_API_KEY`。Python 和 TypeScript 代码片段使用 Comfy SDK（`pip install comfy-sdk` 和 `npm install @comfyorg/sdk`）；cURL 代码片段则是通过原始 HTTP 发起的同一调用。
+
+**模型 ID：** `bria/image`
+
+**端点：** `POST https://api.comfy.org/v2/models/bria/image`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="等待结果">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 从环境变量读取 COMFY_API_KEY。
+# SDK 会自动创建幂等键，并在自动重试时复用它。
+with Comfy() as client:
+    result = client.models.run(
+        "bria/image",
+        {
+            "prompt": "A red vintage bicycle leaning against a brick wall in soft morning light",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量读取 COMFY_API_KEY。
+// SDK 会自动创建幂等键，并在自动重试时复用它。
+const { data } = await comfy.models.run("bria/image", {
+  prompt: "A red vintage bicycle leaning against a brick wall in soft morning light",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/bria/image \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"A red vintage bicycle leaning against a brick wall in soft morning light\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="入队并稍后收集">
+同一个请求体，发送到 `POST https://api.comfy.org/v2/models/bria/image/requests`。运行一旦被接纳，Router 就会以 `201` 应答并返回 `request_id`，结果准备就绪后即可收集，既可以由当前进程收集，也可以由另一个进程收集。[队列投递](/zh/development/comfy-router/queue) 详细介绍了状态、取消与收集的流程。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 从环境变量读取 COMFY_API_KEY。
+# 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bria/image",
+            {
+                "prompt": "A red vintage bicycle leaning against a brick wall in soft morning light",
+            },
+        )
+        print("request_id:", handle.request_id)  # 加上模型 ID，就是另一个进程所需的全部信息
+
+        # 轮询直到请求完成，按服务器给出的 Retry-After 等待。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # 提供商自己的负载，与 models.run() 返回的值相同。
+        # 失败或已取消的请求会在这里抛出带类型的 Router 错误。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量读取 COMFY_API_KEY。
+// 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+const handle = await comfy.models.submit("bria/image", {
+  prompt: "A red vintage bicycle leaning against a brick wall in soft morning light",
+});
+console.log("requestId:", handle.requestId); // 加上模型 ID，就是另一个进程所需的全部信息
+
+// 轮询直到请求完成，按服务器给出的 Retry-After 等待。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// 与 models.run() 返回的结果相同。失败或已取消的请求会在此处被拒绝。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 提交。Router 返回 201，并带有 request_id、status_url、response_url 和 cancel_url。
+curl https://api.comfy.org/v2/models/bria/image/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"A red vintage bicycle leaning against a brick wall in soft morning light\"}"
+
+# 2. 轮询直到状态为 COMPLETED，每次响应按其给出的 Retry-After 秒数等待。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bria/image/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 收集。返回 200 时带有模型的原始输出，仍在运行时则返回 202 及状态响应体。
+curl https://api.comfy.org/v2/models/bria/image/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Schema
+
+### 输入
+
+<ParamField body="aspect_ratio" type="string" default="&quot;1:1&quot;">
+  输出图像比例，取值为 "1:1"、"2:3"、"3:2"、"3:4"、"4:3"、"4:5"、"5:4"、"9:16"、"16:9"、"16:10"、"10:16"、"2:1"、"1:2"、"21:9"、"9:21"、"3:1"、"1:3"、"4:1"、"1:4"、"5:1" 或 "1:5" 之一。使用 "4MP" 时，使用同时发送 prompt 和 structured_prompt 的细化请求时，或使用没有提示词的图像时，Bria 会拒绝从 "16:10" 起的比例。
+</ParamField>
+
+<ParamField body="images" type="string[]">
+  用于启发新图像的参考图像。可以是公开可访问的 URL 或 Base64 编码。接受的格式为 JPEG、JPG、PNG、WEBP。必须恰好包含一项。
+</ParamField>
+
+<ParamField body="ip_signal" type="boolean" default="false">
+  如果为 true，则针对提示词中可能存在的 IP 内容返回警告。
+</ParamField>
+
+<ParamField body="model_version" type="string">
+  要使用的模型版本。仅接受 "FIBO"；省略它则运行同一模型。
+</ParamField>
+
+<ParamField body="output_type" type="string" default="&quot;png&quot;">
+  输出图像格式，"png" 或 "jpeg"。
+</ParamField>
+
+<ParamField body="prompt" type="string">
+  基于文本的指令。可单独使用以生成新图像，也可与 images 或 structured_prompt 一起使用来引导或细化结果。
+</ParamField>
+
+<ParamField body="prompt_content_moderation" type="boolean" default="true">
+  如果为 true，则在提示词审核失败时返回 422。
+</ParamField>
+
+<ParamField body="resolution" type="string" default="&quot;1MP&quot;">
+  输出图像分辨率，"1MP" 或 "4MP"。"4MP" 可改善图像细节，但会使延迟增加约 30 秒。
+</ParamField>
+
+<ParamField body="seed" type="integer">
+  用于确定性生成的种子。如果省略，则使用随机种子。
+</ParamField>
+
+<ParamField body="structured_prompt" type="string">
+  一个包含 JSON 格式结构化提示词的字符串，来自先前生成的结果。将其与相同的种子一起使用可重现该图像，或者更改其中一部分来细化图像。
+</ParamField>
+
+<ParamField body="visual_input_content_moderation" type="boolean" default="true">
+  如果为 true，则在图像审核失败时返回 422。
+</ParamField>
+
+<ParamField body="visual_output_content_moderation" type="boolean" default="true">
+  如果为 true，则在视觉输出审核失败时返回 422。
+</ParamField>
+
+本页内容根据 Router 在 `GET /v2/models/bria/image/openapi.json` 提供的 schema 生成；在请求到达提供商之前，Router 也会依据同一文档校验调用。
+
+### 输出
+
+<ResponseField name="error" type="object">
+  错误对象（仅在 status 为 ERROR 时存在）
+</ResponseField>
+
+<ResponseField name="error.code" type="integer">
+  错误代码。
+</ResponseField>
+
+<ResponseField name="error.details" type="string">
+  额外的错误详情。
+</ResponseField>
+
+<ResponseField name="error.message" type="string">
+  报错信息。
+</ResponseField>
+
+<ResponseField name="request_id" type="string">
+  请求的唯一标识符。
+</ResponseField>
+
+<ResponseField name="result" type="object">
+  结果对象（仅在 status 为 COMPLETED 时存在）
+</ResponseField>
+
+<ResponseField name="result.image_url" type="string">
+  生成或编辑后的图像 URL。
+</ResponseField>
+
+<ResponseField name="result.prompt" type="string">
+  原始提示词。
+</ResponseField>
+
+<ResponseField name="result.refined_prompt" type="string">
+  提示词的细化版本，或在 Bria 未细化的 COMPLETED 生成中为 null。该值可为 null，是因为该键为 PRESENT，携带 null 而非被省略；已在 bria/image-edit-gen-fill 上实际观察到。
+</ResponseField>
+
+<ResponseField name="result.seed" type="integer">
+  用于生成的种子。
+</ResponseField>
+
+<ResponseField name="result.structured_instruction" type="string">
+  结构化指令，即序列化为字符串的 JSON 文档，由 `/v2/structured_instruction/generate` 返回。该操作不会填充任何一个 URL。
+</ResponseField>
+
+<ResponseField name="result.structured_prompt" type="string">
+  详细的 JSON 结构化提示词。
+</ResponseField>
+
+<ResponseField name="result.video_url" type="string">
+  已生成视频的 URL。
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  当前请求状态。
+
+  可能的值：`IN_PROGRESS`、`COMPLETED`、`ERROR`、`UNKNOWN`
+</ResponseField>
+
+## 示例
+
+### 输入
+
+```json
+{
+  "prompt": "A red vintage bicycle leaning against a brick wall in soft morning light"
+}
+```
+
+### 输出
+
+```json
+{
+  "request_id": "0b3f9d7e-2c41-4a8b-9f10-6d5c8e2a4b71",
+  "result": {
+    "image_url": "https://example.invalid/bria/image/generated.png",
+    "seed": 42
+  },
+  "status": "COMPLETED"
+}
+```
+
+
+<RouterCodeFooter />
