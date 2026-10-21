@@ -6,7 +6,7 @@ description: "Put Comfy Router behind LiteLLM Proxy as a pass-through endpoint a
 
 If you already track spend with [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through), you can add Comfy Router as one more pass-through endpoint. Your callers keep their LiteLLM keys, and your Comfy API key stays on the proxy.
 
-Router reports what a synchronous run cost, in US dollars, in the `x-litellm-response-cost` response header, for the models that report a Comfy credit price per run (see [Runs that don't report a cost](#runs-that-dont-report-a-cost)). LiteLLM reads that header on every pass-through response and records it as the request's spend, so you don't maintain a price table for those models.
+Router reports what a run cost, in US dollars, in the `x-litellm-response-cost` response header (on the run response for a synchronous run, and on the result collection for a [queued](#queued-delivery) one), for the models that report a Comfy credit price per run (see [Runs that don't report a cost](#runs-that-dont-report-a-cost)). LiteLLM reads that header on every pass-through response and records it as the request's spend, so you don't maintain a price table for those models.
 
 <Note>
   LiteLLM's built-in `fal_ai/` provider covers image generation only. To route a general workload through LiteLLM, use a pass-through endpoint as shown here, not a native provider.
@@ -28,7 +28,8 @@ Router reports what a synchronous run cost, in US dollars, in the `x-litellm-res
     general_settings:
       pass_through_endpoints:
         # Runs and queue submits. Synchronous runs report their exact cost,
-        # which replaces cost_per_request for that row.
+        # which replaces cost_per_request for that row. Queue submits don't;
+        # see "Queued delivery" below.
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -39,7 +40,9 @@ Router reports what a synchronous run cost, in US dollars, in the `x-litellm-res
           cost_per_request: 0.10   # your fallback estimate, in USD
           timeout: 660             # above Router's run deadline (10 minutes by default)
 
-        # Model catalog, queue status polls, and result collection.
+        # Model catalog, queue status polls, and result collection. A queued
+        # run's result collection reports its exact cost, which replaces the
+        # 0 below for that row.
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -72,7 +75,7 @@ Router reports what a synchronous run cost, in US dollars, in the `x-litellm-res
 
 ## How spend is recorded
 
-A synchronous run that reports a cost carries these response headers:
+A run that reports a cost carries these response headers, on the run response for a synchronous run and on the result collection for a queued one:
 
 ```http
 X-Comfy-Credits-Used: 12.5
@@ -93,7 +96,7 @@ Some runs don't carry `x-litellm-response-cost`. It's absent in the same cases a
 - a charge that didn't reach Comfy billing
 - an error response
 
-It's also absent when Router replays a stored result for a retry with the same `Idempotency-Key` (sent through the proxy as `x-pass-Idempotency-Key`). That retry isn't charged again, so the replay doesn't report the run's exact cost a second time.
+It's also absent when Router replays a stored result for a retry with the same `Idempotency-Key` (sent through the proxy as `x-pass-Idempotency-Key`). That retry isn't charged again, so the replay doesn't report the run's exact cost a second time. For the same reason, only one result collection of a queued run carries it, the first one after the run's price is recorded; collecting the same result again still returns `X-Comfy-Credits-Used`, but not `x-litellm-response-cost`.
 
 When the header is absent, LiteLLM falls back to the endpoint's `cost_per_request`. That applies to every case above. Error responses, runs billed to your own provider key, and idempotent replays are therefore recorded at your estimate even though Comfy didn't charge your credits for them. Set it to a sensible estimate of your typical run rather than `0`, so a run that doesn't report a cost doesn't appear free in your spend reports, and expect those rows to push LiteLLM's totals above your Comfy bill. A run that was priced and genuinely cost nothing reports `x-litellm-response-cost: 0`, which LiteLLM records as zero.
 
@@ -105,12 +108,16 @@ With [queued delivery](/development/comfy-router/queue), one generation reaches 
 | --- | --- | --- |
 | Submit — `/v2/models/{provider}/{model}/requests` | `POST` | your `cost_per_request` estimate |
 | Each status poll — `.../requests/{request_id}/status` | `GET` | `0` |
-| Result collection — `.../requests/{request_id}` | `GET` | `0` |
+| Result collection — `.../requests/{request_id}` | `GET` | the run's exact price, on the first collection that reports it |
 | Cancel — `.../requests/{request_id}/cancel` | `POST` | your `cost_per_request` estimate |
 
 The submit response's `status_url`, `response_url` and `cancel_url` are absolute `https://api.comfy.org/...` URLs, and LiteLLM doesn't rewrite response bodies. Call them through the proxy by replacing `https://api.comfy.org` with your proxy's `/comfy` prefix, for example `http://localhost:4000/comfy/v2/models/...`. Sent straight to Comfy, your LiteLLM key is rejected.
 
-Queue responses don't carry `x-litellm-response-cost` yet, so a queued generation is recorded at your estimate, not at its exact price. Splitting the endpoint by method books that estimate once, on the submit, instead of once per poll. For exact per-run spend in LiteLLM, use the synchronous route.
+The result collection carries `x-litellm-response-cost` once, on the first collection after the run's price is recorded. For most models that's the first collection. For some models the price is recorded after the result is ready, so an early collection can come back without it, and a later collection of the same request reports it.
+
+Router marks the price as reported when it answers that collection. If the response doesn't reach LiteLLM, for example because the request timed out or the connection dropped, a later collection doesn't carry `x-litellm-response-cost` either, and LiteLLM records that run at the `GET` entry's cost.
+
+The submit row still records your `cost_per_request` estimate, so with the config above a queued run is counted twice: once at your estimate and once at its exact price. If you only use queued delivery, set the `POST` entry's `cost_per_request` to `0` so each queued run is recorded once, at its exact price. A run whose result you never collect then doesn't appear in LiteLLM's totals, though it's still billed to your workspace. With both entries at `0`, a run that reports no cost is recorded as `0`. That includes a run whose price is recorded after its result is ready, if you collect that result only once, before the price lands, and the cases above where the collection doesn't report it. If your client collects each result only once, as soon as it's ready, keep the `POST` estimate.
 
 ## Notes
 
