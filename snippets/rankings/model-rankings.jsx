@@ -28,7 +28,8 @@ export const fmtDay = (iso) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + +iso
 export const fmtMonthName = (iso) => ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][+iso.slice(5, 7) - 1];
 
 // A period that runs past the snapshot's last day is partial: label it with its cutoff.
-export const isPartial = (iso, through) => !!through && iso.slice(0, 7) === through.slice(0, 7) && +through.slice(8, 10) < 28;
+export const isPartial = (iso, through) =>
+  !!through && iso.slice(0, 7) === through.slice(0, 7) && +through.slice(8, 10) < new Date(Date.UTC(+through.slice(0, 4), +through.slice(5, 7), 0)).getUTCDate();
 
 export const fmtMonth = (iso, short) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + (short ? "'" + iso.slice(2, 4) : iso.slice(0, 4));
 
