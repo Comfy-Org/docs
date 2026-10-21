@@ -158,7 +158,12 @@ for grain in ("Weekly", "Monthly"):
         a, b = first_on_or_after(p, 3), first_on_or_after(nxt, 3) or snaps[-1]
         if a and b > a:
             for repo, meta in REPOS.items():
-                n = state["totals"][b].get(repo, 0) - state["totals"][a].get(repo, 0)
+                # A repo missing from either snapshot (added later, or left out
+                # of that day's listing) is skipped, not counted from zero.
+                start_n, end_n = state["totals"][a].get(repo), state["totals"][b].get(repo)
+                if start_n is None or end_n is None:
+                    continue
+                n = end_n - start_n
                 if n > 0:
                     dl.append([grain, p.isoformat(), meta["type"], meta["name"], n])
         p = nxt
