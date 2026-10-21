@@ -247,7 +247,7 @@ export const UseCaseRankings = ({ data }) => {
   const rankRows = ranked.map((r) => {
     const now = rank.get(last + "|" + r.name);
     const before = rank.get(last - 1 + "|" + r.name);
-    return { name: r.name, now, before, change: before ? before - now : null };
+    return { name: r.name, now, before };
   });
   const shown = all ? rankRows : rankRows.slice(0, 10);
   const lastWeek = fmtDay(weeks[last]);
@@ -346,7 +346,6 @@ export const UseCaseRankings = ({ data }) => {
             ["Model", (r) => r.name],
             ["Rank, week of " + lastWeek, (r) => "#" + r.now],
             ["Week before", (r) => (r.before ? "#" + r.before : "–")],
-            ["Change", (r) => (r.change == null ? "New" : r.change === 0 ? "0" : (r.change > 0 ? "+" : "−") + Math.abs(r.change)), (r) => (r.change ? (r.change > 0 ? "mr-up" : "mr-down") : "")],
           ]}
         />
         <RankingMore total={rankRows.length} open={all} onToggle={() => setAll(!all)} noun="models" />
