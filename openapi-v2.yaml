@@ -97,13 +97,13 @@ paths:
                   example: photo.png
                 expected_hash:
                   type: string
-                  description: Optional client-computed blake3 (`blake3:<hex>`). Verified against the server-computed hash; mismatch is rejected with 409 `hash_mismatch` and no asset is minted.
+                  description: Optional client-computed blake3 (`blake3:<hex>`). Verified against the server-computed hash; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset's retention is changed; elsewhere the upload is stored before the check, so a retry with the correct hash dedups onto it.
                   example: blake3:9f8a1c0d...
                 tags:
                   type: array
                   items:
                     type: string
-                  description: Category tags (e.g. `input`).
+                  description: 'Category tags (e.g. `input`). A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Cloud''s hosted API also caps this encoded JSON field at 8 KiB, so a long tag set can be refused (422 `invalid_body`) below these limits. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -137,7 +137,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '422':
-          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure (`invalid_request` on a deployment, `invalid_body` on Comfy Cloud). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored.'
+          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment, `invalid_body` or `validation_error` on Comfy Cloud). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored.'
           content:
             application/json:
               schema:
@@ -189,6 +189,7 @@ paths:
                   type: array
                   items:
                     type: string
+                  description: 'A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -219,7 +220,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '422':
-          description: '`invalid_request` on a deployment: the `file_path`, `tags` or `expires_in` is malformed.'
+          description: 'The `file_path`, `tags` or `expires_in` is malformed, or `tags` breaks the limits above or holds a disallowed tag: `invalid_request` on a deployment, `validation_error` on Cloud. A deployment checks the tags even when an identical reference exists.'
           content:
             application/json:
               schema:
@@ -1049,7 +1050,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     DeploymentLookupUnavailable:
-      description: 'On deployment-scoped surfaces, `deployment_lookup_unavailable`: the deployment this address names could not be looked up just now. The request was refused before it did anything (nothing was created, read, changed or canceled), so the same request can be sent again after `Retry-After`. Every operation at a deployment''s address can answer this way.'
+      description: 'On deployment-scoped surfaces, `deployment_lookup_unavailable`: the deployment this address names could not be looked up just now. The request was refused before it did anything (nothing was created, read, changed or canceled), so the same request can be sent again after `Retry-After`. Every operation at a deployment''s address can answer this way. A job submit can also answer this 503 with `database_unavailable`: the job could not be saved just now and nothing was started, so the same request can be sent again after `Retry-After`. No other operation answers `database_unavailable`.'
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
@@ -1514,7 +1515,11 @@ components:
 
         operation: the deployment the address names could not be looked up
 
-        just now; nothing was done, so retry),
+        just now; nothing was done, so retry), `database_unavailable` (503 +
+
+        Retry-After, only on a job submit: the job could not be saved just
+
+        now and nothing was started, so retry),
 
         `deployment_stopped` (422 — terminal deployment state; a retry
 
@@ -1522,7 +1527,11 @@ components:
 
         a malformed asset upload or asset-from-hash field, or a jobs-list
 
-        `limit` that is not a positive integer), `content_blocked` (451:
+        `limit` that is not a positive integer), `validation_error` (422,
+
+        Cloud: an asset upload or asset-from-hash field was refused, e.g. a
+
+        tag over the tag limits), `content_blocked` (451:
 
         content moderation flagged the asset''s bytes) and `sso_required` (403:
 
