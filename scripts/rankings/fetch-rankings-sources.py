@@ -5,7 +5,7 @@
 # Usage: python3 scripts/rankings/fetch-rankings-sources.py <out dir> <last day, YYYY-MM-DD>
 #
 # Sources and the secrets they need (all read-only):
-#   usecase_spend, cloud_model_speed_all  Snowflake  SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
+#   model_generations, cloud_model_speed_all  Snowflake  SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
 #       SNOWFLAKE_PRIVATE_KEY (PEM, key-pair auth) or SNOWFLAKE_PASSWORD,
 #       SNOWFLAKE_WAREHOUSE, optional SNOWFLAKE_ROLE
 #   hardware_monthly                      PostHog    POSTHOG_API_KEY (personal key with
@@ -43,7 +43,7 @@ def http_json(url, body=None, headers=None):
         return json.load(r)
 
 
-# 1 and 3. Snowflake: spend by use case and Cloud model speed.
+# 1 and 3. Snowflake: generations by model and Cloud model speed.
 def snowflake_rows(sql, start, end):
     # The dates come from this script, never from input, so they're filled in
     # as text; binding would make the connector treat the % in LIKE patterns.
@@ -68,11 +68,12 @@ def snowflake_rows(sql, start, end):
         return cur.fetchall()
 
 
-# Weeks are Monday-start (UTC). The use case chart covers the last 8 full weeks.
+# Weeks are Monday-start (UTC). Top models and Top movers cover the last 26 full weeks.
 week_end = THROUGH - dt.timedelta(days=(THROUGH.weekday() + 1) % 7)  # last Sunday on or before THROUGH
-week_start = week_end - dt.timedelta(days=7 * 8 - 1)
-rows = snowflake_rows(query_file("usecase_spend.sql"), week_start, week_end + dt.timedelta(days=1))
-write_csv("usecase_spend", ["week", "use_case", "model", "credits"], [[str(r[0]), r[1], r[2], float(r[3])] for r in rows])
+week_start = week_end - dt.timedelta(days=7 * 26 - 1)
+rows = snowflake_rows(query_file("model_generations.sql"), week_start, week_end + dt.timedelta(days=1))
+write_csv("model_generations", ["week", "model", "api_name", "use_case", "calls", "generations"],
+          [[str(r[0]), r[1], r[2] or "", r[3], int(r[4]), int(r[5])] for r in rows])
 
 # Speed covers every job since this start date, so the 100-job floor stays meaningful.
 SPEED_START = dt.date.fromisoformat(os.environ.get("RANKINGS_SPEED_START", "2026-08-24"))

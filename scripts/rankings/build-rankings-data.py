@@ -1,9 +1,9 @@
 # Builds snippets/rankings/rankings-data.jsx from the internal CSVs that
 # fetch-rankings-sources.py writes (or the dashboard's original exports). It turns
-# credits, install counts and download counts into ranks and shares so no
+# generations, credits, install counts and download counts into shares so no
 # absolute volume is published.
 # Usage: python3 scripts/rankings/build-rankings-data.py <csv dir> snippets/rankings/rankings-data.jsx <last day, YYYY-MM-DD>
-# The dir holds usecase_spend.csv, hardware_monthly.csv, cloud_model_speed_all.csv
+# The dir holds model_generations.csv, hardware_monthly.csv, cloud_model_speed_all.csv
 # and model_downloads_typed.csv.
 import csv, json, os, re, sys, collections
 B, OUT, THROUGH = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -63,24 +63,64 @@ def repo_page(repo):
     return best and "local/" + best
 
 
-# 1. Use case: weekly rank by spend, never credits or shares
-uc = rd('usecase_spend')
-weeks = sorted({r['week'] for r in uc})
-tot = collections.Counter(); case_tot = collections.Counter(); cell = collections.defaultdict(float)
-for r in uc:
-    c = float(r['credits']); tot[(r['use_case'], r['week'])] += c; case_tot[r['use_case']] += c
-    cell[(r['use_case'], r['model'], r['week'])] += c
-# Only the weekly rank is kept (1 = most spend); "Other models" is left out.
-cases = []
-for u, _ in case_tot.most_common():
-    models = sorted({m for (uu, m, w) in cell if uu == u and m != 'Other models'})
-    ranks = {m: [None] * len(weeks) for m in models}
-    for wi, w in enumerate(weeks):
-        live = sorted((m for m in models if cell[(u, m, w)] > 0), key=lambda m: -cell[(u, m, w)])
-        for i, m in enumerate(live):
-            ranks[m][wi] = i + 1
-    cases.append({"name": u, "models": [dict({"m": m, "r": ranks[m]}, **link(api_page(m, u))) for m in models]})
-usecase = {"weeks": weeks, "cases": cases}
+# 1. Generations: weekly share of each output type's generations per model, plus
+# each type's week-over-week change, never counts.
+with open(f"{HERE}/model-types.json", encoding="utf-8") as f:
+    KNOWN = json.load(f)
+TYPE_OF_CASE = {"Text to image": "Image", "Image edit": "Image", "Image tools": "Image", "Image to video": "Video",
+                "Text to video": "Video", "Video to video": "Video", "Speech": "Speech", "3D": "3D"}
+gen = rd('model_generations')
+names = {r['model'] for r in gen} | set(KNOWN)
+
+
+def final_name(model, api):
+    # Preview names count toward their final release, and Meshy's "latest" alias
+    # gets its provider's name.
+    if model.lower() == 'latest' and (api or '').lower().startswith('meshy'):
+        return 'meshy (latest)'
+    base = re.sub(r'-preview$', '', model)
+    return base if base != model and base in names else model
+
+
+weeks = sorted({r['week'] for r in gen})
+calls, by_case, by_api, cell, tot = collections.Counter(), collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter), collections.Counter(), collections.Counter()
+for r in gen:
+    m = final_name(r['model'], r['api_name'])
+    r['m'] = m
+    calls[m] += int(r['calls'])
+    by_case[m][r['use_case']] += float(r['generations'])
+    by_api[m][r['api_name']] += int(r['calls'])
+kind = {}
+for m in calls:
+    case = by_case[m].most_common(1)[0][0]
+    t = KNOWN.get(m) or TYPE_OF_CASE.get(case)
+    if t:
+        kind[m] = (t, case)
+# Models with fewer than 200 calls in the window are grouped as Other models.
+OTHER = 'Other models'
+for r in gen:
+    if r['m'] not in kind:
+        continue
+    t = kind[r['m']][0]
+    m = r['m'] if calls[r['m']] >= 200 else OTHER
+    cell[(t, m, r['week'])] += float(r['generations'])
+    tot[(t, r['week'])] += float(r['generations'])
+gtypes = []
+for t in ['Image', 'Video', 'Speech', '3D']:
+    models = sorted({m for (tt, m, w) in cell if tt == t})
+    if not models:
+        continue
+    rows = []
+    for m in models:
+        row = {"m": m, "s": [R(cell[(t, m, w)] / tot[(t, w)]) if tot[(t, w)] else 0 for w in weeks]}
+        if m != OTHER:
+            row["p"] = by_api[m].most_common(1)[0][0]
+            row.update(link(api_page(m, kind[m][1])))
+        rows.append(row)
+    a_, b_ = tot[(t, weeks[-2])], tot[(t, weeks[-1])]
+    # The type's own week-over-week change, so the page can turn share changes into growth.
+    gtypes.append({"name": t, "g": R(b_ / a_ - 1) if a_ else None, "models": rows})
+generations = {"weeks": weeks, "types": gtypes}
 
 # 2. Hardware: share of each month's installs, never counts
 hw = rd('hardware_monthly')
@@ -94,10 +134,12 @@ for g in ["GPU model", "VRAM", "GPU vendor", "Operating system", "System RAM"]:
     groups.append({"name": g, "items": [{"i": i, "s": [R(cell[(g, i, m)] / tot[(g, m)]) if tot[(g, m)] else 0 for m in months]} for i in items]})
 hardware = {"months": months, "groups": groups}
 
-# 3. Speed: times and share of credits only, job counts dropped
+# 3. Speed: times and a usage rank, job counts and credit shares dropped
 num = lambda v: None if v == '' else float(v)
 sp = rd('cloud_model_speed_all')
-speed = [[r['type'], r['kind'], r['model'], num(r['p50_wait_s']), num(r['p90_wait_s']), num(r['p50_gen_s']), num(r['p90_gen_s']), R(float(r['gpu_share'] or 0)), local_page(r['model'])] for r in sp]
+# Usage rank (1 = most Cloud credits) orders the "Usage" sort; the share itself isn't published.
+usage = {r['model']: i + 1 for i, r in enumerate(sorted(sp, key=lambda r: -float(r['gpu_share'] or 0)))}
+speed = [[r['type'], r['kind'], r['model'], num(r['p50_wait_s']), num(r['p90_wait_s']), num(r['p50_gen_s']), num(r['p90_gen_s']), usage[r['model']], local_page(r['model'])] for r in sp]
 
 # 4. Downloads: share within output type per period, counts dropped
 with open(f"{HERE}/hf-repos.json", encoding="utf-8") as f:
@@ -133,7 +175,7 @@ for g in ["Weekly", "Monthly"]:
             types.append({"name": t, "models": [dict({"m": m, "s": [share(t, m, p) for p in ps]}, **link(repo_page(REPO_OF.get(m, "")))) for m in models]})
     downloads[g] = {"periods": ps, "types": types}
 
-data = {"through": THROUGH, "speedFrom": os.environ.get("RANKINGS_SPEED_START", "2026-08-24"), "usecase": usecase, "hardware": hardware, "speed": speed, "downloads": downloads}
+data = {"through": THROUGH, "speedFrom": os.environ.get("RANKINGS_SPEED_START", "2026-08-24"), "generations": generations, "hardware": hardware, "speed": speed, "downloads": downloads}
 with open(OUT, 'w', encoding='utf-8') as f:
     f.write("// Static snapshot for the Rankings page. Shares and times only: no call counts,\n")
     f.write("// credits, install counts or download counts. Regenerate from the source exports\n")

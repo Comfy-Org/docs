@@ -10,7 +10,7 @@ Raw spend, call counts and install counts never enter the repo.
 (two UTC crons plus a clock check, so daylight saving time is handled). It:
 
 1. Runs `fetch-rankings-sources.py <tmp dir> <yesterday>`, which writes four CSVs to the runner's temp dir:
-   - `usecase_spend.csv`: Snowflake, `queries/usecase_spend.sql`, the last 8 full Monday-start UTC weeks.
+   - `model_generations.csv`: Snowflake, `queries/model_generations.sql`, generations per model and week for the last 26 full Monday-start UTC weeks (Top models and Top movers).
    - `cloud_model_speed_all.csv`: Snowflake, `queries/cloud_model_speed.sql`, every Cloud job since `RANKINGS_SPEED_START` (default 2026-08-24).
    - `hardware_monthly.csv`: PostHog HogQL, `queries/hardware_monthly.hogql`, one count per Desktop install per month from July 2026.
    - `model_downloads_typed.csv`: Hugging Face public download totals for the repos in `hf-repos.json`.
@@ -42,6 +42,12 @@ difference between snapshots, and a period with no snapshot near its start is
 skipped. Periods up to Oct 18, 2026 came from publisher analytics and keep their
 shares; `build-rankings-data.py` merges new periods into the existing data file
 rather than replacing it.
+
+## Output types
+
+`model-types.json` sets the output type (Image, Video, Speech, 3D) of every
+model already on the page. A new model gets its type from its calls' use case
+in `model_generations.sql`; add it to the file to fix a wrong guess.
 
 ## Model page links
 

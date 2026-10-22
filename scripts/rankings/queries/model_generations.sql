@@ -1,15 +1,17 @@
--- Credits per week, use case and model for partner API calls (Router, Cloud and
--- local API nodes), {start} (a Monday) up to {end} (the Monday after the last
--- full week). Only ranks reach the page. {start} and {end} are filled in by
+-- Generations per week, model and use case for partner API calls (Router, Cloud and
+-- local API nodes), {start} (a Monday) up to {end} (the Monday after the last full
+-- week). A generation is a call, or the number of outputs a call asks for (1 to 16).
+-- Only shares and growth reach the page. {start} and {end} are filled in by
 -- fetch-rankings-sources.py.
 with bounds as (
     select '{start}'::date as start_week, '{end}'::date as end_week
 ),
 calls as (
     select
-        c.usage_row_id,
+        c.call_id,
         c.created_at,
         lower(coalesce(c.api_name, ''))                         as api,
+        c.api_name                                              as api_name,
         c.model                                                 as model_raw,
         lower(c.model)                                          as m,
         lower(coalesce(p:endpoint::string, ''))                 as ep,
@@ -22,7 +24,10 @@ calls as (
           or lower(coalesce(p:operation::string, '')) = 'image_to_image') as has_img,
         (coalesce(p:input_video_tokens::float, 0) > 0
           or p:input_video_duration is not null)                as has_vid,
-        try_to_double(p:credits_used::string)                   as credits_used
+        greatest(1, least(16, coalesce(
+            try_to_number(p:generated_images::string), try_to_number(p:num_images::string),
+            try_to_number(p:n::string), try_to_number(p:number_results::string),
+            try_to_number(p:sample_count::string), try_to_number(p:num_outputs::string), 1))) as outputs
     from ANALYTICS_PROD.STAGING.INT_PARTNER_API_CALLS c
     cross join bounds bd
     left join ANALYTICS_PROD.STAGING.STG_REGISTRY__AUDIT_LOGS a
@@ -32,8 +37,9 @@ calls as (
     lateral (select coalesce(try_parse_json(a.params), b.properties) as p) j
     where c.created_at >= bd.start_week
       and c.created_at <  bd.end_week
-      -- Calls with no model name (some Kling, Tripo and Rodin calls) can't be ranked.
+      -- Calls with no model name (some Kling, Recraft and Freepik calls) can't be ranked.
       and c.model is not null
+    qualify row_number() over (partition by c.call_id order by c.created_at) = 1
 ),
 classified as (
     select *,
@@ -82,21 +88,16 @@ classified as (
             else 'Text to image'
         end as use_case
     from calls
-),
--- Models with fewer than 200 calls in the window are grouped as Other models.
-model_volume as (
-    select model_raw, count(*) as calls_8w
-    from classified
-    where use_case is not null
-    group by model_raw
 )
+-- LLM calls (use_case null) are dropped; build-rankings-data.py turns use cases into output types.
 select
-    dateadd(day, 1 - dayofweekiso(c.created_at::date), c.created_at::date)::date as week,
-    c.use_case::varchar                                                          as use_case,
-    (case when v.calls_8w < 200 then 'Other models' else c.model_raw end)::varchar as model,
-    coalesce(sum(c.credits_used), 0)::float                                      as credits
-from classified c
-join model_volume v on v.model_raw = c.model_raw
-where c.use_case is not null
-group by 1, 2, 3
-order by week, use_case, credits desc
+    dateadd(day, 1 - dayofweekiso(created_at::date), created_at::date)::date as week,
+    model_raw::varchar                                                       as model,
+    api_name::varchar                                                        as api_name,
+    use_case::varchar                                                        as use_case,
+    count(*)                                                                 as calls,
+    sum(outputs)                                                             as generations
+from classified
+where use_case is not null
+group by 1, 2, 3, 4
+order by 1, 6 desc

@@ -238,150 +238,185 @@ export const StackedShareBars = ({ periods, series, label, axisLabel, shortLabel
   );
 };
 
-// Section 1: weekly rank by share of spend, per use case.
-export const UseCaseRankings = ({ data }) => {
-  const [u, setU] = useState(data.cases[0].name);
+// Section 1: weekly share of each output type's generations, top 50 models plus Other.
+export const TopModels = ({ data }) => {
+  const TOPN = 50;
+  const OTHER = "Other models";
+  const [t, setT] = useState(data.types[0].name);
   const [all, setAll] = useState(false);
-  const [ref, W] = useRankingWidth();
-  const [tip, show, hide] = useRankingTip();
   const weeks = data.weeks;
   const last = weeks.length - 1;
-  const uc = data.cases.find((c) => c.name === u) || data.cases[0];
-  // The data holds weekly ranks only (1 = most spend), never the spend or its shares.
-  const rank = new Map();
-  uc.models.forEach((m) => m.r.forEach((r, wi) => r && rank.set(wi + "|" + m.m, r)));
-  const ranked = uc.models
-    .filter((m) => m.r[last])
-    .map((m) => ({ name: m.m, h: m.h }))
-    .sort((a, b) => rank.get(last + "|" + a.name) - rank.get(last + "|" + b.name));
-  const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
-  const top = ranked.slice(0, 30);
-  const N = top.length;
-  let maxSeen = N;
-  top.forEach((m) => weeks.forEach((w, wi) => (maxSeen = Math.max(maxSeen, rank.get(wi + "|" + m.name) || 0))));
-  const maxRank = Math.max(1, Math.min(N + 2, maxSeen));
-  const rowH = maxRank > 15 ? 22 : 30;
-  const H = maxRank * rowH + 30;
-  const ml = 36;
-  const mr = Math.min(W * (W < 560 ? 0.36 : 0.42), Math.max(...top.map((m) => textWidth(m.name)), 40) + 40);
-  const x = (i) => ml + 8 + (weeks.length > 1 ? (i * (W - mr - ml - 8)) / (weeks.length - 1) : 0);
-  const y = (r) => 12 + ((r - 1) * (H - 42)) / Math.max(1, maxRank - 1);
-  const [hover, setHover] = useState(null);
-  const weekEvery = Math.max(1, Math.ceil(52 / Math.max(1, (W - mr - ml - 8) / Math.max(1, last))));
-  const rankRows = ranked.map((r) => {
-    const now = rank.get(last + "|" + r.name);
-    const before = rank.get(last - 1 + "|" + r.name);
-    return { name: r.name, h: r.h, now, before };
-  });
-  const shown = all ? rankRows : rankRows.slice(0, 10);
+  const tp = data.types.find((x) => x.name === t) || data.types[0];
+  const named = tp.models.filter((mm) => mm.m !== OTHER);
+  // The chart breaks out the 50 models with the most share over the whole range.
+  const byRange = named.map((mm) => ({ mm, sum: mm.s.reduce((a, v) => a + v, 0) })).sort((a, b) => b.sum - a.sum);
+  const color = new Map(byRange.map((r, i) => [r.mm.m, i < TOPN ? rankingColor(i) : ["var(--mr-muted)", 1]]));
+  const top = byRange.slice(0, TOPN).map((r) => r.mm);
+  const topNames = new Set(top.map((mm) => mm.m));
+  const otherS = weeks.map((_, wi) => tp.models.filter((mm) => !topNames.has(mm.m)).reduce((a, mm) => a + (mm.s[wi] || 0), 0));
+  const series = top.map((mm) => ({ name: mm.m, color: color.get(mm.m), s: mm.s })).concat([{ name: OTHER, color: ["var(--mr-muted)", 1], s: otherS }]);
+  const ranked = named
+    .map((mm) => ({ name: mm.m, h: mm.h, provider: mm.p, last: mm.s[last], change: 100 * (mm.s[last] - mm.s[last - 1]) }))
+    .filter((r) => r.last > 0)
+    .sort((a, b) => b.last - a.last);
+  const shown = all ? ranked : ranked.slice(0, 10);
   const lastWeek = fmtDay(weeks[last]);
 
   return (
-    <section className="mr-sec" id="top-models-by-use-case">
-      <h2>Top models by use case</h2>
-      <p className="mr-lead">Models ranked by share of spend within each use case, week by week.</p>
+    <section className="mr-sec" id="top-models">
+      <h2>Top models</h2>
+      <p className="mr-lead">Weekly share of generations by model over the last six months, within each output type.</p>
       <div className="mr-ctrls">
-        <RankingSeg
-          label="Use case"
-          options={data.cases.map((c) => [c.name, c.name])}
-          value={u}
-          onChange={(v) => {
-            setU(v);
-            setAll(false);
-          }}
+        <RankingSeg label="Output type" options={data.types.map((x) => [x.name, x.name])} value={tp.name} onChange={(v) => (setT(v), setAll(false))} />
+      </div>
+      <div className="mr-card">
+        <h3>
+          Weekly share of generations<span className="mr-sub">: {tp.name}, top {Math.min(TOPN, top.length)} models</span>
+        </h3>
+        <StackedShareBars
+          periods={weeks}
+          series={series}
+          label={"Weekly share of " + tp.name + " generations by model"}
+          axisLabel={fmtDay}
+          tipHead={(w) => "week of " + fmtDate(w)}
+          tipName={"Share of " + tp.name + " generations"}
         />
       </div>
       <div className="mr-card">
         <h3>
-          Weekly rank<span className="mr-sub">: {u}, by share of spend, top {Math.min(30, N)} models this week</span>
-        </h3>
-        <div className="mr-chart" ref={ref} onMouseLeave={hide}>
-          {N ? (
-            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={"Weekly rank by share of spend for " + u}>
-              {Array.from({ length: maxRank }, (_, i) => i + 1).map((r) => (
-                <g key={r}>
-                  <line x1={ml} x2={W - mr} y1={y(r)} y2={y(r)} className="mr-grid" />
-                  <text x={ml - 6} y={y(r)} dy="0.35em" textAnchor="end">
-                    {"#" + r}
-                  </text>
-                </g>
-              ))}
-              {weeks.map((w, i) =>
-                (last - i) % weekEvery !== 0 ? null : (
-                <text key={w} x={x(i)} y={H - 6} textAnchor={i === 0 ? "start" : i === last ? "end" : "middle"}>
-                  {fmtDay(w)}
-                </text>
-                )
-              )}
-              {top
-                .slice()
-                .reverse()
-                .map((m) => {
-                  const k = color.get(m.name);
-                  const pts = weeks.map((w, wi) => ({ wi, r: rank.get(wi + "|" + m.name) }));
-                  let d = "";
-                  let pen = false;
-                  pts.forEach((p) => {
-                    if (p.r && p.r <= maxRank) {
-                      d += (pen ? "L" : "M") + x(p.wi) + "," + y(p.r);
-                      pen = true;
-                    } else pen = false;
-                  });
-                  const end = pts[last];
-                  const dim = hover && hover !== m.name;
-                  return (
-                    <g key={m.name} style={{ opacity: dim ? 0.15 : 1 }} onMouseEnter={() => setHover(m.name)} onMouseLeave={() => setHover(null)}>
-                      <path d={d} fill="none" stroke={k[0]} strokeOpacity={Math.max(0.35, k[1])} strokeWidth={maxRank > 15 ? 2.5 : 3} strokeLinecap="round" strokeLinejoin="round" />
-                      {pts
-                        .filter((p) => p.r && p.r <= maxRank)
-                        .map((p) => (
-                          <circle
-                            key={p.wi}
-                            cx={x(p.wi)}
-                            cy={y(p.r)}
-                            r={maxRank > 15 ? 4 : 5}
-                            fill={k[0]}
-                            fillOpacity={Math.max(0.35, k[1])}
-                            className="mr-dot"
-                            onMouseMove={(ev) => show(ev, m.name + " · week of " + fmtDay(weeks[p.wi]), [[k, "Rank", "#" + p.r]])}
-                          />
-                        ))}
-                      {end.r && end.r <= maxRank ? (
-                        <text className="mr-lab" x={x(last) + 10} y={y(end.r)} dy="0.35em">
-                          {clipText(m.name, mr - 14)}
-                        </text>
-                      ) : null}
-                    </g>
-                  );
-                })}
-            </svg>
-          ) : null}
-          <RankingTip tip={tip} />
-        </div>
-      </div>
-      <div className="mr-card">
-        <h3>
-          Top models<span className="mr-sub">: {u}, week of {lastWeek}</span>
+          Top models<span className="mr-sub">: {tp.name}, week of {fmtDate(weeks[last])}</span>
         </h3>
         <ShareTable
           rows={shown}
           colorOf={(r) => color.get(r.name)}
           cols={[
             ["Model", (r) => r.name],
-            ["Rank, week of " + lastWeek, (r) => "#" + r.now],
-            ["Week before", (r) => (r.before ? "#" + r.before : "–")],
+            ["Provider", (r) => r.provider || ""],
+            ["Share, week of " + lastWeek, (r) => fmtPct(r.last)],
+            ["Change vs week before (pts)", (r) => fmtPts(r.change), changeClass],
           ]}
         />
-        <RankingMore total={rankRows.length} open={all} onToggle={() => setAll(!all)} noun="models" />
+        <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} noun="models" />
       </div>
       <Methodology>
-        Spend is the Comfy credits charged for each call to an API model. Use case comes from each call's request (its endpoint, video mode, or whether an input image was sent) for 92% of spend, and from the model name for the rest. Text to video is mostly inferred from the model name, so some of it may be image to video. Models with fewer than 200 calls over 8 weeks are grouped as Other models, which is left out of the ranking. Weeks are Monday-start UTC weeks, here {fmtDay(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}.
+        Source: Comfy API usage (Comfy Router and partner API nodes, on Cloud and local installs), Monday-start UTC weeks from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. A generation is one call, or the number of outputs when a call asks for several images (under 1% of calls). Shares are within each output type. The chart breaks out the top {TOPN} models over the six months (by summed weekly share); the rest are grouped as Other models. The table ranks every model by its share in the latest week. Output type comes from the model, and for new models from the call's request. Calls with no model name (about 3%, mostly Kling, Recraft, Freepik and Vidu) aren't included, and models renamed from a preview name are merged with their final name. Models with fewer than 200 calls over the six months are grouped as Other models. Language models and sound effects are left out.
       </Methodology>
     </section>
   );
 };
 
-// Section 2: share of each month's Desktop installs by hardware.
+// Section 2: week-over-week growth in generations, from shares and the type's own change.
+export const TopMovers = ({ data }) => {
+  const FLOOR = 0.005;
+  const [t, setT] = useState(data.types[0].name);
+  const [dir, setDir] = useState("up");
+  const [ref, W] = useRankingWidth();
+  const [tip, show, hide] = useRankingTip();
+  const weeks = data.weeks;
+  const last = weeks.length - 1;
+  const tp = data.types.find((x) => x.name === t) || data.types[0];
+  const tg = tp.g;
+  // A model's growth = its share change times the type's own change.
+  const rows = tp.models
+    .filter((mm) => mm.m !== "Other models")
+    .map((mm) => {
+      const prev = mm.s[last - 1] || 0;
+      const now = mm.s[last] || 0;
+      return { name: mm.m, h: mm.h, prev, now, growth: prev >= FLOOR && tg != null ? (now / prev) * (1 + tg) - 1 : null, isNew: prev < FLOOR && now >= FLOOR };
+    });
+  const ranked = rows.filter((r) => r.growth != null);
+  const list = ranked.sort((a, b) => (dir === "up" ? b.growth - a.growth : a.growth - b.growth)).slice(0, 10);
+  const fresh = rows.filter((r) => r.isNew).sort((a, b) => b.now - a.now);
+  const fmtG = (v) => (v > 0.005 ? "+" : v < -0.005 ? "\u2212" : "") + Math.round(Math.abs(v) * 100) + "%";
+  const range = (w) => fmtDay(w) + "\u2013" + (w.slice(5, 7) === addDays(w, 6).slice(5, 7) ? +addDays(w, 6).slice(8, 10) : fmtDay(addDays(w, 6)));
+  const best = rows.filter((r) => r.growth != null).sort((a, b) => b.growth - a.growth)[0];
+  const rowH = 32;
+  const H = list.length * rowH + 4;
+  const numW = textWidth("10.") + 8;
+  const labW = Math.min(W * 0.42, Math.max(40, ...list.map((r) => textWidth(r.name))) + 12);
+  const valW = Math.max(30, ...list.map((r) => textWidth(fmtG(r.growth)))) + 8;
+  const lo = Math.min(0, ...list.map((r) => r.growth));
+  const hi = Math.max(0, ...list.map((r) => r.growth));
+  const x0 = numW + labW + (lo < 0 ? valW : 0);
+  const x1 = W - (hi > 0 ? valW : 0);
+  const x = (v) => (hi === lo ? x0 : x0 + ((v - lo) / (hi - lo)) * (x1 - x0));
+
+  return (
+    <section className="mr-sec" id="top-movers">
+      <h2>Top movers last week</h2>
+      <p className="mr-lead">
+        {best ? (
+          <>
+            <b>{best.name}</b> grew fastest in {tp.name} last week, {fmtG(best.growth)} in generations. {tp.name} overall moved <b>{tg == null ? "–" : fmtG(tg)}</b>.
+          </>
+        ) : (
+          <>
+            {tp.name} overall moved <b>{tg == null ? "–" : fmtG(tg)}</b> last week.
+          </>
+        )}{" "}
+        Last week {range(weeks[last])} vs the week before, {range(weeks[last - 1])}.
+      </p>
+      <div className="mr-ctrls">
+        <RankingSeg label="Output type" options={data.types.map((x) => [x.name, x.name])} value={tp.name} onChange={setT} />
+        <RankingSeg label="Direction" options={[["up", "Biggest gains"], ["down", "Biggest drops"]]} value={dir} onChange={setDir} />
+      </div>
+      <div className="mr-card">
+        <h3>
+          {dir === "up" ? "Top 10 growing models" : "Top 10 shrinking models"}
+          <span className="mr-sub">: percent change in weekly generations, last week vs the week before</span>
+        </h3>
+        <div className="mr-chart" ref={ref} onMouseLeave={hide}>
+          {list.length ? (
+            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={"Week-over-week change in generations, " + tp.name}>
+              <line x1={x(0)} x2={x(0)} y1={0} y2={H} stroke="var(--mr-muted)" />
+              {list.map((r, i) => {
+                const cy = i * rowH + 2 + rowH / 2;
+                const up = r.growth >= 0;
+                return (
+                  <g key={r.name} onMouseMove={(ev) => show(ev, r.name, [[null, "Generations, week over week", fmtG(r.growth)], [null, "Share of " + tp.name, fmtPct(r.prev) + " \u2192 " + fmtPct(r.now)]])}>
+                    <rect className="mr-hit" x={0} width={W} y={i * rowH + 2} height={rowH} rx={4} />
+                    <text x={numW - 8} y={cy} dy="0.35em" textAnchor="end">
+                      {i + 1 + "."}
+                    </text>
+                    <text className="mr-lab" x={numW} y={cy} dy="0.35em">
+                      {clipText(r.name, labW - 12)}
+                    </text>
+                    <rect x={Math.min(x(0), x(r.growth))} width={Math.max(2, Math.abs(x(r.growth) - x(0)))} y={cy - (rowH - 12) / 2} height={rowH - 12} rx={4} fill={up ? RANKING_COLORS[0] : "var(--mr-muted)"} pointerEvents="none" />
+                    <text x={up ? x(r.growth) + 6 : x(r.growth) - 6} y={cy} dy="0.35em" textAnchor={up ? "start" : "end"} pointerEvents="none">
+                      {fmtG(r.growth)}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          ) : (
+            <p className="mr-note">No models above the 0.5% floor this week.</p>
+          )}
+          <RankingTip tip={tip} />
+        </div>
+        {fresh.length ? (
+          <p className="mr-note">
+            New arrivals, from under 0.5% to:{" "}
+            {fresh.map((r, i) => (
+              <span key={r.name}>
+                {i ? ", " : ""}
+                <b>
+                  <ModelName name={r.name} h={r.h} />
+                </b>{" "}
+                ({fmtPct(r.now)} of {tp.name})
+              </span>
+            ))}
+          </p>
+        ) : null}
+      </div>
+      <Methodology>
+        Growth is the percent change in a model's generations from the week before to last week (Monday-start UTC weeks), from the same Comfy API usage as Top models. Only percentages are shown, never generation counts. To keep tiny models from topping the list with huge jumps, a model is ranked only if it had at least 0.5% of its type's generations the week before. Models that crossed 0.5% from below are listed as new arrivals under the chart. The type's overall change is shown for context, since a model can grow just because its whole type grew. Models renamed from a preview name are merged with their final name. Other models, language models and sound effects are left out.
+      </Methodology>
+    </section>
+  );
+};
+
+// Section 3: share of each month's Desktop installs by hardware.
 export const HardwareRankings = ({ data, through }) => {
   const [g, setG] = useState(data.groups[0].name);
   const [all, setAll] = useState(false);
@@ -460,24 +495,26 @@ export const HardwareRankings = ({ data, through }) => {
   );
 };
 
-// Section 3: median to 90th percentile time per Cloud model, log scale.
-export const SpeedRankings = ({ data, from }) => {
+// Section 4: median to 90th percentile time per Cloud model, log scale.
+export const SpeedRankings = ({ data, from, through }) => {
   const TYPES = ["Image", "Video", "Image tools", "Audio", "3D"];
   const ML = { gen: "generation time", wait: "latency" };
   const [k, setK] = useState("Original");
   const [m, setM] = useState("gen");
   const [t, setT] = useState("Image");
+  const [sort, setSort] = useState("usage");
   const [allA, setAllA] = useState(false);
   const [allV, setAllV] = useState(false);
   const [ref, W] = useRankingWidth();
   const [tip, show, hide] = useRankingTip();
-  const rowsAll = data.map((d) => ({ type: d[0], kind: d[1], model: d[2], p50_wait: d[3], p90_wait: d[4], p50_gen: d[5], p90_gen: d[6], share: d[7], h: d[8] }));
+  const rowsAll = data.map((d) => ({ type: d[0], kind: d[1], model: d[2], p50_wait: d[3], p90_wait: d[4], p50_gen: d[5], p90_gen: d[6], usage: d[7], h: d[8] }));
   const kr = rowsAll.filter((r) => r.kind === k);
   const have = TYPES.filter((x) => kr.some((r) => r.type === x));
   const type = have.includes(t) ? t : have[0];
   const lo50 = "p50_" + m;
   const hi90 = "p90_" + m;
-  const rows = kr.filter((r) => r.type === type && r[lo50] != null).sort((a, b) => b.share - a.share);
+  // "Usage" orders by share of Cloud credits (rank 1 = most); "Fastest" by the median of the chosen measure.
+  const rows = kr.filter((r) => r.type === type && r[lo50] != null).sort((a, b) => (sort === "fast" ? a[lo50] - b[lo50] : a.usage - b.usage));
   const showRows = allA ? rows : rows.slice(0, 10);
   const rowH = 26;
   const lw = Math.min(W * 0.38, Math.max(...showRows.map((r) => textWidth(r.model)), 40) + 14);
@@ -497,15 +534,16 @@ export const SpeedRankings = ({ data, from }) => {
   return (
     <section className="mr-sec" id="fastest-models">
       <h2>Fastest models based on Comfy usage</h2>
-      <p className="mr-lead">How fast open models run on Comfy Cloud, from real jobs between Aug 24 and Oct 18, 2026. Times are medians (the typical job) and 90th percentiles (a slow job).</p>
+      <p className="mr-lead">How fast open models run on Comfy Cloud, from real jobs between {fmtDay(from)} and {fmtDate(through)}. Times are medians (the typical job) and 90th percentiles (a slow job).</p>
       <div className="mr-ctrls">
-        <RankingSeg label="Models" options={[["Original", "Original models"], ["Community", "Community fine-tunes"]]} value={k} onChange={(v) => (setK(v), reset())} />
+        <RankingSeg label="Models" options={[["Original", "Original models"], ["Community", "LoRAs"]]} value={k} onChange={(v) => (setK(v), reset())} />
         <RankingSeg label="Measure" options={[["gen", "Generation time"], ["wait", "Latency"]]} value={m} onChange={(v) => (setM(v), reset())} />
         <RankingSeg label="Output type" options={have.map((x) => [x, x])} value={type} onChange={(v) => (setT(v), reset())} />
+        <RankingSeg label="Sort by" options={[["usage", "Usage"], ["fast", "Fastest"]]} value={sort} onChange={(v) => (setSort(v), reset())} />
       </div>
       <div className="mr-card">
         <h3>
-          Speed range<span className="mr-sub">: median to 90th-percentile {ML[m]}, most popular (share of credits) first</span>
+          Speed range<span className="mr-sub">: median to 90th-percentile {ML[m]}, {sort === "fast" ? "fastest median first" : "most used first"}</span>
         </h3>
         <div className="mr-legend">
           <span>
@@ -532,7 +570,6 @@ export const SpeedRankings = ({ data, from }) => {
                 [[RANKING_COLORS[0], 1], "Median " + ML[m], fmtTime(r[lo50])],
                 [["var(--mr-muted)", 1], "90th percentile", fmtTime(r[hi90])],
                 [null, "Median " + ML[other], fmtTime(r["p50_" + other])],
-                [null, "Share of Cloud credits", fmtPct(r.share)],
               ];
               const cy = i * rowH + rowH / 2;
               const ok = r[lo50] != null && r[hi90] != null;
@@ -566,7 +603,6 @@ export const SpeedRankings = ({ data, from }) => {
           rows={allV ? rows : rows.slice(0, 10)}
           cols={[
             ["Model", (r) => r.model],
-            ["Share of Cloud credits", (r) => fmtPct(r.share)],
             ["Median latency", (r) => fmtTime(r.p50_wait)],
             ["90th pct latency", (r) => fmtTime(r.p90_wait)],
             ["Median generation", (r) => fmtTime(r.p50_gen)],
@@ -576,13 +612,13 @@ export const SpeedRankings = ({ data, from }) => {
         <RankingMore total={rows.length} open={allV} onToggle={() => setAllV(!allV)} />
       </div>
       <Methodology>
-        Source: Comfy Cloud job records, successful jobs only. Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since {fmtDate(from)} is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). Community fine-tunes are checkpoints and merges trained on top of them. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Models are ranked by popularity, as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits. GPU time is metered for about 92% of the jobs shown.
+        Source: Comfy Cloud job records, successful jobs only. Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since {fmtDate(from)} is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). LoRAs are the community fine-tunes: checkpoints and merges trained on top of the original models. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Sort by Usage puts the models with the most Cloud usage first, measured as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits (metered for about 92% of the jobs shown). Sort by Fastest puts the lowest median first.
       </Methodology>
     </section>
   );
 };
 
-// Section 4: share of Comfy-Org Hugging Face downloads within each output type.
+// Section 5: share of Comfy-Org Hugging Face downloads within each output type.
 export const DownloadRankings = ({ data, through }) => {
   const TOPN = 15;
   const OTHER = "Other models";
@@ -709,14 +745,16 @@ export const ModelRankings = ({ data }) => (
       .mr-note { margin: 0; font-size: 0.8125rem; color: var(--mr-muted-fg); max-width: 85ch; }
     `}</style>
     <nav className="mr-toc" aria-label="Rankings sections">
-      <a href="#top-models-by-use-case">Top models by use case</a>
+      <a href="#top-models">Top models</a>
+      <a href="#top-movers">Top movers</a>
       <a href="#hardware-setups">Hardware setups</a>
       <a href="#fastest-models">Fastest models</a>
       <a href="#top-open-source-downloads">Top open source downloads</a>
     </nav>
-    <UseCaseRankings data={data.usecase} />
+    <TopModels data={data.generations} />
+    <TopMovers data={data.generations} />
     <HardwareRankings data={data.hardware} through={data.through} />
-    <SpeedRankings data={data.speed} from={data.speedFrom || "2026-08-24"} />
+    <SpeedRankings data={data.speed} from={data.speedFrom || "2026-08-24"} through={data.through} />
     <DownloadRankings data={data.downloads} through={data.through} />
   </div>
 );
