@@ -8,7 +8,7 @@
 #   model_generations, cloud_model_speed_all  Snowflake  SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
 #       SNOWFLAKE_PRIVATE_KEY (PEM, key-pair auth) or SNOWFLAKE_PASSWORD,
 #       SNOWFLAKE_WAREHOUSE, optional SNOWFLAKE_ROLE
-#   hardware_monthly                      PostHog    POSTHOG_API_KEY (personal key with
+#   hardware_weekly                       PostHog    POSTHOG_API_KEY (personal key with
 #       query:read), optional POSTHOG_PROJECT_ID (default 204330), POSTHOG_HOST
 #   model_downloads_typed                 Hugging Face public API, optional HF_TOKEN
 #
@@ -20,6 +20,12 @@ import csv, datetime as dt, json, os, re, sys, urllib.request
 OUT, THROUGH = sys.argv[1], dt.date.fromisoformat(sys.argv[2])
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(OUT, exist_ok=True)
+
+
+def speed_start(through):
+    if os.environ.get("RANKINGS_SPEED_START"):
+        return dt.date.fromisoformat(os.environ["RANKINGS_SPEED_START"])
+    return max(dt.date(2025, 12, 1), through - dt.timedelta(days=364))
 
 
 def write_csv(name, header, rows):
@@ -68,21 +74,22 @@ def snowflake_rows(sql, start, end):
         return cur.fetchall()
 
 
-# Weeks are Monday-start (UTC). Top models and Top movers cover the last 26 full weeks.
+# Weeks are Monday-start (UTC). Top models and Top movers cover the last 52 full weeks.
 week_end = THROUGH - dt.timedelta(days=(THROUGH.weekday() + 1) % 7)  # last Sunday on or before THROUGH
-week_start = week_end - dt.timedelta(days=7 * 26 - 1)
+week_start = week_end - dt.timedelta(days=7 * 52 - 1)
 rows = snowflake_rows(query_file("model_generations.sql"), week_start, week_end + dt.timedelta(days=1))
 write_csv("model_generations", ["week", "model", "api_name", "use_case", "calls", "generations"],
           [[str(r[0]), r[1], r[2] or "", r[3], int(r[4]), int(r[5])] for r in rows])
 
-# Speed covers every job since this start date, so the 100-job floor stays meaningful.
-SPEED_START = dt.date.fromisoformat(os.environ.get("RANKINGS_SPEED_START", "2026-08-24"))
+# Speed covers the last year of jobs. Job start and end times are only recorded
+# from Dec 2025, so the range never starts before that.
+SPEED_START = speed_start(THROUGH)
 rows = snowflake_rows(query_file("cloud_model_speed.sql"), SPEED_START, THROUGH + dt.timedelta(days=1))
 write_csv("cloud_model_speed_all", ["type", "kind", "model", "jobs", "p50_wait_s", "p90_wait_s", "p50_gen_s", "p90_gen_s", "gpu_share"],
           [["" if v is None else v for v in r] for r in rows])
 
 
-# 2. PostHog: Desktop installs per month by hardware.
+# 2. PostHog: Desktop installs per week by hardware.
 def hogql(sql):
     host = os.environ.get("POSTHOG_HOST", "https://us.posthog.com")
     project = os.environ.get("POSTHOG_PROJECT_ID", "204330")
@@ -91,31 +98,33 @@ def hogql(sql):
     return res["results"]
 
 
-HW_FIRST_MONTH = dt.date(2026, 7, 1)  # June reported virtual adapters instead of real GPUs
+# The system info event starts in June 2026, and June reported virtual adapters
+# instead of real GPUs, so weeks start in July.
+HW_FIRST_WEEK = dt.date(2026, 7, 6)
 TOP_GPUS = 30
-hw, m = [], HW_FIRST_MONTH
-while m <= THROUGH:
-    nxt = (m.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
-    end = min(nxt, THROUGH + dt.timedelta(days=1))
-    sql = query_file("hardware_monthly.hogql").replace("{start}", f"{m} 00:00:00").replace("{end}", f"{end} 00:00:00")
+hw, w = [], max(HW_FIRST_WEEK, week_end - dt.timedelta(days=7 * 52 - 1))
+while w <= week_end:
+    # Four weeks per query keeps each one small.
+    end = min(w + dt.timedelta(days=28), week_end + dt.timedelta(days=1))
+    sql = query_file("hardware_weekly.hogql").replace("{start}", f"{w} 00:00:00").replace("{end}", f"{end} 00:00:00")
     hw += [[str(r[0])[:10], r[1], r[2], int(r[3])] for r in hogql(sql + "\nLIMIT 10000")]
-    m = nxt
+    w = end
 # Keep the 30 most common GPU models over the whole range; the rest is Other GPUs.
 gpu_tot = {}
-for month, grp, item, n in hw:
+for week, grp, item, n in hw:
     if grp == "GPU model" and item:
         gpu_tot[item] = gpu_tot.get(item, 0) + n
 top = set(sorted(gpu_tot, key=lambda k: -gpu_tot[k])[:TOP_GPUS])
-total = {month: n for month, grp, item, n in hw if grp == "Total"}
+total = {week: n for week, grp, item, n in hw if grp == "Total"}
 out, shown = [], {}
-for month, grp, item, n in hw:
+for week, grp, item, n in hw:
     if grp == "Total" or (grp == "GPU model" and item not in top):
         continue
     if grp == "GPU model":
-        shown[month] = shown.get(month, 0) + n
-    out.append([month, grp, item, n])
-out += [[month, "GPU model", "Other GPUs", total[month] - shown.get(month, 0)] for month in total]
-write_csv("hardware_monthly", ["month", "grp", "item", "value"], out)
+        shown[week] = shown.get(week, 0) + n
+    out.append([week, grp, item, n])
+out += [[week, "GPU model", "Other GPUs", total[week] - shown.get(week, 0)] for week in total]
+write_csv("hardware_weekly", ["week", "grp", "item", "value"], out)
 
 
 # 4. Hugging Face: downloads of Comfy-Org's model repos.

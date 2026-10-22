@@ -3,9 +3,9 @@
 # generations, credits, install counts and download counts into shares so no
 # absolute volume is published.
 # Usage: python3 scripts/rankings/build-rankings-data.py <csv dir> snippets/rankings/rankings-data.jsx <last day, YYYY-MM-DD>
-# The dir holds model_generations.csv, hardware_monthly.csv, cloud_model_speed_all.csv
+# The dir holds model_generations.csv, hardware_weekly.csv, cloud_model_speed_all.csv
 # and model_downloads_typed.csv.
-import csv, json, os, re, sys, collections
+import csv, collections, datetime as dt, json, os, re, sys
 B, OUT, THROUGH = sys.argv[1], sys.argv[2], sys.argv[3]
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -27,6 +27,16 @@ TASK = {"Text to image": "text-to-image", "Image edit": "image-edit", "Image too
         "Speech": "speech", "Audio": "audio"}
 AUX = re.compile(r"vae|clip|encoder|t5|gemma|llama|lora|whisper|mistral|byt5|llava|dino|jina|qwen-2-5|qwen-3|qwen3vl|qwen-0|qwen-4b|ovis-2|gpt-oss|enhancer|projector|squish|darkbrush|talkvid")
 tokens = lambda s: set(re.findall(r"[a-z]+|[0-9]+", s.lower()))
+
+
+# Model pages outside the hub (launch pages like /minimax-h3/), matched by
+# name when the hub has no page for a model. Paths starting with / are on comfy.org.
+with open(f"{HERE}/model-pages.json", encoding="utf-8") as f:
+    LANDING = [(re.compile(k, re.I), v) for k, v in json.load(f).items()]
+
+
+def landing_page(name):
+    return next((v for k, v in LANDING if k.search(name)), None)
 
 
 link = lambda path: {"h": path} if path else {}
@@ -63,8 +73,8 @@ def repo_page(repo):
     return best and "local/" + best
 
 
-# 1. Generations: weekly share of each output type's generations per model, plus
-# each type's week-over-week change, never counts.
+# 1. Generations: share of each output type's generations per model by week,
+# month and quarter, plus each type's change between the last two periods, never counts.
 with open(f"{HERE}/model-types.json", encoding="utf-8") as f:
     KNOWN = json.load(f)
 TYPE_OF_CASE = {"Text to image": "Image", "Image edit": "Image", "Image tools": "Image", "Image to video": "Video",
@@ -78,6 +88,8 @@ def final_name(model, api):
     # gets its provider's name.
     if model.lower() == 'latest' and (api or '').lower().startswith('meshy'):
         return 'meshy (latest)'
+    if model.startswith('Other models'):
+        return 'Other models'
     base = re.sub(r'-preview$', '', model)
     return base if base != model and base in names else model
 
@@ -105,41 +117,68 @@ for r in gen:
     m = r['m'] if calls[r['m']] >= 200 else OTHER
     cell[(t, m, r['week'])] += float(r['generations'])
     tot[(t, r['week'])] += float(r['generations'])
+# Months and quarters are groups of whole weeks: a week counts toward the month
+# (and quarter) that holds its Thursday, so every week is in exactly one of each.
+month_of = lambda w: (dt.date.fromisoformat(w) + dt.timedelta(days=3)).replace(day=1).isoformat()
+quarter_of = lambda w: month_of(w)[:5] + '%02d' % (3 * ((int(month_of(w)[5:7]) - 1) // 3) + 1) + '-01'
+GRAINS = [('week', lambda w: w), ('month', month_of), ('quarter', quarter_of)]
+
+
+def whole_periods(key):
+    # A period is kept only if every week that belongs to it is in the data.
+    have = set(weeks)
+    first, last = dt.date.fromisoformat(weeks[0]), dt.date.fromisoformat(weeks[-1])
+    span = [(first + dt.timedelta(days=7 * i)).isoformat() for i in range(-15, (last - first).days // 7 + 16)]
+    return [p for p in sorted({key(w) for w in weeks}) if all(w in have for w in span if key(w) == p)]
+
+
+periods = {g: whole_periods(key) for g, key in GRAINS}
 gtypes = []
 for t in ['Image', 'Video', 'Speech', '3D']:
     models = sorted({m for (tt, m, w) in cell if tt == t})
     if not models:
         continue
-    rows = []
+    rows = {m: {"m": m} for m in models}
+    growth = {}
+    for g, key in GRAINS:
+        ps = periods[g]
+        cc, tt, nw = collections.Counter(), collections.Counter(), collections.Counter(key(w) for w in weeks)
+        for (ty, m, w), v in cell.items():
+            if ty == t:
+                cc[(m, key(w))] += v
+                tt[key(w)] += v
+        for m in models:
+            rows[m][g] = [R(cc[(m, p)] / tt[p]) if tt[p] else 0 for p in ps]
+        # The type's own change in generations per week from the period before
+        # (so 4- and 5-week months compare fairly). The page turns share changes
+        # into growth with it.
+        a_, b_ = (tt[ps[-2]] / nw[ps[-2]], tt[ps[-1]] / nw[ps[-1]]) if len(ps) > 1 else (0, 0)
+        growth[g] = R(b_ / a_ - 1) if a_ else None
     for m in models:
-        row = {"m": m, "s": [R(cell[(t, m, w)] / tot[(t, w)]) if tot[(t, w)] else 0 for w in weeks]}
         if m != OTHER:
-            row["p"] = by_api[m].most_common(1)[0][0]
-            row.update(link(api_page(m, kind[m][1])))
-        rows.append(row)
-    a_, b_ = tot[(t, weeks[-2])], tot[(t, weeks[-1])]
-    # The type's own week-over-week change, so the page can turn share changes into growth.
-    gtypes.append({"name": t, "g": R(b_ / a_ - 1) if a_ else None, "models": rows})
-generations = {"weeks": weeks, "types": gtypes}
+            rows[m]["p"] = by_api[m].most_common(1)[0][0]
+            rows[m].update(link(api_page(m, kind[m][1]) or landing_page(m)))
+    gtypes.append({"name": t, "g": growth, "models": list(rows.values())})
+generations = {"weeks": periods['week'], "months": periods['month'], "quarters": periods['quarter'], "types": gtypes}
 
-# 2. Hardware: share of each month's installs, never counts
-hw = rd('hardware_monthly')
-months = sorted({r['month'] for r in hw})
+# 2. Hardware: share of each week's Desktop installs, never counts
+hw = rd('hardware_weekly')
+hweeks = sorted({r['week'] for r in hw})
 tot = collections.Counter(); cell = collections.defaultdict(float)
 for r in hw:
-    tot[(r['grp'], r['month'])] += float(r['value']); cell[(r['grp'], r['item'], r['month'])] += float(r['value'])
+    tot[(r['grp'], r['week'])] += float(r['value']); cell[(r['grp'], r['item'], r['week'])] += float(r['value'])
 groups = []
 for g in ["GPU model", "VRAM", "GPU vendor", "Operating system", "System RAM"]:
-    items = sorted({i for (gg, i, m) in cell if gg == g})
-    groups.append({"name": g, "items": [{"i": i, "s": [R(cell[(g, i, m)] / tot[(g, m)]) if tot[(g, m)] else 0 for m in months]} for i in items]})
-hardware = {"months": months, "groups": groups}
+    items = sorted({i for (gg, i, w) in cell if gg == g})
+    groups.append({"name": g, "items": [{"i": i, "s": [R(cell[(g, i, w)] / tot[(g, w)]) if tot[(g, w)] else 0 for w in hweeks]} for i in items]})
+hardware = {"weeks": hweeks, "groups": groups}
 
 # 3. Speed: times and a usage rank, job counts and credit shares dropped
 num = lambda v: None if v == '' else float(v)
 sp = rd('cloud_model_speed_all')
 # Usage rank (1 = most Cloud credits) orders the "Usage" sort; the share itself isn't published.
 usage = {r['model']: i + 1 for i, r in enumerate(sorted(sp, key=lambda r: -float(r['gpu_share'] or 0)))}
-speed = [[r['type'], r['kind'], r['model'], num(r['p50_wait_s']), num(r['p90_wait_s']), num(r['p50_gen_s']), num(r['p90_gen_s']), usage[r['model']], local_page(r['model'])] for r in sp]
+speed = [[r['type'], r['kind'], r['model'], num(r['p50_wait_s']), num(r['p90_wait_s']), num(r['p50_gen_s']), num(r['p90_gen_s']), usage[r['model']], local_page(r['model']) or landing_page(r['model'])] for r in sp]
 
 # 4. Downloads: share within output type per period, counts dropped
 with open(f"{HERE}/hf-repos.json", encoding="utf-8") as f:
@@ -172,10 +211,12 @@ for g in ["Weekly", "Monthly"]:
     for t in ['Image', 'Video', 'Image tools', 'Audio', '3D', 'Text encoders & VAEs']:
         models = sorted({m for (tt, m, p) in cell if tt == t} | {m for (tt, m, p) in kept if tt == t})
         if models:
-            types.append({"name": t, "models": [dict({"m": m, "s": [share(t, m, p) for p in ps]}, **link(repo_page(REPO_OF.get(m, "")))) for m in models]})
+            types.append({"name": t, "models": [dict({"m": m, "s": [share(t, m, p) for p in ps]}, **link(repo_page(REPO_OF.get(m, "")) or landing_page(m))) for m in models]})
     downloads[g] = {"periods": ps, "types": types}
 
-data = {"through": THROUGH, "speedFrom": os.environ.get("RANKINGS_SPEED_START", "2026-08-24"), "generations": generations, "hardware": hardware, "speed": speed, "downloads": downloads}
+# Same start as fetch-rankings-sources.py: the last year, never before Dec 2025.
+SPEED_FROM = os.environ.get("RANKINGS_SPEED_START") or max(dt.date(2025, 12, 1), dt.date.fromisoformat(THROUGH) - dt.timedelta(days=364)).isoformat()
+data = {"through": THROUGH, "speedFrom": SPEED_FROM, "generations": generations, "hardware": hardware, "speed": speed, "downloads": downloads}
 with open(OUT, 'w', encoding='utf-8') as f:
     f.write("// Static snapshot for the Rankings page. Shares and times only: no call counts,\n")
     f.write("// credits, install counts or download counts. Regenerate from the source exports\n")

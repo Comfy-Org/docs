@@ -35,6 +35,8 @@ export const fmtMonthName = (iso) => ["January", "February", "March", "April", "
 export const isPartial = (iso, through) =>
   !!through && iso.slice(0, 7) === through.slice(0, 7) && +through.slice(8, 10) < new Date(Date.UTC(+through.slice(0, 4), +through.slice(5, 7), 0)).getUTCDate();
 
+export const fmtQuarter = (iso) => "Q" + (Math.floor((+iso.slice(5, 7) - 1) / 3) + 1) + " " + iso.slice(0, 4);
+
 export const fmtMonth = (iso, short) => RANKING_MONTHS[+iso.slice(5, 7) - 1] + " " + (short ? "'" + iso.slice(2, 4) : iso.slice(0, 4));
 
 // Rough label width for 12px text, so long names can be clipped to fit.
@@ -113,12 +115,15 @@ export const RankingMore = ({ total, open, onToggle, noun }) =>
     </button>
   );
 
-// Model pages on the Comfy hub. A row's `h` is its page path under this URL.
+// Model pages on comfy.org. A row's `h` is its page path under the hub, or a
+// comfy.org path starting with / for launch pages outside the hub.
 export const HUB_URL = "https://comfy.org/hub/models/";
+
+export const modelUrl = (h) => (h.startsWith("/") ? "https://comfy.org" + h : HUB_URL + h + "/");
 
 export const ModelName = ({ name, h }) =>
   h ? (
-    <a className="mr-link" href={HUB_URL + h + "/"} target="_blank" rel="noopener noreferrer">
+    <a className="mr-link" href={modelUrl(h)} target="_blank" rel="noopener noreferrer">
       {name}
     </a>
   ) : (
@@ -238,53 +243,57 @@ export const StackedShareBars = ({ periods, series, label, axisLabel, shortLabel
   );
 };
 
-// Section 1: weekly share of each output type's generations, top 50 models plus Other.
+// Section 1: share of each output type's generations by week or month, top 50 models plus Other.
 export const TopModels = ({ data }) => {
   const TOPN = 50;
   const OTHER = "Other models";
   const [t, setT] = useState(data.types[0].name);
+  const [g, setG] = useState("week");
   const [all, setAll] = useState(false);
-  const weeks = data.weeks;
-  const last = weeks.length - 1;
+  const ps = g === "week" ? data.weeks : data.months;
+  const last = ps.length - 1;
+  const unit = g === "week" ? "week" : "month";
+  const pName = (p) => (g === "week" ? "week of " + fmtDate(p) : fmtMonthName(p) + " " + p.slice(0, 4));
   const tp = data.types.find((x) => x.name === t) || data.types[0];
   const named = tp.models.filter((mm) => mm.m !== OTHER);
   // The chart breaks out the 50 models with the most share over the whole range.
-  const byRange = named.map((mm) => ({ mm, sum: mm.s.reduce((a, v) => a + v, 0) })).sort((a, b) => b.sum - a.sum);
+  const byRange = named.map((mm) => ({ mm, sum: mm[g].reduce((a, v) => a + v, 0) })).sort((a, b) => b.sum - a.sum);
   const color = new Map(byRange.map((r, i) => [r.mm.m, i < TOPN ? rankingColor(i) : ["var(--mr-muted)", 1]]));
   const top = byRange.slice(0, TOPN).map((r) => r.mm);
   const topNames = new Set(top.map((mm) => mm.m));
-  const otherS = weeks.map((_, wi) => tp.models.filter((mm) => !topNames.has(mm.m)).reduce((a, mm) => a + (mm.s[wi] || 0), 0));
-  const series = top.map((mm) => ({ name: mm.m, color: color.get(mm.m), s: mm.s })).concat([{ name: OTHER, color: ["var(--mr-muted)", 1], s: otherS }]);
+  const otherS = ps.map((_, pi) => tp.models.filter((mm) => !topNames.has(mm.m)).reduce((a, mm) => a + (mm[g][pi] || 0), 0));
+  const series = top.map((mm) => ({ name: mm.m, color: color.get(mm.m), s: mm[g] })).concat([{ name: OTHER, color: ["var(--mr-muted)", 1], s: otherS }]);
   const ranked = named
-    .map((mm) => ({ name: mm.m, h: mm.h, provider: mm.p, last: mm.s[last], change: 100 * (mm.s[last] - mm.s[last - 1]) }))
+    .map((mm) => ({ name: mm.m, h: mm.h, provider: mm.p, last: mm[g][last], change: 100 * (mm[g][last] - mm[g][last - 1]) }))
     .filter((r) => r.last > 0)
     .sort((a, b) => b.last - a.last);
   const shown = all ? ranked : ranked.slice(0, 10);
-  const lastWeek = fmtDay(weeks[last]);
+  const colName = g === "week" ? "week of " + fmtDay(ps[last]) : fmtMonth(ps[last]);
 
   return (
     <section className="mr-sec" id="top-models">
-      <h2>Top models</h2>
-      <p className="mr-lead">Weekly share of generations by model over the last six months, within each output type.</p>
+      <h2>Top Models</h2>
+      <p className="mr-lead">Share of generations by model over the last year, within each output type.</p>
       <div className="mr-ctrls">
         <RankingSeg label="Output type" options={data.types.map((x) => [x.name, x.name])} value={tp.name} onChange={(v) => (setT(v), setAll(false))} />
+        <RankingSeg label="Period" options={[["week", "By week"], ["month", "By month"]]} value={g} onChange={(v) => (setG(v), setAll(false))} />
       </div>
       <div className="mr-card">
         <h3>
-          Weekly share of generations<span className="mr-sub">: {tp.name}, top {Math.min(TOPN, top.length)} models</span>
+          {g === "week" ? "Weekly" : "Monthly"} Share of Generations<span className="mr-sub">: {tp.name}, top {Math.min(TOPN, top.length)} models</span>
         </h3>
         <StackedShareBars
-          periods={weeks}
+          periods={ps}
           series={series}
-          label={"Weekly share of " + tp.name + " generations by model"}
-          axisLabel={fmtDay}
-          tipHead={(w) => "week of " + fmtDate(w)}
+          label={(g === "week" ? "Weekly" : "Monthly") + " share of " + tp.name + " generations by model"}
+          axisLabel={g === "week" ? fmtDay : (p) => fmtMonth(p, true)}
+          tipHead={pName}
           tipName={"Share of " + tp.name + " generations"}
         />
       </div>
       <div className="mr-card">
         <h3>
-          Top models<span className="mr-sub">: {tp.name}, week of {fmtDate(weeks[last])}</span>
+          Top Models<span className="mr-sub">: {tp.name}, {pName(ps[last])}</span>
         </h3>
         <ShareTable
           rows={shown}
@@ -292,44 +301,46 @@ export const TopModels = ({ data }) => {
           cols={[
             ["Model", (r) => r.name],
             ["Provider", (r) => r.provider || ""],
-            ["Share, week of " + lastWeek, (r) => fmtPct(r.last)],
-            ["Change vs week before (pts)", (r) => fmtPts(r.change), changeClass],
+            ["Share, " + colName, (r) => fmtPct(r.last)],
+            ["Change vs " + unit + " before (pts)", (r) => fmtPts(r.change), changeClass],
           ]}
         />
         <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} noun="models" />
       </div>
       <Methodology>
-        Source: Comfy API usage (Comfy Router and partner API nodes, on Cloud and local installs), Monday-start UTC weeks from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. A generation is one call, or the number of outputs when a call asks for several images (under 1% of calls). Shares are within each output type. The chart breaks out the top {TOPN} models over the six months (by summed weekly share); the rest are grouped as Other models. The table ranks every model by its share in the latest week. Output type comes from the model, and for new models from the call's request. Calls with no model name (about 3%, mostly Kling, Recraft, Freepik and Vidu) aren't included, and models renamed from a preview name are merged with their final name. Models with fewer than 200 calls over the six months are grouped as Other models. Language models and sound effects are left out.
+        Source: Comfy API usage (Comfy Router and partner API nodes, on Cloud and local installs), Monday-start UTC weeks from {fmtDate(data.weeks[0])} to {fmtDate(addDays(data.weeks[data.weeks.length - 1], 6))}. A month is the set of weeks whose Thursday falls in it, so every week counts toward exactly one month, and only months with all their weeks in the data are shown. A generation is one call, or the number of outputs when a call asks for several images (under 1% of calls). Shares are within each output type. The chart breaks out the top {TOPN} models over the year (by summed share); the rest are grouped as Other models. The table ranks every model by its share in the latest {unit}. Output type comes from the model, and for new models from the call's request. Calls with no model name (about 3%, mostly Kling, Recraft, Freepik and Vidu) aren't included, and models renamed from a preview name are merged with their final name. Models with fewer than 200 calls over the year are grouped as Other models. Language models and sound effects are left out.
       </Methodology>
     </section>
   );
 };
 
-// Section 2: week-over-week growth in generations, from shares and the type's own change.
+// Section 2: change in generations from the period before, from shares and the type's own change.
 export const TopMovers = ({ data }) => {
   const FLOOR = 0.005;
+  const GRAINS = { week: ["Week", "week"], month: ["Month", "month"], quarter: ["Quarter", "quarter"] };
   const [t, setT] = useState(data.types[0].name);
+  const [g, setG] = useState("week");
   const [dir, setDir] = useState("up");
   const [ref, W] = useRankingWidth();
   const [tip, show, hide] = useRankingTip();
-  const weeks = data.weeks;
-  const last = weeks.length - 1;
+  const ps = { week: data.weeks, month: data.months, quarter: data.quarters }[g];
+  const last = ps.length - 1;
+  const unit = GRAINS[g][1];
   const tp = data.types.find((x) => x.name === t) || data.types[0];
-  const tg = tp.g;
+  const tg = tp.g[g];
   // A model's growth = its share change times the type's own change.
   const rows = tp.models
     .filter((mm) => mm.m !== "Other models")
     .map((mm) => {
-      const prev = mm.s[last - 1] || 0;
-      const now = mm.s[last] || 0;
+      const prev = mm[g][last - 1] || 0;
+      const now = mm[g][last] || 0;
       return { name: mm.m, h: mm.h, prev, now, growth: prev >= FLOOR && tg != null ? (now / prev) * (1 + tg) - 1 : null, isNew: prev < FLOOR && now >= FLOOR };
     });
   const ranked = rows.filter((r) => r.growth != null);
   const list = ranked.sort((a, b) => (dir === "up" ? b.growth - a.growth : a.growth - b.growth)).slice(0, 10);
   const fresh = rows.filter((r) => r.isNew).sort((a, b) => b.now - a.now);
   const fmtG = (v) => (v > 0.005 ? "+" : v < -0.005 ? "\u2212" : "") + Math.round(Math.abs(v) * 100) + "%";
-  const range = (w) => fmtDay(w) + "\u2013" + (w.slice(5, 7) === addDays(w, 6).slice(5, 7) ? +addDays(w, 6).slice(8, 10) : fmtDay(addDays(w, 6)));
-  const best = rows.filter((r) => r.growth != null).sort((a, b) => b.growth - a.growth)[0];
+  const pName = (p) => (g === "week" ? "week of " + fmtDate(p) : g === "month" ? fmtMonth(p) : fmtQuarter(p));
   const rowH = 32;
   const H = list.length * rowH + 4;
   const numW = textWidth("10.") + 8;
@@ -343,44 +354,42 @@ export const TopMovers = ({ data }) => {
 
   return (
     <section className="mr-sec" id="top-movers">
-      <h2>Top movers last week</h2>
-      <p className="mr-lead">
-        {best ? (
-          <>
-            <b>{best.name}</b> grew fastest in {tp.name} last week, {fmtG(best.growth)} in generations. {tp.name} overall moved <b>{tg == null ? "–" : fmtG(tg)}</b>.
-          </>
-        ) : (
-          <>
-            {tp.name} overall moved <b>{tg == null ? "–" : fmtG(tg)}</b> last week.
-          </>
-        )}{" "}
-        Last week {range(weeks[last])} vs the week before, {range(weeks[last - 1])}.
-      </p>
+      <h2>Top Movers</h2>
       <div className="mr-ctrls">
         <RankingSeg label="Output type" options={data.types.map((x) => [x.name, x.name])} value={tp.name} onChange={setT} />
+        <RankingSeg label="Sort by" options={Object.entries(GRAINS).map(([k, v]) => [k, v[0]])} value={g} onChange={setG} />
         <RankingSeg label="Direction" options={[["up", "Biggest gains"], ["down", "Biggest drops"]]} value={dir} onChange={setDir} />
       </div>
       <div className="mr-card">
         <h3>
-          {dir === "up" ? "Top 10 growing models" : "Top 10 shrinking models"}
-          <span className="mr-sub">: percent change in weekly generations, last week vs the week before</span>
+          {dir === "up" ? "Top 10 Growing Models" : "Top 10 Shrinking Models"}
+          <span className="mr-sub">: percent change in generations from the {unit} before</span>
         </h3>
         <div className="mr-chart" ref={ref} onMouseLeave={hide}>
           {list.length ? (
-            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={"Week-over-week change in generations, " + tp.name}>
+            <svg width="100%" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={"Change in generations from the " + unit + " before, " + tp.name}>
               <line x1={x(0)} x2={x(0)} y1={0} y2={H} stroke="var(--mr-muted)" />
               {list.map((r, i) => {
                 const cy = i * rowH + 2 + rowH / 2;
                 const up = r.growth >= 0;
+                const label = (
+                  <text className={"mr-lab" + (r.h ? " mr-svglink" : "")} x={numW} y={cy} dy="0.35em">
+                    {clipText(r.name, labW - 12)}
+                  </text>
+                );
                 return (
-                  <g key={r.name} onMouseMove={(ev) => show(ev, r.name, [[null, "Generations, week over week", fmtG(r.growth)], [null, "Share of " + tp.name, fmtPct(r.prev) + " \u2192 " + fmtPct(r.now)]])}>
+                  <g key={r.name} onMouseMove={(ev) => show(ev, r.name, [[null, "Generations, " + pName(ps[last]) + " vs " + unit + " before", fmtG(r.growth)], [null, "Share of " + tp.name, fmtPct(r.prev) + " \u2192 " + fmtPct(r.now)]])}>
                     <rect className="mr-hit" x={0} width={W} y={i * rowH + 2} height={rowH} rx={4} />
                     <text x={numW - 8} y={cy} dy="0.35em" textAnchor="end">
                       {i + 1 + "."}
                     </text>
-                    <text className="mr-lab" x={numW} y={cy} dy="0.35em">
-                      {clipText(r.name, labW - 12)}
-                    </text>
+                    {r.h ? (
+                      <a href={modelUrl(r.h)} target="_blank" rel="noopener noreferrer">
+                        {label}
+                      </a>
+                    ) : (
+                      label
+                    )}
                     <rect x={Math.min(x(0), x(r.growth))} width={Math.max(2, Math.abs(x(r.growth) - x(0)))} y={cy - (rowH - 12) / 2} height={rowH - 12} rx={4} fill={up ? RANKING_COLORS[0] : "var(--mr-muted)"} pointerEvents="none" />
                     <text x={up ? x(r.growth) + 6 : x(r.growth) - 6} y={cy} dy="0.35em" textAnchor={up ? "start" : "end"} pointerEvents="none">
                       {fmtG(r.growth)}
@@ -390,10 +399,13 @@ export const TopMovers = ({ data }) => {
               })}
             </svg>
           ) : (
-            <p className="mr-note">No models above the 0.5% floor this week.</p>
+            <p className="mr-note">No models above the 0.5% floor in this period.</p>
           )}
           <RankingTip tip={tip} />
         </div>
+        <p className="mr-note">
+          {tp.name} overall: <b>{tg == null ? "–" : fmtG(tg)}</b> generations per week from the {unit} before.
+        </p>
         {fresh.length ? (
           <p className="mr-note">
             New arrivals, from under 0.5% to:{" "}
@@ -410,14 +422,14 @@ export const TopMovers = ({ data }) => {
         ) : null}
       </div>
       <Methodology>
-        Growth is the percent change in a model's generations from the week before to last week (Monday-start UTC weeks), from the same Comfy API usage as Top models. Only percentages are shown, never generation counts. To keep tiny models from topping the list with huge jumps, a model is ranked only if it had at least 0.5% of its type's generations the week before. Models that crossed 0.5% from below are listed as new arrivals under the chart. The type's overall change is shown for context, since a model can grow just because its whole type grew. Models renamed from a preview name are merged with their final name. Other models, language models and sound effects are left out.
+        Growth is the percent change in a model's generations per week from one period to the one before, from the same Comfy API usage as Top models. Week compares the latest full Monday-start UTC week with the week before. Month and Quarter compare the latest full month or quarter with the one before, where a week counts toward the month that holds its Thursday; comparing generations per week keeps 4- and 5-week months fair. Only percentages are shown, never generation counts. To keep tiny models from topping the list with huge jumps, a model is ranked only if it had at least 0.5% of its type's generations in the earlier period. Models that crossed 0.5% from below are listed as new arrivals under the chart. The type's overall change is shown for context, since a model can grow just because its whole type grew. Models renamed from a preview name are merged with their final name. Other models, language models and sound effects are left out.
       </Methodology>
     </section>
   );
 };
 
-// Section 3: share of each month's Desktop installs by hardware.
-export const HardwareRankings = ({ data, through }) => {
+// Section 3: share of each week's Desktop installs by hardware.
+export const HardwareRankings = ({ data }) => {
   const [g, setG] = useState(data.groups[0].name);
   const [all, setAll] = useState(false);
   const OTHER = "Other GPUs";
@@ -425,8 +437,8 @@ export const HardwareRankings = ({ data, through }) => {
     VRAM: ["<6GB", "6-8GB", "8-12GB", "12-16GB", "16-24GB", "24-48GB", "48+GB", "Apple (shared memory)", "Unknown"],
     "System RAM": ["<=8GB", "8-16GB", "16-32GB", "32-64GB", "64-128GB", "128+GB"],
   };
-  const months = data.months;
-  const last = months.length - 1;
+  const weeks = data.weeks;
+  const last = weeks.length - 1;
   const grp = data.groups.find((x) => x.name === g) || data.groups[0];
   const ranked = grp.items
     .filter((i) => i.i !== OTHER)
@@ -434,18 +446,20 @@ export const HardwareRankings = ({ data, through }) => {
     .sort((a, b) => b.last - a.last);
   const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
   const order = KEEP[g] ? KEEP[g].filter((n) => ranked.some((r) => r.name === n)) : ranked.map((r) => r.name);
-  const series = order.map((n) => {
-    const r = ranked.find((x) => x.name === n);
-    return { name: n, color: color.get(n), s: r.s };
-  });
-  const monthLabel = (iso) => fmtMonth(iso) + (isPartial(iso, through) ? " (to " + fmtDay(through) + ")" : "");
-  const colLabel = (iso) => (isPartial(iso, through) ? RANKING_MONTHS[+iso.slice(5, 7) - 1] + " 1–" + +through.slice(8, 10) : fmtMonthName(iso));
+  const other = grp.items.find((i) => i.i === OTHER);
+  // Other GPUs sits at the bottom of each bar, next to the axis.
+  const series = (other ? [{ name: OTHER, color: ["var(--mr-muted)", 1], s: other.s }] : []).concat(
+    order.map((n) => {
+      const r = ranked.find((x) => x.name === n);
+      return { name: n, color: color.get(n), s: r.s };
+    })
+  );
   const shown = all ? ranked : ranked.slice(0, 10);
 
   return (
     <section className="mr-sec" id="hardware-setups">
-      <h2>Hardware setup breakdown</h2>
-      <p className="mr-lead">What hardware ComfyUI Desktop users run, month by month. Each bar shows the share of that month's active Desktop installs, so all figures are percentages.</p>
+      <h2>Hardware Setup Breakdown</h2>
+      <p className="mr-lead">What hardware ComfyUI Desktop users run, week by week. Each bar shows the share of that week's active Desktop installs, so all figures are percentages.</p>
       <div className="mr-ctrls">
         <RankingSeg
           label="Breakdown"
@@ -459,37 +473,35 @@ export const HardwareRankings = ({ data, through }) => {
       </div>
       <div className="mr-card">
         <h3>
-          Monthly share<span className="mr-sub">: {g}, share of each month's installs</span>
+          Weekly Share<span className="mr-sub">: {g}, share of each week's installs{other ? ", top 30 plus Other GPUs" : ""}</span>
         </h3>
-        {g === "GPU model" ? <p className="mr-note">GPU models beyond the top 30 removed.</p> : null}
         <StackedShareBars
-          periods={months}
+          periods={weeks}
           series={series}
-          label={"Monthly share of installs for " + g}
-          axisLabel={monthLabel}
-          shortLabel={(iso) => fmtMonth(iso, true)}
-          tipHead={monthLabel}
+          label={"Weekly share of installs for " + g}
+          axisLabel={fmtDay}
+          tipHead={(w) => "week of " + fmtDate(w)}
           tipName={"Share of " + g + " installs"}
         />
       </div>
       <div className="mr-card">
         <h3>
-          Values<span className="mr-sub">: {g}, share of installs, {colLabel(months[last])} vs {colLabel(months[last - 1])}</span>
+          Values<span className="mr-sub">: {g}, share of installs</span>
         </h3>
         <ShareTable
           rows={shown}
           colorOf={(r) => color.get(r.name)}
           cols={[
             ["Setup", (r) => r.name],
-            [colLabel(months[last]), (r) => fmtPct(r.last)],
-            [colLabel(months[last - 1]), (r) => fmtPct(r.prev)],
+            ["Week of " + fmtDay(weeks[last]), (r) => fmtPct(r.last)],
+            ["Week of " + fmtDay(weeks[last - 1]), (r) => fmtPct(r.prev)],
             ["Change (pts)", (r) => fmtPts(r.change), changeClass],
           ]}
         />
         <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} />
       </div>
       <Methodology>
-        Source: ComfyUI Desktop app telemetry, one count per install per calendar month (UTC), using its latest report that month. The latest month runs to {fmtDate(through)}. June 2026 is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. July counts are inflated by install IDs that changed during the month, so compare shares, not totals. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted. Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the top 30 are left out.
+        Source: ComfyUI Desktop app telemetry, one count per install per Monday-start UTC week, using its latest report that week, from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. The app only started sending hardware reports in June 2026, so there isn't a full year yet. June is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted. Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the 30 most common over the whole range are grouped as Other GPUs.
       </Methodology>
     </section>
   );
@@ -533,8 +545,7 @@ export const SpeedRankings = ({ data, from, through }) => {
 
   return (
     <section className="mr-sec" id="fastest-models">
-      <h2>Fastest models based on Comfy usage</h2>
-      <p className="mr-lead">How fast open models run on Comfy Cloud, from real jobs between {fmtDay(from)} and {fmtDate(through)}. Times are medians (the typical job) and 90th percentiles (a slow job).</p>
+      <h2>Fastest Models</h2>
       <div className="mr-ctrls">
         <RankingSeg label="Models" options={[["Original", "Original models"], ["Community", "LoRAs"]]} value={k} onChange={(v) => (setK(v), reset())} />
         <RankingSeg label="Measure" options={[["gen", "Generation time"], ["wait", "Latency"]]} value={m} onChange={(v) => (setM(v), reset())} />
@@ -543,7 +554,7 @@ export const SpeedRankings = ({ data, from, through }) => {
       </div>
       <div className="mr-card">
         <h3>
-          Speed range<span className="mr-sub">: median to 90th-percentile {ML[m]}, {sort === "fast" ? "fastest median first" : "most used first"}</span>
+          Speed Range<span className="mr-sub">: median to 90th-percentile {ML[m]}, {sort === "fast" ? "fastest median first" : "most used first"}</span>
         </h3>
         <div className="mr-legend">
           <span>
@@ -598,7 +609,7 @@ export const SpeedRankings = ({ data, from, through }) => {
         <RankingMore total={rows.length} open={allA} onToggle={() => setAllA(!allA)} />
       </div>
       <div className="mr-card">
-        <h3>Fastest models</h3>
+        <h3>Times by Model</h3>
         <ShareTable
           rows={allV ? rows : rows.slice(0, 10)}
           cols={[
@@ -612,7 +623,7 @@ export const SpeedRankings = ({ data, from, through }) => {
         <RankingMore total={rows.length} open={allV} onToggle={() => setAllV(!allV)} />
       </div>
       <Methodology>
-        Source: Comfy Cloud job records, successful jobs only. Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since {fmtDate(from)} is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). LoRAs are the community fine-tunes: checkpoints and merges trained on top of the original models. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Sort by Usage puts the models with the most Cloud usage first, measured as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits (metered for about 92% of the jobs shown). Sort by Fastest puts the lowest median first.
+        Source: Comfy Cloud job records, successful jobs from {fmtDate(from)} to {fmtDate(through)}. Times are medians (the typical job) and 90th percentiles (a slow job). Latency is the wait from when a job is submitted to when it starts running. Generation time is from start to finish of the run, including loading the model onto the GPU and every other step in the workflow, so it varies with steps, resolution and video length as well as the model. Each job is matched to its main diffusion model, which works for about 69% of jobs. Every model with at least 100 jobs since {fmtDate(from)} is shown. Original models are the official releases from the model makers (including Comfy's repackaged and quantized copies). LoRAs are the community fine-tunes: checkpoints and merges trained on top of the original models. When the same file is stored under several names, the most used copy is shown. Checkpoints with explicit names are left out. Every job ran on the same GPU (RTX Pro 6000). API (partner) models are left out because their timing mixes latency and generation time. Sort by Usage puts the models with the most Cloud usage first, measured as share of Cloud credits: Cloud charges credits per second of GPU time and every job ran on the same GPU, so each model's share of metered GPU time is its share of credits (metered for about 92% of the jobs shown). Sort by Fastest puts the lowest median first.
       </Methodology>
     </section>
   );
@@ -629,15 +640,18 @@ export const DownloadRankings = ({ data, through }) => {
   const types = grain.types.map((x) => x.name);
   const type = types.includes(t) ? t : types[0];
   const tp = grain.types.find((x) => x.name === type);
-  const ps = grain.periods;
+  // The page shows the last year: 52 weeks or 12 months.
+  const cut = Math.max(0, grain.periods.length - (g === "Weekly" ? 52 : 12));
+  const ps = grain.periods.slice(cut);
   const last = ps.length - 1;
   const ranked = tp.models
-    .map((mm) => ({ name: mm.m, h: mm.h, s: mm.s, last: mm.s[last], prev: mm.s[last - 1], change: 100 * (mm.s[last] - mm.s[last - 1]) }))
+    .map((mm) => ({ s: mm.s.slice(cut), mm }))
+    .map(({ s, mm }) => ({ name: mm.m, h: mm.h, s, last: s[last], prev: s[last - 1], change: 100 * (s[last] - s[last - 1]) }))
     .filter((r) => r.last > 0)
     .sort((a, b) => b.last - a.last);
   const color = new Map(ranked.map((r, i) => [r.name, rankingColor(i)]));
   const topNames = ranked.slice(0, TOPN).map((r) => r.name);
-  const otherS = ps.map((_, pi) => tp.models.filter((mm) => !topNames.includes(mm.m)).reduce((a, mm) => a + (mm.s[pi] || 0), 0));
+  const otherS = ps.map((_, pi) => tp.models.filter((mm) => !topNames.includes(mm.m)).reduce((a, mm) => a + (mm.s[cut + pi] || 0), 0));
   const series = ranked
     .slice(0, TOPN)
     .map((r) => ({ name: r.name, color: color.get(r.name), s: r.s }))
@@ -649,15 +663,15 @@ export const DownloadRankings = ({ data, through }) => {
 
   return (
     <section className="mr-sec" id="top-open-source-downloads">
-      <h2>Top open source model downloads</h2>
-      <p className="mr-lead">Share of downloads of Comfy-Org's open model repos on Hugging Face, by week or month.</p>
+      <h2>Top Open Source Model Downloads</h2>
+      <p className="mr-lead">Share of downloads of Comfy-Org's open model repos on Hugging Face over the last year, by week or month.</p>
       <div className="mr-ctrls">
         <RankingSeg label="Output type" options={types.map((x) => [x, x])} value={type} onChange={(v) => (setT(v), setAll(false))} />
         <RankingSeg label="Period" options={[["Weekly", "Weekly"], ["Monthly", "Monthly"]]} value={g} onChange={(v) => (setG(v), setAll(false))} />
       </div>
       <div className="mr-card">
         <h3>
-          Share of downloads<span className="mr-sub">: {type}, share of each {unit}, top {TOPN} in the latest {unit}</span>
+          Share of Downloads<span className="mr-sub">: {type}, share of each {unit}, top {TOPN} in the latest {unit}</span>
         </h3>
         <StackedShareBars periods={ps} series={series} label={g + " share of downloads by model, Comfy-Org Hugging Face repos"} axisLabel={axLabel} tipHead={pLabel} tipName={"Share of " + type + " downloads"} />
       </div>
@@ -739,21 +753,23 @@ export const ModelRankings = ({ data }) => (
       .mr-more:hover { background: var(--mr-grid); }
       .mr-link { color: inherit; text-decoration: underline; text-decoration-color: var(--mr-muted); text-underline-offset: 2px; }
       .mr-link:hover { text-decoration-color: currentColor; }
+      .mr svg text.mr-svglink { text-decoration: underline; text-decoration-color: var(--mr-muted); cursor: pointer; }
+      .mr svg a:hover text.mr-svglink { text-decoration-color: currentColor; }
       .mr-method summary { cursor: pointer; width: fit-content; font-size: 0.8125rem; color: var(--mr-fg); }
       .mr-method summary:focus-visible { outline: 2px solid var(--mr-fg); outline-offset: 1px; }
       .mr-method[open] summary { margin-bottom: 0.5rem; }
       .mr-note { margin: 0; font-size: 0.8125rem; color: var(--mr-muted-fg); max-width: 85ch; }
     `}</style>
     <nav className="mr-toc" aria-label="Rankings sections">
-      <a href="#top-models">Top models</a>
-      <a href="#top-movers">Top movers</a>
-      <a href="#hardware-setups">Hardware setups</a>
-      <a href="#fastest-models">Fastest models</a>
-      <a href="#top-open-source-downloads">Top open source downloads</a>
+      <a href="#top-models">Top Models</a>
+      <a href="#top-movers">Top Movers</a>
+      <a href="#hardware-setups">Hardware Setups</a>
+      <a href="#fastest-models">Fastest Models</a>
+      <a href="#top-open-source-downloads">Top Open Source Downloads</a>
     </nav>
     <TopModels data={data.generations} />
     <TopMovers data={data.generations} />
-    <HardwareRankings data={data.hardware} through={data.through} />
+    <HardwareRankings data={data.hardware} />
     <SpeedRankings data={data.speed} from={data.speedFrom || "2026-08-24"} through={data.through} />
     <DownloadRankings data={data.downloads} through={data.through} />
   </div>
