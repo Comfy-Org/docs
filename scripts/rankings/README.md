@@ -43,6 +43,13 @@ skipped. Periods up to Oct 18, 2026 came from publisher analytics and keep their
 shares; `build-rankings-data.py` merges new periods into the existing data file
 rather than replacing it.
 
+## Desktop v1 hardware
+
+The legacy Desktop app (v1) sent its telemetry to Mixpanel, which lands in
+Snowflake (`STG_MIXPANEL_DESKTOP__EVENTS` and `__PROFILES`). It stopped at the
+end of May 2026, so its weekly shares (Oct 20, 2025 to May 10, 2026) are a fixed
+file, `state/hardware-desktop-v1.json`, and the daily job doesn't query it.
+
 ## Output types
 
 `model-types.json` sets the output type (Image, Video, Speech, 3D) of every

@@ -428,9 +428,13 @@ export const TopMovers = ({ data }) => {
   );
 };
 
-// Section 3: share of each week's Desktop installs by hardware.
-export const HardwareRankings = ({ data }) => {
-  const [g, setG] = useState(data.groups[0].name);
+// Section 3: share of each week's Desktop installs by hardware, for the current
+// Desktop app (v2) or the legacy one (v1).
+export const HardwareRankings = ({ data: byApp }) => {
+  const [ver, setVer] = useState("v2");
+  const data = byApp[ver];
+  const [gSel, setG] = useState(data.groups[0].name);
+  const g = data.groups.some((x) => x.name === gSel) ? gSel : data.groups[0].name;
   const [all, setAll] = useState(false);
   const OTHER = "Other GPUs";
   const KEEP = {
@@ -459,8 +463,9 @@ export const HardwareRankings = ({ data }) => {
   return (
     <section className="mr-sec" id="hardware-setups">
       <h2>Hardware Setup Breakdown</h2>
-      <p className="mr-lead">What hardware ComfyUI Desktop users run, week by week. Each bar shows the share of that week's active Desktop installs, so all figures are percentages.</p>
+      <p className="mr-lead">What hardware ComfyUI Desktop users run, week by week. Each bar shows the share of that week's active Desktop installs, so all figures are percentages. Desktop v2 is the current app; Desktop v1 is the legacy app, whose data ends in May 2026.</p>
       <div className="mr-ctrls">
+        <RankingSeg label="App" options={[["v2", "Desktop v2"], ["v1", "Desktop v1"]]} value={ver} onChange={(v) => (setVer(v), setAll(false))} />
         <RankingSeg
           label="Breakdown"
           options={data.groups.map((x) => [x.name, x.name])}
@@ -473,12 +478,12 @@ export const HardwareRankings = ({ data }) => {
       </div>
       <div className="mr-card">
         <h3>
-          Weekly Share<span className="mr-sub">: {g}, share of each week's installs{other ? ", top 30 plus Other GPUs" : ""}</span>
+          Weekly Share<span className="mr-sub">: Desktop {ver}, {g}, share of each week's installs{other ? ", top 30 plus Other GPUs" : ""}</span>
         </h3>
         <StackedShareBars
           periods={weeks}
           series={series}
-          label={"Weekly share of installs for " + g}
+          label={"Weekly share of Desktop " + ver + " installs for " + g}
           axisLabel={fmtDay}
           tipHead={(w) => "week of " + fmtDate(w)}
           tipName={"Share of " + g + " installs"}
@@ -501,7 +506,16 @@ export const HardwareRankings = ({ data }) => {
         <RankingMore total={ranked.length} open={all} onToggle={() => setAll(!all)} />
       </div>
       <Methodology>
-        Source: ComfyUI Desktop app telemetry, one count per install per Monday-start UTC week, using its latest report that week, from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. The app only started sending hardware reports in June 2026, so there isn't a full year yet. June is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted. Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the 30 most common over the whole range are grouped as Other GPUs.
+        {ver === "v2" ? (
+          <>
+            Source: ComfyUI Desktop v2 app telemetry, one count per install per Monday-start UTC week, using its latest report that week, from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. Desktop v2 only started sending hardware reports in June 2026, so there isn't a full year yet. June is left out: the early app often reported a virtual display adapter instead of the real GPU, and no VRAM. Portable, manual-install and Cloud users don't send this, so Linux and multi-GPU setups are likely undercounted.
+          </>
+        ) : (
+          <>
+            Source: the legacy ComfyUI Desktop v1 app's opt-in telemetry, one count per install active in each Monday-start UTC week, from {fmtDate(weeks[0])} to {fmtDate(addDays(weeks[last], 6))}. Its data stops at the end of May 2026, when Desktop v2 replaced it; the last weeks of May are left out because they are partial or have incomplete hardware records. Each install's hardware is its latest profile, not what it had that week, and the main GPU is the one with the most VRAM. System RAM isn't recorded, and installs with no platform land in Other. AMD's share jumps in early January 2026, which may be a change in how the app reported AMD GPUs rather than real growth.
+          </>
+        )}{" "}
+        Intel and AMD integrated graphics land in under 6GB. Macs share memory between CPU and GPU, so they have their own VRAM bucket. VRAM buckets include their upper bound (an 8GB card is in 6-8GB). GPU names are cleaned up, laptop chips are kept separate, and GPUs outside the 30 most common over the whole range are grouped as Other GPUs (for Desktop v1 this includes installs with no GPU recorded).
       </Methodology>
     </section>
   );
@@ -696,6 +710,40 @@ export const DownloadRankings = ({ data, through }) => {
       </Methodology>
     </section>
   );
+};
+
+// Mintlify shows the page description as plain text under the title. This
+// turns one phrase in it into a link once the page has rendered.
+export const SubtitleLink = ({ phrase, href }) => {
+  useEffect(() => {
+    const link = () => {
+      const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+        const i = node.nodeValue.indexOf(phrase);
+        if (i < 0 || node.parentElement.closest("a, h1, nav, aside, script, style, .mr")) continue;
+        const a = document.createElement("a");
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = phrase;
+        a.style.textDecoration = "underline";
+        a.style.textUnderlineOffset = "3px";
+        const rest = node.splitText(i);
+        rest.nodeValue = rest.nodeValue.slice(phrase.length);
+        node.parentNode.insertBefore(a, rest);
+        return true;
+      }
+      return false;
+    };
+    if (link()) return;
+    const timer = setInterval(() => link() && clearInterval(timer), 250);
+    const stop = setTimeout(() => clearInterval(timer), 5000);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(stop);
+    };
+  }, [phrase, href]);
+  return null;
 };
 
 export const ModelRankings = ({ data }) => (

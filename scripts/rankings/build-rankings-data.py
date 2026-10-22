@@ -171,7 +171,11 @@ groups = []
 for g in ["GPU model", "VRAM", "GPU vendor", "Operating system", "System RAM"]:
     items = sorted({i for (gg, i, w) in cell if gg == g})
     groups.append({"name": g, "items": [{"i": i, "s": [R(cell[(g, i, w)] / tot[(g, w)]) if tot[(g, w)] else 0 for w in hweeks]} for i in items]})
-hardware = {"weeks": hweeks, "groups": groups}
+# The legacy Desktop app (v1) stopped sending data in May 2026, so its weekly
+# shares are a fixed file (built once from its Mixpanel data in Snowflake).
+with open(f"{HERE}/state/hardware-desktop-v1.json", encoding="utf-8") as f:
+    hardware_v1 = json.load(f)
+hardware = {"v2": {"weeks": hweeks, "groups": groups}, "v1": hardware_v1}
 
 # 3. Speed: times and a usage rank, job counts and credit shares dropped
 num = lambda v: None if v == '' else float(v)
