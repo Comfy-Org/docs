@@ -1528,8 +1528,8 @@ export function modelPageRedirects(existing: Redirect[], live: Iterable<string>,
 }
 
 /**
- * Replace the `Models` group under `Comfy Router` in the `en` nav and settle the
- * model-page redirects (see `modelPageRedirects`). Returns the new file text.
+ * Replace the `Models` group on the `Comfy Router` tab in the `en` nav and settle
+ * the model-page redirects (see `modelPageRedirects`). Returns the new file text.
  */
 export function renderDocsJson(nav: NavGroup, pages: { live: Iterable<string>; pruned: Iterable<PrunedPage> }): string {
   const raw = readFileSync(join(ROOT, DOCS_JSON), "utf8");
@@ -1537,22 +1537,11 @@ export function renderDocsJson(nav: NavGroup, pages: { live: Iterable<string>; p
   doc.redirects = modelPageRedirects(Array.isArray(doc.redirects) ? doc.redirects : [], pages.live, pages.pruned);
   const en = doc.navigation?.languages?.find((l: any) => l.language === "en");
   if (!en) throw new Error(`${DOCS_JSON}: no \`en\` language in navigation.languages`);
-  const groups: NavGroup[] = [];
-  const walk = (node: any) => {
-    if (Array.isArray(node)) return node.forEach(walk);
-    if (node && typeof node === "object") {
-      if (typeof node.group === "string") groups.push(node);
-      if (node.pages) walk(node.pages);
-      if (node.tabs) walk(node.tabs);
-      if (node.anchors) walk(node.anchors);
-    }
-  };
-  walk(en);
-  const router = groups.find((g) => g.group === "Comfy Router");
-  if (!router) throw new Error(`${DOCS_JSON}: no \`Comfy Router\` group in the en nav`);
-  const at = router.pages.findIndex((p) => typeof p === "object" && (p as NavGroup).group === "Models");
-  if (at === -1) throw new Error(`${DOCS_JSON}: no \`Models\` group under \`Comfy Router\``);
-  router.pages[at] = nav;
+  const routerTab = en.tabs?.find((t: { tab?: string }) => t.tab === "Comfy Router");
+  if (!routerTab) throw new Error(`${DOCS_JSON}: no \`Comfy Router\` tab in the en nav`);
+  const at = routerTab.pages.findIndex((p: unknown) => typeof p === "object" && p !== null && (p as NavGroup).group === "Models");
+  if (at === -1) throw new Error(`${DOCS_JSON}: no \`Models\` group on the \`Comfy Router\` tab`);
+  routerTab.pages[at] = nav;
   return `${JSON.stringify(doc, null, 2)}\n`;
 }
 
