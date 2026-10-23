@@ -160,6 +160,8 @@ const phrases: Record<string, Translation> = {
   "Input duration, capped at 5 seconds per request": ["Input video (max 5s)", "入力動画（最大 5 秒）", "输入视频（最多 5 秒）", "입력 동영상(최대 5초)"],
   "Background removal": ["Background removal", "背景除去", "背景移除", "배경 제거"],
   "Fibo image editing": ["Image edit", "画像編集", "图像编辑", "이미지 편집"],
+  "Promotional price until 2026-11-07": ["Promo until Nov 7, 2026", "2026年11月7日までのプロモ価格", "促销价（至 2026 年 11 月 7 日）", "2026년 11월 7일까지 프로모션 가격"],
+  "From 2026-11-07": ["From Nov 7, 2026", "2026年11月7日から", "自 2026 年 11 月 7 日起", "2026년 11월 7일부터"],
   "Kling 3 Standard": ["Standard", "標準", "标准", "표준"],
   "text": ["Text only", "テキストのみ", "仅文本", "텍스트만"],
   "style_references": ["Style references", "スタイル参照", "风格参考", "스타일 참조"],
@@ -228,7 +230,12 @@ export function formatOption(conditions: string | undefined, locale: PricingLoca
     if (key === "quality") return ({ very_low: ["Very low", "最低", "极低", "매우 낮음"], low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "thinking_mode") return ({ fast: ["Fast thinking", "高速思考", "快速思考", "빠른 사고"], high: ["High thinking", "高度思考", "深度思考", "고급 사고"], ultra: ["Ultra thinking", "最高思考", "极致思考", "울트라 사고"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "video_type" || key === "feature") return translate(value);
+    if (key === "type" && value === "video") return ["Video generation", "動画生成", "视频生成", "동영상 생성"][index];
+    if (key === "type" && value === "video_edit") return ["Video edit", "動画編集", "视频编辑", "동영상 편집"][index];
+    if (key === "type" && value === "video_reframe") return ["Video reframe", "動画リフレーム", "视频重构图", "동영상 리프레임"][index];
     if (key === "type") return value === "image_edit" ? translate("Edit") : ["Image generation", "画像生成", "图像生成", "이미지 생성"][index];
+    if (key === "dynamic_range") return ({ standard: "SDR", hdr: "HDR", hdr_exr: "HDR + EXR" } as Record<string, string>)[value] ?? value;
+    if (key === "duration") return value;
     if (key === "endpoint") return value.includes("dialogue") ? ["Dialogue", "対話", "对话", "대화"][index] : ["Text to speech", "音声合成", "语音合成", "음성 합성"][index];
     if (key === "input_tier" || key === "output_tier") return value.replace(/^qima_(input|output)_/, "").replace(/k$/, "K").replace(/^standard$/, ["Standard", "標準", "标准", "표준"][index]).replace(/^large$/, ["Large", "大", "大", "대형"][index]);
     return part;

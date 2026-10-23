@@ -2,18 +2,19 @@
 title: "LiteLLM과 함께 Comfy Router 사용하기"
 sidebarTitle: "LiteLLM"
 description: "Comfy Router를 패스스루 엔드포인트로 LiteLLM Proxy 뒤에 두고, x-litellm-response-cost 헤더에서 각 실행의 정확한 USD 비용을 기록합니다. 유지 관리할 가격표가 필요 없습니다."
-translationSourceHash: 62eb02ac
+translationSourceHash: e35cd883
 translationFrom: development/comfy-router/litellm.mdx
 translationBlockHashes:
-  "_intro": fe57ab19
-  "Configure the pass-through": 882570d1
-  "How spend is recorded": 204aef47
-  "Queued delivery": 2d3385e4
+  "_intro": 1ddb0d0a
+  "Configure the pass-through": 380c3ae3
+  "How spend is recorded": f852c18c
+  "Queued delivery": 46044c93
   "Notes": 50e3cf6b
 ---
+
 이미 [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through)로 지출을 추적하고 있다면, Comfy Router를 pass-through 엔드포인트 하나 더 추가할 수 있습니다. 호출자는 LiteLLM 키를 그대로 사용하고, Comfy API 키는 프록시에 남아 있습니다.
 
-Router는 실행당 Comfy 크레딧 가격을 보고하는 모델에 대해, 동기 실행의 비용을 미국 달러로 `x-litellm-response-cost` 응답 헤더에 보고합니다([비용을 보고하지 않는 실행](#비용을-보고하지-않는-실행) 참조). LiteLLM은 모든 pass-through 응답에서 이 헤더를 읽어 요청의 지출로 기록하므로, 해당 모델에 대한 가격표를 유지할 필요가 없습니다.
+Router는 실행당 Comfy 크레딧 가격을 보고하는 모델의 경우, 실행 비용을 미국 달러로 `x-litellm-response-cost` 응답 헤더에 보고합니다. 동기 실행에서는 실행 응답에, [대기 중](#대기-중-전달) 실행에서는 결과 수집 응답에 해당합니다([비용을 보고하지 않는 실행](#비용을-보고하지-않는-실행) 참조). LiteLLM은 모든 pass-through 응답에서 이 헤더를 읽어 요청의 지출로 기록하므로, 해당 모델에 대한 가격표를 유지할 필요가 없습니다.
 
 <Note>
   LiteLLM의 내장 `fal_ai/` 공급자는 이미지 생성만 지원합니다. 일반 워크로드를 LiteLLM을 통해 라우팅하려면 네이티브 공급자가 아니라 여기에서처럼 pass-through 엔드포인트를 사용하세요.
@@ -35,7 +36,8 @@ Router는 실행당 Comfy 크레딧 가격을 보고하는 모델에 대해, 동
     general_settings:
       pass_through_endpoints:
         # 실행 및 실행 대기열 제출. 동기 실행은 정확한 비용을 보고하며,
-        # 이는 해당 행의 cost_per_request를 대체합니다.
+        # 이는 해당 행의 cost_per_request를 대체합니다. 실행 대기열 제출은 그렇지 않습니다.
+        # 아래 "대기 중 전달"을 참조하세요.
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -46,7 +48,9 @@ Router는 실행당 Comfy 크레딧 가격을 보고하는 모델에 대해, 동
           cost_per_request: 0.10   # 예비 추정치(USD)
           timeout: 660             # Router의 실행 기한(기본 10분)보다 큰 값
 
-        # 모델 카탈로그, 실행 대기열 상태 폴링, 결과 수집.
+        # 모델 카탈로그, 실행 대기열 상태 폴링, 결과 수집. 대기 중인
+        # 실행의 결과 수집은 정확한 비용을 보고하며, 이는 해당 행의
+        # 아래 0을 대체합니다.
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -79,7 +83,7 @@ Router는 실행당 Comfy 크레딧 가격을 보고하는 모델에 대해, 동
 
 ## 지출이 기록되는 방식
 
-비용을 보고하는 동기 실행은 다음과 같은 응답 헤더를 포함합니다:
+비용을 보고하는 실행은 동기 실행이면 실행 응답에, 대기 중인 실행이면 결과 수집에 다음과 같은 응답 헤더를 포함합니다:
 
 ```http
 X-Comfy-Credits-Used: 12.5
@@ -87,7 +91,7 @@ X-Litellm-Response-Cost: 0.0592417062
 X-Litellm-Total-Tokens: 0
 ```
 
-`X-Comfy-Credits-Used`는 실행 가격을 Comfy 크레딧으로 나타낸 값이며, 소수점 둘째 자리로 반올림됩니다. `X-Litellm-Response-Cost`는 반올림되지 않은 크레딧 수량에서 USD로 환산한 같은 가격이므로, 표시된 크레딧을 환산 비율로 나눈 값은 마지막 자릿수에서 이와 다를 수 있습니다. 헤더 이름은 대소문자를 구분하지 않으므로 LiteLLM은 이를 `x-litellm-response-cost`로 읽습니다. LiteLLM은 전송된 그대로 기록하며, 여러분의 `cost_per_request` 대신 이 값을 사용합니다. `x-litellm-total-tokens`는 항상 `0`입니다. 미디어 실행은 토큰으로 과금되지 않기 때문입니다.
+`X-Comfy-Credits-Used`는 실행 가격을 Comfy 크레딧으로 나타낸 값이며, 소수점 둘째 자리로 반올림됩니다. `X-Litellm-Response-Cost`는 반올림되지 않은 크레딧 수량에서 USD로 환산한 같은 가격이므로, 표시된 크레딧을 환산 비율로 나눈 값은 마지막 자릿수에서 이와 다를 수 있습니다. 헤더 이름은 대소문자를 구분하지 않으므로 LiteLLM은 이를 `x-litellm-response-cost`로 읽습니다. LiteLLM은 전송된 그대로 기록하며, 여러분의 `cost_per_request` 대신 이 값을 사용합니다. `x-litellm-total-tokens`는 항상 `0`입니다. 미디어 실행은 토큰 단위로 과금되지 않기 때문입니다.
 
 `X-Comfy-Credits-Used`와 마찬가지로, 이 헤더는 정산된 청구 금액이 아니라 가격을 보고합니다. LiteLLM의 합계가 아니라 [워크스페이스 청구](https://platform.comfy.org)와 대조해 확인하세요.
 
@@ -97,12 +101,12 @@ X-Litellm-Total-Tokens: 0
 
 - Comfy 크레딧이 아니라 자신의 공급자 키로 청구되는 실행
 - 아직 Router의 실행별 크레딧 가격을 보고하는 모델 목록에 없는 모델. 이 목록은 보수적이며, 일부 공급자는 아예 포함되지 않습니다
-- Comfy 청구에 도달하지 않은 청구
+- Comfy 청구에 도달하지 못한 청구
 - 오류 응답
 
-또한 Router가 동일한 `Idempotency-Key`(프록시를 통해 `x-pass-Idempotency-Key`로 전송됨)로 재시도할 때 저장된 결과를 재생하는 경우에도 존재하지 않습니다. 해당 재시도에는 다시 요금이 부과되지 않으므로, 재생은 실행의 정확한 비용을 두 번째로 보고하지 않습니다.
+또한 Router가 동일한 `Idempotency-Key`(프록시를 통해 `x-pass-Idempotency-Key`로 전송됨)로 재시도할 때 저장된 결과를 재생하는 경우에도 존재하지 않습니다. 해당 재시도에는 다시 요금이 부과되지 않으므로, 재생은 실행의 정확한 비용을 두 번째로 보고하지 않습니다. 같은 이유로, 대기 중인 실행의 결과 수집 중에서는 실행 가격이 기록된 이후의 첫 번째 수집만 이 헤더를 포함합니다. 동일한 결과를 다시 수집해도 여전히 `X-Comfy-Credits-Used`는 반환되지만 `x-litellm-response-cost`는 반환되지 않습니다.
 
-헤더가 없으면 LiteLLM은 엔드포인트의 `cost_per_request`로 대체합니다. 이는 위의 모든 경우에 적용됩니다. 따라서 오류 응답, 자신의 공급자 키로 청구되는 실행, 멱등 재생은 Comfy가 해당 실행에 크레딧을 청구하지 않았음에도 여러분의 추정치로 기록됩니다. 비용을 보고하지 않는 실행이 지출 보고서에서 무료로 보이지 않도록 `0` 대신 일반적인 실행에 대한 합리적인 추정치로 설정하고, 해당 행들이 LiteLLM의 합계를 Comfy 청구서보다 높게 밀어 올릴 수 있음을 예상하세요. 가격이 책정되었지만 실제로 비용이 전혀 발생하지 않은 실행은 `x-litellm-response-cost: 0`을 보고하며, LiteLLM은 이를 0으로 기록합니다.
+헤더가 없으면 LiteLLM은 엔드포인트의 `cost_per_request`로 대체합니다. 이는 위의 모든 경우에 적용됩니다. 따라서 오류 응답, 자신의 공급자 키로 청구되는 실행, 멱등 재생은 Comfy가 해당 실행에 크레딧을 청구하지 않았음에도 여러분의 추정치로 기록됩니다. 비용을 보고하지 않는 실행이 지출 보고서에서 무료로 보이지 않도록 이 값을 `0` 대신 일반적인 실행에 대한 합리적인 추정치로 설정하고, 해당 행들이 LiteLLM의 합계를 Comfy 청구서보다 높게 밀어 올릴 수 있음을 예상하세요. 가격이 책정되었지만 실제로 비용이 전혀 발생하지 않은 실행은 `x-litellm-response-cost: 0`을 보고하며, LiteLLM은 이를 0으로 기록합니다.
 
 ## 대기 중 전달
 
@@ -112,12 +116,16 @@ X-Litellm-Total-Tokens: 0
 | --- | --- | --- |
 | 제출: `/v2/models/{provider}/{model}/requests` | `POST` | `cost_per_request` 추정치 |
 | 각 상태 폴링: `.../requests/{request_id}/status` | `GET` | `0` |
-| 결과 수집: `.../requests/{request_id}` | `GET` | `0` |
+| 결과 수집: `.../requests/{request_id}` | `GET` | 실행의 정확한 가격, 이를 보고하는 첫 번째 수집 시 |
 | 취소: `.../requests/{request_id}/cancel` | `POST` | `cost_per_request` 추정치 |
 
 제출 응답의 `status_url`, `response_url`, `cancel_url`은 절대 `https://api.comfy.org/...` URL이며, LiteLLM은 응답 본문을 재작성하지 않습니다. `https://api.comfy.org`를 프록시의 `/comfy` 접두사로 바꿔서, 예를 들어 `http://localhost:4000/comfy/v2/models/...`처럼 프록시를 통해 호출하세요. Comfy로 직접 전송하면 LiteLLM 키가 거부됩니다.
 
-실행 대기열 응답에는 아직 `x-litellm-response-cost`가 포함되지 않으므로, 대기 중인 생성은 정확한 가격이 아니라 추정치로 기록됩니다. 엔드포인트를 방법별로 분할하면 폴링마다 한 번이 아니라 제출 시 한 번만 해당 추정치가 청구됩니다. LiteLLM에서 실행별 정확한 지출을 확인하려면 동기 경로를 사용하세요.
+결과 수집은 실행의 가격이 기록된 후 첫 번째 수집에서 `x-litellm-response-cost`를 한 번 전달합니다. 대부분의 모델에서는 첫 번째 수집입니다. 일부 모델은 결과가 준비된 후에 가격이 기록되므로, 이른 수집은 이 헤더 없이 반환될 수 있고, 같은 요청의 나중 수집에서 이를 보고합니다.
+
+Router는 해당 수집에 응답할 때 가격을 보고된 것으로 표시합니다. 응답이 LiteLLM에 도달하지 못하면, 예를 들어 요청 시간이 초과되거나 연결이 끊기면, 나중 수집에도 `x-litellm-response-cost`가 포함되지 않으며 LiteLLM은 해당 실행을 `GET` 항목의 비용으로 기록합니다.
+
+제출 행은 여전히 `cost_per_request` 추정치를 기록하므로, 위 설정에서는 대기 중인 실행이 두 번 계산됩니다: 추정치로 한 번, 정확한 가격으로 한 번. 대기 중 전달만 사용한다면 `POST` 항목의 `cost_per_request`를 `0`으로 설정하여 각 대기 중 실행이 정확한 가격으로 한 번만 기록되도록 하세요. 결과를 수집하지 않는 실행은 LiteLLM 합계에 나타나지 않지만, 워크스페이스에는 계속 청구됩니다. 두 항목 모두 `0`이면 비용을 보고하지 않는 실행은 `0`으로 기록됩니다. 여기에는 결과가 준비된 후 가격이 기록되는 실행에서 가격이 기록되기 전에 결과를 한 번만 수집하는 경우와, 위에서 수집이 비용을 보고하지 않는 경우가 포함됩니다. 클라이언트가 각 결과를 준비되는 즉시 한 번만 수집한다면 `POST` 추정치를 유지하세요.
 
 ## 참고 사항
 
