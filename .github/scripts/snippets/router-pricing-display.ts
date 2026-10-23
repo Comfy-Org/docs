@@ -29,6 +29,7 @@ export const pricingCopy = {
     gpuSecondUnit: "GPU-second",
     byResolution: (unit: string) => `Per ${unit} by resolution`,
     videoDuration: "Video rates apply to output plus reference-video duration.",
+    rayExrNote: "Ray 3.2 EXR export is not available yet. Leave `exr_export` off for HDR requests; HDR is available at 720p and 1080p.",
     resolution: "Resolution", duration: "Duration", mode: "Mode", audio: "Audio", inputType: "Input type", type: "Type", operation: "Operation", quality: "Quality",
     model: "Name", modelId: "Model ID", option: "Option", credits: "Credits", input: "Input credits", cached: "Cached input credits", output: "Output credits",
     variable: "Usage-based", unavailable: "Not published",
@@ -59,6 +60,7 @@ export const pricingCopy = {
     gpuSecondUnit: "GPU 秒",
     byResolution: (unit: string) => `解像度別の${unit}料金`,
     videoDuration: "動画料金は出力動画と参照動画の合計時間に適用されます。",
+    rayExrNote: "Ray 3.2 の EXR エクスポートはまだ利用できません。HDR リクエストでは `exr_export` を有効にしないでください。HDR は 720p と 1080p で利用できます。",
     resolution: "解像度", duration: "長さ", mode: "モード", audio: "音声", inputType: "入力の種類", type: "種類", operation: "操作", quality: "品質",
     model: "名前", modelId: "モデル ID", option: "オプション", credits: "クレジット", input: "入力クレジット", cached: "キャッシュ入力クレジット", output: "出力クレジット",
     variable: "使用量ベース", unavailable: "未公開",
@@ -89,6 +91,7 @@ export const pricingCopy = {
     gpuSecondUnit: "GPU 秒",
     byResolution: (unit: string) => `按分辨率的${unit}费率`,
     videoDuration: "视频费率按输出视频与参考视频的总时长计算。",
+    rayExrNote: "Ray 3.2 的 EXR 导出暂不可用。HDR 请求请勿启用 `exr_export`。HDR 支持 720p 和 1080p。",
     resolution: "分辨率", duration: "时长", mode: "模式", audio: "音频", inputType: "输入类型", type: "类型", operation: "操作", quality: "质量",
     model: "名称", modelId: "模型 ID", option: "选项", credits: "积分", input: "输入积分", cached: "缓存输入积分", output: "输出积分",
     variable: "按用量计费", unavailable: "未发布",
@@ -119,6 +122,7 @@ export const pricingCopy = {
     gpuSecondUnit: "GPU 초",
     byResolution: (unit: string) => `해상도별 ${unit} 요금`,
     videoDuration: "동영상 요금은 출력 동영상과 참조 동영상의 총 길이에 적용됩니다.",
+    rayExrNote: "Ray 3.2의 EXR 내보내기는 아직 제공되지 않습니다. HDR 요청에서는 `exr_export`를 사용하지 마세요. HDR은 720p와 1080p에서 사용할 수 있습니다.",
     resolution: "해상도", duration: "길이", mode: "모드", audio: "오디오", inputType: "입력 유형", type: "유형", operation: "작업", quality: "품질",
     model: "이름", modelId: "모델 ID", option: "옵션", credits: "크레딧", input: "입력 크레딧", cached: "캐시 입력 크레딧", output: "출력 크레딧",
     variable: "사용량 기반", unavailable: "게시되지 않음",
@@ -230,7 +234,12 @@ export function formatOption(conditions: string | undefined, locale: PricingLoca
     if (key === "quality") return ({ very_low: ["Very low", "最低", "极低", "매우 낮음"], low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "thinking_mode") return ({ fast: ["Fast thinking", "高速思考", "快速思考", "빠른 사고"], high: ["High thinking", "高度思考", "深度思考", "고급 사고"], ultra: ["Ultra thinking", "最高思考", "极致思考", "울트라 사고"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "video_type" || key === "feature") return translate(value);
+    if (key === "type" && value === "video") return ["Video generation", "動画生成", "视频生成", "동영상 생성"][index];
+    if (key === "type" && value === "video_edit") return ["Video edit", "動画編集", "视频编辑", "동영상 편집"][index];
+    if (key === "type" && value === "video_reframe") return ["Video reframe", "動画リフレーム", "视频重构图", "동영상 리프레임"][index];
     if (key === "type") return value === "image_edit" ? translate("Edit") : ["Image generation", "画像生成", "图像生成", "이미지 생성"][index];
+    if (key === "dynamic_range") return ({ standard: "SDR", hdr: "HDR", hdr_exr: "HDR + EXR" } as Record<string, string>)[value] ?? value;
+    if (key === "duration") return value;
     if (key === "endpoint") return value.includes("dialogue") ? ["Dialogue", "対話", "对话", "대화"][index] : ["Text to speech", "音声合成", "语音合成", "음성 합성"][index];
     if (key === "input_tier" || key === "output_tier") return value.replace(/^qima_(input|output)_/, "").replace(/k$/, "K").replace(/^standard$/, ["Standard", "標準", "标准", "표준"][index]).replace(/^large$/, ["Large", "大", "大", "대형"][index]);
     return part;

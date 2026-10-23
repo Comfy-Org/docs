@@ -197,8 +197,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(663);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(632);
+    expect(snapshot.rates).toHaveLength(692);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(661);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -501,6 +501,37 @@ describe("public Router pricing", () => {
     expect(references.rows.map((row) => row[2])).toEqual([
       "0.633 / reference image", "0.633 / reference image",
     ]);
+  });
+
+  test("publishes Luma Ray 3.2 HDR tiers without EXR and notes that EXR export is not available yet", () => {
+    const hdrRates = snapshot.rates.filter((rate) => rate.model_id === "luma_2/ray-3.2" && /dynamic_range=hdr(;|$)/.test(rate.conditions ?? ""));
+    const byConditions = Object.fromEntries(hdrRates.map((rate) => [rate.conditions, { price_usd: rate.price_usd, credits: rate.credits }]));
+    expect(byConditions).toEqual({
+      "type=video; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "0.6", credits: "126.6" },
+      "type=video; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "2.4", credits: "506.4" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "2.16", credits: "455.76" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=10s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=10s": { price_usd: "8.64", credits: "1823.04" },
+    });
+    expect(snapshot.rates.filter((rate) => rate.conditions?.includes("dynamic_range=hdr_exr"))).toEqual([]);
+
+    const rayCredits = tables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    const rayUsd = usdTables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "126.6", "506.4"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "455.76", "911.52"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "911.52", "1823.04"],
+    ]) expect(rayCredits.displayRows).toContainEqual(row);
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "&#36;0.60", "&#36;2.40"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "&#36;2.16", "&#36;4.32"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "&#36;4.32", "&#36;8.64"],
+    ]) expect(rayUsd.displayRows).toContainEqual(row);
+    for (const row of [...rayCredits.displayRows, ...rayUsd.displayRows]) expect(row.join(" ")).not.toContain("EXR");
+    expect(sourcePage.match(/Ray 3\.2 EXR export is not available yet\./g)).toHaveLength(2);
   });
 
   test("groups Ideogram versions and pivots quality prices into columns", () => {
