@@ -553,8 +553,13 @@ type SchemaDoc = {
   "x-comfy-router-output-modalities"?: string[];
 };
 
-/** One alternate serving provider for a native model, from `x-comfy-router-alt-providers`. */
-export type AltProvider = { provider: string; model_id: string };
+/**
+ * One alternate serving provider for a native model, from `x-comfy-router-alt-providers`.
+ * `model_id` is absent for a leg reachable only through `?model_provider=` on the
+ * native model (Router's `DirectHeld`, BE-22964): its own catalog id is held back,
+ * publishes no document, and must not be printed on a public page.
+ */
+export type AltProvider = { provider: string; model_id?: string };
 
 /** What an alias document says it is a leg of, from `x-comfy-router-alias-of` / `-alias-provider`. */
 export type AliasRelation = { aliasOf: string; provider: string };
@@ -614,7 +619,9 @@ export function outputContent(
  * Read defensively: these two extensions arrive from the exporter through the
  * spec sync, so a malformed or half-written value must leave the page exactly as
  * it is today rather than emit a section built out of `undefined`. An entry that
- * is not `{provider: string, model_id: string}` is dropped, a duplicate provider
+ * is not `{provider: string, model_id?: string}` is dropped (a `model_id` that is
+ * present must be a `provider/model` id; one that is absent marks a leg named by
+ * provider alone, whose own id is held back), a duplicate provider
  * keeps its first row, and a document that names ITSELF as its own alias target
  * or as one of its own legs is ignored: that would otherwise write a redirect
  * from a page to itself, or a "served by" row pointing at the page it sits on.
@@ -642,10 +649,10 @@ export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
     if (!entry || typeof entry !== "object") continue;
     const { provider, model_id } = entry as Record<string, unknown>;
     if (!isSlug(provider)) continue;
-    if (!isModelId(model_id) || model_id === model) continue;
+    if (model_id !== undefined && (!isModelId(model_id) || model_id === model)) continue;
     if (seen.has(provider)) continue;
     seen.add(provider);
-    altProviders.push({ provider, model_id });
+    altProviders.push(model_id === undefined ? { provider } : { provider, model_id });
   }
   altProviders.sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
   return { altProviders };
@@ -902,7 +909,11 @@ export function servingProvidersSection(natives: NativeLegs[]): string {
   const rows = (n: NativeLegs) =>
     [
       `- **Comfy** (default): ${callExample(n.model)}`,
-      ...n.legs.map((leg) => `- **${providerLabel(leg.provider)}**, as \`${leg.model_id}\`: ${callExample(n.model, leg.provider)}`),
+      // A leg with no `model_id` is reachable only through `model_provider`, so
+      // it gets no "as <id>": naming its held-back catalog id would publish it.
+      ...n.legs.map(
+        (leg) => `- **${providerLabel(leg.provider)}**${leg.model_id ? `, as \`${leg.model_id}\`` : ""}: ${callExample(n.model, leg.provider)}`
+      ),
     ].join("\n");
   // A page that documents one model needs no header per model; a curated spec
   // covering several does, or the rows below it have no subject.
@@ -1352,6 +1363,12 @@ export function providerRelationRows(
     const key = `${provider}\u0000${model}`;
     const known = seen.get(key);
     if (known !== undefined) {
+      if (known === "" && aliasId !== "") {
+        // The native document names this leg by provider alone because its own id
+        // is held back, yet an alias document for that id was published anyway.
+        problems.push(`${model}: provider \`${provider}\` is listed without a model id on the native document, but \`${aliasId}\` publishes an alias document for it; a held-back leg id must publish no document`);
+        return;
+      }
       if (known !== aliasId) problems.push(`${model}: provider \`${provider}\` is aliased as both \`${known}\` and \`${aliasId}\`; the native model's alt-providers list is canonical`);
       return;
     }
@@ -1362,7 +1379,7 @@ export function providerRelationRows(
     rows.push({ provider, model, aliasId, page: target.page, title: target.title });
   };
   // The native documents first: their lists win when the two sides disagree.
-  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id);
+  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id ?? "");
   // Then every alias document, including the ones that kept a page of their own
   // because the model they alias is not documented here yet.
   for (const a of aliasDocs) add(a.provider, a.aliasOf, a.model);
