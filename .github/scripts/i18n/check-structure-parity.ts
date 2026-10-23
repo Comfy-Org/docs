@@ -46,7 +46,7 @@ import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { SYNC_OWNED_RULES } from "../sync-owned/check-sync-owned.ts";
 
-const LOCALES = ["ja", "zh", "ko"];
+const LOCALES = ["ja", "zh", "ko", "es"];
 
 /** Paths that are not one-to-one translations of an English page. */
 const EXEMPT_PATTERNS: RegExp[] = [
