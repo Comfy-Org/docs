@@ -115,11 +115,12 @@ export const RankingMore = ({ total, open, onToggle, noun }) =>
     </button>
   );
 
-// Model pages on comfy.org. A row's `h` is its page path under the hub, or a
-// comfy.org path starting with / for launch pages outside the hub.
+// Model pages. A row's `h` is its page path under the comfy.org hub, a
+// comfy.org path starting with / for launch pages outside the hub, or a full
+// URL (a docs.comfy.org tutorial) for models with no page on comfy.org.
 export const HUB_URL = "https://comfy.org/hub/models/";
 
-export const modelUrl = (h) => (h.startsWith("/") ? "https://comfy.org" + h : HUB_URL + h + "/");
+export const modelUrl = (h) => (h.startsWith("https://") ? h : h.startsWith("/") ? "https://comfy.org" + h : HUB_URL + h + "/");
 
 export const ModelName = ({ name, h }) =>
   h ? (

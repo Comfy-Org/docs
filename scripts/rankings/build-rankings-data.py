@@ -35,8 +35,13 @@ with open(f"{HERE}/model-pages.json", encoding="utf-8") as f:
     LANDING = [(re.compile(k, re.I), v) for k, v in json.load(f).items()]
 
 
+# Docs tutorials, for models with no page on comfy.org at all.
+with open(f"{HERE}/docs-pages.json", encoding="utf-8") as f:
+    DOCS = [(re.compile(k, re.I), "https://docs.comfy.org/tutorials/" + v) for k, v in json.load(f).items()]
+
+
 def landing_page(name):
-    return next((v for k, v in LANDING if k.search(name)), None)
+    return next((v for k, v in LANDING if k.search(name)), None) or next((v for k, v in DOCS if k.search(name)), None)
 
 
 link = lambda path: {"h": path} if path else {}

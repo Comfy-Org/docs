@@ -62,7 +62,8 @@ Model names link to their page on the Comfy Hub (https://comfy.org/hub/models/)
 when one exists. Models without a hub page link to their launch page on
 comfy.org (like https://comfy.org/minimax-h3/) when a pattern in
 `model-pages.json` matches the name. Add a pattern there when comfy.org adds a
-launch page. The page list is `hub-pages.json`, built from a checkout of the
+launch page. Models with no page on comfy.org at all link to
+their docs.comfy.org tutorial when a pattern in `docs-pages.json` matches. The page list is `hub-pages.json`, built from a checkout of the
 private Comfy-Org/comfy-website repo. Rebuild it by hand when the hub adds models:
 
 ```bash
