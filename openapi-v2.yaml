@@ -50,18 +50,56 @@ paths:
 
         it is stored, the asset''s `hash` is the hash of the stored bytes and
 
-        can differ from `expected_hash`. Such an image (JPEG, PNG, WebP or
+        can differ from `expected_hash`. On Comfy Cloud, an upload whose
 
-        TIFF) over 50 MiB is refused with 422 `validation_error`.
+        bytes open as a JPEG, PNG, WebP or classic TIFF (including TIFF-based
+
+        camera RAW such as DNG, NEF, ARW and CR2, but not BigTIFF) and that
+
+        is over 50 MiB is refused with 422 `validation_error`, whatever its
+
+        `content_type` and whether or not it carries location metadata. A
+
+        request that declares a `Content-Length` over Comfy Cloud''s 200 MB
+
+        (200,000,000-byte) body limit is refused before that check with a
+
+        plain 413 that does not use the `ErrorEnvelope` shape. A body sent
+
+        without a declared length is cut off when it passes that limit, and
+
+        no 413 is sent: a cut-off while the fields before `file` are read
+
+        fails with 422 `invalid_body`, and a cut-off inside the file usually
+
+        fails with 500 `upstream_error`. Nothing after the `file` field is
+
+        read, so a body that only passes the limit there is uploaded
+
+        normally.
+
+        Deployment-scoped surfaces neither strip location metadata nor apply
+
+        the 50 MiB image cap; they limit the request body to 110 MB
+
+        (110,000,000 bytes). A request that declares a `Content-Length` over
+
+        that limit is refused with the same plain 413; a body sent without a
+
+        declared length is cut off when it passes the limit, and the upload
+
+        then fails with an error response that is not guaranteed to be a 413.
 
         The uploaded asset is referenceable immediately; any content scanning
 
         runs in the background and does not block the response.
 
 
-        ~100 MB single-request expectation for v1; chunked/resumable large
+        An upload is a single request. v1 expects files of up to ~100 MB;
 
-        uploads are a deliberate open question.
+        the hard cap is the body limit of the surface it is sent to (above).
+
+        Chunked/resumable large uploads are a deliberate open question.
 
 
         On Comfy Cloud an upload fails with 422 `upload_timed_out` when no
@@ -144,8 +182,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '413':
+          description: The upload is over the body limit. On Comfy Cloud (200 MB, 200,000,000 bytes) and on deployment-scoped surfaces (110 MB, 110,000,000 bytes) the request declared a `Content-Length` over it; the server's body limit sends this before the upload is handled, so the body is not an `ErrorEnvelope` and its shape is not part of this contract. The self-hosted proxy instead refuses a file over its configured cap (100 MiB by default) with an `ErrorEnvelope` whose code is `payload_too_large`.
         '422':
-          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment, `invalid_body` or `validation_error` on Comfy Cloud). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored.'
+          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment or the self-hosted proxy; a deployment answers a body that is not `multipart/form-data` with a boundary with a plain 500 instead). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored. Comfy Cloud''s asset upload answers validation failure instead with `invalid_content_type` (the request is not `multipart/form-data` with a boundary), `invalid_body` (a malformed multipart body or upload field) or `validation_error` (the platform refused the upload, for example an image over the size cap or a disallowed tag).'
           content:
             application/json:
               schema:
@@ -1554,9 +1594,19 @@ components:
 
         the key is valid, but the account must sign in through its
 
-        organization''s single sign-on, which does not accept this key). Job
+        organization''s single sign-on, which does not accept this key).
 
-        labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
+        Comfy Cloud''s asset upload adds `invalid_content_type` (422: the
+
+        request is not `multipart/form-data` with a boundary),
+
+        `invalid_body` (422: a malformed multipart body or upload field) and
+
+        `validation_error` (422: the platform refused the upload, for example
+
+        an image over the size cap or a disallowed tag).
+
+        Job labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
 
         limit; `details.key` names the key, except for too many pairs, which
 
