@@ -2,7 +2,7 @@
 title: "Comfy Router の機能と制限"
 sidebarTitle: "機能と制限"
 description: "Comfy Router とパートナープロキシのどちらを選ぶか、長時間実行される呼び出しへの備え、リカバリ・レート制限・アセット保存について説明します。"
-translationSourceHash: 21800074
+translationSourceHash: eb87761a
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
@@ -11,13 +11,15 @@ translationBlockHashes:
   "Calls are cut off at a server deadline": 6dd44c43
   "Recovery depends on the provider": da9d8904
   "Request bodies are capped": 675b77c8
-  "Requests are rate limited per caller": 421194d9
+  "Requests are rate limited per caller": 249d4d51
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": 1ba61544
+  "Comfy charges and usage": ed49ddec
+  "Models without a pre-flight estimate": 69a12694
   "Router does not cover every partner operation": 97d31362
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
 
 
 
@@ -86,7 +88,7 @@ Router は、ボディが **100 MiB (104,857,600 bytes)** を超えるリクエ�
 
 リクエストレートの制限は、呼び出しとカタログ/スキーマの読み取りに適用され、生成前に拒否されたリクエストも含まれます。これはソース IP ではなく、認証された呼び出し元に従います。呼び出し元のプロバイダーキーを使用した呼び出しは対象外ですが、プロバイダーの制限は引き続き適用されます。
 
-カタログとスキーマの読み取りはキャッシュしてください。スキーマは `ETag` と `If-None-Match` で再検証してください。再試行とコミット済み支出のフィールドについては[ヘッダー](/ja/development/comfy-router/headers)を参照してください。
+カタログとスキーマの読み取りはキャッシュしてください。カタログとスキーマの読み取りは `ETag` と `If-None-Match` で再検証してください。再試行とコミット済み支出のフィールドについては[ヘッダー](/ja/development/comfy-router/headers)を参照してください。
 
 ## 呼び出しの実行中は進捗が表示されない
 
@@ -102,7 +104,42 @@ Router は最終レスポンスのみを返し、ストリーミングされる�
 
 カタログは価格ではなく、`billing.charges_on_policy_rejection` を含む請求に関する事実を提供します。`yes`、`no`、`unknown` を明示的に処理してください。詳細は [billing](/ja/development/comfy-router/billing#モデル課金に関する事実) を参照してください。
 
-実行前に価格を確認するには、`POST /v2/models/{provider}/{model}/estimate` を呼び出すか、キュー中の送信の `201` にある `estimate` オブジェクトを読み取ってください。estimate の展開中は、このルートは `error_type: not_enabled` とともに `403` を返し、送信には `estimate` が含まれません。それぞれは Comfy がその実行に対して請求するレートカードに基づいて価格が決まりますが、価格の固定ではなく、独自のプロバイダーキーでの実行は `/estimate` がその実行の金額を返したとしても Comfy からは請求されず、`unknown` の estimate には金額が含まれません。それは無料を意味するものではありません。`X-Comfy-Credits-Used` は、実行に対する事後的な数値のままです。`exact`、`estimated`、`unknown` の読み取り方については、[Pre-flight cost estimates](/ja/development/comfy-router/reference#事前のコスト見積もり) を参照してください。
+実行前に価格を確認するには、`POST /v2/models/{provider}/{model}/estimate` を呼び出すか、キュー中の送信の `201` にある `estimate` オブジェクトを読み取ってください。estimate の展開中は、このルートは `error_type: not_enabled` とともに `403` を返し、送信には `estimate` が含まれません。それぞれは Comfy がその実行に対して請求するレートカードに基づいて価格が決まりますが、その金額は見積もりであり最終的な請求額ではなく、ワークスペースの使用量と請求の記録に確定した請求額が最終となります。また、価格を固定するものでもありません。独自のプロバイダーキーでの実行は、`/estimate` がその実行の金額を返したとしても Comfy からは請求されません。また、`unknown` の estimate には金額が含まれておらず、それは無料を意味するものではありません。`X-Comfy-Credits-Used` は、実行に対する事後的な丸められた数値のままですが、領収書ではありません。`exact`、`estimated`、`unknown` の読み取り方については、[実行前のコスト見積もり](/ja/development/comfy-router/reference#事前のコスト見積もり) を参照してください。実行前に価格を算出できないモデルは、[事前見積もりがないモデル](#事前見積もりのないモデル) に一覧されています。
+
+## 事前見積もりのないモデル
+
+Router は、以下のモデルへの呼び出しを実行前に確実に価格算出することがまだできません。そのため、これらのモデルについては `/estimate` およびキュー中の送信の `estimate` が `source: unknown` を返します。ただし、特定のリクエストボディに対して数値を返す場合もあります。`unknown` は数値が提示されなかったことを意味し、実行が無料であることを意味するものではありません。[Comfy の課金と使用量](#comfy-の課金と使用量) のルールは引き続き適用されます。自身のプロバイダーキーでの実行は Comfy から課金されず、`X-Comfy-Credits-Used` は任意であるため、ヘッダーが不足している場合はコストが報告されなかったことを意味します。ここに記載されていないモデルでも、特定のリクエストボディに対して `unknown` を返すことがあるため、すべての見積もりで `source` を確認してください。
+
+このリストは見積もりカバレッジの拡大に伴い縮小していきます。これは Router 自身の価格算出コードから生成されており、公開されていないモデルは決して掲載されません。
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **anthropic**: `anthropic/claude-fable-5`, `anthropic/claude-fable-5-1`, `anthropic/claude-haiku-4-5-20251001`, `anthropic/claude-opus-4-6`, `anthropic/claude-opus-4-7`, `anthropic/claude-opus-4-8`, `anthropic/claude-opus-5`, `anthropic/claude-opus-5-5`, `anthropic/claude-sonnet-4-5-20250929`, `anthropic/claude-sonnet-4-6`, `anthropic/claude-sonnet-5`, `anthropic/claude-sonnet-5-5`
+- **bfl**: `bfl/erase-v1`, `bfl/flux-2-max`, `bfl/flux-2-pro`, `bfl/flux-3-image`, `bfl/flux-3-video`, `bfl/flux-kontext-max`, `bfl/flux-kontext-pro`, `bfl/flux-pro-1.0-expand`, `bfl/flux-pro-1.0-fill`, `bfl/flux-pro-1.1`, `bfl/flux-pro-1.1-ultra`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplus**: `byteplus/seed-2-0-lite-260228`, `byteplus/seed-2-0-mini-260215`, `byteplus/seed-2-0-pro-260328`, `byteplus/seed-audio-1.0`, `byteplus/seed-audio-1.0-multilingual`, `byteplus/seedance-1-0-pro-250528`, `byteplus/seedance-1-0-pro-fast-251015`, `byteplus/seedance-1-5-pro-251215`
+- **elevenlabs**: `elevenlabs/eleven_multilingual_v2`, `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4`, `elevenlabs/eleven_v4_turbo`
+- **fal**: `fal/crystal-upscaler`, `fal/crystal-video-upscaler`, `fal/fal-gpt-image-2`, `fal/fal-gpt-image-2.5-flare`, `fal/fal-gpt-image-2.5-sunburst`, `fal/fal-nano-banana-2`, `fal/fal-nano-banana-pro`, `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`, `fal/flux-3-max`, `fal/patina`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **gemini-interactions**: `gemini-interactions/gemini-omni-1.1-flash`, `gemini-interactions/gemini-omni-flash-preview`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`, `ideogram/p-image-ideogram`
+- **kling**: `kling/kling-3.0-turbo`, `kling/kling-image-o1`, `kling/kling-v2-5-turbo`, `kling/kling-v2-6`, `kling/kling-v3`, `kling/kling-v3-omni`, `kling/kling-video-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **luma**: `luma/photon-1`, `luma/photon-flash-1`, `luma/ray-2`, `luma/ray-flash-2`
+- **meshy**: `meshy/animations`, `meshy/meshy-5`, `meshy/meshy-6`, `meshy/meshy-7`, `meshy/meshy-7.1`, `meshy/remesh`, `meshy/rigging`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openai**: `openai/gpt-4.1`, `openai/gpt-4.1-mini`, `openai/gpt-4.1-nano`, `openai/gpt-4o`, `openai/gpt-5`, `openai/gpt-5-mini`, `openai/gpt-5-nano`, `openai/gpt-5.5`, `openai/gpt-5.5-pro`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-6-astra`, `openai/gpt-6-luna`, `openai/gpt-6-sol`, `openai/gpt-image-1`, `openai/gpt-image-1.5`, `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, `openai/gpt-image-2.5-sunburst`, `openai/o1`, `openai/o1-pro`, `openai/o3`, `openai/o4-mini`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **recraft**: `recraft/recraftv2`, `recraft/recraftv3`, `recraft/recraftv4`, `recraft/recraftv4_1`, `recraft/recraftv4_1_pro`, `recraft/recraftv4_1_pro_vector`, `recraft/recraftv4_1_utility`, `recraft/recraftv4_1_utility_pro`, `recraft/recraftv4_1_utility_pro_vector`, `recraft/recraftv4_1_utility_vector`, `recraft/recraftv4_1_vector`, `recraft/recraftv4_pro`, `recraft/recraftv4_styles`, `recraft/recraftv4_styles_pro`, `recraft/recraftv4_styles_pro_vector`, `recraft/recraftv4_styles_vector`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **runway**: `runway/gen4_image`
+- **synclabs**: `synclabs/sync-3`
+- **veed**: `veed/clean-audio`, `veed/clean-audio-video`, `veed/fabric-1.0`, `veed/lipsync-2.0`, `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **vertexai**: `vertexai/gemini-2.5-flash`, `vertexai/gemini-2.5-flash-image`, `vertexai/gemini-2.5-pro`, `vertexai/gemini-3-pro-image`, `vertexai/gemini-3.1-flash-image`, `vertexai/gemini-3.1-flash-lite`, `vertexai/gemini-3.1-flash-lite-image`, `vertexai/gemini-3.1-pro-preview`, `vertexai/gemini-3.5-flash`, `vertexai/gemini-3.7-flash`, `vertexai/gemini-3.8-flash`, `vertexai/gemini-nano-banana-2.1`
+- **wavespeed**: `wavespeed/flashvsr`, `wavespeed/seedvr2`, `wavespeed/ultimate-image-upscaler`, `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`, `wavespeed/wavespeed-nano-banana-2`, `wavespeed/wavespeed-nano-banana-pro`, `wavespeed/wavespeed-seedance-2.0`, `wavespeed/wavespeed-seedance-2.5`
+- **xai**: `xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`, `xai/grok-imagine-image-pro`, `xai/grok-imagine-image-quality`, `xai/grok-imagine-video`, `xai/grok-imagine-video-1.5`, `xai/grok-imagine-video-1.5-lite`, `xai/grok-imagine-video-1.5-preview`
+
+{/* END GENERATED: models without a pre-flight estimate */}
 
 ## Routerはすべてのパートナー操作をカバーしていない
 
