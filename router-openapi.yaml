@@ -28,16 +28,35 @@ paths:
       parameters:
       - $ref: '#/components/parameters/RouterCatalogCursor'
       - $ref: '#/components/parameters/RouterCatalogLimit'
+      - in: header
+        name: If-None-Match
+        required: false
+        description: The `ETag` a caller holds from an earlier `200`. When it matches the current page (RFC 9110 weak comparison; `*` matches any current page) the answer is a bodyless `304` carrying the same `ETag`, otherwise the full page.
+        schema:
+          type: string
       responses:
         '200':
           description: OK - one page of the model catalog.
           headers:
             X-Comfy-Request-Id:
               $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterCatalogETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterCatalogCacheControlHeader'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RouterModelListResponse'
+        '304':
+          description: Not Modified - the page is unchanged since the `ETag` the caller sent in `If-None-Match`. No body is returned.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterCatalogETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterCatalogCacheControlHeader'
         '400':
           $ref: '#/components/responses/RouterRequestError'
         '401':
@@ -59,16 +78,35 @@ paths:
       parameters:
       - $ref: '#/components/parameters/RouterProvider'
       - $ref: '#/components/parameters/RouterModel'
+      - in: header
+        name: If-None-Match
+        required: false
+        description: The `ETag` a caller holds from an earlier `200`. When it matches the current entry (RFC 9110 weak comparison; `*` matches any current entry) the answer is a bodyless `304` carrying the same `ETag`, otherwise the full entry.
+        schema:
+          type: string
       responses:
         '200':
           description: OK - the model's catalog entry.
           headers:
             X-Comfy-Request-Id:
               $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterCatalogETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterCatalogCacheControlHeader'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RouterModelDetail'
+        '304':
+          description: Not Modified - the entry is unchanged since the `ETag` the caller sent in `If-None-Match`. No body is returned.
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            ETag:
+              $ref: '#/components/headers/RouterCatalogETagHeader'
+            Cache-Control:
+              $ref: '#/components/headers/RouterCatalogCacheControlHeader'
         '401':
           $ref: '#/components/responses/RouterRequestError'
         '403':
@@ -111,6 +149,8 @@ paths:
               $ref: '#/components/headers/RouterNoSniffHeader'
             X-Comfy-Router-Fallback-Provider:
               $ref: '#/components/headers/RouterFallbackProviderHeader'
+            X-Comfy-Router-Provider:
+              $ref: '#/components/headers/RouterProviderHeader'
             X-Comfy-Router-Dropped-Params:
               $ref: '#/components/headers/RouterDroppedParamsHeader'
             X-Comfy-Credits-Used:
@@ -158,7 +198,7 @@ paths:
   /v2/models/{provider}/{model}/estimate:
     post:
       summary: Price a model call before running it, without running it.
-      description: 'Returns what Comfy will charge for running this body on this model, in US dollars, priced from the same rate card the charge is billed against. The body is validated against the model''s input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model''s schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`.'
+      description: 'Returns a pre-flight estimate, in US dollars, of what running this body on this model will cost, priced from the same rate card the run is billed against. It is an estimate, not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. The body is validated against the model''s input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model''s schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`.'
       operationId: estimateRouterModelCost
       tags:
       - Comfy Router
@@ -328,6 +368,8 @@ paths:
               $ref: '#/components/headers/RouterRequestIdHeader'
             X-Content-Type-Options:
               $ref: '#/components/headers/RouterNoSniffHeader'
+            X-Comfy-Credits-Used:
+              $ref: '#/components/headers/RouterCreditsUsedHeader'
           content:
             application/json:
               schema:
@@ -456,7 +498,7 @@ components:
       example: unknown
     RouterCostEstimate:
       type: object
-      description: 'What Comfy will charge for this call, priced before dispatch from the same rate card the charge is billed against, in US dollars. `source` says how much to trust the number: `exact` carries `amount`; `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.'
+      description: 'A pre-flight estimate of what this call will cost, in US dollars, priced before dispatch from the same rate card the run is billed against. It is not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. `X-Comfy-Credits-Used`, reported after the run, is a rounded post-hoc figure, not a receipt. `source` says how much to trust the number: `exact` carries `amount`; `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.'
       required:
       - source
       - currency
@@ -466,19 +508,19 @@ components:
       properties:
         source:
           type: string
-          description: '`exact` | `estimated` | `unknown`; read any other value as `unknown`.'
+          description: '`exact` | `estimated` | `unknown`; read any other value as `unknown`. `exact` and `estimated` both label an estimate; neither is the final charge. `unknown` carries no figure.'
         currency:
           type: string
           description: Always `USD`.
         amount:
           type: string
-          description: Dollars as a decimal string, e.g. "0.04", with up to 8 decimals and no exponent. A chargeable sub-cent price is never rendered as "0". Present only when `source` is `exact`.
+          description: 'The estimated cost in dollars as a decimal string, e.g. "0.04", with up to 8 decimals and no exponent. A chargeable sub-cent price is never rendered as "0". Present only when `source` is `exact`. Not the final charge: the settled charge in your workspace''s usage and billing records is.'
         min_amount:
           type: string
-          description: The lower bound in dollars as a decimal string. Present only when `source` is `estimated`.
+          description: 'The low end of the estimate in dollars as a decimal string. It is an estimate, not a guaranteed floor: a call can be billed less, for example when the provider returns less than the request asked for (such as no images), when the estimate is a typical price learned from past calls, or when the price does not rise steadily with the amount requested. Present only when `source` is `estimated`.'
         max_amount:
           type: string
-          description: The upper bound in dollars as a decimal string. Present only when `source` is `estimated`.
+          description: 'The high end of the estimate in dollars as a decimal string. It is an estimate, not a guaranteed cap: a call can be billed more, for example when the provider returns more than was asked (such as more images than requested), when the estimate is learned from past calls, or when the price does not rise steadily with the amount requested. Present only when `source` is `estimated`.'
         amount_cents:
           type: number
           format: double
@@ -494,7 +536,7 @@ components:
         credits:
           type: number
           format: double
-          description: '`amount` in Comfy credits using the platform conversion ($1 = 211 credits), rounded to 2 decimals - the figure `X-Comfy-Credits-Used` will carry for an `exact` quote.'
+          description: '`amount` in Comfy credits using the platform conversion ($1 = 211 credits), rounded to 2 decimals - the figure `X-Comfy-Credits-Used` is expected to carry for an `exact` quote. That header is a rounded post-hoc figure, not a receipt; the settled charge in your workspace''s usage and billing records is final.'
         provider:
           type: string
           description: The provider leg this quote is for. On a queued submit it is the leg that will run.
@@ -503,7 +545,7 @@ components:
         pricing_as_of:
           type: string
           format: date-time
-          description: 'When the rate card this quote was priced from was fetched. The run is charged at the rates in force when it is rated, not at this instant. Whenever no rate card was read (`reason: pricing_unavailable`, `byok`, or a `not_quotable` call that cannot be priced from any card), this is when the quote was answered.'
+          description: 'When the rate card this quote was priced from was fetched. The estimate is not a price lock: the run is charged at the rates in force when it is rated, not at this instant. Whenever no rate card was read (`reason: pricing_unavailable`, `byok`, or a `not_quotable` call that cannot be priced from any card), this is when the quote was answered.'
         reason:
           type: string
           description: 'Present only when `source` is `unknown`: `not_quotable` (Router cannot price this call before it runs - its price depends on what the provider reports back, or the body does not bound a billed quantity), `unpriced_model` (the rate card does not price this request), `byok` (queued submit only: the run uses your own provider key, so Comfy bills nothing for it), or `pricing_unavailable` (queued submit only: the rate card could not be read when the request was admitted; this is transient, and the run is still charged as usual). Read any other value as `not_quotable`.'
@@ -521,7 +563,7 @@ components:
           description: A bounded, sanitized reason the model provider gave for rejecting the request, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - i.e. the provider refused the request as malformed and said why. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). Absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself. It mirrors the `X-Comfy-Upstream-Detail` header.
         refusal_subject:
           type: string
-          description: 'Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.'
+          description: 'Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals, and for the MiniMax Router''s Nano Banana legs'' Gemini refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.'
       required:
       - detail
       - error_type
@@ -637,6 +679,10 @@ components:
           $ref: '#/components/schemas/RouterModelSegment'
         billing:
           $ref: '#/components/schemas/RouterModelBilling'
+        schema_etag:
+          type: string
+          description: 'The current strong `ETag` of this model''s `GET /v2/models/{provider}/{model}/openapi.json` document. Send it as `If-None-Match` on that read to get a `304` while the schema is unchanged, or compare it with the value seen last time to learn which models'' schemas changed without fetching every document. Absent whenever that read would not answer `200` for this caller at this moment: the schema service is not available, the model''s document cannot be rendered, or the model stopped being available to this caller while the response was being built. An absent tag is not a schema change; re-read the model''s document to learn its current tag.'
+          example: '"9f2c1e0b7a4d3c6e8f5a2b1d0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e"'
       required:
       - id
       - provider
@@ -764,7 +810,7 @@ components:
         estimate:
           allOf:
           - $ref: '#/components/schemas/RouterCostEstimate'
-          description: 'The pre-flight cost estimate for this request, present on a fresh admission when the cost estimate is enabled for the caller. It quotes the provider leg this request was pinned to (the queue has no fallback loop, so `fallback_provider` never changes the leg that runs). When no figure can be given it is still present, with `source: unknown`; the submission never fails because of the estimate. Omitted on an idempotent replay (`Idempotent-Replayed: true`), because the original quote is not stored. It is not a price lock: the run is charged at the rates in force when it is rated.'
+          description: 'The pre-flight cost estimate for this request, present on a fresh admission when the cost estimate is enabled for the caller. It quotes the provider leg this request was pinned to (the queue has no fallback loop, so `fallback_provider` never changes the leg that runs). When no figure can be given it is still present, with `source: unknown`; the submission never fails because of the estimate. Omitted on an idempotent replay (`Idempotent-Replayed: true`), because the original quote is not stored. It is an estimate, not the final charge, and not a price lock: the run is charged at the rates in force when it is rated, and the settled charge in your workspace''s usage and billing records is final.'
       required:
       - request_id
       - status
@@ -842,7 +888,7 @@ components:
       - detail
   responses:
     RouterConcurrencyLimited:
-      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in either case and `detail` says which bound was hit: the number of concurrent calls, or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in every case and `detail` says which bound was hit: the number of concurrent calls; the number of concurrent calls to models classed expensive, a quarter of the concurrent-call limit shared with partner-node calls, whose refusal also carries the `X-Model-Concurrency-Limit`, `X-Model-Concurrency-Current` and `X-Model-Concurrency-Remaining` headers; or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes - for the expensive-model bound, one of their calls to an expensive model, which may be a partner-node call. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
       headers:
         X-Comfy-Error-Type:
           $ref: '#/components/headers/RouterErrorTypeHeader'
@@ -854,6 +900,12 @@ components:
           $ref: '#/components/headers/CommittedSpendCurrentHeader'
         X-Committed-Spend-Remaining:
           $ref: '#/components/headers/CommittedSpendRemainingHeader'
+        X-Model-Concurrency-Limit:
+          $ref: '#/components/headers/ModelConcurrencyLimitHeader'
+        X-Model-Concurrency-Current:
+          $ref: '#/components/headers/ModelConcurrencyCurrentHeader'
+        X-Model-Concurrency-Remaining:
+          $ref: '#/components/headers/ModelConcurrencyRemainingHeader'
       content:
         application/json:
           schema:
@@ -1080,6 +1132,30 @@ components:
         format: int64
         minimum: 0
         example: 400
+    ModelConcurrencyCurrentHeader:
+      description: The caller's concurrent calls to models classed expensive, as counted by the gate that refused this call. Present alongside `X-Model-Concurrency-Limit`.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 1
+    ModelConcurrencyLimitHeader:
+      description: The most concurrent calls to models classed expensive the caller may hold at once, a quarter of the concurrent-call limit, shared with partner-node calls. Present on a `429` raised by that bound.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 1
+    ModelConcurrencyRemainingHeader:
+      description: The expensive-model calls the caller may still start; `0` on the `429`. Present alongside `X-Model-Concurrency-Limit`.
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        example: 0
     RouterCapacityRetryAfterHeader:
       description: Seconds to wait before re-sending the same request, unchanged. It is present only when Router refused the request body for capacity - the in-flight request-body budget was full, or no slot was free to scan an oversized body - and a capacity refusal submitted nothing and charged nothing, so re-sending the identical call once the interval has passed is the whole remedy. There is no `Idempotency-Key` to collect under and no queued request to poll for; this is the one `Retry-After` on Router that means simply "send it again later". It is absent on the dependency-fault `503`s that share this status - a credential rail, an idempotency store or a policy decision point that could not answer - because none of them knows when it will, and a wrong number is worse than none against a dependency that is already failing.
       required: false
@@ -1087,6 +1163,18 @@ components:
         type: integer
         minimum: 1
         example: 4
+    RouterCatalogCacheControlHeader:
+      description: 'Freshness directives for a catalog page or entry. `private` because the answer is decided per credential (the response also carries `Vary: Authorization, X-API-Key`), so a shared cache must not hold it, and `must-revalidate` so a stale copy is revalidated against the `ETag` rather than served on. Error responses on these routes are `private, no-store` instead.'
+      required: false
+      schema:
+        type: string
+        example: private, max-age=300, must-revalidate
+    RouterCatalogETagHeader:
+      description: Strong entity tag over the served body's bytes, for `GET /v2/models` and `GET /v2/models/{provider}/{model}`. A caller that re-reads the catalog should store this value and send it back as `If-None-Match` to get a `304` instead of the body.
+      required: true
+      schema:
+        type: string
+        example: '"6b8c1f2e0a9d4c3b5e7f8a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f"'
     RouterCreditsUsedHeader:
       description: 'What this run cost, in Comfy credits, priced from the same rate card the charge itself is billed against - so a caller needs no price table of its own, and on a run that reached the provider through more than one billed call it is their sum rather than the last one. It reports a price, not a settled ledger entry. On a model Comfy bills while your request is still open, the value is published only once the usage event was accepted by billing; on a model that submits and then polls, it is the price the asynchronous worker will bill, recorded before that charge settles - so a run whose billing later fails can still have carried this header. Treat it as what you will be charged, not as proof you were, and reconcile against the usage and billing API rather than against this header alone. Absent whenever no cost was reported: a request billed against your own provider key, a partner whose response does not carry every dimension its price is computed from, a usage event that matched no billable metric, or a charge that did not reach billing - so a missing header means "not reported" and must not be read as "free", and a report that sums absent headers as zero will not reconcile. A run that was rated and genuinely cost nothing reads `0`, which is a reported cost rather than a missing one, so branch on whether the header is present rather than on whether its value is non-zero. Coverage is partial today and widening, so do not assume the header is present for every model. On a response that also carries `Idempotent-Replayed: true` this restates what the original run cost, and that run is charged once however many times you retry the key - so do not add the header up across retries of one `Idempotency-Key`. Absent on an error response: it is written only on the path that returns a result, which a refused call never reaches.'
       required: false
@@ -1123,6 +1211,12 @@ components:
         enum:
         - nosniff
         example: nosniff
+    RouterProviderHeader:
+      description: The provider of the Router leg that served this call, present on every successful run response - the model's own provider on a native run, the alternate provider `model_provider` named, or the provider a `fallback_provider` retry landed on (which `X-Comfy-Router-Fallback-Provider` also names, only in that case) - which is the leg Router dispatched to and not necessarily the vendor that produced the output, since a proxy-level cascade inside a native leg (the `vertexai` Gemini image chain, for one) can hand the call to a different vendor that no header names. Absent on an error response. It is stored with the `Idempotency-Key` record and replayed unchanged on a same-key retry; a retry of a call recorded before this header existed carries none.
+      required: false
+      schema:
+        type: string
+        example: openai
     RouterQueuePollAfterHeader:
       description: Seconds to wait before polling this queued request again. It is Router's own estimate of when asking again is worth the round trip, and it moves with how far the request has actually got - a request at the back of the queue is told to wait longer than one already running.
       required: false
