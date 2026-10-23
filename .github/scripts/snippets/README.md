@@ -76,7 +76,7 @@ provider renders sanely without a code change.
 
 Some models can be served by more than one provider. Router publishes the
 relationship on the schema documents themselves: a **native** document lists its
-legs in `x-comfy-router-alt-providers` (`[{provider, model_id}]`), and each leg
+legs in `x-comfy-router-alt-providers` (`[{provider, model_id?, limits?}]`), and each leg
 also has an **alias** document of its own carrying `x-comfy-router-alias-of` (the
 native model id) and `x-comfy-router-alias-provider` (the provider serving it).
 
@@ -96,12 +96,26 @@ The generator reads both and organises the docs by model rather than by route:
   per leg with the provider's label, the leg's alias model id, and the same call
   on the same endpoint with `?model_provider=<provider>` added. A native model
   with no leg renders no section.
+- A leg whose entry carries a **`limits`** object (a leg materially narrower
+  than its native model) gets indented sub-bullets under its row: what it
+  accepts (resolution, audio, duration range, aspect ratios), its price, the
+  inputs it rejects and with which error, and its fallback. The price comes
+  from `router-pricing/metronome-rates.json`, keyed on the native model id and
+  the provider label, current rows only, with credits rounded to 2 decimals.
+  With no matching row the price line is omitted. The lines are indented
+  because `gen-router-pricing.ts` counts a page's providers from its column-0
+  `- **<Label>**` lines. A malformed `limits` is dropped as a whole and the
+  leg row renders as if it had none. Only what the JSON and the rate snapshot
+  say is printed, and no value containing `/` is accepted, so a held-back leg
+  id cannot reach the page through `limits`.
 - A **`development/comfy-router/providers.mdx`** index is generated listing each
   serving provider and the native models it covers, and is added to the `Models`
   nav group beside the catalog index. Comfy is described rather than enumerated:
   it serves the whole catalog, and the catalog index one link away already is
   that list. The page exists only while some model publishes a leg, so a catalog
-  with no alternate routing gains no page, no nav entry and no diff.
+  with no alternate routing gains no page, no nav entry and no diff. A cell
+  whose leg carries `limits` renders `✓*`, with one footnote under the table
+  pointing at the model page.
 
 The redirect destination is resolved through the page the native model is
 actually documented on, which is not always `models/<provider>/<model>/code`: a

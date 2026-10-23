@@ -20,7 +20,11 @@ import {
   renderModelsIndex,
   renderProvidersPage,
   servingProvidersSection,
+  legPrice,
+  roundCredits,
 } from "./gen-code-pages.ts";
+import type { RateSnapshot } from "./gen-code-pages.ts";
+import { servingProviders } from "./gen-router-pricing.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 
@@ -429,6 +433,182 @@ describe("the Providers page", () => {
     expect(description.length).toBeGreaterThanOrEqual(40);
     expect(description.length).toBeLessThanOrEqual(160);
     expect(page).not.toContain("—");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-leg limits (BE-23008's `limits` object on an alt-provider entry). The
+// fixture is the Tencent leg on Kling V3: silent 720P only, 3 to 15 seconds,
+// the std tier only, text-to-video only. Its own catalog id is held back, so the
+// one id that must never reach a page is in the fixture too, where the exporter
+// could plausibly leak it (a `reason`).
+// ---------------------------------------------------------------------------
+
+const KLING = "kling/kling-v3";
+const KLING_PAGE = "development/comfy-router/models/kling/kling-v3/code";
+const HELD_ID = "tencent-kling-v3";
+const TENCENT_LIMITS = {
+  resolutions: ["720P"],
+  audio: ["silent"],
+  duration_seconds: { min: 3, max: 15, default: 5 },
+  aspect_ratios: ["16:9", "9:16", "1:1"],
+  rejected_inputs: [
+    { field: "image", rule: "set", reason: `text-to-video only (${HELD_ID})` },
+    { field: "image_tail", rule: "set", reason: "text-to-video only" },
+    { field: "sound", rule: "equals", values: ["on"], example: "on", reason: "no audio yet" },
+    { field: "mode", rule: "not_in", values: ["std"], example: "pro", reason: "std tier only" },
+    { field: "multi_shot", rule: "set", example: true, reason: "single shot" },
+    { field: "multi_prompt", rule: "set", reason: "single shot" },
+    { field: "shot_type", rule: "set", example: "customize", reason: "single shot" },
+  ],
+  rejected_with: "400 invalid_input",
+  fallback: { provider: "kling", default: true, opt_out: "fallback_provider=false" },
+};
+const HIGGSFIELD_KLING_LEG = { provider: "higgsfield", model_id: "higgsfield/higgsfield-kling-3-std" };
+const KLING_DOC = {
+  paths: {},
+  "x-comfy-router-alt-providers": [HIGGSFIELD_KLING_LEG, { provider: "tencent", limits: TENCENT_LIMITS }],
+};
+const TENCENT_RATE = {
+  model_id: KLING, serving_provider: "Tencent", kind: "metered", price_usd: "0.096", credits: "20.256",
+  unit: "per second", conditions: "720P, silent", effective_from: "2026-10-20",
+};
+const HIGGSFIELD_RATE = {
+  model_id: KLING, serving_provider: "Higgsfield", kind: "metered", price_usd: "0.1262", credits: "26.6282",
+  unit: "per second", conditions: "Kling 3 Standard", effective_from: "2026-09-20",
+};
+const RATES: RateSnapshot = { snapshot_at: "2026-10-23T00:00:00Z", rates: [HIGGSFIELD_RATE, TENCENT_RATE] };
+const NO_RATES: RateSnapshot = { snapshot_at: "2026-10-23T00:00:00Z", rates: [] };
+
+const EXPECTED_TENCENT_ROWS = [
+  "- **Tencent**: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=tencent`",
+  "  - Limits: 720P, silent; 3–15 seconds (default 5); aspect ratio 16:9, 9:16 or 1:1",
+  "  - Price: 20.26 credits ($0.096) per second",
+  '  - Rejected with `400 invalid_input`: `image`, `image_tail`, `sound: "on"`, `mode` other than `std` (e.g. `"pro"`), `multi_shot`, `multi_prompt`, `shot_type`',
+  "  - Fallback: if Tencent fails, the request retries once on Kling (the default provider). Send `fallback_provider=false` to opt out. Rejected inputs and BYOK requests don't fall back.",
+].join("\n");
+
+describe("alt-provider leg limits", () => {
+  const legs = () => readRelations(KLING, KLING_DOC).altProviders;
+
+  test("readRelations keeps a well-formed `limits` on its leg and none on a leg without one", () => {
+    const [higgsfield, tencent] = legs();
+    expect(higgsfield).toEqual(HIGGSFIELD_KLING_LEG);
+    expect(tencent.provider).toBe("tencent");
+    expect(tencent).not.toHaveProperty("model_id");
+    expect(tencent.limits?.duration_seconds).toEqual({ min: 3, max: 15, default: 5 });
+    expect(tencent.limits?.rejected_inputs).toHaveLength(7);
+  });
+
+  test("the Tencent leg renders its row plus the four limit lines, under the row", () => {
+    const out = servingProvidersSection([{ model: KLING, legs: legs() }], RATES);
+    expect(out).toContain(EXPECTED_TENCENT_ROWS);
+    expect(out).not.toContain("—");
+  });
+
+  test("a leg without `limits` renders byte-identically to before limits existed", () => {
+    const before = [
+      "- **Comfy** (default): `POST https://api.comfy.org/v2/models/kling/kling-v3`",
+      "- **Higgsfield**, as `higgsfield/higgsfield-kling-3-std`: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=higgsfield`",
+      "- **Tencent**:",
+    ].join("\n");
+    expect(servingProvidersSection([{ model: KLING, legs: legs() }], RATES)).toContain(before);
+    // And the section a page with no limited leg gets is untouched by the rate snapshot.
+    const plain = [{ model: KLING, legs: [HIGGSFIELD_KLING_LEG] }];
+    expect(servingProvidersSection(plain, RATES)).toBe(servingProvidersSection(plain, NO_RATES));
+    expect(servingProvidersSection(plain, RATES)).not.toContain("  - ");
+  });
+
+  test("a malformed `limits` is dropped and the leg row is kept", () => {
+    const bad = [
+      "720P",
+      [],
+      { resolutions: "720P" },
+      { resolutions: ["720P"], duration_seconds: { min: 15, max: 3 } },
+      { duration_seconds: { min: 3, max: 15, default: 30 } },
+      { rejected_inputs: [{ field: "mode", rule: "not_in" }] },
+      { rejected_inputs: [{ field: "mode", rule: "unknown_rule" }] },
+      { fallback: { provider: "kling" } },
+      { fallback: { provider: "kling", default: true, opt_out: "`rm -rf`" } },
+      { aspect_ratios: ["<b>16:9</b>"] },
+      // A `provider/model` id smuggled into a printed value.
+      { resolutions: [`tencent/${HELD_ID}`] },
+      {},
+    ];
+    for (const limits of bad) {
+      const [leg] = readRelations(KLING, { paths: {}, "x-comfy-router-alt-providers": [{ provider: "tencent", limits }] }).altProviders;
+      expect(leg).toEqual({ provider: "tencent" });
+      expect(servingProvidersSection([{ model: KLING, legs: [leg] }], RATES)).toContain(
+        "- **Tencent**: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=tencent`\n\n`strict_mode`"
+      );
+    }
+  });
+
+  test("with no matching rate row the price line is omitted, never guessed", () => {
+    const out = servingProvidersSection([{ model: KLING, legs: legs() }], NO_RATES);
+    expect(out).toContain("  - Limits: 720P, silent");
+    expect(out).not.toContain("Price:");
+    // Higgsfield's row is for another provider; it must not stand in for Tencent's.
+    expect(legPrice(KLING, "Tencent", { ...RATES, rates: [HIGGSFIELD_RATE] })).toBeUndefined();
+  });
+
+  test("only the current, priced, entitled row is rendered; the 1080P tier is not", () => {
+    const rates = (...rows: object[]): RateSnapshot => ({ ...RATES, rates: rows as RateSnapshot["rates"] });
+    // An older row is superseded by the current one.
+    const older = { ...TENCENT_RATE, price_usd: "0.2", credits: "42.2", effective_from: "2026-01-01" };
+    expect(legPrice(KLING, "Tencent", rates(older, TENCENT_RATE))).toBe("20.26 credits ($0.096) per second");
+    // An un-entitled or ended row is not a current price.
+    expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, entitled: false }))).toBeUndefined();
+    expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, effective_until: "2026-10-21" }))).toBeUndefined();
+    expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, kind: "usage", price_usd: undefined, credits: undefined }))).toBeUndefined();
+    // The snapshot carries no 1080P row, and nothing renders one.
+    const out = servingProvidersSection([{ model: KLING, legs: legs() }], RATES);
+    expect(out).not.toContain("1080");
+    expect(out).not.toContain("0.128");
+  });
+
+  test("credits round half up to 2 decimals on the decimal string", () => {
+    expect(roundCredits("20.256")).toBe("20.26");
+    expect(roundCredits("26.6282")).toBe("26.63");
+    expect(roundCredits("29.54")).toBe("29.54");
+    expect(roundCredits("21.1")).toBe("21.1");
+    expect(roundCredits("0.004")).toBe("0");
+    expect(roundCredits("1.005")).toBe("1.01");
+    expect(roundCredits("abc")).toBeUndefined();
+  });
+
+  test("the providers matrix marks the limited cell `✓*`, adds the footnote, and leaves other cells alone", () => {
+    const pages = new Map([[KLING, { page: KLING_PAGE, title: "Kling V3" }]]);
+    const { rows, problems } = providerRelationRows(new Map([[KLING, legs()]]), [], pages);
+    expect(problems).toEqual([]);
+    const page = renderProvidersPage(rows);
+    expect(page).toContain("| Model / provider | **Comfy (default)** | **Higgsfield** | **Tencent** |");
+    expect(page).toContain(`| [Kling V3](/${KLING_PAGE}) | ✓ | ✓ | ✓* |`);
+    expect(page).toContain("\n\\* This provider serves the model with narrower limits than the default; see the model page.\n");
+    expect(page).not.toContain(HELD_ID);
+    // With no limited leg anywhere, the page is exactly what it was.
+    const plain = providerRelationRows(new Map([[KLING, [HIGGSFIELD_KLING_LEG]]]), [], pages).rows;
+    expect(plain[0]).not.toHaveProperty("limited");
+    expect(renderProvidersPage(plain)).not.toContain("✓*");
+    expect(renderProvidersPage(plain)).not.toContain("narrower limits");
+  });
+
+  test("the pricing generator still counts exactly the three providers on the Kling V3 page", () => {
+    const section = servingProvidersSection([{ model: KLING, legs: legs() }], RATES);
+    expect(servingProviders(`# Kling V3\n\n${section}\n\n## Schema\n`, KLING)).toEqual(["Comfy", "Higgsfield", "Tencent"]);
+  });
+
+  test("the held-back leg id appears nowhere in a whole run", () => {
+    const schema = { authored: false, components: {}, ...readRelations(KLING, KLING_DOC) };
+    const page = renderDerivedPage(KLING, schema);
+    expect(page).toContain("Rejected with `400 invalid_input`");
+    const pages = new Map([[KLING, { page: KLING_PAGE, title: "Kling V3" }]]);
+    const providers = renderProvidersPage(providerRelationRows(new Map([[KLING, schema.altProviders]]), [], pages).rows);
+    for (const out of [servingProvidersSection([{ model: KLING, legs: schema.altProviders }], RATES), page, providers]) {
+      expect(out).not.toContain(HELD_ID);
+      expect(out).not.toContain("tencent/");
+      expect(out).not.toContain("undefined");
+    }
   });
 });
 
