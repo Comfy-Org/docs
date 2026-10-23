@@ -503,6 +503,34 @@ describe("public Router pricing", () => {
     ]);
   });
 
+  test("publishes Luma Ray 3.2 HDR + EXR tiers with exact prices on the credits and USD tables", () => {
+    const hdrExrRates = snapshot.rates.filter((rate) => rate.model_id === "luma_2/ray-3.2" && rate.conditions?.includes("dynamic_range=hdr_exr"));
+    const byConditions = Object.fromEntries(hdrExrRates.map((rate) => [rate.conditions, { price_usd: rate.price_usd, credits: rate.credits }]));
+    expect(byConditions).toEqual({
+      "type=video; resolution=720p; dynamic_range=hdr_exr; duration=5s": { price_usd: "0.9", credits: "189.9" },
+      "type=video; resolution=1080p; dynamic_range=hdr_exr; duration=5s": { price_usd: "3.6", credits: "759.6" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr_exr; duration=5s": { price_usd: "3.24", credits: "683.64" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr_exr; duration=10s": { price_usd: "6.48", credits: "1367.28" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr_exr; duration=5s": { price_usd: "6.48", credits: "1367.28" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr_exr; duration=10s": { price_usd: "12.96", credits: "2734.56" },
+    });
+
+    const rayCredits = tables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    const rayUsd = usdTables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    for (const row of [
+      ["", "", "Video generation · HDR + EXR · 5s", "-", "-", "189.9", "759.6"],
+      ["", "", "Video edit · HDR + EXR · 5s", "-", "-", "683.64", "1367.28"],
+      ["", "", "Video edit · HDR + EXR · 10s", "-", "-", "1367.28", "2734.56"],
+    ]) expect(rayCredits.displayRows).toContainEqual(row);
+    for (const row of [
+      ["", "", "Video generation · HDR + EXR · 5s", "-", "-", "&#36;0.90", "&#36;3.60"],
+      ["", "", "Video edit · HDR + EXR · 5s", "-", "-", "&#36;3.24", "&#36;6.48"],
+      ["", "", "Video edit · HDR + EXR · 10s", "-", "-", "&#36;6.48", "&#36;12.96"],
+    ]) expect(rayUsd.displayRows).toContainEqual(row);
+  });
+
   test("groups Ideogram versions and pivots quality prices into columns", () => {
     const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
     expect(ideogram.headers).toEqual([
