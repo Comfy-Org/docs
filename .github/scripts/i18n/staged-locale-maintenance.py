@@ -19,6 +19,12 @@ here:
 
 Both are idempotent: run them after every translation batch.
 
+`relink-links` only rewrites prose. Fenced code blocks (```/~~~, info string
+included) and inline code spans are split out first and restored byte-for-byte,
+so a documented URL inside a code sample is never localized. `prune-nav` drops
+OpenAPI blocks only for a locale that has no localized `/<lang>/api-reference`
+pages on disk; locales that ship a localized API reference keep it.
+
 Usage:
   python3 .github/scripts/i18n/staged-locale-maintenance.py relink-links --lang es [--dry-run] [--check]
   python3 .github/scripts/i18n/staged-locale-maintenance.py prune-nav    --lang es [--dry-run] [--check]
@@ -40,6 +46,99 @@ LINK_PATTERNS = (
     # snippet imports: from "/snippets/foo.mdx" (closing quote not consumed)
     re.compile(r'(?P<pre>\bfrom\s+")(?P<path>/snippets/[^"]*)(?=")'),
 )
+
+# A fence line: up to three spaces of indent, then ``` or ~~~, then an info string.
+FENCE_OPEN_RE = re.compile(r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def split_code_segments(text: str) -> list[tuple[bool, str]]:
+    """Split `text` into `(is_code, chunk)` pairs; "".join(chunks) == text.
+
+    Fenced blocks (both fence lines and their body, info string included) come
+    back as code chunks so callers can leave them byte-for-byte untouched.
+    """
+    segments: list[tuple[bool, str]] = []
+    prose: list[str] = []
+    code: list[str] = []
+    fence_char = ""
+    fence_len = 0
+
+    def flush_prose() -> None:
+        if prose:
+            segments.append((False, "".join(prose)))
+            prose.clear()
+
+    def flush_code() -> None:
+        if code:
+            segments.append((True, "".join(code)))
+            code.clear()
+
+    for line in text.splitlines(keepends=True):
+        match = FENCE_OPEN_RE.match(line.rstrip("\r\n"))
+        if fence_char:
+            code.append(line)
+            # A closing fence is the same character, at least as long, no info string.
+            if match and match.group("fence")[0] == fence_char:
+                if len(match.group("fence")) >= fence_len and not match.group("info").strip():
+                    fence_char = ""
+                    flush_code()
+            continue
+        if match:
+            flush_prose()
+            fence_char = match.group("fence")[0]
+            fence_len = len(match.group("fence"))
+            code.append(line)
+            continue
+        prose.append(line)
+
+    flush_prose()
+    flush_code()
+    return segments
+
+
+def split_inline_code(chunk: str) -> list[tuple[bool, str]]:
+    """Split a prose chunk at inline code spans; "".join(chunks) == chunk.
+
+    A span opens on a backtick run and closes on the next run of exactly the
+    same length (CommonMark). An unmatched run is literal text, and a span never
+    crosses a blank line.
+    """
+    segments: list[tuple[bool, str]] = []
+    pos = 0
+    cursor = 0
+    while True:
+        opening = BACKTICK_RUN_RE.search(chunk, cursor)
+        if opening is None:
+            break
+        if opening.start() > 0 and chunk[opening.start() - 1] == "\\":
+            cursor = opening.end()  # escaped backtick: literal, not a span
+            continue
+        run_len = opening.end() - opening.start()
+        limit = chunk.find("\n\n", opening.end())
+        closing = None
+        search_from = opening.end()
+        while True:
+            candidate = BACKTICK_RUN_RE.search(chunk, search_from)
+            if candidate is None:
+                break
+            if limit != -1 and candidate.start() > limit:
+                break
+            if candidate.end() - candidate.start() == run_len:
+                closing = candidate
+                break
+            search_from = candidate.end()
+        if closing is None:
+            cursor = opening.end()
+            continue
+        if opening.start() > pos:
+            segments.append((False, chunk[pos : opening.start()]))
+        segments.append((True, chunk[opening.start() : closing.end()]))
+        pos = closing.end()
+        cursor = pos
+    if pos < len(chunk):
+        segments.append((False, chunk[pos:]))
+    return segments
 
 
 def page_file_exists(repo_rel: str) -> bool:
@@ -108,10 +207,20 @@ class Relinker:
             added += 1
             return f"{pre}{localized}{en_rel}{suffix}"
 
-        out = text
-        for pattern in LINK_PATTERNS:
-            out = pattern.sub(repl, out)
-        return out, added, removed
+        def relink_prose(segment: str) -> str:
+            out = segment
+            for pattern in LINK_PATTERNS:
+                out = pattern.sub(repl, out)
+            return out
+
+        pieces: list[str] = []
+        for is_code, chunk in split_code_segments(text):
+            if is_code:
+                pieces.append(chunk)  # fenced code: never rewritten
+                continue
+            for is_span, part in split_inline_code(chunk):
+                pieces.append(part if is_span else relink_prose(part))
+        return "".join(pieces), added, removed
 
 
 def iter_locale_files(lang: str) -> list[str]:
@@ -153,8 +262,25 @@ def cmd_relink_links(args: argparse.Namespace) -> int:
     return 1 if (args.check and changed) else 0
 
 
-def prune_nodes(nodes: list) -> list:
-    """Drop groups/OpenAPI blocks that have no page leaves."""
+def has_localized_api_reference(lang: str) -> bool:
+    """True when `/<lang>/api-reference` holds at least one localized page."""
+    root = os.path.join(REPO_ROOT, lang, "api-reference")
+    if not os.path.isdir(root):
+        return False
+    for _root, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git")]
+        if any(name.endswith((".mdx", ".md")) for name in names):
+            return True
+    return False
+
+
+def prune_nodes(nodes: list, drop_openapi: bool = True) -> list:
+    """Drop groups/OpenAPI blocks that have no page leaves.
+
+    OpenAPI blocks are generated from a spec, so they carry no `pages` of their
+    own: they are dropped only when the locale has no localized API reference on
+    disk (`drop_openapi`), which keeps working tabs for zh/ja/ko.
+    """
     out: list = []
     for node in nodes:
         if isinstance(node, str):
@@ -163,8 +289,12 @@ def prune_nodes(nodes: list) -> list:
         if not isinstance(node, dict):
             continue
         if node.get("openapi") is not None:
-            continue  # API reference has no localized pages yet
-        pages = prune_nodes(node.get("pages") or [])
+            if drop_openapi:
+                continue
+            # Generated from a spec: it has no page leaves of its own to prune.
+            out.append(node)
+            continue
+        pages = prune_nodes(node.get("pages") or [], drop_openapi)
         if pages:
             out.append({**node, "pages": pages})
     return out
@@ -183,14 +313,19 @@ def cmd_prune_nav(args: argparse.Namespace) -> int:
         return 2
 
     before = len(json.dumps(target, ensure_ascii=False))
+    # zh/ja/ko ship a localized api-reference directory; es (and any locale
+    # without one) has nothing to point those tabs at yet.
+    drop_openapi = not has_localized_api_reference(args.lang)
     for tab in target.get("tabs", []):
         if isinstance(tab, dict) and isinstance(tab.get("pages"), list):
-            tab["pages"] = prune_nodes(tab["pages"])
+            tab["pages"] = prune_nodes(tab["pages"], drop_openapi)
     kept_tabs = []
     for tab in target.get("tabs", []):
         if not isinstance(tab, dict):
             continue
-        if tab.get("openapi") is not None or tab.get("pages"):
+        # An OpenAPI tab carries its pages in the spec, so it is kept only for a
+        # locale that actually ships that API reference.
+        if tab.get("pages") or (tab.get("openapi") is not None and not drop_openapi):
             kept_tabs.append(tab)
     target["tabs"] = kept_tabs
     after = len(json.dumps(target, ensure_ascii=False))
@@ -219,7 +354,7 @@ def main() -> int:
         if name == "relink-links":
             p.add_argument(
                 "--other-locales",
-                default="zh,ja,ko",
+                default="zh,ja,ko,es",
                 help="comma separated other locale codes to leave untouched",
             )
 
