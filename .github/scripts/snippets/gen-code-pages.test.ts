@@ -231,8 +231,17 @@ describe("renderDocsJson: the redirect lands in the real docs.json", () => {
   test("nothing pruned means the redirects are byte-for-byte what was there", () => {
     const after = JSON.parse(renderDocsJson(nav, { live: [], pruned: [] }));
     expect(after.redirects).toEqual(before.redirects);
-    // `redirects` stays the last key, so the file's shape does not churn.
-    expect(Object.keys(after).at(-1)).toBe("redirects");
+    // Preserve the authored key order, including settings added after redirects.
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    const enBefore = before.navigation.languages.find((l: { language: string }) => l.language === "en");
+    const enAfter = after.navigation.languages.find((l: { language: string }) => l.language === "en");
+    expect(enAfter.tabs.filter((t: { tab: string }) => t.tab !== "Comfy Router"))
+      .toEqual(enBefore.tabs.filter((t: { tab: string }) => t.tab !== "Comfy Router"));
+    const routerBefore = enBefore.tabs.find((t: { tab: string }) => t.tab === "Comfy Router");
+    const routerAfter = enAfter.tabs.find((t: { tab: string }) => t.tab === "Comfy Router");
+    expect(routerAfter.pages.find((p: { group?: string }) => p.group === "Models")).toEqual(nav);
+    expect(routerAfter.pages.filter((p: { group?: string }) => p.group !== "Models"))
+      .toEqual(routerBefore.pages.filter((p: { group?: string }) => p.group !== "Models"));
   });
 });
 
