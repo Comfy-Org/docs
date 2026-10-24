@@ -46,14 +46,79 @@ paths:
 
         bytes — a client-declared `expected_hash` is verified, never trusted.
 
+        If location metadata (GPS, XMP, IPTC) is removed from an image before
+
+        it is stored, the asset''s `hash` is the hash of the stored bytes and
+
+        can differ from `expected_hash`. On Comfy Cloud, an upload whose
+
+        bytes open as a JPEG, PNG, WebP or classic TIFF (including TIFF-based
+
+        camera RAW such as DNG, NEF, ARW and CR2, but not BigTIFF) and that
+
+        is over 50 MiB is refused with 422 `validation_error`, whatever its
+
+        `content_type` and whether or not it carries location metadata. A
+
+        request that declares a `Content-Length` over Comfy Cloud''s 200 MB
+
+        (200,000,000-byte) body limit is refused before that check with a
+
+        plain 413 that does not use the `ErrorEnvelope` shape. A body sent
+
+        without a declared length is cut off when it passes that limit, and
+
+        no 413 is sent: a cut-off while the fields before `file` are read
+
+        fails with 422 `invalid_body`, and a cut-off inside the file usually
+
+        fails with 500 `upstream_error`. Nothing after the `file` field is
+
+        read, so a body that only passes the limit there is uploaded
+
+        normally.
+
+        Deployment-scoped surfaces neither strip location metadata nor apply
+
+        the 50 MiB image cap; they limit the request body to 110 MB
+
+        (110,000,000 bytes). A request that declares a `Content-Length` over
+
+        that limit is refused with the same plain 413; a body sent without a
+
+        declared length is cut off when it passes the limit, and the upload
+
+        then fails with an error response that is not guaranteed to be a 413.
+
         The uploaded asset is referenceable immediately; any content scanning
 
         runs in the background and does not block the response.
 
 
-        ~100 MB single-request expectation for v1; chunked/resumable large
+        An upload is a single request. v1 expects files of up to ~100 MB;
 
-        uploads are a deliberate open question.
+        the hard cap is the body limit of the surface it is sent to (above).
+
+        Chunked/resumable large uploads are a deliberate open question.
+
+
+        On Comfy Cloud an upload fails with 422 `upload_timed_out` when no
+
+        request bytes arrive for 30 seconds, or when the whole request takes
+
+        longer than 10 minutes, however steadily bytes keep arriving.
+
+        On Comfy Cloud an upload can also be refused with 503 `upload_busy`
+
+        and `Retry-After` when the server is busy with other uploads: nothing
+
+        was stored, so the same upload can be sent again after `Retry-After`.
+
+        On a Developer Platform deployment the same 422 `upload_timed_out`
+
+        applies when no request bytes arrive for 30 seconds, or when the whole
+
+        request takes longer than 20 minutes.
 
         '
       x-streaming-upload: true
@@ -84,13 +149,13 @@ paths:
                   example: photo.png
                 expected_hash:
                   type: string
-                  description: Optional client-computed blake3 (`blake3:<hex>`). Verified against the server-computed hash; mismatch is rejected with 409 `hash_mismatch` and no asset is minted.
+                  description: Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset's retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation dedups onto it.
                   example: blake3:9f8a1c0d...
                 tags:
                   type: array
                   items:
                     type: string
-                  description: Category tags (e.g. `input`).
+                  description: 'Category tags (e.g. `input`). A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Cloud''s hosted API also caps this encoded JSON field at 8 KiB, so a long tag set can be refused (422 `invalid_body`) below these limits. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -123,14 +188,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '413':
+          description: The upload is over the body limit. On Comfy Cloud (200 MB, 200,000,000 bytes) and on deployment-scoped surfaces (110 MB, 110,000,000 bytes) the request declared a `Content-Length` over it; the server's body limit sends this before the upload is handled, so the body is not an `ErrorEnvelope` and its shape is not part of this contract. The self-hosted proxy instead refuses a file over its configured cap (100 MiB by default) with an `ErrorEnvelope` whose code is `payload_too_large`.
         '422':
-          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), or validation failure.'
+          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment or the self-hosted proxy; a deployment answers a body that is not `multipart/form-data` with a boundary with a plain 500 instead). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored. Comfy Cloud''s asset upload answers validation failure instead with `invalid_content_type` (the request is not `multipart/form-data` with a boundary), `invalid_body` (a malformed multipart body or upload field) or `validation_error` (the platform refused the upload, for example an image over the size cap or a disallowed tag).'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/assets/from-hash:
@@ -154,6 +223,15 @@ paths:
 
         deliberately indistinguishable (`404` `blob_not_found`).
 
+
+        The lookup key is the `hash` an upload returned, which is the hash of
+
+        the stored bytes. When location metadata was removed from an image
+
+        before it was stored, that differs from the client''s digest of the
+
+        file it sent, and the client''s digest finds nothing.
+
         '
       requestBody:
         required: true
@@ -174,6 +252,7 @@ paths:
                   type: array
                   items:
                     type: string
+                  description: 'A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -204,13 +283,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '422':
-          description: '`invalid_request` on a deployment: the `file_path`, `tags` or `expires_in` is malformed.'
+          description: 'The `file_path`, `tags` or `expires_in` is malformed, or `tags` breaks the limits above or holds a disallowed tag: `invalid_request` on a deployment, `validation_error` on Cloud. A deployment checks the tags even when an identical reference exists.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/assets/by-hash/{hash}:
@@ -219,7 +300,7 @@ paths:
       tags:
       - assets
       summary: Existence check for a blob by blake3 hash
-      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes. A refusal answers its status with no body, so a `403`''s code is not readable here.'
+      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes. Use the `hash` an upload returned: for an image whose location metadata was removed before storage, the client''s digest of the file it sent names no stored blob. A refusal answers its status with no body, so a `403`''s code is not readable here.'
       parameters:
       - $ref: '#/components/parameters/BlakeHash'
       responses:
@@ -233,6 +314,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/assets/{id}:
@@ -259,6 +342,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
     delete:
@@ -299,6 +384,8 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/assets/{id}/content:
@@ -362,6 +449,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs:
@@ -452,6 +541,13 @@ paths:
                     auth_token_comfy_org:
                       type: string
                       description: Session bearer token for partner (API) nodes — the equivalent of `api_key_comfy_org` for a caller authenticated by session rather than by key.
+                    preview_method:
+                      type: string
+                      description: ComfyUI's preview method for this prompt, passed to ComfyUI as sent, which validates it. Used only for jobs sent by Comfy Cloud's editor; ignored for other callers.
+                    extra_pnginfo:
+                      type: object
+                      description: ComfyUI's `extra_pnginfo` for this prompt, which carries the editor's workflow into saved outputs. Used only for jobs sent by Comfy Cloud's editor; ignored for other callers.
+                      additionalProperties: true
                 metadata:
                   type: object
                   description: 'Your own labels for the job, such as which of your customers it ran for. At most 16 pairs. A key is 1 to 40 characters from `A-Z a-z 0-9 _ - .`; a value is a string of at most 256 bytes in UTF-8 (bytes, not characters: 200 `é` is 400 bytes) with no control character (U+0000 to U+001F, tab and newline included, and U+007F to U+009F) and no bidirectional embedding, override or isolate (U+202A to U+202E, U+2066 to U+2069). Anything else is refused `422` `metadata_invalid` and no job is created: a bad key or value is named in the message and in `details.key`, while more than 16 pairs is refused with the count and no `details`. A `metadata` that is not an object is refused `400` `invalid_request`; `null` is the same as none. Stored with the job, returned on it, and filterable on `GET /api/v2/jobs`. Set once, here: nothing changes it later. Only jobs sent to a deployment keep it today: Comfy Cloud refuses a non-empty `metadata` with `422` `metadata_not_supported`, and runs a job with empty or absent `metadata` as before.'
@@ -508,6 +604,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
     get:
@@ -614,6 +712,8 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
         '501':
@@ -656,6 +756,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/workflow:
@@ -682,6 +784,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/logs:
@@ -802,6 +906,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/events:
@@ -886,6 +992,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
   /api/v2/jobs/{id}/cancel:
@@ -925,6 +1033,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/DeploymentLookupUnavailable'
         '500':
           $ref: '#/components/responses/UpstreamError'
 components:
@@ -995,6 +1105,15 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     RateLimited:
       description: '`rate_limited` — the caller has exceeded a request rate limit for this account. Account/rate-scoped, not resource-specific — this can be returned even for a job, asset or deployment the caller doesn''t own or that doesn''t exist.'
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    DeploymentLookupUnavailable:
+      description: 'On deployment-scoped surfaces, `deployment_lookup_unavailable`: the deployment this address names could not be looked up just now. The request was refused before it did anything (nothing was created, read, changed or canceled), so the same request can be sent again after `Retry-After`. Every operation at a deployment''s address can answer this way. A job submit can also answer this 503 with `database_unavailable`: the job could not be saved just now and nothing was started, so the same request can be sent again after `Retry-After`. No other operation answers `database_unavailable`. On Comfy Cloud an asset upload can also answer this 503 with `upload_busy`: the server is busy with other uploads and nothing was stored, so the same upload can be sent again after `Retry-After`.'
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
@@ -1435,7 +1554,11 @@ components:
 
         `missing_asset` (422), `hash_mismatch` (409), `blob_not_found`
 
-        (404), `idempotency_key_reuse` (422),
+        (404), `idempotency_key_reuse` (422), `upload_timed_out` (422: an
+
+        asset upload stopped sending or was too slow; retry from a faster
+
+        connection),
 
         `queue_full` (429 + Retry-After), `rate_limited` (429 + Retry-After:
 
@@ -1451,21 +1574,49 @@ components:
 
         but its GPU provider is not taking work on it yet; retry),
 
+        `deployment_lookup_unavailable` (503 + Retry-After, on any
+
+        operation: the deployment the address names could not be looked up
+
+        just now; nothing was done, so retry), `database_unavailable` (503 +
+
+        Retry-After, only on a job submit: the job could not be saved just
+
+        now and nothing was started, so retry),
+
         `deployment_stopped` (422 — terminal deployment state; a retry
 
         cannot succeed without operator action), `invalid_request` (422:
 
         a malformed asset upload or asset-from-hash field, or a jobs-list
 
-        `limit` that is not a positive integer), `content_blocked` (451:
+        `limit` that is not a positive integer), `validation_error` (422,
+
+        Cloud: an asset upload or asset-from-hash field was refused, e.g. a
+
+        tag over the tag limits), `content_blocked` (451:
 
         content moderation flagged the asset''s bytes) and `sso_required` (403:
 
         the key is valid, but the account must sign in through its
 
-        organization''s single sign-on, which does not accept this key). Job
+        organization''s single sign-on, which does not accept this key).
 
-        labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
+        Comfy Cloud''s asset upload adds `invalid_content_type` (422: the
+
+        request is not `multipart/form-data` with a boundary),
+
+        `invalid_body` (422: a malformed multipart body or upload field),
+
+        `validation_error` (422: the platform refused the upload, for example
+
+        an image over the size cap or a disallowed tag) and `upload_busy`
+
+        (503 + Retry-After: the server is busy with other uploads and nothing
+
+        was stored, so retry).
+
+        Job labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
 
         limit; `details.key` names the key, except for too many pairs, which
 

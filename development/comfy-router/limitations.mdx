@@ -40,7 +40,7 @@ Router's default deadline is **10 minutes**, configurable by the deployment. Set
 
 ## Recovery depends on the provider
 
-Router can retain a provider handle for an accepted submit-and-poll generation. Reuse the same `Idempotency-Key` to collect it later; completed replayable responses can also come from the key record.
+Router retains the provider handle for a submit-and-poll generation as soon as the provider accepts the submit. If the connection is lost after that point, a resend with the same `Idempotency-Key` and the same body collects the original generation instead of starting a second one, and is not charged again. This holds when Router ends the call (its deadline, or your client hanging up) and also, in almost every case, when the Router server handling the call restarts mid-call. The exception is a restart in the brief moment between the provider accepting the submit and Router recording it: the key is then held for up to 15 minutes, after which a resend starts and is charged for a new generation. After a restart, a resend can get `409` / `concurrency_limit_exceeded` with `Retry-After` for up to about a minute while Router confirms the original handler is gone; keep resending the same key and it collects the result. Completed replayable responses can also come from the key record.
 
 Not every disconnected call is recoverable. Preserve the request and key before sending, then use the [retry outcome table](/development/comfy-router/errors#retry-outcomes). A new key creates a new call and may incur another charge.
 
@@ -65,7 +65,7 @@ The cap applies to every request, whether or not it carries an `Idempotency-Key`
 
 The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply.
 
-Cache catalog and schema reads. Revalidate schemas with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
+Cache catalog and schema reads. Revalidate them with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
 
 ## No progress while a call runs
 
@@ -81,11 +81,66 @@ The response can contain provider usage or cost fields. They do not represent a 
 
 The catalog provides billing facts, including `billing.charges_on_policy_rejection`, but no prices. Handle `yes`, `no`, and `unknown` explicitly. See [billing](/development/comfy-router/billing#model-billing-facts).
 
-To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced from the rate card Comfy bills the run against, but it is not a price lock, a run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains the post-hoc figure for a run. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`.
+To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced from the rate card Comfy bills the run against, but the figure is an estimate, not the final charge, and the settled charge in your workspace's usage and billing records is final. Nor is it a price lock. A run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains a rounded post-hoc figure for a run, not a receipt. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`. The models that cannot be priced before a run are listed in [models without a pre-flight estimate](#models-without-a-pre-flight-estimate).
+
+## Models without a pre-flight estimate
+
+Router cannot yet reliably price a call to the models below before it runs, so expect `/estimate` and a queued submit's `estimate` to answer `source: unknown` for them, though some may return a figure for a particular body. `unknown` means no figure was given, not that the run is free. The [Comfy charges and usage](#comfy-charges-and-usage) rules still apply: a run on your own provider key is not billed by Comfy, and `X-Comfy-Credits-Used` is optional, so a missing header means the cost was not reported. A model not listed here can still answer `unknown` for a particular body, so read `source` on every estimate.
+
+This list shrinks as estimate coverage grows. It is generated from Router's own pricing code, and models that are not publicly available are never listed.
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **bfl**: `bfl/erase-v1`, `bfl/flux-2-max`, `bfl/flux-2-pro`, `bfl/flux-3-image`, `bfl/flux-3-video`, `bfl/flux-kontext-max`, `bfl/flux-kontext-pro`, `bfl/flux-pro-1.0-expand`, `bfl/flux-pro-1.0-fill`, `bfl/flux-pro-1.1`, `bfl/flux-pro-1.1-ultra`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplus**: `byteplus/seed-audio-1.0`, `byteplus/seed-audio-1.0-multilingual`, `byteplus/seedance-1-0-pro-250528`, `byteplus/seedance-1-0-pro-fast-251015`, `byteplus/seedance-1-5-pro-251215`
+- **elevenlabs**: `elevenlabs/eleven_sfx_v2`
+- **fal**: `fal/crystal-upscaler`, `fal/crystal-video-upscaler`, `fal/fal-gpt-image-2`, `fal/fal-gpt-image-2.5-flare`, `fal/fal-gpt-image-2.5-sunburst`, `fal/fal-nano-banana-2`, `fal/fal-nano-banana-pro`, `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`, `fal/flux-3-max`, `fal/patina`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`, `ideogram/p-image-ideogram`
+- **kling**: `kling/kling-3.0-turbo`, `kling/kling-image-o1`, `kling/kling-v2-5-turbo`, `kling/kling-v2-6`, `kling/kling-v3`, `kling/kling-v3-omni`, `kling/kling-video-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **luma**: `luma/photon-1`, `luma/photon-flash-1`, `luma/ray-2`, `luma/ray-flash-2`
+- **meshy**: `meshy/animations`, `meshy/meshy-5`, `meshy/meshy-6`, `meshy/meshy-7`, `meshy/meshy-7.1`, `meshy/remesh`, `meshy/rigging`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **recraft**: `recraft/recraftv2`, `recraft/recraftv3`, `recraft/recraftv4`, `recraft/recraftv4_1`, `recraft/recraftv4_1_pro`, `recraft/recraftv4_1_pro_vector`, `recraft/recraftv4_1_utility`, `recraft/recraftv4_1_utility_pro`, `recraft/recraftv4_1_utility_pro_vector`, `recraft/recraftv4_1_utility_vector`, `recraft/recraftv4_1_vector`, `recraft/recraftv4_pro`, `recraft/recraftv4_styles`, `recraft/recraftv4_styles_pro`, `recraft/recraftv4_styles_pro_vector`, `recraft/recraftv4_styles_vector`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **runway**: `runway/gen4_image`
+- **synclabs**: `synclabs/sync-3`
+- **veed**: `veed/clean-audio`, `veed/clean-audio-video`, `veed/fabric-1.0`, `veed/lipsync-2.0`, `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **wavespeed**: `wavespeed/flashvsr`, `wavespeed/seedvr2`, `wavespeed/ultimate-image-upscaler`, `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
+- **xai**: `xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`, `xai/grok-imagine-image-pro`, `xai/grok-imagine-image-quality`, `xai/grok-imagine-video`, `xai/grok-imagine-video-1.5`, `xai/grok-imagine-video-1.5-lite`, `xai/grok-imagine-video-1.5-preview`
+
+{/* END GENERATED: models without a pre-flight estimate */}
 
 ## Router does not cover every partner operation
 
 Router runs models. File uploads, account reads, asset management, streaming, and provider job controls can require partner-proxy routes under `/proxy/…`, which sit outside Router and are not described by its contract. Router's own surface is the [Comfy Router specification](/router-openapi.yaml); support varies by provider.
+
+### Krea 3 reference images must be uploaded first
+
+`krea/krea-3` does not accept arbitrary image links. Every entry in `image_urls` must be an `image_url` returned by `POST /proxy/krea/assets`, which is an `https://app-uploads.krea.ai/...` URL. Router checks only that the link parses as an `https` URL whose host is exactly `app-uploads.krea.ai` (no other host and no explicit port): any other link, including a public `https` URL you host yourself, is rejected with `400` `invalid_input` before the model runs. A link that passes that check but is not a live upload (expired, deleted or mistyped) still gets past it, and Router then fails to read the image's size and answers with a `5xx` error, not a `400`, so always pass the `image_url` exactly as the upload returned it.
+
+1. Upload each reference image as `multipart/form-data`, with the image in the form field `file` (JPEG, PNG, or WebP, up to 75 MB). Authenticate the same way you do for Router, with `X-API-Key` or `Authorization: Bearer`.
+
+   ```bash
+   curl -X POST https://api.comfy.org/proxy/krea/assets \
+     -H "X-API-Key: $COMFY_API_KEY" \
+     -F "file=@reference.png"
+   ```
+
+2. Read `image_url` from the JSON response and pass it in `image_urls`:
+
+   ```json
+   {
+     "prompt": "Place the product on a clean studio background",
+     "resolution": "1k",
+     "image_urls": ["<image_url from step 1>"]
+   }
+   ```
+
+Text-to-image calls omit `image_urls` and need no upload.
 
 ## Model outputs and stored assets
 

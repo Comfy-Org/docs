@@ -2,18 +2,19 @@
 title: "将 Comfy Router 与 LiteLLM 配合使用"
 sidebarTitle: "LiteLLM"
 description: "将 Comfy Router 置于 LiteLLM Proxy 之后作为直通端点，并从 x-litellm-response-cost 响应头中记录每次运行的确切美元成本，无需维护价格表。"
-translationSourceHash: 62eb02ac
+translationSourceHash: e35cd883
 translationFrom: development/comfy-router/litellm.mdx
 translationBlockHashes:
-  "_intro": fe57ab19
-  "Configure the pass-through": 882570d1
-  "How spend is recorded": 204aef47
-  "Queued delivery": 2d3385e4
+  "_intro": 1ddb0d0a
+  "Configure the pass-through": 380c3ae3
+  "How spend is recorded": f852c18c
+  "Queued delivery": 46044c93
   "Notes": 50e3cf6b
 ---
+
 如果你已经使用 [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through) 跟踪支出，就可以把 Comfy Router 作为又一个透传端点添加进来。调用方继续使用自己的 LiteLLM 密钥，而你的 Comfy API 密钥则保留在代理上。
 
-对于会反馈每次运行 Comfy 点数价格的模型（参见[不反馈成本的运行](#不报告成本的运行)），Router 会在 `x-litellm-response-cost` 响应头中以美元为单位反馈一次同步运行的成本。LiteLLM 会在每个透传响应中读取该响应头，并将其记录为该请求的支出，因此你无需为这些模型维护价格表。
+对于会反馈每次运行 Comfy 点数价格的模型（参见[不反馈成本的运行](#不报告成本的运行)），Router 会在 `x-litellm-response-cost` 响应头中以美元为单位反馈一次运行的成本：同步运行体现在运行响应上，[已排队](#队列投递)的运行则体现在结果收集响应上。LiteLLM 会在每个透传响应中读取该响应头，并将其记录为该请求的支出，因此你无需为这些模型维护价格表。
 
 <Note>
   LiteLLM 内置的 `fal_ai/` 提供商仅涵盖图像生成。若要通过 LiteLLM 路由常规工作负载，请使用此处所示的透传端点，而不是原生提供商。
@@ -34,8 +35,9 @@ translationBlockHashes:
     ```yaml config.yaml
     general_settings:
       pass_through_endpoints:
-        # Runs and queue submits. Synchronous runs report their exact cost,
-        # which replaces cost_per_request for that row.
+        # 运行和队列提交。同步运行会报告其确切费用，
+        # 该费用会替换该行的 cost_per_request。队列提交不会；
+        # 参见下方“队列交付”。
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -43,10 +45,12 @@ translationBlockHashes:
           headers:
             X-API-Key: "os.environ/COMFY_API_KEY"
             content-type: application/json
-          cost_per_request: 0.10   # your fallback estimate, in USD
-          timeout: 660             # above Router's run deadline (10 minutes by default)
+          cost_per_request: 0.10   # 你的回退估算值，单位为 USD
+          timeout: 660             # 高于 Router 的运行截止时间（默认 10 分钟）
 
-        # Model catalog, queue status polls, and result collection.
+        # 模型目录、队列状态轮询和结果收集。排队运行的
+        # 结果收集会报告其确切费用，该费用会替换下方
+        # 该行的 0。
         - path: "/comfy/v2/models"
           target: "https://api.comfy.org/v2/models"
           include_subpath: true
@@ -79,7 +83,7 @@ translationBlockHashes:
 
 ## 支出如何记录
 
-报告成本的同步运行会携带以下响应头：
+报告成本的运行会携带以下响应头：对于同步运行，它们出现在运行响应中；对于排队运行，它们出现在结果收集响应中：
 
 ```http
 X-Comfy-Credits-Used: 12.5
@@ -95,14 +99,14 @@ X-Litellm-Total-Tokens: 0
 
 有些运行不会携带 `x-litellm-response-cost`。它与 `X-Comfy-Credits-Used` 在相同的情况下缺失：
 
-- 计费到你自己提供商密钥而不是你的 Comfy 积分的运行
-- 尚未列入 Router 的报告每次运行积分价格的模型列表的模型。该列表较为保守，有些提供商完全不在其中
-- 没有到达 Comfy 计费的扣费
+- 使用你自己的提供商密钥计费、而不是计入你的 Comfy 积分的运行
+- 尚未列入 Router 会报告每次运行积分价格的模型列表中的模型。该列表较为保守，有些提供商完全不在其中
+- 未进入 Comfy 计费环节的扣费
 - 错误响应
 
-当 Router 针对使用相同 `Idempotency-Key`（通过代理发送时为 `x-pass-Idempotency-Key`）的重试重放已存储的结果时，它也会缺失。该重试不会再次计费，因此这次重放不会第二次报告该次运行的确切成本。
+当 Router 针对使用相同 `Idempotency-Key` 的重试（通过代理发送时为 `x-pass-Idempotency-Key`）重放已存储的结果时，该响应头也会缺失。该重试不会再次计费，因此这次重放不会第二次报告该次运行的确切成本。出于同样的原因，排队运行的结果收集中只有一次会携带该响应头，即该次运行的价格被记录后的第一次收集；再次收集同一结果仍会返回 `X-Comfy-Credits-Used`，但不会返回 `x-litellm-response-cost`。
 
-当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、计费到你自己提供商密钥的运行以及幂等重放，都会按你的估值记录，即使 Comfy 并没有为此扣除你的积分。请把它设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费，同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已被定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
+当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、使用你自己的提供商密钥计费的运行以及幂等重放，都会按你设置的估值记录，即使 Comfy 并未为此扣除你的积分。请将 `cost_per_request` 设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费，同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已被定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
 
 ## 队列投递
 
@@ -112,12 +116,16 @@ X-Litellm-Total-Tokens: 0
 | --- | --- | --- |
 | 提交：`/v2/models/{provider}/{model}/requests` | `POST` | 你的 `cost_per_request` 估算值 |
 | 每次状态轮询：`.../requests/{request_id}/status` | `GET` | `0` |
-| 结果收集：`.../requests/{request_id}` | `GET` | `0` |
+| 结果收集：`.../requests/{request_id}` | `GET` | 该次运行的确切价格，在首次上报该价格的收集请求上 |
 | 取消：`.../requests/{request_id}/cancel` | `POST` | 你的 `cost_per_request` 估算值 |
 
-提交响应中的 `status_url`、`response_url` 和 `cancel_url` 都是绝对的 `https://api.comfy.org/...` URL，而 LiteLLM 不会重写响应体。要通过代理调用它们，请把 `https://api.comfy.org` 替换为代理的 `/comfy` 前缀，例如 `http://localhost:4000/comfy/v2/models/...`。如果直接发送给 Comfy，你的 LiteLLM 密钥会被拒绝。
+提交响应中的 `status_url`、`response_url` 和 `cancel_url` 都是绝对的 `https://api.comfy.org/...` URL，而 LiteLLM 不会重写响应体。要通过代理调用它们，请将 `https://api.comfy.org` 替换为代理的 `/comfy` 前缀，例如 `http://localhost:4000/comfy/v2/models/...`。如果直接发送给 Comfy，你的 LiteLLM 密钥会被拒绝。
 
-队列响应目前还不包含 `x-litellm-response-cost`，因此一次排队生成会按你的估算值记录，而不是按它的确切价格。按方法拆分端点可以让该估算值只在提交时计一次，而不是每次轮询都计一次。如果要在 LiteLLM 中获得每次运行的精确消费，请使用同步路由。
+结果收集请求只会在该次运行的价格记录后的第一次收集时携带一次 `x-litellm-response-cost`。对大多数模型来说，那就是第一次收集。对某些模型，价格会在结果就绪后才记录，因此较早的收集可能返回时不带该字段，而同一请求的后续收集会上报它。
+
+Router 在响应该次收集时会将价格标记为已上报。如果响应没有到达 LiteLLM（例如请求超时或连接中断），后续收集也不会携带 `x-litellm-response-cost`，LiteLLM 就会按 `GET` 条目的费用记录该次运行。
+
+提交行仍会记录你的 `cost_per_request` 估算值，因此在使用上述配置时，一次排队运行会被计算两次：一次按你的估算值，一次按它的确切价格。如果你只使用队列投递，请将 `POST` 条目的 `cost_per_request` 设为 `0`，这样每次排队运行只会按其确切价格记录一次。这样，对于你从未收集结果的运行，它不会出现在 LiteLLM 的总计中，但仍会计费到你的工作区。当两个条目都为 `0` 时，未上报任何费用的运行会被记录为 `0`。这包括以下情况：某次运行的价格在其结果就绪后才记录，而你只在该价格记录之前收集该结果一次；以及上述收集请求未上报该价格的情况。如果你的客户端只在每个结果就绪时收集一次，请保留 `POST` 的估算值。
 
 ## 说明
 
