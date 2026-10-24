@@ -61,8 +61,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -85,7 +85,7 @@ describe("public Router pricing", () => {
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
     expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Pika", "Runware", "WaveSpeed"]);
-    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
+    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield", "Tencent"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
@@ -197,8 +197,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(692);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(661);
+    expect(snapshot.rates).toHaveLength(693);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(662);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
