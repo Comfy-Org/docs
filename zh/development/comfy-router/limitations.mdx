@@ -2,7 +2,7 @@
 title: "Comfy Router 的能力与限制"
 sidebarTitle: "能力与限制"
 description: "选择 Comfy Router 还是合作伙伴代理，为长时间运行的调用做好规划，并了解恢复、速率限制与资产存储。"
-translationSourceHash: 21800074
+translationSourceHash: eb87761a
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
@@ -11,13 +11,15 @@ translationBlockHashes:
   "Calls are cut off at a server deadline": 6dd44c43
   "Recovery depends on the provider": da9d8904
   "Request bodies are capped": 675b77c8
-  "Requests are rate limited per caller": 421194d9
+  "Requests are rate limited per caller": 249d4d51
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": 1ba61544
+  "Comfy charges and usage": ed49ddec
+  "Models without a pre-flight estimate": 69a12694
   "Router does not cover every partner operation": 97d31362
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
 
 
 
@@ -81,12 +83,12 @@ Router 会拒绝正文大于 **100 MiB（104,857,600 字节）** 的请求。该
 
 | 响应 | 原因 | 操作 |
 | --- | --- | --- |
-| `429` / `concurrency_limit_exceeded` | 并发调用过多，或在承诺支出上限之下余量不足。 | 减少并发工作。支出响应头可将支出上限与调用次数限制区分开来。 |
+| `429` / `concurrency_limit_exceeded` | 并发调用过多，或承诺支出上限下的余量不足。 | 减少并发工作。支出响应头可将支出上限与调用次数限制区分开。 |
 | `429` / `rate_limited` | 请求额度已耗尽。 | 等待 `Retry-After` 后再重试。 |
 
-请求速率限制适用于调用以及目录/schema 读取，包括在生成之前就被拒绝的请求。它跟随经过身份验证的调用方，而不是来源 IP。使用调用方自己的提供商密钥的调用不受此限制；提供商自身的限制仍然适用。
+请求速率限制适用于调用以及目录和 schema 读取，包括在生成前即被拒绝的请求。它按经过身份验证的调用方计算，而不是按来源 IP 计算。使用调用方自己的提供商密钥发起的调用不受此限制；提供商侧的限制仍然适用。
 
-缓存目录与 schema 读取。使用 `ETag` 和 `If-None-Match` 重新验证 schema。重试字段与承诺支出字段见[响应头](/zh/development/comfy-router/headers)。
+缓存目录和 schema 读取结果。使用 `ETag` 和 `If-None-Match` 重新验证这些结果。有关重试和承诺支出字段的说明，请参阅[响应头](/zh/development/comfy-router/headers)。
 
 ## 调用运行期间没有进度更新
 
@@ -98,11 +100,46 @@ Router 只返回最终响应，不提供流式 token、服务器发送事件、�
 
 ## Comfy 费用与用量
 
-响应可能包含提供商的用量或成本字段。它们并不代表通用的 Comfy 收费。`X-Comfy-Credits-Used` 是可选响应头：缺失该响应头意味着成本未被报告，而不是该次运行为免费。重放的响应（`Idempotent-Replayed: true`）不会再次计费，但可能重复给出原始运行的数字，因此不要将同一个 `Idempotency-Key` 的多次重试中的该响应头累加。请使用 Comfy 平台查询余额、用量和发票。
+响应中可能包含提供商的用量或成本字段，但它们并不代表通用的 Comfy 收费。`X-Comfy-Credits-Used` 是可选响应头：缺失该响应头意味着成本未被报告，而不是该次运行免费。重放的响应（`Idempotent-Replayed: true`）不会再次计费，但可能重复给出原始运行的数字，因此不要将同一个 `Idempotency-Key` 的多次重试中的该响应头累加。请使用 Comfy 平台查询余额、用量和发票。
 
-目录提供的是计费事实，包括 `billing.charges_on_policy_rejection`，而不是价格。请显式处理 `yes`、`no` 和 `unknown`。参见[计费](/zh/development/comfy-router/billing#模型计费事实)。
+模型目录提供计费事实，包括 `billing.charges_on_policy_rejection`，但不提供价格。请显式处理 `yes`、`no` 和 `unknown`。参见[计费](/zh/development/comfy-router/billing#模型计费事实)。
 
-要在运行之前查看价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。在估算功能逐步推出的期间，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中不包含 `estimate`。两者的定价都来自 Comfy 为该次运行计费所依据的费率表，但它并非价格锁定：使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍是运行结束后的事后数字。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检费用预估)。
+要在运行之前查看价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。在估算功能逐步推出的期间，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中会省略 `estimate`。两者的价格都来自 Comfy 为该次运行计费所依据的费率卡，但该数字只是估算值，并非最终收费；最终以你工作区的用量与计费记录中的结算金额为准。它也不是价格锁定。使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍然只是一次运行的事后四舍五入数字，而不是收据。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检费用预估)。无法在运行前定价的模型列在[没有预检估算的模型](#无法预先估算的模型)中。
+
+## 无法预先估算的模型
+
+Router 目前还无法在运行前可靠地为对以下模型的调用定价，因此对于这些模型，`/estimate` 以及排队提交的 `estimate` 都会返回 `source: unknown`，不过其中一些模型针对特定请求体可能会返回具体数额。`unknown` 表示未给出数额，而不是说明该次运行免费。[Comfy 计费与用量](#comfy-费用与用量) 规则仍然适用：使用你自己的提供商密钥运行不会由 Comfy 计费，并且 `X-Comfy-Credits-Used` 是可选的，因此缺少该响应头意味着费用未被报告。未列在此处的模型针对特定请求体同样可能返回 `unknown`，所以请对每次估算都查看 `source`。
+
+随着估算覆盖范围不断扩大，这个列表会逐渐缩短。它由 Router 自身的定价代码生成，且未公开提供的模型永远不会被列出。
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **anthropic**: `anthropic/claude-fable-5`, `anthropic/claude-fable-5-1`, `anthropic/claude-haiku-4-5-20251001`, `anthropic/claude-opus-4-6`, `anthropic/claude-opus-4-7`, `anthropic/claude-opus-4-8`, `anthropic/claude-opus-5`, `anthropic/claude-opus-5-5`, `anthropic/claude-sonnet-4-5-20250929`, `anthropic/claude-sonnet-4-6`, `anthropic/claude-sonnet-5`, `anthropic/claude-sonnet-5-5`
+- **bfl**: `bfl/erase-v1`, `bfl/flux-2-max`, `bfl/flux-2-pro`, `bfl/flux-3-image`, `bfl/flux-3-video`, `bfl/flux-kontext-max`, `bfl/flux-kontext-pro`, `bfl/flux-pro-1.0-expand`, `bfl/flux-pro-1.0-fill`, `bfl/flux-pro-1.1`, `bfl/flux-pro-1.1-ultra`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplus**: `byteplus/seed-2-0-lite-260228`, `byteplus/seed-2-0-mini-260215`, `byteplus/seed-2-0-pro-260328`, `byteplus/seed-audio-1.0`, `byteplus/seed-audio-1.0-multilingual`, `byteplus/seedance-1-0-pro-250528`, `byteplus/seedance-1-0-pro-fast-251015`, `byteplus/seedance-1-5-pro-251215`
+- **elevenlabs**: `elevenlabs/eleven_multilingual_v2`, `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4`, `elevenlabs/eleven_v4_turbo`
+- **fal**: `fal/crystal-upscaler`, `fal/crystal-video-upscaler`, `fal/fal-gpt-image-2`, `fal/fal-gpt-image-2.5-flare`, `fal/fal-gpt-image-2.5-sunburst`, `fal/fal-nano-banana-2`, `fal/fal-nano-banana-pro`, `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`, `fal/flux-3-max`, `fal/patina`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **gemini-interactions**: `gemini-interactions/gemini-omni-1.1-flash`, `gemini-interactions/gemini-omni-flash-preview`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`, `ideogram/p-image-ideogram`
+- **kling**: `kling/kling-3.0-turbo`, `kling/kling-image-o1`, `kling/kling-v2-5-turbo`, `kling/kling-v2-6`, `kling/kling-v3`, `kling/kling-v3-omni`, `kling/kling-video-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **luma**: `luma/photon-1`, `luma/photon-flash-1`, `luma/ray-2`, `luma/ray-flash-2`
+- **meshy**: `meshy/animations`, `meshy/meshy-5`, `meshy/meshy-6`, `meshy/meshy-7`, `meshy/meshy-7.1`, `meshy/remesh`, `meshy/rigging`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openai**: `openai/gpt-4.1`, `openai/gpt-4.1-mini`, `openai/gpt-4.1-nano`, `openai/gpt-4o`, `openai/gpt-5`, `openai/gpt-5-mini`, `openai/gpt-5-nano`, `openai/gpt-5.5`, `openai/gpt-5.5-pro`, `openai/gpt-5.6-luna`, `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-6-astra`, `openai/gpt-6-luna`, `openai/gpt-6-sol`, `openai/gpt-image-1`, `openai/gpt-image-1.5`, `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, `openai/gpt-image-2.5-sunburst`, `openai/o1`, `openai/o1-pro`, `openai/o3`, `openai/o4-mini`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **recraft**: `recraft/recraftv2`, `recraft/recraftv3`, `recraft/recraftv4`, `recraft/recraftv4_1`, `recraft/recraftv4_1_pro`, `recraft/recraftv4_1_pro_vector`, `recraft/recraftv4_1_utility`, `recraft/recraftv4_1_utility_pro`, `recraft/recraftv4_1_utility_pro_vector`, `recraft/recraftv4_1_utility_vector`, `recraft/recraftv4_1_vector`, `recraft/recraftv4_pro`, `recraft/recraftv4_styles`, `recraft/recraftv4_styles_pro`, `recraft/recraftv4_styles_pro_vector`, `recraft/recraftv4_styles_vector`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **runway**: `runway/gen4_image`
+- **synclabs**: `synclabs/sync-3`
+- **veed**: `veed/clean-audio`, `veed/clean-audio-video`, `veed/fabric-1.0`, `veed/lipsync-2.0`, `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **vertexai**: `vertexai/gemini-2.5-flash`, `vertexai/gemini-2.5-flash-image`, `vertexai/gemini-2.5-pro`, `vertexai/gemini-3-pro-image`, `vertexai/gemini-3.1-flash-image`, `vertexai/gemini-3.1-flash-lite`, `vertexai/gemini-3.1-flash-lite-image`, `vertexai/gemini-3.1-pro-preview`, `vertexai/gemini-3.5-flash`, `vertexai/gemini-3.7-flash`, `vertexai/gemini-3.8-flash`, `vertexai/gemini-nano-banana-2.1`
+- **wavespeed**: `wavespeed/flashvsr`, `wavespeed/seedvr2`, `wavespeed/ultimate-image-upscaler`, `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`, `wavespeed/wavespeed-nano-banana-2`, `wavespeed/wavespeed-nano-banana-pro`, `wavespeed/wavespeed-seedance-2.0`, `wavespeed/wavespeed-seedance-2.5`
+- **xai**: `xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`, `xai/grok-imagine-image-pro`, `xai/grok-imagine-image-quality`, `xai/grok-imagine-video`, `xai/grok-imagine-video-1.5`, `xai/grok-imagine-video-1.5-lite`, `xai/grok-imagine-video-1.5-preview`
+
+{/* END GENERATED: models without a pre-flight estimate */}
 
 ## Router 并不覆盖每个合作伙伴操作
 
