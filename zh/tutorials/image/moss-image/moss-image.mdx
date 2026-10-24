@@ -2,14 +2,16 @@
 title: "MOSS-Image 在 ComfyUI 中：文生图与布局工作流"
 description: "在 ComfyUI 中本地运行 MOSS-Image：这是一个 5B 开放权重的文生图模型，配备提示词上采样器，并支持根据手绘边界框进行布局引导生成。"
 sidebarTitle: "MOSS-Image"
-translationSourceHash: c04a86d8
+translationSourceHash: b4456369
 translationFrom: tutorials/image/moss-image/moss-image.mdx
 translationBlockHashes:
   "_intro": 3e9c5a21
   "About MOSS-Image": 5d119d85
-  "MOSS-Image workflows": 9e0b5162
+  "MOSS-Image workflows": b7e89fe1
   "MOSS-Image model downloads": 76439d38
-  "Prompting tips": eba8f84a
+  "Prompting tips": 36fcf415
+  "Going above 2 MP": 8dac1045
+  "Reference images and the prompt upsampler": c40d8e4f
 ---
 import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx"
 
@@ -105,6 +107,10 @@ MOSS-Image 是 OpenMOSS 的开放权重文生图模型：一个 5B 单流 DiT，
 
 根据提示词加上你绘制的布局来生成图像。打开 `Create Bounding Boxes` 并为每个元素拖出一个框；每个框都带有自己的描述文字，标记为文本的框会在其中渲染该文本。`MOSS-Image Layout Prompt` 会把这些框转换为模型读取的布局提示词，因此框内的描述文字和你写的场景提示词都会被使用。
 
+先画背景的框，再画前景元素：框按你绘制的顺序输出。标记为文本的框记为 text，其余框记为 object。要把包含人物的框记为 character，就把它在 `Create Bounding Boxes` 预览里的编号填进 `MOSS-Image Layout Prompt` 的 `character_boxes`，例如 `1, 3`。指向文本框的编号不起作用。两个布局模板都预填了这个字段（SFT 是 `2`，Base 是 `1`），排队前先对照自己的框确认。
+
+只要连了至少一个框，`MOSS-Image Layout Prompt` 就会输出 JSON 提示词：一段场景描述加每个框一个条目。布局模板里 `enable_prompt_enhancer` 默认关闭，因此这段 JSON 会原样送到模型。打开它，上采样器会改写这段文本，可能把框丢掉。
+
 <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_moss_image_t2i_bboxes-1.webp" alt="MOSS-Image 布局引导的文本到图像工作流预览" />
 
 <CardGroup cols={2}>
@@ -197,11 +203,31 @@ bf16 版本 `moss_image_sft_bf16.safetensors` 和 `moss_image_base_bf16.safetens
 ## 提示技巧
 
 - **描述最终图像，而不是提出请求。** 该模型是在描述文本上训练的，因此请写出画面看起来是什么样，而不是写“帮我做一张海报”这样的指令。上采样器遵循同一规则，所以简短提示词仍然有效。
-- **关闭上采样器以控制措辞。** 在子图节点上将 `enable_prompt_upsampler` 设为 `false`，提示词就会原样传给模型。两种设置都会在 `Preview Any` 中显示结果，因此可以对比。
+- **基础模型也读标签序列。** 关闭上采样器后，MOSS-Image-Base 既接受描述文本，也接受逗号分隔的标签，顺序为质量、评分、元信息、年份、角色、作品、画师，最后是通用标签，例如 `best quality, highres, hatsune miku, vocaloid, @foo bar, 1girl, blue hair`。
+- **关闭上采样器以控制措辞。** 在子图节点上将 `enable_prompt_enhancer` 设为 `false`，提示词就会原样传给模型。两种设置都会在 `Preview Any` 中显示结果，因此可以对比。
 - **自行控制换行。** 自动换行可能不会落在你期望的位置。当换行位置很重要时，在要渲染的文本中放入实际换行符或 `\n`。
 - **位置很重要时，使用布局工作流。** 框会为每个元素和每个文本块向模型提供明确的位置，这比用文字描述位置更可靠。
-- **将画布保持在推荐范围内。** `ResolutionSelector` 选择宽高比和像素数（默认 1 MP）。MOSS-Image 针对 1 MP 至 2 MP 训练，并可在约 0.25 MP 至 4 MP 的范围内外推；宽度和高度必须是 16 的倍数。
-- **从模板设置开始，然后为官方效果放慢速度。** 模板使用 `er_sde` 采样器、以 CFG 2.5 运行 25 步，以求速度。官方设置是 CFG 3、50 步，因此如果结果效果不足，可以尝试这些设置。
+- **将画布保持在推荐范围内。** `ResolutionSelector` 选择宽高比和像素数（默认 1 MP）。推荐输出范围为 1 MP 至 2 MP，模型可在约 0.25 MP 至 4 MP 之间外推；宽度和高度必须是 16 的倍数。
+- **从模板设置开始，然后为官方效果放慢速度。** 模板使用 `er_sde` 采样器、以 CFG 2.5 运行 25 步。基础模型的官方设置是 `euler` 采样器、CFG 3、50 步，因此如果结果效果不足，可以尝试这些设置。
+- **在基础模型上为短提示词调高 CFG。** 基础模型的官方 CFG 范围是 3.0 到 6.0，高于模板的 2.5。短提示词要关闭上采样器才能原样传给模型：长提示词保持 3.0，需要时再调高。
 - **保持负面提示词简短。** 模板默认附带 `nsfw, worst quality, bad anatomy, watermark, jpeg artifact`。
-- **跳过层引导默认开启，位于第 22 层。** 子图节点上有一个 `SLG` 开关，引导使用官方的第 22 层。关闭它可能看起来更真实，但可能丢失细节；其他层只能在子图内部调整。
+- **跳过层引导使用第 22 层。** 子图节点上有一个 `SLG` 开关，22 是官方层号。关闭它可能看起来更真实，但可能丢失细节；其他层只能在子图内部调整。
 - **基础模型用于微调。** 在 MOSS-Image 上训练 LoRA 时，请冻结文本编码器。
+
+## 高于 2 MP 的输出
+
+推荐输出范围是 1 MP 至 2 MP，模型最多可外推到约 4 MP。再大的尺寸就落在外推范围之外，因此大图要靠分步放大，而不是一次画一张巨大的画布。
+
+模板给采样器接的是固定的 `Empty Flux 2 Latent`，所以这一步要在子图里改：
+
+1. 第一遍在 1 MP 或 2 MP 下渲染。
+2. 解码结果，用 `Upscale Image` 在像素空间放大，再用 `VAE Encode` 编码回去。直接放大潜空间是对潜张量重采样，丢掉的细节第二遍补不回来。
+3. 把编码后的潜空间接到采样器上，替换 `Empty Flux 2 Latent`，1.5 倍放大时把 `denoise` 设为约 0.6：更低会保留第一遍，更高会重做构图。
+
+重复“放大再重绘”，不要直接跳到最终尺寸。从 2 MP 一次跳到 8K 往往只是重复细节而不是增加细节，而 8K 画布需要 `VAE Decode (Tiled)`。
+
+## 参考图与提示词上采样器
+
+子图节点上有一个可选的 `ref_image (for llm)` 输入。它只进入上采样器，不进入扩散模型：MOSS-Image 本身没有图像输入，无法照搬参考图。上采样器开启时，图像会影响它写出的描述文本；关闭时，这个输入会被忽略。
+
+上采样器跑在模型本来就要加载的 Qwen3.5 文本编码器上，通过 `Generate Text` 节点执行，系统提示词取自官方的 MOSS-Image 提示词增强 skill。输出长度由 `max_length` 控制，模板中是 4096 token。在 `MOSS-Image: Text to Image` 和 `MOSS-Image Base: Text to Image` 模板里，`prompt_enhancer_seed` 可以复现同一段描述，`Preview Any` 显示最终送到采样器的文本。

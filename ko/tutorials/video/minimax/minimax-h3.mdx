@@ -2,7 +2,7 @@
 title: "ComfyUI MiniMax H3 비디오 생성 가이드"
 description: "ComfyUI에서 오픈 가중치 MiniMax H3를 사용하는 방법: 텍스트 기반, 이미지 기반, 레퍼런스 기반 비디오 워크플로와 네이티브 스테레오 오디오, 프롬프트 작성 팁, Sage Attention 가속화."
 sidebarTitle: "개요"
-translationSourceHash: 6baf68cb
+translationSourceHash: 87317da7
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": 94f54ee8
@@ -11,11 +11,11 @@ translationBlockHashes:
   "Choosing the checkpoint precision": 4a53fdf9
   "Workflow index": bdc3b9f8
   "Setting the output resolution": db770c15
-  "Clip length": d9104665
+  "Clip length": 2d495d82
   "Step count": d2a8a6f8
   "Sampler and scheduler": 79c739c3
   "Speeding up generation with Sage Attention": 24cc9a70
-  "Speeding up generation with sparse attention": cd054e87
+  "Speeding up generation with sparse attention": 801c9acf
   "Commercial licensing": 201e2de5
 ---
 
@@ -128,18 +128,20 @@ Latent 업스케일은 시간 절약, 피크 VRAM은 아님. 다듬기는 부분
 
 ## 클립 길이
 
-H3는 짧은 클립 학습; 노드는 넓은 범위 허용, 과장도 차단 안 함.
+H3는 짧은 클립으로 학습되었습니다. 네이티브 노드는 더 넓은 범위를 받아들이며 초과 길이 요청도 막지 않습니다.
 
-템플릿 `duration`(초)을 24fps **17k+5** 프레임으로 변환.
+템플릿은 초 단위 `duration`을 24fps의 **17k+5** 프레임으로 변환합니다.
 
 | 설정 | 범위 |
 | --- | --- |
 | `length` 입력 | 5–3600 프레임(약 0.2 s–150 s) |
 | 학습 범위 | 약 124–362 프레임(약 5–15 s) |
-| 프레임 그리드 | 24fps `17k+5`(124 프레임 = 5 s) |
+| 프레임 그리드 | 24fps `17k+5`(124 프레임 ≈ 5.2 s) |
 | 템플릿 기본 | 5 s → 124 프레임 |
 
-만 해상도 긴 클립은 VRAM 먼저 소진. Megapixels 낮춤.
+`duration`과 `length`는 모두 `17k+5` 그리드로 올림됩니다. 5 s를 지정하면 124 프레임(5.17 s), `length`에 120을 넣어도 124 프레임이 됩니다. 프레임은 0번 프레임부터 17 프레임씩 묶이고, 남는 5 프레임이 마지막 블록입니다. 같은 두 그리드 값 사이의 요청은 같은 클립을 만듭니다.
+
+긴 클립을 전체 해상도로 생성하면 VRAM이 먼저 부족해집니다. Megapixels를 낮춰 맞추세요.
 
 ### 클립 연결
 
@@ -204,6 +206,26 @@ Turbo는 schedule만 단축, 스텝당 시간 동일(로드 시 병합). 4스텝
 - `min_tokens`(기본 **12288**) 미만 이득 작음.
 
 FastH3 **`vsa`**, `keep_percent` **10**; [FastH3 페이지](/ko/tutorials/video/minimax/minimax-h3-fastvideo).
+
+### 스파스 어텐션이 실제로 동작하는지 확인
+
+베이스 H3 템플릿에는 이 노드가 없습니다. `UNETLoader`와 `BasicGuider` 사이에 **Model Sparse Attention**을 추가한 뒤 **`verbose`**(고급, 기본 꺼짐)를 켜면 attention 형태마다 한 줄씩 로그가 남습니다.
+
+dense로 남는 호출은 `dense (<n> tokens): <reason>` 또는 `dense (<b>, <n>, <h>, <d>): <reason>`을 출력하며, 처음 걸린 조건만 보고합니다.
+
+| 로그 이유 | 조치 |
+| --- | --- |
+| `no compiled sol_attn kernel for this GPU` | 설치된 `comfy-kitchen`에 이 GPU용 kernel이 없습니다. 업데이트하거나 해당 머신에서는 이 노드를 쓰지 않습니다. |
+| `<n> tokens < min_tokens <value>` | 해상도나 클립 길이를 올리거나 `min_tokens`를 낮춥니다(기본 **12288**). |
+| `sigma <x> outside the start/end window` | `start_percent`와 `end_percent`를 넓힙니다. |
+| `block <i> in dense_blocks` | 해당 블록 번호를 `dense_blocks`에서 뺍니다. |
+| `no H3 layout for this call` | `vsa`에서만 발생합니다. `sol-attn`으로 바꿉니다. |
+
+성공한 호출은 `sparse (<b>, <n>, <h>, <d>), sinks <k>/<q>` 또는 `sparse producer path: <n> tokens, <mode>`를 출력합니다.
+
+`verbose`를 켜도 로그가 없는 경우가 세 가지 있습니다. H3 경로의 활성값이 bfloat16이 아니거나, `head_dim`이 **128**이 아니거나, rope 주파수가 없으면 조용히 dense로 돌아갑니다.
+
+`vsa`는 FastH3 체크포인트에 묶여 있습니다. 해당 가중치에만 있는 `to_gate_compress` 레이어가 주는 거친 브랜치를 읽기 때문에, 다른 H3 체크포인트에서는 노드가 `VSA: the model has no to_gate_compress layers; running the fine stage without the coarse branch`를 출력하고 세밀 단계만 실행합니다. 이 경고는 `verbose`와 무관합니다.
 
 ## 상업적 라이선스
 

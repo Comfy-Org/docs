@@ -2,15 +2,16 @@
 title: "Qwen-Image-2.1 ComfyUI 原生工作流示例"
 description: "在 ComfyUI 中运行 Qwen-Image-2.1：一个模型即可完成图像生成与编辑，原生 2K 输出，专业级文字排版，并支持透明度通道。"
 sidebarTitle: "Qwen-Image-2.1"
-translationSourceHash: 54cbb96a
+translationSourceHash: 13a6434f
 translationFrom: tutorials/image/qwen/qwen-image-2-1.mdx
 translationBlockHashes:
   "_intro": 1aac4055
   "Qwen-Image-2.1 workflow": a421d119
   "Model links": 07d7c7b3
-  "Workflow settings": d1b4f2f9
+  "Workflow settings": 1f64eacd
   "VAE decoding artifacts": 8c94f042
-  "Faster sampling with the Lightning LoRA": 62588fb8
+  "Faster sampling with the Turbo LoRA": 7c22e331
+  "Faster sampling with the Lightning LoRA": fa73c3a1
   "Alpha channel output": d52c962c
 ---
 import UpdateReminder from "/snippets/zh/tutorials/update-reminder.mdx"
@@ -249,13 +250,16 @@ Keep the character and pose in <image1> unchanged, put this light blue denim shi
 
 文生图和图像编辑模板包含一个可选的提示词增强步骤。它使用独立的文本编码器在采样前改写提示词，把简短的请求扩展为更详细的描述。
 
-两个模板都在 Qwen Image 2.1 子图节点上提供以下控件：
+四个模板都在 Qwen Image 2.1 子图节点上提供以下控件：
 
-- `refine_prompt`：两个模板默认都关闭。开启后图像模型使用改写后的提示词采样，而不是你输入的原始提示词
+- `refine_prompt`：四个模板默认都关闭。开启后图像模型使用改写后的提示词采样，而不是你输入的原始提示词
 - `PE_model`：执行改写的文本编码器，文生图为 `qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors`，图像编辑为 `qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors`
-- `thinking_mode`：两个模板默认都关闭。与 `refine_prompt` 一起开启后，改写模型会在输出前先进行推理
+- `thinking_mode`（图像编辑模板中显示为 `thinking`）：四个模板默认都关闭。该 checkpoint 用推理块训练，关闭时会损失质量，因此请先提高 `max_length`（见下文），再与 `refine_prompt` 一起开启
+- `max_length`：推理过程和改写后提示词共享的 Token 预算。所有模板均为 **4096**，节点可设置到 32768
 
-子图内的 **Preview Any** 节点会显示真正送入图像模型的提示词，方便你在决定是否保留改写结果前先查看。改写模型遵循的指令位于 **Text (System Prompt)** 节点中，可以自行编辑。由于只有开启 `refine_prompt` 时才会执行增强分支，两个模板中的增强文本编码器都是可选的；需要时开启 `refine_prompt` 即可。背景移除模板不包含此步骤。
+子图内的 **Preview Any** 节点会显示真正送入图像模型的提示词，方便你在决定是否保留改写结果前先查看。改写模型遵循的指令位于 **Text (System Prompt)** 节点中，可以自行编辑。由于只有开启 `refine_prompt` 时才会执行增强分支，四个模板中的增强文本编码器都是可选的；需要时开启 `refine_prompt` 即可。背景移除模板不包含此步骤。
+
+所有模板都把 `max_length` 设为 4096，以免单次改写耗时数分钟。提示词增强模型卡（[T2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I)、[I2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I)）使用 `max_new_tokens` **16256**（文生图）和 **24000**（图像编辑）采样，两者都开启 thinking。推理过程一旦耗尽 4096 预算就会无法结束，增强器随即返回空字符串。此时 **Preview Any** 显示为空，图像模型采样的就是这个空提示词：图像编辑返回接近原图的结果，文生图则完全丢失请求内容。开启 thinking 前把 `max_length` 提高到模型卡中的取值，改写的等待时间也会随之变长。
 
 ## VAE 解码伪影
 
@@ -263,11 +267,17 @@ Qwen-Image-2.1 自带的 VAE 会在细节丰富的写实类输出上留下细密
 
 [texture_fix_vae_for_qwen_image_2.1_bf16.safetensors](https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1/blob/main/texture_fix_vae_for_qwen_image_2.1_bf16.safetensors) 是同一个解码器的非官方微调版本，解码同一份 latent 时纹理更干净。把它放进 `ComfyUI/models/vae/`，在 `Load VAE` 节点上选择它来替换 [qwen_image_2.1_vae_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/vae/qwen_image_2.1_vae_bf16.safetensors)。它以略低的还原精度换取更干净的纹理。
 
+## 用 Turbo LoRA 加速采样
+
+基础检查点的 Turbo LoRA 用 8 步、`cfg` 1 采样。官方文件位于 [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1) 仓库：[qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/blob/main/loras/qwen_image_2.1_turbo_lora_avg_rank_178_bf16.safetensors)。把它下载到 `ComfyUI/models/loras/`，用 `LoraLoaderModelOnly` 节点加载到送入采样器的模型线上。
+
+[Turbo 工作流](#image_qwen_image_2_1_turbo_t2i) 走的是另一条路：单独的 Turbo 扩散模型，配一套固定的 8 步 `ManualSigmas` 调度。LoRA 复用基础检查点，因此不需要再下载那个模型。基础模板本来就是 `cfg` 1 配 `euler` 和 `simple`，所以在 Qwen Image 2.1 子图节点上把 `steps` 设为 8，采样器和调度器保持模板原样即可。
+
 ## 用 Lightning LoRA 加速采样
 
 基础工作流采样 25 步。[Qwen-Image-2.1-Lightning](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning) 是面向同一基础检查点的非官方 4 步蒸馏 LoRA。把 [pytorch_lora_weights.safetensors](https://huggingface.co/lightx2v/Qwen-Image-2.1-Lightning/blob/main/pytorch_lora_weights.safetensors) 下载到 `ComfyUI/models/loras/`，用 `LoraLoaderModelOnly` 节点加载到送入采样器的模型线上。
 
-该 LoRA 在 `cfg` 1 下按四步调度运行。它的模型卡给出的是 `1.0, 0.75, 0.5, 0.25` 这组网格，而这是采样调度做指数平移（exponential shift）之前的取值，不是采样器实际使用的数值。ComfyUI 的 Qwen-Image-2.1 采样设置自带同一个平移，按 1024x1024 拟合，所以在该分辨率下把 `steps` 设为 4、保留模板的 `euler` 与 `simple`，就能复现蒸馏时的调度：约 `1.0, 0.857, 0.667, 0.4`。在 `KSampler` 上把 `steps` 设为 4，调度器保持模板原样即可。
+该 LoRA 在 `cfg` 1 下按四步调度运行。它的模型卡给出的是 `1.0, 0.75, 0.5, 0.25` 这组网格，而这是采样调度做指数平移（exponential shift）之前的取值，不是采样器实际使用的数值。ComfyUI 的 Qwen-Image-2.1 采样设置自带同一个平移，按 1024x1024 拟合，所以在该分辨率下把 `steps` 设为 4、保留模板的 `euler` 与 `simple`，就能复现蒸馏时的调度：约 `1.0, 0.857, 0.667, 0.4`。在 Qwen Image 2.1 子图节点上把 `steps` 设为 4，调度器保持模板原样即可。
 
 `ManualSigmas` 节点标记为实验性，会把填入的数值原样传递，所以手写调度必须直接填平移之后的数值。ComfyUI 的平移按 1024x1024 拟合，输出尺寸偏离该分辨率后两者的贴合度会下降。
 
