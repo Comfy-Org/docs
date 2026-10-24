@@ -1036,8 +1036,9 @@ export function roundCredits(value: string): string | undefined {
 
 /**
  * The price of one leg, from its CURRENT rate rows: priced (not usage-based),
- * not explicitly un-entitled, not ended by the snapshot date, and at the latest
- * `effective_from` among those. No matching row means no price line: the page
+ * not explicitly un-entitled, started and not ended by the snapshot date, and at
+ * the latest `effective_from` among those. The provider label matches without
+ * regard to case, as `gen-router-pricing.ts` labels some providers differently. No matching row means no price line: the page
  * never guesses a price, and a tier the snapshot does not carry never appears.
  */
 export function legPrice(model: string, provider: string, snapshot: RateSnapshot): string | undefined {
@@ -1045,11 +1046,12 @@ export function legPrice(model: string, provider: string, snapshot: RateSnapshot
   const live = snapshot.rates.filter(
     (r) =>
       r.model_id === model &&
-      r.serving_provider === provider &&
+      r.serving_provider.toLowerCase() === provider.toLowerCase() &&
       r.kind !== "usage" &&
       r.entitled !== false &&
       r.price_usd !== undefined &&
       r.credits !== undefined &&
+      !(asOf && r.effective_from.slice(0, 10) > asOf) &&
       !(r.effective_until && asOf && r.effective_until.slice(0, 10) <= asOf)
   );
   if (!live.length) return undefined;
@@ -1122,7 +1124,7 @@ const callExample = (model: string, provider?: string) =>
  * `model_provider` is served by Router directly, and every row below it is the
  * same endpoint with that one query parameter added.
  */
-export function servingProvidersSection(natives: NativeLegs[], rates: RateSnapshot = routerRates()): string {
+export function servingProvidersSection(natives: NativeLegs[], rates?: RateSnapshot): string {
   const withLegs = natives.filter((n) => n.legs.length > 0);
   if (!withLegs.length) return "";
   const rows = (n: NativeLegs) =>
@@ -1132,7 +1134,8 @@ export function servingProvidersSection(natives: NativeLegs[], rates: RateSnapsh
       // it gets no "as <id>": naming its held-back catalog id would publish it.
       ...n.legs.flatMap((leg) => [
         `- **${providerLabel(leg.provider)}**${leg.model_id ? `, as \`${leg.model_id}\`` : ""}: ${callExample(n.model, leg.provider)}`,
-        ...legLimitLines(n.model, leg, rates),
+        // Only a leg with limits reads the rate snapshot, so a page without one never depends on it.
+        ...(leg.limits ? legLimitLines(n.model, leg, rates ?? routerRates()) : []),
       ]),
     ].join("\n");
   // A page that documents one model needs no header per model; a curated spec

@@ -560,6 +560,13 @@ describe("alt-provider leg limits", () => {
     // An un-entitled or ended row is not a current price.
     expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, entitled: false }))).toBeUndefined();
     expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, effective_until: "2026-10-21" }))).toBeUndefined();
+    // A scheduled row that starts after the snapshot is not current yet.
+    const scheduled = { ...TENCENT_RATE, price_usd: "0.5", credits: "105.5", effective_from: "2026-11-01" };
+    expect(legPrice(KLING, "Tencent", rates(TENCENT_RATE, scheduled))).toBe("20.26 credits ($0.096) per second");
+    expect(legPrice(KLING, "Tencent", rates(scheduled))).toBeUndefined();
+    // The provider label matches regardless of case.
+    expect(legPrice(KLING, "tencent", rates(TENCENT_RATE))).toBe("20.26 credits ($0.096) per second");
+    expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, serving_provider: "TENCENT" }))).toBe("20.26 credits ($0.096) per second");
     expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, kind: "usage", price_usd: undefined, credits: undefined }))).toBeUndefined();
     // The snapshot carries no 1080P row, and nothing renders one.
     const out = servingProvidersSection([{ model: KLING, legs: legs() }], RATES);
