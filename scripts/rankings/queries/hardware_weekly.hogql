@@ -1,0 +1,56 @@
+-- Desktop installs per Monday-start week by hardware, from the Desktop app's system
+-- info event. One count per install per week, using its latest report that week.
+-- {start} and {end} are filled in by fetch-rankings-sources.py.
+SELECT
+    week,
+    pair.1 AS grp,
+    pair.2 AS item,
+    count() AS installs
+FROM (
+    SELECT
+        toStartOfWeek(timestamp, 1) AS week,
+        distinct_id,
+        argMax(lower(coalesce(properties.gpu_vendor, '')), timestamp) AS vendor,
+        argMax(coalesce(properties.gpu_model, ''), timestamp) AS model,
+        argMax(coalesce(properties.platform, ''), timestamp) AS platform,
+        argMax(toFloat(properties.gpu_vram_gb), timestamp) AS vram,
+        argMax(toFloat(properties.total_memory_gb), timestamp) AS ram
+    FROM events
+    WHERE event = 'comfy.desktop.session.system_info'
+        AND timestamp >= toDateTime('{start}')
+        AND timestamp < toDateTime('{end}')
+    GROUP BY week, distinct_id
+)
+ARRAY JOIN [
+    ('Total', 'All'),
+    ('GPU vendor', multiIf(vendor = 'nvidia', 'NVIDIA', vendor = 'mps', 'Apple', vendor = 'amd', 'AMD', vendor = 'intel', 'Intel', 'None/Other')),
+    ('Operating system', multiIf(platform = 'win32', 'Windows', platform = 'darwin', 'macOS', platform = 'linux', 'Linux', 'Other')),
+    -- Buckets include their upper bound (an 8GB card is in 6-8GB). Macs share
+    -- memory between CPU and GPU, so they get their own bucket.
+    ('VRAM', multiIf(
+        vendor = 'mps', 'Apple (shared memory)',
+        vram IS NULL OR vram <= 0, 'Unknown',
+        ceil(vram - 0.25) < 6, '<6GB',
+        ceil(vram - 0.25) <= 8, '6-8GB',
+        ceil(vram - 0.25) <= 12, '8-12GB',
+        ceil(vram - 0.25) <= 16, '12-16GB',
+        ceil(vram - 0.25) <= 24, '16-24GB',
+        ceil(vram - 0.25) <= 48, '24-48GB',
+        '48+GB')),
+    ('System RAM', multiIf(
+        ram IS NULL OR ram <= 0, 'Unknown',
+        ceil(ram - 0.25) <= 8, '<=8GB',
+        ceil(ram - 0.25) <= 16, '8-16GB',
+        ceil(ram - 0.25) <= 32, '16-32GB',
+        ceil(ram - 0.25) <= 64, '32-64GB',
+        ceil(ram - 0.25) <= 128, '64-128GB',
+        '128+GB')),
+    -- GPU names without vendor prefixes and trademark marks; laptop chips stay separate.
+    ('GPU model', trim(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(model,
+        '\\((R|TM)\\)', ''),
+        '^(NVIDIA GeForce|NVIDIA|AMD|Intel) ', ''),
+        ' Laptop GPU$', ' Laptop')))
+] AS pair
+GROUP BY week, grp, item
+HAVING grp != 'GPU model' OR installs >= 50
+ORDER BY week, grp, installs DESC
