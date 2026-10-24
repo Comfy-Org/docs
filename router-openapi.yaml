@@ -344,6 +344,8 @@ paths:
           $ref: '#/components/responses/RouterIdempotencyConflict'
         '422':
           $ref: '#/components/responses/RouterModelValidationError'
+        '429':
+          $ref: '#/components/responses/RouterQueueSubmitTooManyRequests'
         '503':
           $ref: '#/components/responses/RouterRequestUnavailable'
   /v2/models/{provider}/{model}/requests/{request_id}:
@@ -403,8 +405,6 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '504':
           $ref: '#/components/responses/RouterRequestError'
-        '422':
-          $ref: '#/components/responses/RouterModelValidationError'
         default:
           $ref: '#/components/responses/RouterRequestError'
   /v2/models/{provider}/{model}/requests/{request_id}/cancel:
@@ -737,7 +737,7 @@ components:
       example: bfl
     RouterQueueCancelResponse:
       type: object
-      description: The answer to a cancellation ask on the two statuses that describe a request this route resolved - the `202` and the `400`. One body shape across both rather than a success envelope plus an error envelope, because both are the same statement - what cancelling found - and a client that has to parse a different type per status code gains nothing from the split.
+      description: The answer to a cancellation ask on the two statuses that describe a request this route resolved - the `202` and the `409`. One body shape across both rather than a success envelope plus an error envelope, because both are the same statement - what cancelling found - and a client that has to parse a different type per status code gains nothing from the split.
       properties:
         request_id:
           $ref: '#/components/schemas/RouterQueueRequestId'
@@ -986,6 +986,17 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RouterErrorResponse'
+    RouterQueueSubmitTooManyRequests:
+      description: 'Inspect `X-Comfy-Error-Type`: `queue_backlog_full` means you already hold as many unfinished queued requests as you are allowed, so submit again once one of them finishes; `rate_limited` means wait for the allowance window. Nothing was queued or charged, and the `Idempotency-Key` is not consumed. A submit at your in-flight limit is queued rather than refused, so `concurrency_limit_exceeded` is never answered here.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
     RouterRequestError:
       description: A Router request-level failure - the request never reached the model, or failed for a reason the model itself did not report. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.
       headers:
@@ -1218,7 +1229,7 @@ components:
         type: string
         example: openai
     RouterQueuePollAfterHeader:
-      description: Seconds to wait before polling this queued request again. It is Router's own estimate of when asking again is worth the round trip, and it moves with how far the request has actually got - a request at the back of the queue is told to wait longer than one already running.
+      description: 'Seconds to wait before polling this queued request again. It is Router''s own estimate of when asking again is worth the round trip: while the request waits it grows with its place in the queue, while it runs it grows with how long it has been running, and it stops growing at 10.'
       required: false
       schema:
         type: integer

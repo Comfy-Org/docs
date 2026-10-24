@@ -1089,7 +1089,8 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
       }).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
-      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
+      const rayExrNote = routes.some(({ model }) => model.id === "luma_2/ray-3.2") ? `${copy.rayExrNote}\n\n` : "";
+      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${rayExrNote}${tables}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
