@@ -145,19 +145,28 @@ interface TranslationConfig {
 const config = loadI18nConfig() as TranslationConfig;
 const pathFilterOpts = { languages: config.languages, skip_paths: config.skip_paths };
 
+const firstConfigured = (...values: Array<string | undefined>) =>
+  values.find((value) => value?.trim())?.trim();
+
 const BASE_URL =
-  process.env.TRANSLATE_API_BASE_URL ??
-  process.env.TRANSLATE_CJK_BASE_URL ??
+  firstConfigured(
+    process.env.TRANSLATE_API_BASE_URL,
+    process.env.TRANSLATE_CJK_BASE_URL
+  ) ??
   "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
 const API_KEY =
-  process.env.TRANSLATE_API_KEY ??
-  process.env.DEEPSEEK_API_KEY ??
-  process.env.TRANSLATE_CJK_API_KEY ??
-  process.env.DASHSCOPE_API_KEY ??
+  firstConfigured(
+    process.env.TRANSLATE_API_KEY,
+    process.env.DEEPSEEK_API_KEY,
+    process.env.TRANSLATE_CJK_API_KEY,
+    process.env.DASHSCOPE_API_KEY
+  ) ??
   "";
 const MODEL =
-  process.env.TRANSLATE_API_MODEL ??
-  process.env.TRANSLATE_CJK_MODEL ??
+  firstConfigured(
+    process.env.TRANSLATE_API_MODEL,
+    process.env.TRANSLATE_CJK_MODEL
+  ) ??
   "qwen-mt-plus";
 const CONCURRENCY = Number(
   process.env.TRANSLATE_CONCURRENCY ??
@@ -447,10 +456,31 @@ function buildTranslationInstructions(lang: LangConfig): string {
     "The English source is authoritative — always follow it for meaning.",
     "If a current translation is provided, use it as context: preserve wording where the English is unchanged; only update sections that differ from the English.",
     "Preserve ALL MDX/JSX syntax exactly: component tags, import statements, code blocks, URLs, frontmatter YAML structure.",
+    "Preserve every inline code span and numeric value exactly as written. They may contain model IDs, prices, API fields, or version numbers.",
     "For Markdown headings, preserve custom anchor syntax like {#workflow-id} exactly. Never convert it to visible inline code such as (`workflow_id`). The {#...} anchor must remain outside the translated heading text.",
     "DO translate: title, description, sidebarTitle in frontmatter; all prose; Card title/children text; table content; list items.",
-    "Do NOT translate or rewrite code inside ``` fenced blocks. Copy every fenced code block byte-for-byte from the English source, including its language tag, indentation, whitespace, and closing fence. Translate only prose outside fenced blocks.",
+    "Do NOT translate or rewrite code inside ``` fenced blocks: identifiers, keywords, string literals, numeric values, indentation, blank lines, the language tag and the closing fence must stay byte-for-byte identical to the English source.",
+    "DO translate the text of code comments inside ``` fenced blocks, both whole-line comments and trailing comments that follow code, keeping each comment on the same line and in the same position as the English source. Python docstrings (a triple-quoted string that opens a def, class or module) are documentation too: translate their text. Never translate or alter a shebang line (`#!...`), a string literal used as a value, a variable name, or any code token. Translate all other prose outside fenced blocks.",
     preserveStr ? `Do NOT translate these technical terms: ${preserveStr}` : "",
+    "API literals in prose are values, not prose. When a line labels a value the caller sends (booleans `true`/`false`, enums such as `auto`, `disabled`, `standard`, `fast`, `mp4`, `mov`, JSON keys, model ids, endpoint paths), keep that value byte-for-byte identical to the English source, keep the label's own punctuation (`:` or `=`) and keep every labelled item on its own line. Translate only the explanation that follows the label.",
+    "Translate the heading text itself (`## Schema`, `### Input`, `### Output`, `## Examples`) while keeping any `{#anchor}` exactly as in the English source, and follow the target language's own pages: ja uses スキーマ, 入力, 出力; ko uses 스키마, 입력, 출력; zh uses 输入 and 输出. Chinese model pages conventionally keep `## Schema` in English, so leave that one heading in English for zh.",
+    "In Chinese prose use full-width punctuation (，。：；（）) instead of ASCII commas or colons.",
+    lang.code === "es"
+      ? "For Spanish, write neutral Latin American Spanish in the informal second person (tú), matching the ComfyUI frontend's es locale: `flujo de trabajo` for workflow, `nodo` for node, `Inicia sesión` style imperatives. Localize the section headings as `## Esquema`, `### Entrada` and `### Salida`. Use the inverted opening marks ¿ and ¡ where the sentence needs them."
+      : "",
+    lang.code === "es"
+      ? "Spanish headings use sentence case: capitalize only the first word and proper nouns, product names or UI labels. Never copy English Title Case into a Spanish heading. Start task headings with the infinitive (`Instalar el administrador`, `Guardar y compartir flujos de trabajo`), not the gerund (`Instalando`, `Guardando`), which is an English -ing calque."
+      : "",
+    lang.code === "es"
+      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Load Image`, `Reroute`, `Run`, `Run (On Change)`, `Run (Instant)`, `Unsupported Node Packs`, `Install All`, `Apply Changes`, `View in Manager`, `Download`, `Download all`, `Give Feedback`, `Docs`, `Help & Support`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Use `video`, never `vídeo`. Avoid passive reflexive calques (`se pueden pasar`) and empty `el mismo/la misma` where Spanish reads better with a direct subject."
+      : "",
+    lang.code === "es"
+      ? "Spanish runs 20 to 30 percent longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact."
+      : "",
+    lang.code === "zh"
+      ? "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for a term everywhere within the file. Never invent words (for example `fixed` is 固定, not 顶固). Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a 链接 (hyperlinks), while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a 连线."
+      : "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for that term everywhere within the file. Never invent words for a term the glossary already covers. Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a hyperlink, while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a connection between nodes. Use the target language's own established wording for both senses and never collapse them into one word.",
+    "Preserve the logical direction of every sentence. Negations, conditions and consequences must keep the English polarity: `so it applies here` must never become `so it does not apply here`, and a note that a limit never rejects a real prompt must not read as an instruction to configure it.",
     "If you notice semantic issues in the existing translation relative to the English (wrong meaning, missing section, untranslated prose), note them AFTER the MDX content, separated by a line containing only '=== MISMATCHES ===' followed by one issue per line.",
     "Do NOT report expected localization as issues: /{lang}/ internal links, translated snippet import paths, or other path prefix changes applied for the target locale.",
     "If no issues, output only the translated MDX with no separator.",

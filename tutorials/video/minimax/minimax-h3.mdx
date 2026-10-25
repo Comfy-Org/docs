@@ -1,331 +1,240 @@
 ---
-title: "MiniMax H3 in ComfyUI: T2V, I2V, and R2V Video Workflows"
-description: "Learn how to use the open-weights MiniMax H3 in ComfyUI with native text-to-video, image-to-video, and reference-to-video workflows with stereo audio."
-sidebarTitle: "MiniMax H3"
+title: "ComfyUI MiniMax H3 Video Generation Guide"
+description: "How to use open-weights MiniMax H3 in ComfyUI: text-to-video, image-to-video, and reference-to-video workflows with native stereo audio, prompt writing tips, and Sage Attention speedups."
+sidebarTitle: "Overview"
 ---
 
-[MiniMax H3](https://www.minimax.io/blog/minimax-h3) is MiniMax's general-purpose, omni-modal generation model, now available as open weights. It jointly understands text, images, video, and audio in a single context, and generates video with **native stereo audio**: voice, sound effects, and music are modeled together in a single forward pass instead of being layered on afterward. Output is up to 2K resolution, 24fps, and about 15 seconds.
+import UpdateReminder from "/snippets/tutorials/update-reminder.mdx";
 
-ComfyUI natively supports MiniMax H3. The template library currently ships with three example workflows, each covering one generation mode:
+[MiniMax H3](https://www.minimax.io/blog/minimax-h3) is MiniMax's open-weights omni-modal model. It understands text, images, video, and audio in one context and generates video with **native stereo audio** (voice, SFX, and music in a single pass). Open weights target about 1 megapixel (768px short edge) at 24fps for up to ~15 seconds. 2K is a hosted-service output and needs a separate upscale pass in ComfyUI.
 
-- **Text-to-Video** (T2V): Generate videos from text prompts
-- **Image-to-Video** (I2V): Generate videos from an input image, with optional first/last-frame control
-- **Reference-to-Video** (R2V): Generate videos that lock in a character, style, motion, camera move, or voice from reference images, videos, and audio
+Documentation is split across six pages:
 
-These three are example templates, not an exhaustive list. The model supports more generation modes through the native MiniMax H3 nodes: first/last-frame image-to-video (fl2va) via the `MiniMaxH3ImageToVideo` node, and reference-driven generation with images, videos, and audio (ref2va) via the `MiniMaxH3ReferenceToVideo` node. You can build additional workflows with these nodes.
+- **Overview** (this page): capabilities, checkpoints, workflow index, resolution, clip length, steps, sampler, speedups
+- **[Native workflows](/tutorials/video/minimax/minimax-h3-native)**: T2V, I2V, R2V, and native-node techniques
+- **[Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe)**: anchor reference frames on the timeline
+- **[Fun ControlNet Union](/tutorials/video/minimax/minimax-h3-fun-controlnet)**: control video or inpainting with a mask
+- **[Prompt guide](/tutorials/video/minimax/minimax-h3-prompt-guide)**: official guides, tips, embeddings
+- **[FastH3](/tutorials/video/minimax/minimax-h3-fastvideo)**: FastVideo sparse-attention checkpoints
 
 <UpdateReminder/>
 <Note>
-H3's open weights let you run the model locally. Commercial use of locally generated outputs requires a [MiniMax commercial license](https://comfy.org/minimax/license), available through Comfy, the only official reseller. Generations on Comfy Cloud already include commercial rights.
+H3's open weights let you run the model locally. Commercial use of locally generated outputs requires a [MiniMax commercial license](https://comfy.org/minimax/license), available through Comfy, the only official reseller. Generations on Comfy Cloud already include commercial rights. See [Commercial licensing](#commercial-licensing) for tiers and pricing.
 </Note>
 
 ## Key features
 
-- **Native stereo audio**: Dialogue, sound effects, and music are generated together with the video, synced in one MP4
-- **Multimodal context**: Text, images, video, and audio references can be combined in one generation
-- **Reference-driven generation**: Lock a character's identity, a style, a motion, a camera move, or a voice from reference materials
-- **Instruction following**: Describe the relationship between references and the target shot in natural language
-- **Accurate text rendering**: Spelled-out text and brand elements render cleanly
-- **Open weights**: Run locally in ComfyUI with full control over every parameter
+- **Native stereo audio**: Dialogue, SFX, and music in one MP4
+- **Multimodal context**: Combine text, image, video, and audio references
+- **Reference-driven generation**: Lock identity, style, motion, camera, or voice from references
+- **Instruction following**: Describe reference-to-shot relationships in natural language
+- **Accurate text rendering**: Clean spelled-out text and brand elements
+- **Open weights**: Full local control in ComfyUI
 
 ## Getting started
 
-MiniMax H3 is supported in ComfyUI with open weights. To get started:
+1. Update ComfyUI: base T2V/I2V/R2V templates need **0.30.0+**; Multiframe Reference **0.34.0+**; Fun ControlNet Union, sparse attention, and Model Attention Backend **0.35.0+**; FastH3 **0.36.0+**
+2. **Template Library** > **Video** > pick a MiniMax H3 workflow
+3. Download models from the pop-up (tens of GB; allow time and disk space)
 
-1. Update ComfyUI to version 0.30.0 or later
-2. Go to **Template Library** > **Video** > choose any MiniMax H3 workflow
-3. Follow the pop-up to download models and run the workflow
+Weights live on Hugging Face: [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3).
 
-The model files are hosted on Hugging Face in the [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) repository.
+<Note>
+Use **pruned** checkpoints when both full and pruned builds exist. Pruned builds store adaln in a shared curve table (`adaln_t_table`) that ComfyUI reads from the file; templates load `minimax_h3_*_pruned_int8_convrot.safetensors`. LoRAs distilled on **full** builds carry adaln tensors that do not exist on pruned builds (shape mismatch; those weights are skipped). Turbo LoRAs have no adaln tensors and work on either build.
+</Note>
+
+## Choosing the checkpoint precision
+
+Pick the smallest build that fits in VRAM. Change only the `UNETLoader` file; ComfyUI reads quantization from the checkpoint. LoRAs must match the build family (full-build LoRAs lose adaln on pruned).
+
+| Build (fl2va / ref2va) | Size | Notes |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | Smallest; INT8 path; ComfyUI 0.38.0+ |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | Default in templates |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | Same size as INT8 |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | Unquantized pruned |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | Full unquantized build |
+
+Links are `fl2va` (T2V/I2V); `ref2va` files are in the same folder at the same sizes. **Comfy Kitchen attention cannot run `int8_convrot` checkpoints**; use a `bf16` build with that backend.
+
+If VRAM is tight, step down a size: CPU offload costs more than precision tradeoffs. On RTX 30-series, INT8 matrix ops are ~2× FP16 and there is no FP8 path, so INT8 often beats FP8 at the same file size.
+
+H3 also needs video and audio VAEs: [video fp16 / int8_convrot](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/vae) and [audio fp32](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors). Templates use int8 video + fp32 audio; int8 video decodes ~2× faster on ComfyUI 0.36.0+. Swap files on `VAELoader` like the diffusion model.
+
+## Workflow index
+
+Six template workflows ship today (examples, not an exhaustive list). The library also includes an I2V continuation variant (`video_minimax_h3_i2v_continuation`).
+
+<CardGroup cols={2}>
+  <Card title="Text to Video (T2V)" icon="type" href="/tutorials/video/minimax/minimax-h3-native#minimax-h3-text-to-video-t2v">
+    Generate videos from text prompts with native stereo audio
+  </Card>
+  <Card title="Image to Video (I2V)" icon="image" href="/tutorials/video/minimax/minimax-h3-native#minimax-h3-image-to-video-i2v">
+    Generate videos from an input image, with optional first/last-frame control
+  </Card>
+  <Card title="Reference to Video (R2V)" icon="link" href="/tutorials/video/minimax/minimax-h3-native#minimax-h3-reference-to-video-r2v">
+    Lock in a character, style, motion, camera move, or voice from reference images, videos, and audio
+  </Card>
+  <Card title="Multiframe Reference" icon="film" href="/tutorials/video/minimax/minimax-h3-multiframe">
+    Anchor reference frames at specific points along the output timeline with chained Add Guide nodes
+  </Card>
+  <Card title="Fun ControlNet Union" icon="person" href="/tutorials/video/minimax/minimax-h3-fun-controlnet">
+    Drive H3 with a Canny, Depth, HED, MLSD, or Pose control video, or run video inpainting with a mask
+  </Card>
+</CardGroup>
+
+**MiniMax H3 Image to Video** covers T2V and first/last-frame I2V (`t2va` / `fl2va`). **MiniMax H3 Reference to Video** covers R2V (`ref2va`).
+
+<Note>
+Reference conditioning only applies when it reaches the sampler. T2V/I2V templates sample inside a subgraph wired to **Image to Video** only. A **Reference to Video** node on the canvas is ignored without error. Use the R2V template (or a workflow built from it) for reference-driven output.
+</Note>
+
+Prompt resources: [prompt guide](/tutorials/video/minimax/minimax-h3-prompt-guide).
 
 ## Setting the output resolution
 
-Each workflow uses a **Resolution Selector** node to control the overall output size. The node computes `width` and `height` from three settings, and its outputs connect directly to the `width` and `height` inputs of the MiniMax H3 node:
+**Resolution Selector** sets `width` and `height` on the H3 node:
 
-- **Aspect ratio**: Pick a preset such as `16:9 (Widescreen)`, `9:16 (Portrait Widescreen)`, or `1:1 (Square)`
-- **Megapixels**: Target total pixel count for the output. Higher values give larger frames; lower values run faster
-- **Multiple**: The computed resolution is rounded to the nearest multiple of this number. Keep it at `32` to match H3's resolution grid
+- **Aspect ratio**: Presets such as `16:9 (Widescreen)`, `9:16 (Portrait Widescreen)`, `1:1 (Square)`
+- **Megapixels**: Total pixel count (higher = larger, slower)
+- **Multiple**: Round to this grid; keep **32** for H3
 
-The template ships with a fast preview size. For full-quality output at 16:9, set the Resolution Selector's Megapixels to `0.98` for H3's native canvas (a 768px short edge, 1344x768 at 16:9), or enter `1344 x 768` directly in the MiniMax H3 node's `width` and `height` inputs (its default). Skip the `1.0` Megapixel step: it yields 1376x768, above the model's 768x1344 pixel area cap.
+Templates open at **Megapixels** **0.4**: **864×480** at 16:9, **640×640** at 1:1 (the I2V default). A 0.4 MP render is fast and fine for drafts; raise **Megapixels** before a final render.
 
-## ComfyUI Native Workflows
+For 16:9 native quality, set **Megapixels** to **0.98** or enter **1344 × 768** on the node. H3 is trained near 1 MP, with a 768-pixel short edge and up to a 768×1344 area. Sizes above 768×1344 render slower without adding detail, and quality drops the further you move from the trained resolution. For 2K, generate at native size and upscale separately.
 
-### MiniMax H3 Text to Video (T2V)
+The H3 nodes have no 768×1344 cap on output size: `width` and `height` step by **32** up to 16384 per axis. Reference videos on **Reference to Video** are downscaled to fit a 768px short edge and a 768×1344 area. Reference images follow `ref_image_size`: **match** scales them to the generation's pixel area, **max** to a 2048px short edge.
 
-Generate videos from text prompts with native stereo audio.
+### Upscaling to higher resolution
 
-<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_t2v.mp4"></video>
+Use a **latent upscaler** on the 24-channel video latent to avoid VAE round-trip ghosting. [Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) (unofficial) needs [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) in `ComfyUI/models/latent_upscale_models/` and its [custom node](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). Chain **Minimax H3 Latent Upscaler (3D)** after a low-res pass (`scale` 1.0–4.0, default 2.0), then re-sample at target resolution.
 
-<CardGroup cols={2}>
-  <Card title="Run on Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_t2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
-    Open in Comfy Cloud
-  </Card>
-  <Card title="Download Workflow" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_t2v.json">
-    Download JSON or search "MiniMax H3 T2V" in Template Library
-  </Card>
-</CardGroup>
+Latent upscale saves time, not peak VRAM (refine still runs at target size). Treat refine as partial denoise: `denoise` **0.1–0.5** keeps composition; go higher only to rework the first pass. Give the refine sampler enough steps to rebuild multistep history (see Sampler and scheduler).
 
-#### Model downloads
+Video and audio latents are separate (24 + 32 channels). The upscaler only spatially enlarges video; audio is unchanged until refine denoises both. Low refine `denoise` preserves first-pass audio. To keep audio exactly, decode the first pass with `VAEDecodeAudio` before refine and wire that track into final `CreateVideo` (add `SaveAudioAdvanced` for a lossless export).
 
-<CardGroup cols={2}>
-  <Card title="Diffusion Model: minimax_h3_fl2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors">
-    Place in <code>ComfyUI/models/diffusion_models/</code>
-  </Card>
-  <Card title="Text Encoder: qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
-    Place in <code>ComfyUI/models/text_encoders/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-  <Card title="LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
-    Required by the workflow's model scan; powers the optional Lightning LoRA turbo mode. Place in <code>ComfyUI/models/loras/</code>
-  </Card>
-</CardGroup>
+## Clip length
 
-#### Model storage
+H3 is trained on short clips; native nodes accept a wider range without blocking over-length requests.
 
-```
-ComfyUI/
-├── 📂 models/
-│   ├── 📂 diffusion_models/
-│   │   └── minimax_h3_fl2va_pruned_int8_convrot.safetensors
-│   ├── 📂 text_encoders/
-│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
-│   ├── 📂 vae/
-│   │   ├── minimax_h3_video_vae_fp16.safetensors
-│   │   └── minimax_h3_audio_vae_fp32.safetensors
-│   ├── 📂 loras/
-│   │   └── minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors
-│   └── 📂 embeddings/
-│       └── minimaxh3_art_is_explosion.safetensors
-```
+Templates expose `duration` in seconds, converted to frames on the `17k+5` grid at 24fps.
 
-#### Prompting tips
+| Setting | Range |
+| --- | --- |
+| `length` input | 5–3600 frames (~0.2 s–150 s) |
+| Trained range | ~124–362 frames (~5–15 s) |
+| Frame grid | `17k+5` at 24 fps (124 frames ≈ 5.2 s) |
+| Template default | 5 s → 124 frames |
 
-1. **Describe the whole scene**: State the overall scene first (location, character, what is happening), then break it into timed shots
-2. **Shots, camera, and audio**: Describe the shots, camera moves, and the accompanying audio (dialogue, SFX, music) in one prompt block
-3. **Resolution**: H3's native canvas is a 768px short edge, which is 1344x768 at 16:9, and resolutions are rounded to a multiple of 32
-4. **Duration**: The duration input snaps to the model's 17-frame-per-block (17k+5) grid at 24fps
-5. **First/last frame**: Connect images to `first_frame` and/or `last_frame` on the `MiniMaxH3ImageToVideo` node to turn this workflow into first/last-frame image-to-video
-6. **Turbo mode (optional)**: The workflow generates at 20 steps by default; raise the step count (for example to 25) for better motion quality. Enable `turbo_mode` on the MiniMax H3 node to use the included Lightning LoRA (`minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16`) at 8 steps for much faster generation, with slightly lower audio and motion quality
+`duration` and `length` round **up** to the next `17k+5` value: a 5 s request renders 124 frames (5.17 s), and a `length` of 120 also renders 124. Frames pack from frame 0 in 17-frame blocks, so the leftover 5 frames are the last block, not the first. Requests that fall between the same two grid points render the same clip.
 
-#### Prompt writing guide
+Long clips at full resolution exhaust VRAM first; lower megapixels to fit.
 
-MiniMax publishes an official [video prompt writing guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) for the base generation modes: T2VA, I2VA, FL2VA, and L2VA. The guide explains how to structure a prompt into timed shots with camera movement and audio (dialogue, SFX, music), and includes examples for each mode. MiniMax also publishes installable [H3 skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills), including a prompt-writing skill that packages these guides for agent use.
+### Chaining clips
 
----
+Beyond the trained range, chain I2V continuations from each clip's last frame. Errors compound (faces lose texture first); turbo/distilled schedules show burn sooner.
 
-### MiniMax H3 Image to Video (I2V)
+Use `video_minimax_h3_i2v_continuation` (empty prompt): load the previous last frame, describe the next segment. Prefer short continuous shots and cut before burn shows. For longer chains, [H3-Anti-Burn-LoRA](https://huggingface.co/Imagineer13/H3-Anti-Burn-LoRA/blob/main/h3_antiburn_universal_v1.safetensors) on clips after the first at `strength_model` ~0.5 (tune for your continuation style).
 
-Generate videos from an input image, with optional first/last-frame keyframes.
+## Step count
 
-<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_i2v.mp4"></video>
+Defaults (Lightning LoRA **off**): **20 steps**. With turbo on: **8** for T2V/I2V (and continuation), **4** for R2V, Multiframe, and Fun ControlNet. On T2V/I2V subgraphs, `turbo_mode`, `turbo_steps`, and `turbo_model_strength` control the distilled LoRA. A 4-step fl2va file is also listed: [`minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors) with `turbo_steps` **4**.
 
-<CardGroup cols={2}>
-  <Card title="Run on Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_i2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
-    Open in Comfy Cloud
-  </Card>
-  <Card title="Download Workflow" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_i2v.json">
-    Download JSON or search "MiniMax H3 I2V" in Template Library
-  </Card>
-</CardGroup>
+Reference shots need more steps: reference tokens ride every step, so 4-step turbo can barely apply references (pose/face drift). For tight reference match, keep turbo off or raise toward **25**.
 
-<CardGroup cols={1}>
-  <Card title="Input Image: transparent_rgb_gaming_mouse.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/transparent_rgb_gaming_mouse.png">
-    Download the default input image, or use your own image.
-  </Card>
-</CardGroup>
+Distilled schedules smooth fine detail (skin, fabric, hair) vs 20-step base. Each turbo file is mode-specific; test at a fixed seed before stacking style LoRAs. `turbo_steps` and `turbo_model_strength` are adjustable: higher steps + lower strength (less than 1) move back toward base quality and cost time. Example: 4-step file at 6–8 steps, strength ~0.8.
 
-#### Model downloads
+Turbo LoRAs shorten the schedule, not per-step time (merged at load). Running a 4-step LoRA at 20 steps takes about as long as base 20 steps.
 
-<CardGroup cols={2}>
-  <Card title="Diffusion Model: minimax_h3_fl2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors">
-    Place in <code>ComfyUI/models/diffusion_models/</code>
-  </Card>
-  <Card title="Text Encoder: qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
-    Place in <code>ComfyUI/models/text_encoders/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-</CardGroup>
+Guidance by content:
 
-<CardGroup cols={1}>
-  <Card title="Turbo LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
-    Place in <code>ComfyUI/models/loras/</code>. Used when <code>turbo_mode</code> is enabled.
-  </Card>
-</CardGroup>
+- Simple shots: **12–16** steps often enough
+- High-frequency detail (chainmail, filigree, many small objects): improves up to ~**50**; below that, triangular grid artifacts under motion (worse with turbo)
+- Most motion/prompt gains by step **16**; little visible change past **50**
+- Soft frames at native resolution are usually a resolution issue, not steps
 
-#### Model storage
+Audio converges later than video in the joint denoise. Speech and timbre need **12+** steps; at **8** steps audio is often the weak link.
 
-```
-ComfyUI/
-├── 📂 models/
-│   ├── 📂 diffusion_models/
-│   │   └── minimax_h3_fl2va_pruned_int8_convrot.safetensors
-│   ├── 📂 text_encoders/
-│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
-│   ├── 📂 loras/
-│   │   └── minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors
-│   ├── 📂 vae/
-│   │   ├── minimax_h3_video_vae_fp16.safetensors
-│   │   └── minimax_h3_audio_vae_fp32.safetensors
-│   └── 📂 embeddings/
-│       └── minimaxh3_art_is_explosion.safetensors
-```
+## Sampler and scheduler
 
-#### Prompting tips
+Templates use **`res_multistep`** + **`simple`**. T2V/I2V/FastH3 hide these inside the subgraph; R2V, Multiframe, and Fun ControlNet expose `KSamplerSelect` and `BasicScheduler` on canvas.
 
-1. **Keyframes**: The `first_frame` and `last_frame` inputs are optional; the model generates the motion between them
-2. **Prompt**: Describe the shots, motion, and the accompanying audio (dialogue, SFX, music) in one block
-3. **Resolution**: H3's native canvas is a 768px short edge, which is 1344x768 at 16:9, and resolutions are rounded to a multiple of 32
-4. **Duration**: The duration input snaps to the model's 17-frame-per-block (17k+5) grid at 24fps
-5. **Turbo mode**: Enable `turbo_mode` on the MiniMax H3 node to switch to the turbo LoRA and generate in `turbo_steps` (default 8) instead of 20 steps. `turbo_model_strength` controls the LoRA strength (default 1.0).
+`res_multistep` is second-order multistep (first step is Euler). Splitting the schedule across two samplers drops multistep history: the second sampler's first step is first-order again. Keep one sampler run, or give the second enough steps to warm up.
 
-#### Prompt writing guide
-
-MiniMax publishes an official [video prompt writing guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md) for the base generation modes: T2VA, I2VA, FL2VA, and L2VA. The guide explains how to structure a prompt into timed shots with camera movement and audio (dialogue, SFX, music), and includes examples for each mode. MiniMax also publishes installable [H3 skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills), including a prompt-writing skill that packages these guides for agent use.
-
----
-
-### MiniMax H3 Reference to Video (R2V)
-
-Generate videos that lock in a character, style, motion, camera move, or voice from any mix of reference images, videos, and audio.
-
-<video controls className="w-full aspect-video" src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/output/video_minimax_h3_r2v.mp4"></video>
-
-<CardGroup cols={2}>
-  <Card title="Run on Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=video_minimax_h3_r2v&utm_source=docs&utm_medium=referral&utm_campaign=minimax-h3">
-    Open in Comfy Cloud
-  </Card>
-  <Card title="Download Workflow" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_r2v.json">
-    Download JSON or search "MiniMax H3 R2V" in Template Library
-  </Card>
-</CardGroup>
-
-<CardGroup cols={2}>
-  <Card title="Reference Image: red_superboy_on_city_roof.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/red_superboy_on_city_roof.png">
-    Character reference for the workflow, or use your own images.
-  </Card>
-  <Card title="Reference Image: mecha_dragon_lightning.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/mecha_dragon_lightning.png">
-    Style and subject reference for the workflow, or use your own images.
-  </Card>
-</CardGroup>
-
-#### Model downloads
-
-<CardGroup cols={2}>
-  <Card title="Diffusion Model: minimax_h3_ref2va_pruned_int8_convrot" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors">
-    Place in <code>ComfyUI/models/diffusion_models/</code>
-  </Card>
-  <Card title="Text Encoder: qwen3vl_32b_minimax_h3_nvfp4_awq" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors">
-    Place in <code>ComfyUI/models/text_encoders/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_video_vae_fp16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-  <Card title="VAE: minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
-    Place in <code>ComfyUI/models/vae/</code>
-  </Card>
-  <Card title="LoRA: minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors">
-    Required by the workflow's model scan; powers the optional Lightning LoRA turbo mode. Place in <code>ComfyUI/models/loras/</code>
-  </Card>
-</CardGroup>
-
-#### Model storage
-
-```
-ComfyUI/
-├── 📂 models/
-│   ├── 📂 diffusion_models/
-│   │   └── minimax_h3_ref2va_pruned_int8_convrot.safetensors
-│   ├── 📂 text_encoders/
-│   │   └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
-│   ├── 📂 vae/
-│   │   ├── minimax_h3_video_vae_fp16.safetensors
-│   │   └── minimax_h3_audio_vae_fp32.safetensors
-│   ├── 📂 loras/
-│   │   └── minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors
-│   └── 📂 embeddings/
-│       └── minimaxh3_art_is_explosion.safetensors
-```
-
-#### Prompting tips
-
-1. **Reference by tag**: Reference each input by tag in the exact order it was connected, for example `<Picture 1>`, `<Video 1>`, `<Audio 1>`
-2. **Assign each reference a job**: State which reference drives which part of the shot (identity, style, motion, camera, voice). Explicit assignments tend to work much better
-3. **Limits**: Up to 9 reference images, 3 reference videos (each can carry its own soundtrack), and 3 standalone reference audio clips
-4. **ref_image_size**: `match` scales references down to the generation resolution for speed; `max` keeps up to a 2048px short edge for stronger identity fidelity at the cost of speed
-5. **Note**: R2V uses the `ref2va` diffusion model, a different set of weights from the `fl2va` model used by the T2V and I2V workflows
-6. **Turbo mode (optional)**: The workflow generates at 20 steps by default; raise the step count (for example to 25) for better motion quality. Enable the **Lightning LoRA** checkbox to use the 4-step turbo LoRA (`minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16`) for much faster generation, with slightly lower audio and motion quality
-
-#### Prompt writing guide
-
-MiniMax publishes an official [full-reference mode prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md) for reference-driven generation (R2V). The guide covers the rewrite output structure, including subject definitions, reference labels, and retention analysis, and how to assign each reference a role in the target shot. MiniMax also publishes installable [H3 skills](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills), including a prompt-writing skill that packages these guides for agent use.
-
-## Advanced workflows with the native nodes
-
-The native MiniMax H3 nodes support three additional workflows that landed in recent ComfyUI updates. Update ComfyUI to the latest version to use them.
-
-### Anchoring guides at any frame (#15439)
-
-[Comfy-Org/ComfyUI#15439](https://github.com/Comfy-Org/ComfyUI/pull/15439) added the `MiniMaxH3AddGuide` node. Before it, keyframes could only anchor at the first and last frame of the video. The node removes that restriction: a guide can anchor at any frame, on a continuous time axis.
-
-Connect the `positive` and latent outputs of a MiniMax H3 node to `MiniMaxH3AddGuide`, then provide at least one guide input:
-
-- **image**: A still image or a clip. Multi-frame batches are anchored as a clip and cropped down to the model's valid clip lengths: 5, 22, 39... frames (17k+5). Batches shorter than 5 frames use only the first image
-- **audio**: A soundtrack anchored at the same frame index, cropped to the video's remaining duration
-- **frame_idx**: The frame to anchor at. Negative values count from the end of the video
-
-Connect the video VAE to `vae` when you provide an image, and the audio VAE to `audio_vae` when you provide audio. Chain several `MiniMaxH3AddGuide` nodes to anchor guides at multiple frames.
-
-For example, feed the first 22 frames of an existing video plus its audio into a `MiniMaxH3AddGuide` at frame 0, and the model generates the continuation of both streams. Or place a still image at frame 60 of a 124-frame video to force the video to pass through that frame.
-
-First/last-frame anchoring produces the same coordinates as before, so existing workflows keep working unchanged.
-
-### Using prompt embeddings (#15697)
-
-[Comfy-Org/ComfyUI#15697](https://github.com/Comfy-Org/ComfyUI/pull/15697) added support for prompt embeddings in MiniMax H3. You can now use ComfyUI's standard `embedding:` syntax in H3 prompts.
-
-Place an embedding file in `ComfyUI/models/embeddings/` and reference it in the prompt by name, for example `embedding:my_embedding`. The embedding is loaded and mixed into the text conditioning just like with any other ComfyUI model.
-
-The [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/embeddings) repository hosts 10 style embeddings in its `embeddings` folder. These files are unofficial: they were contributed by community member [silveroxides](https://huggingface.co/silveroxides) via [Hugging Face PR #50](https://huggingface.co/Comfy-Org/MiniMax-H3/discussions/50), and were not produced by Comfy-Org or MiniMax. The original files are in the [silveroxides/MiniMax-H3_tests](https://huggingface.co/silveroxides/MiniMax-H3_tests/tree/main/embeddings) repository. The file name describes the intended effect, and the trigger word is the file name without the extension:
-
-| Embedding | Effect (by name) |
-|---|---|
-| `minimaxh3_art_is_explosion` | Explosive art composition |
-| `minimaxh3_blooming_flowers` | Flowers blooming |
-| `minimaxh3_bullet_time` | Bullet-time effect |
-| `minimaxh3_dark_magic` | Dark magic atmosphere |
-| `minimaxh3_fire_breath` | Fire-breath effect |
-| `minimaxh3_four_seasons` | Four seasons transition |
-| `minimaxh3_kiss_camera` | Kiss scene camera move |
-| `minimaxh3_spiral_ascent` | Spiraling ascent |
-| `minimaxh3_storm_magic` | Storm magic |
-| `minimaxh3_truman_show` | Truman Show style |
-
-### Inpainting and extension with latent noise masks (#15375)
-
-[Comfy-Org/ComfyUI#15375](https://github.com/Comfy-Org/ComfyUI/pull/15375) added per-token noise masks for MiniMax H3, covering both the video and audio latents. You can now regenerate only part of a video while keeping the rest fixed.
-
-Connect a mask to the sampler's `denoise_mask` input as usual: a value of `0` preserves the corresponding latent region, while `1` regenerates it. Video masks snap to the model's 2x2 latent patch grid, and audio masks to whole latent frames. Use it for local inpainting, object removal, or extending a clip while keeping the existing content stable.
+Default H3 shifts are `shift` **12** and `audio_shift` **3** from the model definition (no extra node). FastH3 templates set **ModelSamplingMiniMaxH3** to `shift_video` **10**, `shift_audio` **3**. Wrong video shift on distilled builds (e.g. **3** instead of **10** on 8-step) can show grid artifacts. Custom finetunes may need their own pair on **ModelSamplingMiniMaxH3** (see the file's model card). [DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) uses `shift` **12**, `audio_shift` **2**, **`lcm`** + **`simple`**.
 
 ## Speeding up generation with Sage Attention
 
-The example workflows use the standard attention implementation. You can roughly double the generation speed with [Sage Attention](https://github.com/woct0rdho/SageAttention), with minimal quality loss. Sage Attention is an optional dependency, so you need to install it yourself:
+[Sage Attention](https://github.com/woct0rdho/SageAttention) can roughly **2×** speed with small quality impact (optional install):
 
-1. Install the `sageattention` Python package. Download the wheel that matches your PyTorch and CUDA versions from the [SageAttention releases](https://github.com/woct0rdho/SageAttention/releases) page, then install it with `pip install <wheel-file>`.
-2. Install the [KJNodes custom nodes](https://github.com/kijai/ComfyUI-KJNodes), which provide the `Patch Sage Attention KJ` node. Use the ComfyUI Manager, or clone the repository into `ComfyUI/custom_nodes/` and restart ComfyUI.
-3. Add a `Patch Sage Attention KJ` node to the workflow and connect it between the `UNETLoader` and the `BasicGuider` node: its `model` input receives the model from the `UNETLoader`, and its `model` output feeds the `model` input of the `BasicGuider`. Set `sage_attention` to `auto`.
-4. Run the workflow as usual. Only the guider needs the patch; the scheduler only generates the sigmas and can stay as is.
+1. `pip install` the wheel matching your PyTorch/CUDA from [releases](https://github.com/woct0rdho/SageAttention/releases)
+2. Install [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) for `Patch Sage Attention KJ`
+3. Insert between `UNETLoader` and `BasicGuider`; set `sage_attention` to `auto`
+4. Or launch with `--use-sage-attention`
 
-Notes:
+Sage needs float16/bfloat16; some H3 layers use other dtypes and fall back to PyTorch attention (console warnings are normal).
 
-- Sage Attention requires float16 or bfloat16 tensors. MiniMax H3 runs some layers in other dtypes, so you may see "Input tensors must be in dtype of torch.float16 or torch.bfloat16, using pytorch attention instead" messages in the console. These are expected; the affected layers fall back to standard attention and generation still works.
-- Alternatively, you can enable Sage Attention globally by launching ComfyUI with the `--use-sage-attention` flag instead of adding the node.
+### Quality degradation with INT8 attention
+
+End-of-clip morphing or garbled on-screen text with Sage often comes from INT8 attention quantization (hot channels in late blocks).
+
+- Templates use **`int8_convrot`** checkpoints. **Comfy Kitchen does not support them** ([issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)). Use default attention, or switch `UNETLoader` to **`pruned_bf16`** then change backend.
+- On **bf16** checkpoints, **Comfy Kitchen attention** (channel rotation before quantize) clears artifacts at similar speed.
+
+Add **Model Attention Backend** (`comfy kitchen attention`) on the model path to `BasicGuider` (after LoRA/turbo), or use `--use-ck-attention` (0.32.0+). Requires `comfy-kitchen` INT8 kernels on your hardware.
+
+## Speeding up generation with sparse attention
+
+**Model Sparse Attention** (0.35.0+, experimental) cuts attention cost on long clips. For base H3 use `method` **`sol-attn`** (`sla`/`vsa` need matching weights). Needs CUDA + `sol_attn` from `comfy-kitchen`; otherwise layers stay dense.
+
+- Defaults `start_percent` **0.2**, `end_percent` **1.0**. Later start (~**0.4**) and earlier end (~**0.9**) protect opening/closing frames.
+- Keep **`sink_conditioning`** at **`exact_kv_and_rows`** on H3 (protects packed text/audio/reference rows).
+- **`tau`**: higher = sparser/faster (`1.0` ~16% exact blocks, `1.3` default, `2.0` ~2.7%).
+- Short sequences below `min_tokens` (default **12288**) see little gain.
+
+FastH3 uses **`vsa`** at `keep_percent` **10**; see [FastH3 page](/tutorials/video/minimax/minimax-h3-fastvideo).
+
+### Checking whether sparse attention is active
+
+Base H3 templates do not include the node. Add **Model Sparse Attention** between `UNETLoader` and `BasicGuider`, then turn on **`verbose`** (Advanced, off by default) to log one line per attention shape.
+
+Calls that stay dense log `dense (<n> tokens): <reason>` or `dense (<b>, <n>, <h>, <d>): <reason>`. Only the first failing condition is reported:
+
+| Logged reason | What to change |
+| --- | --- |
+| `no compiled sol_attn kernel for this GPU` | The installed `comfy-kitchen` has no kernel for your GPU. Update it, or leave the node out on that machine. |
+| `<n> tokens < min_tokens <value>` | Raise the resolution or clip length, or lower `min_tokens` (default **12288**). |
+| `sigma <x> outside the start/end window` | Widen `start_percent` and `end_percent`. |
+| `block <i> in dense_blocks` | Remove that block index from `dense_blocks`. |
+| `no H3 layout for this call` | `vsa` only. Select `sol-attn`. |
+
+Calls that succeed log `sparse (<b>, <n>, <h>, <d>), sinks <k>/<q>` or `sparse producer path: <n> tokens, <mode>`.
+
+Three conditions never log, even with `verbose` on: activations that are not bfloat16 on the H3 path, a `head_dim` other than **128**, and missing rope frequencies all fall back silently.
+
+`vsa` is bound to the FastH3 checkpoint. It reads a learned coarse branch from `to_gate_compress` layers that only those weights carry, so on any other H3 checkpoint the node prints `VSA: the model has no to_gate_compress layers; running the fine stage without the coarse branch` and runs the fine stage alone. That warning is not gated by `verbose`.
+
+## Commercial licensing
+
+H3's open weights are free to download and run. Using locally generated outputs commercially requires a [MiniMax commercial license](https://comfy.org/minimax/license), sold through Comfy, the only official reseller. Generations on Comfy Cloud already include commercial rights, so a license is only needed for local use.
+
+Do you need one?
+
+- **Comfy Cloud**: commercial use is included. Nothing to buy.
+- **Your own hardware, outside the US, EU, UK, and Korea, under $20M in yearly revenue**: the free MiniMax community license covers commercial use. Show a "Powered by MiniMax H3" credit; the same territory rule applies to where your outputs are used.
+- **Your own hardware in the US, EU, UK, or Korea, or over $20M in yearly revenue**: you need one of the two licenses below.
+
+Licenses come in two tiers:
+
+|                           | Professional           | Enterprise                                                   |
+| ------------------------- | ---------------------- | ------------------------------------------------------------ |
+| Price                     | From $5,000 per month  | Custom, annual agreement, priced to your volume              |
+| Term                      | Monthly                | 12-month minimum                                             |
+| Licensed users            | Up to 10               | No cap                                                       |
+| Domains                   | 1                      | Custom                                                       |
+| Model versions            | Distilled open weights | All versions, undistilled weights and new releases included  |
+| Commercial use of outputs | Full commercial rights | Full commercial rights                                       |
+| Fine-tuning and LoRA      | Included               | Included                                                     |
+| Client and downstream work | Included              | Included                                                     |
+
+Professional starts at $5,000 per month. Enterprise has no flat list price; it is quoted to your generation volume and team. Both tiers cover MiniMax H3 plus MiniMax Audio & Music under one agreement. [Request a license](https://comfy.org/contact) to get a quote.
