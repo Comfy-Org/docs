@@ -468,6 +468,15 @@ function buildTranslationInstructions(lang: LangConfig): string {
     lang.code === "es"
       ? "For Spanish, write neutral Latin American Spanish in the informal second person (tú), matching the ComfyUI frontend's es locale: `flujo de trabajo` for workflow, `nodo` for node, `Inicia sesión` style imperatives. Localize the section headings as `## Esquema`, `### Entrada` and `### Salida`. Use the inverted opening marks ¿ and ¡ where the sentence needs them."
       : "",
+    lang.code === "es"
+      ? "Spanish headings use sentence case: capitalize only the first word and proper nouns, product names or UI labels. Never copy English Title Case into a Spanish heading. Start task headings with the infinitive (`Instalar el administrador`, `Guardar y compartir flujos de trabajo`), not the gerund (`Instalando`, `Guardando`), which is an English -ing calque."
+      : "",
+    lang.code === "es"
+      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Use `video`, never `vídeo`. Avoid passive reflexive calques (`se pueden pasar`) and empty `el mismo/la misma` where Spanish reads better with a direct subject."
+      : "",
+    lang.code === "es"
+      ? "Spanish runs 20 to 30 percent longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact."
+      : "",
     lang.code === "zh"
       ? "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for a term everywhere within the file. Never invent words (for example `fixed` is 固定, not 顶固). Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a 链接 (hyperlinks), while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a 连线."
       : "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for that term everywhere within the file. Never invent words for a term the glossary already covers. Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a hyperlink, while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a connection between nodes. Use the target language's own established wording for both senses and never collapse them into one word.",
