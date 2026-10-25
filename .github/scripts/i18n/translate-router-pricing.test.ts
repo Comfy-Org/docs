@@ -6,7 +6,7 @@ import { REPO_ROOT } from "./i18n-config.mjs";
 import { keepLinksInsideLocale, localizedPageContent } from "./translate-router-pricing.ts";
 
 const PAGE = "development/comfy-router/pricing.mdx";
-const LOCALES = ["ja", "zh", "ko"] as const;
+const LOCALES = ["ja", "zh", "ko", "es"] as const;
 const links = (content: string) => [...content.matchAll(/\]\((\/[^)]+)\)/g)].map((match) => match[1]);
 const technicalKeys = (content: string) => [...content.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
 const providers = (content: string) => [...content.matchAll(/<Accordion title="([^"]+)"/g)].map((match) => match[1]);
@@ -20,8 +20,8 @@ const numericRates = (content: string) => {
   for (const line of bothCurrencies.split("\n")) {
     if (!line.startsWith("|")) { priceColumns = []; continue; }
     const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
-    if (/^(Name|名前|名称|이름)$/.test(cells[0])) {
-      priceColumns = cells.flatMap((cell, index) => /credits|usd|クレジット|积分|크레딧/i.test(cell) ? [index] : []);
+    if (/^(Name|名前|名称|이름|Nombre)$/.test(cells[0])) {
+      priceColumns = cells.flatMap((cell, index) => /credits|usd|クレジット|积分|크레딧|crédit/i.test(cell) ? [index] : []);
       continue;
     }
     if (cells.every((cell) => /^:?-+:?$/.test(cell))) continue;
@@ -59,7 +59,7 @@ for (const locale of LOCALES) {
     const englishLinks = links(english);
     expect(localizedLinks.length).toEqual(englishLinks.length);
     localizedLinks.forEach((link, index) => {
-      if (link.replace(/^\/(ja|zh|ko)\//, "/") === englishLinks[index]) return;
+      if (link.replace(/^\/(ja|zh|ko|es)\//, "/") === englishLinks[index]) return;
       expect(link.startsWith(`/${locale}/`)).toBe(true);
     });
 

@@ -1,8 +1,8 @@
-export type PricingLocale = "en" | "ja" | "zh" | "ko";
+export type PricingLocale = "en" | "ja" | "zh" | "ko" | "es";
 export type PricingCategory = "images" | "video" | "text" | "audio" | "3d";
 
-const localeIndex = { en: 0, ja: 1, zh: 2, ko: 3 } as const;
-type Translation = readonly [string, string, string, string];
+const localeIndex = { en: 0, ja: 1, zh: 2, ko: 3, es: 4 } as const;
+type Translation = readonly [string, string, string, string, string];
 
 export const pricingCopy = {
   en: {
@@ -129,72 +129,103 @@ export const pricingCopy = {
     status: "사용량 기반 요금은 요청마다 달라집니다. 게시되지 않은 요금은 무료라는 뜻이 아닙니다.",
     categories: { images: "이미지", video: "동영상", text: "텍스트 및 멀티모달", audio: "오디오", "3d": "3D" },
   },
+  es: {
+    title: "Precios de Comfy Router", sidebar: "Precios",
+    description: "Compara los precios de los modelos de Comfy Router en créditos o USD según el proveedor que los sirve en imagen, video, texto, audio y 3D.",
+    intro: (creditsPerUsd: number) => `${creditsPerUsd} créditos = $1 USD.`,
+    updated: "Precios actualizados",
+    imageTiers: "Calidad y resolución de imagen",
+    tokenRates: "Tarifas por tokens",
+    ratesPer: (unit: string) => `Tarifas por ${unit}`,
+    imageOperationRates: "Tarifas de generación y edición de imágenes",
+    qwenImageRates: "Tarifas de imagen de salida de Qwen Image 3.0",
+    seedreamProRates: "Tarifas de imagen de salida de Seedream 5.0 Pro",
+    seedanceVideoTokenRates: "Tarifas de tokens de video de Seedance",
+    seedanceAudioTokenRates: "Tarifas de audio de Seedance 1.5 Pro",
+    lumaUniRates: "Generación de imagen y edición de imagen posterior",
+    ideogramImageRates: "Tarifas de imágenes de Ideogram",
+    switchxRates: "Tarifas de imagen y video de SwitchX",
+    switchxBillingNote: "Las imágenes se facturan por imagen de salida. Los videos se facturan por cada 30 fotogramas de salida, redondeando hacia arriba.",
+    kreaGenerationRates: "Tarifas de generación de Krea 2 (créditos / generación)",
+    durationRates: "Tarifas por duración",
+    usageRates: "Tarifas por uso",
+    comfyGpuUsageNote: "Las tarifas por uso de Comfy se facturan por segundo de GPU activo; el costo total depende del tiempo de ejecución.",
+    gpuSecondUnit: "segundo de GPU",
+    byResolution: (unit: string) => `Por ${unit} según la resolución`,
+    videoDuration: "Las tarifas de video se aplican a la salida más la duración del video de referencia.",
+    rayExrNote: "La exportación EXR de Ray 3.2 todavía no está disponible. Deja `exr_export` desactivado para las solicitudes HDR; HDR está disponible en 720p y 1080p.",
+    resolution: "Resolución", duration: "Duración", mode: "Modo", audio: "Audio", inputType: "Tipo de entrada", type: "Tipo", operation: "Operación", quality: "Calidad",
+    model: "Nombre", modelId: "ID del modelo", option: "Opción", credits: "Créditos", input: "Entrada de créditos", cached: "Entrada en caché de créditos", output: "Salida de créditos",
+    variable: "Por uso", unavailable: "No publicado",
+    status: "Las tarifas por uso varían según la solicitud. Los precios no publicados no significan que el uso sea gratuito.",
+    categories: { images: "Imágenes", video: "Video", text: "Texto y multimodal", audio: "Audio", "3d": "3D" },
+  },
 } as const;
 
 const phrases: Record<string, Translation> = {
-  "Input text tokens": ["Text input", "テキスト入力", "文本输入", "텍스트 입력"],
-  "Input image tokens": ["Image input", "画像入力", "图像输入", "이미지 입력"],
-  "Input audio tokens": ["Audio input", "音声入力", "音频输入", "오디오 입력"],
-  "Input video tokens": ["Video input", "動画入力", "视频输入", "동영상 입력"],
-  "Output text tokens": ["Text output", "テキスト出力", "文本输出", "텍스트 출력"],
-  "Output image tokens": ["Image output", "画像出力", "图像输出", "이미지 출력"],
-  "Output video tokens": ["Video output", "動画出力", "视频输出", "동영상 출력"],
-  "Reasoning tokens": ["Reasoning", "推論", "推理", "추론"],
-  "Cached input tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력"],
-  "Cached input text tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력"],
-  "Cache-write input text tokens": ["Cache write", "キャッシュ書き込み", "缓存写入", "캐시 쓰기"],
-  "5-minute cache-write input tokens": ["Cache write (5 min)", "キャッシュ書き込み（5 分）", "缓存写入（5 分钟）", "캐시 쓰기(5분)"],
-  "1-hour cache-write input tokens": ["Cache write (1 hour)", "キャッシュ書き込み（1 時間）", "缓存写入（1 小时）", "캐시 쓰기(1시간)"],
-  "Text to image": ["Text to image", "テキストから画像", "文生图", "텍스트 이미지 생성"],
-  "Edit": ["Image edit", "画像編集", "图像编辑", "이미지 편집"],
-  "Text to video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성"],
-  "Text-to-video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성"],
-  "Image to video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성"],
-  "text-to-video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성"],
-  "image-to-video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성"],
-  "video-to-video": ["Video to video", "動画から動画", "视频转视频", "동영상 대 동영상"],
-  "Input image": ["Input image", "入力画像", "输入图像", "입력 이미지"],
-  "Output image": ["Output image", "出力画像", "输出图像", "출력 이미지"],
-  "Output video": ["Output video", "出力動画", "输出视频", "출력 동영상"],
-  "Reference video input": ["Reference video", "参照動画", "参考视频", "참조 동영상"],
-  "Layer decomposition": ["Layer separation", "レイヤー分離", "图层分离", "레이어 분리"],
-  "Additional input image after the first": ["Input images after the first", "2 枚目以降の入力画像", "首张之后的输入图像", "두 번째부터의 입력 이미지"],
-  "Reference images after the first five": ["References beyond 5", "5 枚を超える参照画像", "超过 5 张的参考图像", "5장을 초과하는 참조 이미지"],
-  "Each supplied reference image": ["Reference images", "参照画像", "参考图像", "참조 이미지"],
-  "Input duration, capped at 5 seconds per request": ["Input video (max 5s)", "入力動画（最大 5 秒）", "输入视频（最多 5 秒）", "입력 동영상(최대 5초)"],
-  "Background removal": ["Background removal", "背景除去", "背景移除", "배경 제거"],
-  "Fibo image editing": ["Image edit", "画像編集", "图像编辑", "이미지 편집"],
-  "Promotional price until 2026-11-07": ["Promo until Nov 7, 2026", "2026年11月7日までのプロモ価格", "促销价（至 2026 年 11 月 7 日）", "2026년 11월 7일까지 프로모션 가격"],
-  "From 2026-11-07": ["From Nov 7, 2026", "2026年11月7日から", "自 2026 年 11 月 7 日起", "2026년 11월 7일부터"],
-  "Kling 3 Standard": ["Standard", "標準", "标准", "표준"],
-  "text": ["Text only", "テキストのみ", "仅文本", "텍스트만"],
-  "style_references": ["Style references", "スタイル参照", "风格参考", "스타일 참조"],
-  "moodboards": ["Moodboards", "ムードボード", "情绪板", "무드보드"],
+  "Input text tokens": ["Text input", "テキスト入力", "文本输入", "텍스트 입력", "Entrada de texto"],
+  "Input image tokens": ["Image input", "画像入力", "图像输入", "이미지 입력", "Entrada de imagen"],
+  "Input audio tokens": ["Audio input", "音声入力", "音频输入", "오디오 입력", "Entrada de audio"],
+  "Input video tokens": ["Video input", "動画入力", "视频输入", "동영상 입력", "Entrada de video"],
+  "Output text tokens": ["Text output", "テキスト出力", "文本输出", "텍스트 출력", "Salida de texto"],
+  "Output image tokens": ["Image output", "画像出力", "图像输出", "이미지 출력", "Salida de imagen"],
+  "Output video tokens": ["Video output", "動画出力", "视频输出", "동영상 출력", "Salida de video"],
+  "Reasoning tokens": ["Reasoning", "推論", "推理", "추론", "Razonamiento"],
+  "Cached input tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력", "Entrada en caché"],
+  "Cached input text tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력", "Entrada en caché"],
+  "Cache-write input text tokens": ["Cache write", "キャッシュ書き込み", "缓存写入", "캐시 쓰기", "Escritura en caché"],
+  "5-minute cache-write input tokens": ["Cache write (5 min)", "キャッシュ書き込み（5 分）", "缓存写入（5 分钟）", "캐시 쓰기(5분)", "Escritura en caché (5 min)"],
+  "1-hour cache-write input tokens": ["Cache write (1 hour)", "キャッシュ書き込み（1 時間）", "缓存写入（1 小时）", "캐시 쓰기(1시간)", "Escritura en caché (1 h)"],
+  "Text to image": ["Text to image", "テキストから画像", "文生图", "텍스트 이미지 생성", "Texto a imagen"],
+  "Edit": ["Image edit", "画像編集", "图像编辑", "이미지 편집", "Edición de imagen"],
+  "Text to video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성", "Texto a video"],
+  "Text-to-video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성", "Texto a video"],
+  "Image to video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성", "Imagen a video"],
+  "text-to-video": ["Text to video", "テキストから動画", "文生视频", "텍스트 동영상 생성", "Texto a video"],
+  "image-to-video": ["Image to video", "画像から動画", "图生视频", "이미지 동영상 생성", "Imagen a video"],
+  "video-to-video": ["Video to video", "動画から動画", "视频转视频", "동영상 대 동영상", "Video a video"],
+  "Input image": ["Input image", "入力画像", "输入图像", "입력 이미지", "Imagen de entrada"],
+  "Output image": ["Output image", "出力画像", "输出图像", "출력 이미지", "Imagen de salida"],
+  "Output video": ["Output video", "出力動画", "输出视频", "출력 동영상", "Video de salida"],
+  "Reference video input": ["Reference video", "参照動画", "参考视频", "참조 동영상", "Video de referencia"],
+  "Layer decomposition": ["Layer separation", "レイヤー分離", "图层分离", "레이어 분리", "Separación de capas"],
+  "Additional input image after the first": ["Input images after the first", "2 枚目以降の入力画像", "首张之后的输入图像", "두 번째부터의 입력 이미지", "Imágenes de entrada después de la primera"],
+  "Reference images after the first five": ["References beyond 5", "5 枚を超える参照画像", "超过 5 张的参考图像", "5장을 초과하는 참조 이미지", "Referencias más allá de 5"],
+  "Each supplied reference image": ["Reference images", "参照画像", "参考图像", "참조 이미지", "Imágenes de referencia"],
+  "Input duration, capped at 5 seconds per request": ["Input video (max 5s)", "入力動画（最大 5 秒）", "输入视频（最多 5 秒）", "입력 동영상(최대 5초)", "Video de entrada (máx. 5 s)"],
+  "Background removal": ["Background removal", "背景除去", "背景移除", "배경 제거", "Eliminación de fondo"],
+  "Fibo image editing": ["Image edit", "画像編集", "图像编辑", "이미지 편집", "Edición de imagen"],
+  "Promotional price until 2026-11-07": ["Promo until Nov 7, 2026", "2026年11月7日までのプロモ価格", "促销价（至 2026 年 11 月 7 日）", "2026년 11월 7일까지 프로모션 가격", "Promoción hasta el 7 de noviembre de 2026"],
+  "From 2026-11-07": ["From Nov 7, 2026", "2026年11月7日から", "自 2026 年 11 月 7 日起", "2026년 11월 7일부터", "A partir del 7 de noviembre de 2026"],
+  "Kling 3 Standard": ["Standard", "標準", "标准", "표준", "Estándar"],
+  "text": ["Text only", "テキストのみ", "仅文本", "텍스트만", "Solo texto"],
+  "style_references": ["Style references", "スタイル参照", "风格参考", "스타일 참조", "Referencias de estilo"],
+  "moodboards": ["Moodboards", "ムードボード", "情绪板", "무드보드", "Moodboards"],
 };
 
 const units: Record<string, Translation> = {
-  "1M tokens": ["1M tokens", "1M トークン", "1M 令牌", "1M 토큰"],
-  "1K video tokens": ["1K video tokens", "1K 動画トークン", "1K 视频令牌", "1K 동영상 토큰"],
-  "second": ["second", "秒", "秒", "초"], "minute": ["minute", "分", "分钟", "분"],
-  "5 seconds": ["5 s", "5 秒", "5 秒", "5초"],
-  "30 output frames, rounded up": ["30 frames (rounded up)", "30 フレーム（切り上げ）", "30 帧（向上取整）", "30프레임(올림)"],
-  "request": ["request", "リクエスト", "请求", "요청"],
-  "completed operation": ["operation", "操作", "操作", "작업"],
-  "generation": ["generation", "生成", "次生成", "생성"],
-  "image": ["image", "画像", "图像", "이미지"],
-  "generated image": ["image", "画像", "图像", "이미지"],
-  "input image": ["input image", "入力画像", "输入图像", "입력 이미지"],
-  "output image": ["output image", "出力画像", "输出图像", "출력 이미지"],
-  "reference image": ["reference image", "参照画像", "参考图像", "참조 이미지"],
-  "additional reference image": ["extra reference image", "追加参照画像", "额外参考图像", "추가 참조 이미지"],
-  "usage credit": ["Meshy credit", "Meshy クレジット", "Meshy 积分", "Meshy 크레딧"],
-  "video credit": ["Kling credit", "Kling クレジット", "Kling 积分", "Kling 크레딧"],
-  "variable based on reported usage": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량"],
-  "variable per request": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량"],
-  "variable with output video duration": ["video duration", "動画の長さ", "视频时长", "동영상 길이"],
-  "variable with processed pixels": ["pixels and duration", "画素数と長さ", "像素和时长", "픽셀 및 길이"],
-  "variable with text length": ["text length", "テキスト長", "文本长度", "텍스트 길이"],
-  "varies with image dimensions and scale": ["dimensions and scale", "寸法と拡大率", "尺寸与缩放", "크기 및 배율"],
+  "1M tokens": ["1M tokens", "1M トークン", "1M 令牌", "1M 토큰", "1M de tokens"],
+  "1K video tokens": ["1K video tokens", "1K 動画トークン", "1K 视频令牌", "1K 동영상 토큰", "1K de tokens de video"],
+  "second": ["second", "秒", "秒", "초", "segundo"], "minute": ["minute", "分", "分钟", "분", "minuto"],
+  "5 seconds": ["5 s", "5 秒", "5 秒", "5초", "5 s"],
+  "30 output frames, rounded up": ["30 frames (rounded up)", "30 フレーム（切り上げ）", "30 帧（向上取整）", "30프레임(올림)", "30 fotogramas (redondeando hacia arriba)"],
+  "request": ["request", "リクエスト", "请求", "요청", "solicitud"],
+  "completed operation": ["operation", "操作", "操作", "작업", "operación"],
+  "generation": ["generation", "生成", "次生成", "생성", "generación"],
+  "image": ["image", "画像", "图像", "이미지", "imagen"],
+  "generated image": ["image", "画像", "图像", "이미지", "imagen"],
+  "input image": ["input image", "入力画像", "输入图像", "입력 이미지", "imagen de entrada"],
+  "output image": ["output image", "出力画像", "输出图像", "출력 이미지", "imagen de salida"],
+  "reference image": ["reference image", "参照画像", "参考图像", "참조 이미지", "imagen de referencia"],
+  "additional reference image": ["extra reference image", "追加参照画像", "额外参考图像", "추가 참조 이미지", "imagen de referencia adicional"],
+  "usage credit": ["Meshy credit", "Meshy クレジット", "Meshy 积分", "Meshy 크레딧", "crédito de Meshy"],
+  "video credit": ["Kling credit", "Kling クレジット", "Kling 积分", "Kling 크레딧", "crédito de Kling"],
+  "variable based on reported usage": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량", "uso por solicitud"],
+  "variable per request": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량", "uso por solicitud"],
+  "variable with output video duration": ["video duration", "動画の長さ", "视频时长", "동영상 길이", "duración del video"],
+  "variable with processed pixels": ["pixels and duration", "画素数と長さ", "像素和时长", "픽셀 및 길이", "píxeles y duración"],
+  "variable with text length": ["text length", "テキスト長", "文本长度", "텍스트 길이", "longitud del texto"],
+  "varies with image dimensions and scale": ["dimensions and scale", "寸法と拡大率", "尺寸与缩放", "크기 및 배율", "dimensiones y escala"],
 };
 
 export function formatUnit(unit: string, locale: PricingLocale): string {
@@ -228,20 +259,20 @@ export function formatOption(conditions: string | undefined, locale: PricingLoca
       return value.replace(/P$/, "p").replace(/k$/, "K").replace(/^(720|1080)$/, "$1p");
     }
     if (["generateAudio", "generate_audio"].includes(key)) return value === "true"
-      ? ["Audio", "音声", "音频", "오디오"][index]
-      : ["No audio", "音声なし", "无音频", "오디오 없음"][index];
-    if (key === "draft") return value === "true" ? ["Draft", "ドラフト", "草稿", "초안"][index] : ["Standard", "標準", "标准", "표준"][index];
-    if (key === "quality") return ({ very_low: ["Very low", "最低", "极低", "매우 낮음"], low: ["Low", "低", "低", "낮음"], medium: ["Medium", "中", "中", "중간"], high: ["High", "高", "高", "높음"], xhigh: ["Extra high", "最高", "超高", "매우 높음"], max: ["Max", "最大", "最高", "최대"], DEFAULT: ["Standard", "標準", "标准", "표준"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질"] } as Record<string, string[]>)[value]?.[index] ?? value;
-    if (key === "thinking_mode") return ({ fast: ["Fast thinking", "高速思考", "快速思考", "빠른 사고"], high: ["High thinking", "高度思考", "深度思考", "고급 사고"], ultra: ["Ultra thinking", "最高思考", "极致思考", "울트라 사고"] } as Record<string, string[]>)[value]?.[index] ?? value;
+      ? ["Audio", "音声", "音频", "오디오", "Audio"][index]
+      : ["No audio", "音声なし", "无音频", "오디오 없음", "Sin audio"][index];
+    if (key === "draft") return value === "true" ? ["Draft", "ドラフト", "草稿", "초안", "Borrador"][index] : ["Standard", "標準", "标准", "표준", "Estándar"][index];
+    if (key === "quality") return ({ very_low: ["Very low", "最低", "极低", "매우 낮음", "Muy baja"], low: ["Low", "低", "低", "낮음", "Baja"], medium: ["Medium", "中", "中", "중간", "Media"], high: ["High", "高", "高", "높음", "Alta"], xhigh: ["Extra high", "最高", "超高", "매우 높음", "Muy alta"], max: ["Max", "最大", "最高", "최대", "Máxima"], DEFAULT: ["Standard", "標準", "标准", "표준", "Estándar"], TURBO: ["Turbo", "Turbo", "Turbo", "Turbo", "Turbo"], QUALITY: ["Quality", "高品質", "高质量", "고품질", "Calidad"] } as Record<string, string[]>)[value]?.[index] ?? value;
+    if (key === "thinking_mode") return ({ fast: ["Fast thinking", "高速思考", "快速思考", "빠른 사고", "Razonamiento rápido"], high: ["High thinking", "高度思考", "深度思考", "고급 사고", "Razonamiento alto"], ultra: ["Ultra thinking", "最高思考", "极致思考", "울트라 사고", "Razonamiento ultra"] } as Record<string, string[]>)[value]?.[index] ?? value;
     if (key === "video_type" || key === "feature") return translate(value);
-    if (key === "type" && value === "video") return ["Video generation", "動画生成", "视频生成", "동영상 생성"][index];
-    if (key === "type" && value === "video_edit") return ["Video edit", "動画編集", "视频编辑", "동영상 편집"][index];
-    if (key === "type" && value === "video_reframe") return ["Video reframe", "動画リフレーム", "视频重构图", "동영상 리프레임"][index];
-    if (key === "type") return value === "image_edit" ? translate("Edit") : ["Image generation", "画像生成", "图像生成", "이미지 생성"][index];
+    if (key === "type" && value === "video") return ["Video generation", "動画生成", "视频生成", "동영상 생성", "Generación de video"][index];
+    if (key === "type" && value === "video_edit") return ["Video edit", "動画編集", "视频编辑", "동영상 편집", "Edición de video"][index];
+    if (key === "type" && value === "video_reframe") return ["Video reframe", "動画リフレーム", "视频重构图", "동영상 리프레임", "Reencuadre de video"][index];
+    if (key === "type") return value === "image_edit" ? translate("Edit") : ["Image generation", "画像生成", "图像生成", "이미지 생성", "Generación de imagen"][index];
     if (key === "dynamic_range") return ({ standard: "SDR", hdr: "HDR", hdr_exr: "HDR + EXR" } as Record<string, string>)[value] ?? value;
     if (key === "duration") return value;
-    if (key === "endpoint") return value.includes("dialogue") ? ["Dialogue", "対話", "对话", "대화"][index] : ["Text to speech", "音声合成", "语音合成", "음성 합성"][index];
-    if (key === "input_tier" || key === "output_tier") return value.replace(/^qima_(input|output)_/, "").replace(/k$/, "K").replace(/^standard$/, ["Standard", "標準", "标准", "표준"][index]).replace(/^large$/, ["Large", "大", "大", "대형"][index]);
+    if (key === "endpoint") return value.includes("dialogue") ? ["Dialogue", "対話", "对话", "대화", "Diálogo"][index] : ["Text to speech", "音声合成", "语音合成", "음성 합성", "Texto a voz"][index];
+    if (key === "input_tier" || key === "output_tier") return value.replace(/^qima_(input|output)_/, "").replace(/k$/, "K").replace(/^standard$/, ["Standard", "標準", "标准", "표준", "Estándar"][index]).replace(/^large$/, ["Large", "大", "大", "대형", "Grande"][index]);
     return part;
   }))].join(" · ") || "-";
 }
@@ -251,7 +282,7 @@ export function formatAmount(value: string): string {
 }
 
 export function formatDate(value: string, locale: PricingLocale): string {
-  return new Intl.DateTimeFormat({ en: "en-US", ja: "ja-JP", zh: "zh-CN", ko: "ko-KR" }[locale], {
+  return new Intl.DateTimeFormat({ en: "en-US", ja: "ja-JP", zh: "zh-CN", ko: "ko-KR", es: "es-419" }[locale], {
     year: "numeric", month: "short", day: "numeric", timeZone: "UTC",
   }).format(new Date(value));
 }
