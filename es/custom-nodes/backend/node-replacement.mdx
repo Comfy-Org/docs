@@ -1,0 +1,232 @@
+---
+title: "Reemplazo de nodos"
+description: "Registra reemplazos de nodos para que los usuarios migren de los nodos obsoletos"
+translationSourceHash: fa4b1539
+translationFrom: custom-nodes/backend/node-replacement.mdx
+translationBlockHashes:
+  "_intro": 0dc318ee
+  "When to use": df3092ae
+  "NodeReplace parameters": 22f2bd38
+  "Frontend behavior": 2fc5a2b5
+---
+
+La API de reemplazo de nodos permite a los desarrolladores de nodos personalizados definir rutas de migración desde nodos obsoletos hasta sus equivalentes más recientes. Cuando actualizas o renombras nodos, los usuarios pueden actualizar automáticamente sus flujos de trabajo.
+
+## Cuándo usar
+
+- **Cambiar nombres de clase de nodo**: Cambiaste el nombre de clase de un nodo (usa `DISPLAY_NAME` para cambios de nombre para mostrar en su lugar)
+- **Fusionar nodos**: Varios nodos consolidados en uno (p. ej., `Load3DAnimation` fusionado en `Load3D`)
+- **Refactorizar entradas**: Los nombres o tipos de las entradas cambiaron entre versiones
+- **Corregir errores tipográficos**: Corregir nombres de nodos sin romper los flujos de trabajo existentes
+
+## Where to register replacements
+
+Register replacements during your extension's `on_load` lifecycle hook. Create a dedicated file (e.g., `node_replacements.py`) in your custom node package:
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # Register replacements here
+```
+
+## Complete example
+
+Here's a full example showing how to structure node replacements in a custom node package:
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """Register all node replacements for this package."""
+    
+    # Simple rename - no input changes needed
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # Complex replacement with input mapping
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # New input with default
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # No nodes defined here, just replacements
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Core examples
+
+ComfyUI core uses node replacements for built-in node migrations. Here are real examples from [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_replacements.py):
+
+### Simple node merge
+
+When `Load3DAnimation` was merged into `Load3D`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### Typo fix
+
+Correcting a typo in `SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### Input renaming with defaults
+
+Replacing `ImageScaleBy` with `ResizeImageMaskNode`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Autogrow input mapping
+
+For nodes using Autogrow (dynamic inputs), use dot notation:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## Parámetros de NodeReplace
+
+| Parámetro | Tipo | Descripción |
+|-----------|------|-------------|
+| `new_node_id` | str | Nombre de clase del nodo de reemplazo |
+| `old_node_id` | str | Nombre de clase del nodo obsoleto |
+| `old_widget_ids` | list[str] \| None | Lista ordenada que vincula los IDs de widget con sus índices relativos |
+| `input_mapping` | list \| None | Cómo asignar las entradas del nodo antiguo al nuevo |
+| `output_mapping` | list \| None | Cómo asignar las salidas del nodo antiguo al nuevo |
+
+## Input mapping
+
+Each input mapping entry defines how an input transfers from the old node to the new one.
+
+**Map from old input:**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**Set a fixed value:**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**Map dynamic/autogrow inputs (use dot notation):**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## Output mapping
+
+Output mappings use index-based references:
+
+```python
+{"new_idx": 0, "old_idx": 0}  # Map first output
+{"new_idx": 1, "old_idx": 0}  # Old output 0 -> new output 1
+```
+
+## Widget ID binding
+
+The `old_widget_ids` field maps widget IDs to their positional indexes. This is required because workflow JSON stores widget values by position, not ID.
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# Widget at index 0 = "steps"
+# Widget at index 1 = "cfg"
+# Widget at index 2 = "sampler"
+```
+
+## REST API
+
+Retrieve all registered replacements:
+
+```
+GET /api/node_replacements
+```
+
+**Response:**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## Comportamiento del frontend
+
+Cuando un flujo de trabajo contiene un nodo obsoleto, el frontend:
+
+1. Obtiene los reemplazos desde `GET /api/node_replacements`
+2. Detecta los nodos que coinciden con `old_node_id`
+3. Pide al usuario que los mejore
+4. Aplica las asignaciones de entrada/salida automáticamente
+5. Conserva las conexiones y los valores de los widgets
+
+Consulta la implementación del frontend:
+- [PR #8364 de lógica de negocio](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [PR #8483 de lógica adicional](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [PR #8604 de vistas de UI](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)

@@ -1,0 +1,313 @@
+---
+title: "Ejemplos de API"
+description: "Tres patrones comunes para llamar a la API de ComfyUI Server"
+translationSourceHash: d728bf1f
+translationFrom: development/comfyui-server/api-examples.mdx
+translationBlockHashes:
+  "_intro": 84518317
+  "Method 1: Submit and Forget (HTTP only)": 040a0a2d
+  "Method 2: WebSocket + History (Monitor Completion)": ce4e5a84
+  "Which Method Should I Use?": 95cec253
+---
+Esta página muestra tres formas de interactuar con la API del servidor de ComfyUI, desde un envío HTTP simple hasta una integración completa con WebSocket y salida de imágenes en tiempo real.
+
+Todos los ejemplos usan el [flujo de trabajo predeterminado de SD1.5](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples) a modo de ilustración. Antes de usar la API, debes exportar tu flujo de trabajo en [formato API](/es/development/api-development/workflow-api-format).
+
+<Note>
+  Estos ejemplos usan Python con la biblioteca estándar y el paquete `websocket-client` (`pip install websocket-client`). El protocolo subyacente de la API es el mismo independientemente del lenguaje. Consulta la [Referencia de la API de Cloud](/es/development/cloud/api-reference) para ver los equivalentes en TypeScript y curl.
+</Note>
+
+---
+
+## Método 1: Enviar y olvidar (solo HTTP)
+
+Fuente: [`basic_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/basic_api_example.py)
+
+El enfoque más sencillo: envía un flujo de trabajo y no esperes los resultados. Es útil para tareas en las que envías y te olvidas, y revisas las salidas más tarde.
+
+```python
+"""basic_api_example.py: envía un flujo de trabajo solo por HTTP."""
+
+import json
+from urllib import request
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt}
+    data = json.dumps(p).encode("utf-8")
+    req = request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    request.urlopen(req)
+
+
+if __name__ == "__main__":
+    # Carga un flujo de trabajo exportado en formato API
+    prompt_text = """{
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "cfg": 8, "denoise": 1,
+                "latent_image": ["5", 0],
+                "model": ["4", 0],
+                "negative": ["7", 0],
+                "positive": ["6", 0],
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "seed": 8566257, "steps": 20
+            }
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"batch_size": 1, "height": 512, "width": 512}
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "masterpiece best quality man"}
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["4", 1], "text": "bad hands"}
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"filename_prefix": "ComfyUI", "images": ["8", 0]}
+        }
+    }"""
+
+    prompt = json.loads(prompt_text)
+    # Modifica las entradas antes de enviar
+    prompt["3"]["inputs"]["seed"] = 5
+    prompt["6"]["inputs"]["text"] = "masterpiece best quality man"
+
+    queue_prompt(prompt)
+    print("Prompt submitted successfully.")
+```
+
+<Info>
+  Este método usa el nodo `SaveImage`, que guarda las imágenes en el disco del servidor. Para recuperarlas, tendrías que hacer después una llamada a `GET /view?filename=...`.
+</Info>
+
+---
+
+## Método 2: WebSocket + historial (monitorizar la finalización)
+
+Fuente: [`websockets_api_example.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example.py)
+
+Usa WebSocket para esperar a que finalice la ejecución y luego obtén las salidas a través del endpoint `/history`. Este es el patrón recomendado para la mayoría de los casos de uso.
+
+```python
+"""websockets_api_example.py: monitorea la ejecución por WebSocket y descarga mediante /history."""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt, prompt_id):
+    p = {"prompt": prompt, "client_id": client_id, "prompt_id": prompt_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    urllib.request.urlopen(req)
+
+
+def get_image(filename, subfolder, folder_type):
+    params = urllib.parse.urlencode({
+        "filename": filename,
+        "subfolder": subfolder,
+        "type": folder_type,
+    })
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/view?{params}"
+    ) as response:
+        return response.read()
+
+
+def get_history(prompt_id):
+    with urllib.request.urlopen(
+        f"http://{SERVER_ADDRESS}/history/{prompt_id}"
+    ) as response:
+        return json.loads(response.read())
+
+
+def get_images(ws, prompt):
+    prompt_id = str(uuid.uuid4())
+    queue_prompt(prompt, prompt_id)
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["node"] is None and data["prompt_id"] == prompt_id:
+                    break  # Ejecución terminada
+        # Los frames binarios son imágenes de vista previa, omítelos aquí
+        continue
+
+    history = get_history(prompt_id)[prompt_id]
+    output_images = {}
+    for node_id in history["outputs"]:
+        node_output = history["outputs"][node_id]
+        images_output = []
+        if "images" in node_output:
+            for image in node_output["images"]:
+                image_data = get_image(
+                    image["filename"], image["subfolder"], image["type"]
+                )
+                images_output.append(image_data)
+        output_images[node_id] = images_output
+    return output_images
+
+
+if __name__ == "__main__":
+    prompt_text = """{
+        "3": { ... }, "4": { ... }, "5": { ... },
+        "6": { ... }, "7": { ... }, "8": { ... },
+        "9": { "class_type": "SaveImage", "inputs": { ... } }
+    }"""
+    prompt = json.loads(prompt_text)
+    prompt["3"]["inputs"]["seed"] = 5
+    prompt["6"]["inputs"]["text"] = "masterpiece best quality man"
+
+    ws = websocket.WebSocket()
+    ws.connect(f"ws://{SERVER_ADDRESS}/ws?clientId={client_id}")
+    images = get_images(ws, prompt)
+    ws.close()
+
+    print(f"Got {len(images)} output node(s) with images.")
+
+    # Mostrar las imágenes (requiere Pillow):
+    # for node_id in images:
+    #     for image_data in images[node_id]:
+    #         from PIL import Image
+    #         import io
+    #         img = Image.open(io.BytesIO(image_data))
+    #         img.show()
+```
+
+<Tip>
+  Los frames binarios del WebSocket contienen imágenes de vista previa del progreso durante la generación. Puedes decodificarlos para obtener vistas previas en vivo (consulta la página [Server Messages](/development/comfyui-server/comms_messages) para conocer el formato binario).
+</Tip>
+
+---
+
+## Method 3: WebSocket with SaveImageWebsocket (Real-time Images)
+
+Source: [`websockets_api_example_ws_images.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/script_examples/websockets_api_example_ws_images.py)
+
+For scenarios where you don't want images saved to disk, use the `SaveImageWebsocket` node. Images are delivered directly via WebSocket binary frames.
+
+```python
+"""websockets_api_example_ws_images.py — Receive images directly via WebSocket."""
+
+import websocket  # pip install websocket-client
+import uuid
+import json
+import urllib.request
+import urllib.parse
+
+SERVER_ADDRESS = "127.0.0.1:8188"
+client_id = str(uuid.uuid4())
+
+
+def queue_prompt(prompt):
+    p = {"prompt": prompt, "client_id": client_id}
+    data = json.dumps(p).encode("utf-8")
+    req = urllib.request.Request(
+        f"http://{SERVER_ADDRESS}/prompt", data=data
+    )
+    return json.loads(urllib.request.urlopen(req).read())
+
+
+def get_images(ws, prompt):
+    prompt_id = queue_prompt(prompt)["prompt_id"]
+    output_images = {}
+    current_node = ""
+
+    while True:
+        out = ws.recv()
+        if isinstance(out, str):
+            message = json.loads(out)
+            if message["type"] == "executing":
+                data = message["data"]
+                if data["prompt_id"] == prompt_id:
+                    if data["node"] is None:
+                        break  # Execution done
+                    current_node = data["node"]
+        else:
+            # Binary frame — image data from SaveImageWebsocket
+            if current_node == "save_image_websocket_node":
+                images_output = output_images.get(current_node, [])
+                # The first 8 bytes are type/meta, rest is image data
+                images_output.append(out[8:])
+                output_images[current_node] = images_output
+
+    return output_images
+
+
+if __name__ == "__main__":
+    prompt_text = """{
+        "3": { "class_type": "KSampler", "inputs": { ... } },
+        ...
+        "save_image_websocket_node": {
+            "class_type": "SaveImageWebsocket",
+            "inputs": {"images": ["8", 0]}
+        }
+    }"""
+    prompt = json.loads(prompt_text)
+    prompt["3"]["inputs"]["seed"] = 5
+
+    ws = websocket.WebSocket()
+    ws.connect(f"ws://{SERVER_ADDRESS}/ws?clientId={client_id}")
+    images = get_images(ws, prompt)
+    ws.close()
+
+    print(f"Received {len(images)} image(s) via WebSocket.")
+
+    # Display (requires Pillow):
+    # for image_data in images.get("save_image_websocket_node", []):
+    #     from PIL import Image
+    #     import io
+    #     img = Image.open(io.BytesIO(image_data))
+    #     img.show()
+```
+
+<Info>
+  The workflow must use a node with `class_type: "SaveImageWebsocket"` (a built-in node) instead of the regular `SaveImage` node.
+</Info>
+
+---
+
+## ¿Qué método debería usar?
+
+<CardGroup cols={3}>
+  <Card title="Método 1: Solo HTTP" icon="paper-plane">
+    **Envía y olvida.** Úsalo cuando no necesites resultados inmediatos o cuando puedas recuperar los resultados más tarde.
+  </Card>
+  <Card title="Método 2: WebSocket + Historial" icon="chart-line" href="#método-2-websocket-+-historial-monitorizar-la-finalización">
+    **RECOMENDADO.** Espera a que termine y luego descarga las salidas. El mejor equilibrio entre simplicidad y fiabilidad.
+  </Card>
+  <Card title="Método 3: SaveImageWebsocket" icon="images" href="#method-3-websocket-with-saveimagewebsocket-real-time-images">
+    **Imágenes en tiempo real.** Lo mejor para aplicaciones interactivas en las que quieres recibir imágenes sin escribir en disco.
+  </Card>
+</CardGroup>
+
+Para ver la referencia completa de la API (endpoints, formatos de payload, manejo de errores), consulta las páginas [Server Routes](/development/comfyui-server/comms_routes) y [Server Messages](/development/comfyui-server/comms_messages).

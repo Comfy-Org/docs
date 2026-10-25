@@ -1,0 +1,256 @@
+---
+title: "Usa Ideogram 4.0 con Comfy Router"
+description: "Fragmentos de Python, TypeScript y cURL para generar imágenes con Ideogram 4.0 por HTTP con Comfy Router, más los campos de solicitud y la forma del resultado."
+sidebarTitle: "Ideogram 4.0"
+translationSourceHash: 57905e9a
+translationFrom: development/comfy-router/models/ideogram/ideogram-v4/code.mdx
+translationBlockHashes:
+  "_intro": 5b2331fa
+  "Quick start": 9c6f1a98
+  "Schema": da4e8bcc
+  "Examples": 094048af
+---
+{/* GENERATED FILE. Edit code.yaml in this directory and run `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/es/comfy-router/model-code-footer.mdx";
+
+Referencia de API de Ideogram 4.0. Ideogram 4.0 es el modelo de texto a imagen de Ideogram, que renderiza texto legible dentro de las imágenes generadas.
+
+**Entrada:** Texto · **Salida:** Imagen
+
+## Inicio rápido
+
+Crea una clave en [tu espacio de trabajo de Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) y expórtala como `COMFY_API_KEY`. Los fragmentos de Python y TypeScript usan los SDK de Comfy (`pip install comfy-sdk` y `npm install @comfyorg/sdk`); el fragmento de cURL es la misma llamada sobre HTTP sin procesar.
+
+**ID del modelo:** `ideogram/ideogram-v4`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/ideogram/ideogram-v4`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Lee COMFY_API_KEY del entorno.
+# El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "ideogram/ideogram-v4",
+            {
+                "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+                "resolution": "1024x1024",
+                "rendering_speed": "DEFAULT",
+            },
+        )
+
+    print("image:", result["data"][0]["url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Lee COMFY_API_KEY del entorno.
+// El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+type Result = { data: { url: string }[] };
+const result = await comfy.models.run<Result>("ideogram/ideogram-v4", {
+  text_prompt: "a single red maple leaf on a plain white background, studio lighting",
+  resolution: "1024x1024",
+  rendering_speed: "DEFAULT",
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.data[0].url);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"text_prompt\": \"a single red maple leaf on a plain white background, studio lighting\", \"resolution\": \"1024x1024\", \"rendering_speed\": \"DEFAULT\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Enviar y recoger más tarde">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) explica el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Lee COMFY_API_KEY del entorno.
+# Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "ideogram/ideogram-v4",
+            {
+                "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+                "resolution": "1024x1024",
+                "rendering_speed": "DEFAULT",
+            },
+        )
+        print("request_id:", handle.request_id)  # con el ID del modelo, todo lo que necesita otro proceso
+
+        # Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # La carga propia del proveedor, el mismo valor que devuelve models.run().
+        # Una solicitud que falló o se canceló lanza aquí el error tipado de Router.
+        result = await handle.get()
+
+    print("image:", result["data"][0]["url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Lee COMFY_API_KEY del entorno.
+// Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+type Result = { data: { url: string }[] };
+const handle = await comfy.models.submit<Result>("ideogram/ideogram-v4", {
+  text_prompt: "a single red maple leaf on a plain white background, studio lighting",
+  resolution: "1024x1024",
+  rendering_speed: "DEFAULT",
+});
+console.log("requestId:", handle.requestId); // con el ID del modelo, todo lo que necesita otro proceso
+
+// Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// El mismo resultado que devuelve models.run(). Una solicitud que falló o se canceló se rechaza aquí.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.data[0].url);
+```
+
+```bash cURL
+# 1. Envía. Router responde 201 con request_id, status_url, response_url y cancel_url.
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"text_prompt\": \"a single red maple leaf on a plain white background, studio lighting\", \"resolution\": \"1024x1024\", \"rendering_speed\": \"DEFAULT\"}"
+
+# 2. Consulta hasta que el estado sea COMPLETED, esperando los segundos de Retry-After que indica cada respuesta.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Recoge. 200 con la salida nativa del modelo, 202 con el cuerpo de estado mientras sigue en ejecución.
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Esquema
+
+### Entrada
+
+<ParamField body="enable_copyright_detection" type="boolean">
+  Activa la detección de derechos de autor posterior a la generación (comprobaciones de semejanza y logotipos de Hive).
+</ParamField>
+
+<ParamField body="json_prompt" type="object">
+  prompt estructurado de V4. Desactiva Magic Prompt; se consume directamente. Proporciona exactamente uno de text_prompt o json_prompt.
+</ParamField>
+
+<ParamField body="rendering_speed" type="string" default="&quot;DEFAULT&quot;">
+  El ajuste de velocidad de renderizado que controla el equilibrio entre la velocidad de generación y la calidad
+
+  Valores posibles: `DEFAULT`, `TURBO`, `QUALITY`
+</ParamField>
+
+<ParamField body="resolution" type="string">
+  Resolución de salida en WIDTHxHEIGHT. Omítela para dejar que el modelo elija una relación de aspecto. Valores 2K admitidos: 2048x2048, 1440x2880, 2880x1440, 1664x2496, 2496x1664, 1792x2240, 2240x1792, 1440x2560, 2560x1440, 1600x2560, 2560x1600, 1728x2304, 2304x1728, 1296x3168, 3168x1296, 1152x2944, 2944x1152, 1248x3328, 3328x1248, 1280x3072, 3072x1280.
+</ParamField>
+
+<ParamField body="text_prompt" type="string">
+  prompt en lenguaje natural. Activa Magic Prompt automáticamente. Proporciona exactamente uno de text_prompt o json_prompt.
+</ParamField>
+
+Generado a partir del esquema que Router sirve en `GET /v2/models/ideogram/ideogram-v4/openapi.json`, el mismo documento contra el que valida una llamada antes de que la solicitud llegue al proveedor.
+
+### Salida
+
+<ResponseField name="created" type="string (date-time)">
+  Marca de tiempo en la que se creó la generación.
+
+  Formato: `date-time`
+</ResponseField>
+
+<ResponseField name="data" type="object[]">
+  Arreglo con la información de las imágenes generadas.
+</ResponseField>
+
+<ResponseField name="data[].is_image_safe" type="boolean">
+  Indica si la imagen se considera segura.
+</ResponseField>
+
+<ResponseField name="data[].prompt" type="string">
+  El prompt utilizado para generar esta imagen.
+</ResponseField>
+
+<ResponseField name="data[].resolution" type="string">
+  La resolución de la imagen generada (p. ej., '1024x1024').
+</ResponseField>
+
+<ResponseField name="data[].seed" type="integer">
+  El valor de semilla utilizado para esta generación.
+</ResponseField>
+
+<ResponseField name="data[].style_type" type="string">
+  El tipo de estilo utilizado para la generación (p. ej., 'REALISTIC', 'ANIME').
+</ResponseField>
+
+<ResponseField name="data[].url" type="string">
+  URL de la imagen generada.
+</ResponseField>
+
+## Ejemplos
+
+### Entrada
+
+```json
+{
+  "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+  "resolution": "1024x1024",
+  "rendering_speed": "DEFAULT"
+}
+```
+
+### Salida
+
+```json
+{
+  "response_type": "url",
+  "created": "2026-08-27T21:00:00Z",
+  "data": [
+    {
+      "url": "https://.../image.png",
+      "prompt": "a single red maple leaf on a plain white background, studio lighting",
+      "resolution": "1024x1024",
+      "seed": 1234567890,
+      "is_image_safe": true
+    }
+  ]
+}
+```
+
+La URL es temporal. Descarga la imagen cuanto antes si necesitas conservarla.
+
+<RouterCodeFooter />

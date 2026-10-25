@@ -1,0 +1,221 @@
+---
+title: "Crear nodos personalizados en ComfyUI"
+sidebarTitle: "Crea tu primer nodo"
+description: "Guía paso a paso para crear un nodo personalizado en ComfyUI: define CATEGORY, INPUT_TYPES y FUNCTION, registra el nodo y crea una extensión JS del cliente."
+translationSourceHash: ff922dfe
+translationFrom: custom-nodes/walkthrough.mdx
+translationBlockHashes:
+  "_intro": 511dfaae
+  "Write a basic node": 5acd782d
+  "Tweak the UI": 566e9dcc
+---
+
+Esta página te guiará paso a paso por el proceso de crear un nodo personalizado.
+
+Nuestro ejemplo tomará un lote de imágenes y devolverá una de las imágenes. Inicialmente, el nodo
+devolverá la imagen que, en promedio, sea la más clara de color; luego lo extenderemos
+para que tenga una variedad de criterios de selección y, finalmente, agregaremos algo de código del lado del cliente.
+
+Esta página asume muy poco conocimiento de Python o Javascript.
+
+Después de este recorrido, profundiza en los detalles del [código del backend](./backend/server_overview) y
+el [código del frontend](./js/javascript_overview).
+
+## Escribir un nodo básico
+
+### Requisitos previos
+
+- Una [instalación](/es/installation/manual_install) de ComfyUI en funcionamiento. Para desarrollo, recomendamos instalar ComfyUI manualmente.
+- Una [instalación](/es/comfy-cli/getting-started) de comfy-cli en funcionamiento.
+
+### Configurar el entorno
+
+```bash
+cd ComfyUI/custom_nodes
+comfy node scaffold
+```
+
+Después de responder algunas preguntas, tendrás un nuevo directorio configurado.
+
+```bash
+ ~  % comfy node scaffold
+You've downloaded .cookiecutters/cookiecutter-comfy-extension before. Is it okay to delete and re-download it? [y/n] (y): y
+  [1/9] full_name (): Comfy
+  [2/9] email (you@gmail.com): me@comfy.org
+  [3/9] github_username (your_github_username): comfy
+  [4/9] project_name (My Custom Nodepack): FirstComfyNode
+  [5/9] project_slug (firstcomfynode): 
+  [6/9] project_short_description (A collection of custom nodes for ComfyUI): 
+  [7/9] version (0.0.1): 
+  [8/9] Select open_source_license
+    1 - GNU General Public License v3
+    2 - MIT license
+    3 - BSD license
+    4 - ISC license
+    5 - Apache Software License 2.0
+    6 - Not open source
+    Choose from [1/2/3/4/5/6] (1): 1
+  [9/9] include_web_directory_for_custom_javascript [y/n] (n): y
+Initialized empty Git repository in firstcomfynode/.git/
+✓ Custom node project created successfully!
+```
+
+### Definir el nodo
+
+Agrega el siguiente código al final de `src/nodes.py`:
+
+```Python src/nodes.py
+class ImageSelector:
+    CATEGORY = "example"
+    @classmethod    
+    def INPUT_TYPES(s):
+        return { "required":  { "images": ("IMAGE",), } }
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "choose_image"
+```
+
+<Info>La estructura básica de un nodo personalizado se describe en detalle [aquí](/es/custom-nodes/backend/server_overview). </Info>
+
+Un nodo personalizado se define con una clase de Python, que debe incluir estas cuatro cosas: `CATEGORY`,
+que especifica en qué parte del menú de agregar nuevo nodo se ubicará el nodo personalizado,
+`INPUT_TYPES`, que es un método de clase que define qué entradas recibirá el nodo
+(consulta [más adelante](/es/custom-nodes/backend/server_overview#input_types) los detalles del diccionario que devuelve),
+`RETURN_TYPES`, que define qué salidas producirá el nodo, y `FUNCTION`, el nombre
+de la función que se llamará cuando se ejecute el nodo.
+
+<Tip>Observa que el tipo de dato de entrada y salida es `IMAGE` (singular) aunque
+esperamos recibir un lote de imágenes y devolver solo una. En Comfy, `IMAGE` significa
+lote de imágenes, y una sola imagen se trata como un lote de tamaño 1.</Tip>
+
+### La función principal
+
+La función principal, `choose_image`, recibe argumentos con nombre tal como se definen en `INPUT_TYPES` y
+devuelve una `tuple` tal como se define en `RETURN_TYPES`. Como trabajamos con imágenes, que internamente
+se almacenan como `torch.Tensor`,
+
+```Python
+import torch
+```
+
+Luego agrega la función a tu clase. El tipo de dato de la imagen es `torch.Tensor` con forma `[B,H,W,C]`,
+donde `B` es el tamaño del lote y `C` es el número de canales: 3, para RGB. Si iteramos sobre ese
+tensor, obtendremos una serie de `B` tensores con forma `[H,W,C]`. El método `.flatten()` lo convierte
+en un tensor unidimensional de longitud `H*W*C`, `torch.mean()` toma la media y `.item()`
+convierte un tensor de un solo valor en un float de Python.
+
+```Python
+def choose_image(self, images):
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    brightest = brightness.index(max(brightness))
+    result = images[brightest].unsqueeze(0)
+    return (result,)
+```
+
+Notas sobre esas dos últimas líneas:
+
+- `images[brightest]` devolverá un tensor con forma `[H,W,C]`. `unsqueeze` se usa para insertar una dimensión (de longitud 1), en este caso, en la dimensión cero, y obtener
+`[B,H,W,C]` con `B=1`: una sola imagen.
+- en `return (result,)`, la coma final es esencial para asegurar que devuelves una tupla.
+
+### Registrar el nodo
+
+Para que Comfy reconozca el nuevo nodo, debe estar disponible a nivel del paquete. Modifica la variable `NODE_CLASS_MAPPINGS` al final de `src/nodes.py`. Debes reiniciar ComfyUI para ver los cambios.
+
+```Python src/nodes.py
+
+NODE_CLASS_MAPPINGS = {
+    "Example" : Example,
+    "Image Selector" : ImageSelector,
+}
+
+# Opcionalmente, puedes renombrar el nodo en el diccionario `NODE_DISPLAY_NAME_MAPPINGS`.
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node",
+    "Image Selector": "Image Selector",
+}
+```
+
+<Info>Para una explicación detallada de cómo ComfyUI descubre y carga los nodos personalizados, consulta la [documentación del ciclo de vida de los nodos](/es/custom-nodes/backend/lifecycle).</Info>
+
+## Add some options
+
+That node is maybe a bit boring, so we might add some options; a widget that allows you to 
+choose the brightest image, or the reddest, bluest, or greenest. Edit your `INPUT_TYPES` to look like:
+
+```Python
+@classmethod    
+def INPUT_TYPES(s):
+    return { "required":  { "images": ("IMAGE",), 
+                            "mode": (["brightest", "reddest", "greenest", "bluest"],)} }
+```
+
+Then update the main function. We'll use a fairly naive definition of 'reddest' as being the average
+`R` value of the pixels divided by the average of all three colors. So:
+
+```Python
+def choose_image(self, images, mode):
+    batch_size = images.shape[0]
+    brightness = list(torch.mean(image.flatten()).item() for image in images)
+    if (mode=="brightest"):
+        scores = brightness
+    else:
+        channel = 0 if mode=="reddest" else (1 if mode=="greenest" else 2)
+        absolute = list(torch.mean(image[:,:,channel].flatten()).item() for image in images)
+        scores = list( absolute[i]/(brightness[i]+1e-8) for i in range(batch_size) )
+    best = scores.index(max(scores))
+    result = images[best].unsqueeze(0)
+    return (result,)
+```
+
+## Ajustar la interfaz
+
+Quizá queramos algo de retroalimentación visual, así que enviemos un pequeño mensaje de texto para que se muestre.
+
+### Enviar un mensaje desde el servidor
+
+Esto requiere agregar dos líneas al código Python:
+
+```Python
+from server import PromptServer
+```
+
+y, al final del método `choose_image`, agrega una línea para enviar un mensaje al front end (`send_sync` recibe un tipo de mensaje, que debe ser único, y un diccionario)
+
+```Python
+PromptServer.instance.send_sync("example.imageselector.textmessage", {"message":f"Picked image {best+1}"})
+return (result,)
+```
+
+### Escribir una extensión de cliente
+
+Para agregar algo de JavaScript al cliente, crea un subdirectorio, `web/js`, en el directorio de tu nodo personalizado y modifica el final de `__init__.py` para informarle a Comfy sobre él exportando `WEB_DIRECTORY`:
+
+```Python
+WEB_DIRECTORY = "./web/js"
+__all__ = ['NODE_CLASS_MAPPINGS', 'WEB_DIRECTORY']
+```
+
+La extensión de cliente se guarda como un archivo `.js` en el subdirectorio `web/js`, así que crea `image_selector/web/js/imageSelector.js` con el código a continuación. (Para más información, consulta [client side coding](./js/javascript_overview)).
+
+```Javascript
+import { app } from "../../scripts/app.js";
+app.registerExtension({
+	name: "example.imageselector",
+    async setup() {
+        function messageHandler(event) { alert(event.detail.message); }
+        app.api.addEventListener("example.imageselector.textmessage", messageHandler);
+    },
+})
+```
+
+Lo único que hicimos fue registrar una extensión y agregar un detector para el tipo de mensaje que enviamos en el método `setup()`. Esto lee el diccionario que enviamos (que se almacena en `event.detail`).
+
+Detén el servidor de Comfy, inícialo de nuevo, recarga la página web y ejecuta tu flujo de trabajo.
+
+### El ejemplo completo
+
+El ejemplo completo está disponible [aquí](https://gist.github.com/robinjhuang/fbf54b7715091c7b478724fc4dffbd03). Puedes descargar el [archivo JSON](https://github.com/Comfy-Org/docs/blob/main/public/workflow.json) del flujo de trabajo de ejemplo o verlo a continuación:
+
+<div align="center">
+  <img src="/images/firstnodeworkflow.png" alt="Flujo de trabajo del selector de imágenes" width="100%" />
+</div>

@@ -1,0 +1,96 @@
+---
+title: "Encabezados de Comfy Router"
+sidebarTitle: "Encabezados"
+description: "Encabezados de solicitud y respuesta de Comfy Router para cada modelo: autenticación, idempotencia, IDs de solicitud, límites de reintento y gasto."
+translationSourceHash: 1a5ab40d
+translationFrom: development/comfy-router/headers.mdx
+translationBlockHashes:
+  "_intro": 6e9409a3
+  "Request headers": be659e29
+  "Response headers": 3901ffe9
+  "Status codes that carry two meanings": e6089b85
+  "Next": 31f315d9
+---
+Todos los modelos de Router usan `POST /v2/models/{provider}/{model}` con su propio cuerpo JSON. Esta página cubre los encabezados compartidos entre modelos; la [referencia de API](/es/development/comfy-router/reference) enumera el contrato generado.
+
+Los SDK de Comfy (`comfy-sdk` para Python, `@comfyorg/sdk` para TypeScript) gestionan la autenticación y generan claves de idempotencia. Exponen metadatos de respuesta seleccionados como se describe a continuación. Los clientes HTTP directos deben enviar y leer los encabezados por su cuenta.
+
+## Encabezados de la solicitud
+
+<ParamField header="X-API-Key" type="string">
+  Una clave API de Comfy, `comfyui-...`, creada en [tu espacio de trabajo de Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router). Usa el acceso a modelos y el saldo de créditos de tu espacio de trabajo. También puedes enviarla como `Authorization: Bearer comfyui-...`; si ambos encabezados están presentes, gana `X-API-Key`.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`. Un valor `comfyui-` es una clave API. Cualquier otro valor se trata como un JWT de Comfy Cloud.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Identifica una generación lógica. Genera y guarda un UUID antes de la llamada y luego reutilízalo para los reintentos de la solicitud sin cambios. La clave puede reproducir un resultado o recopilar el trabajo aceptado durante un máximo de 24 horas. Los SDK generan claves y te permiten usar las tuyas (`idempotency_key=` en Python, `idempotencyKey` en TypeScript). Consulta [resultados de reintento](/es/development/comfy-router/errors#resultados-de-reintento) para conflictos, caducidad y resultados no reproducibles.
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`. Envía la entrada JSON nativa del modelo. Los campos y los requisitos de validación varían según el modelo; consulta [Uso de la API del Router](/es/development/comfy-router/api).
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  Solo en `GET /v2/models/{provider}/{model}/openapi.json`. Envía el `ETag` que tienes de un `200` anterior; cuando aún coincide, la respuesta es un `304` sin cuerpo con el mismo `ETag`. Guarda en caché el esquema de un modelo durante la vida de tu proceso y revalídalo de esta forma en lugar de volver a leerlo antes de cada llamada.
+</ParamField>
+
+## Encabezados de respuesta
+
+<ResponseField name="X-Comfy-Request-Id" type="string" required>
+  Identifica esta solicitud HTTP. Inclúyelo cuando contactes a soporte. TypeScript lo expone como `requestId`; Python expone `request_id` en los errores.
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="string">
+  La categoría de error legible por máquina. En un `422`, usa este encabezado porque el cuerpo de validación tiene `detail[]` y no tiene `error_type`. Combínalo con el estado HTTP para decidir qué hacer. Trata un valor desconocido como `internal_error` para el flujo de control y consérvalo para el diagnóstico.
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="boolean">
+  Presente y `true` cuando Router entrega un resultado almacenado en lugar de ejecutar el modelo otra vez. No está presente en una ejecución nueva. En la ruta de envío en cola, un `201` reproducido devuelve el identificador de la solicitud original en lugar de encolar una segunda ejecución.
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Segundos que debes esperar antes de reintentar. En `409` / `concurrency_limit_exceeded` o `504` / `deadline_exceeded`, reintenta la misma solicitud y la misma clave después de la espera. En `429` / `rate_limited`, indica cuándo se restablece el límite de tasa. En la lectura del estado de una solicitud en cola y en la lectura de su resultado `202`, es la sugerencia de Router sobre cuándo vale la pena volver a consultar.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="integer">
+  El límite máximo del gasto de socio comprometido en llamadas que aún se están ejecutando, en centavos de USD. Una compuerta de gasto con aplicación activa puede devolverlo en las respuestas admitidas y en sus rechazos `429`. No está presente cuando la compuerta no está aplicando el límite o cuando otro control rechazó la solicitud.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="integer">
+  Centavos de USD comprometidos actualmente en llamadas en curso. Una respuesta admitida incluye su propia llamada; un `429` excluye la llamada rechazada. Se envía junto con `X-Committed-Spend-Limit`.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="integer">
+  Centavos de USD que quedan por debajo del límite de gasto comprometido. Puede ser positivo en un rechazo cuando la llamada solicitada cuesta más que la cantidad restante.
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  En `GET /v2/models/{provider}/{model}/openapi.json`. Guárdalo y envíalo de vuelta como `If-None-Match` para revalidar un esquema en caché.
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="string">
+  En la ruta del esquema: `private, must-revalidate`. Mantén la respuesta en una caché privada y revalida las copias obsoletas con el `ETag`.
+</ResponseField>
+
+## Códigos de estado con dos significados
+
+Tres estados se comparten entre dos categorías, y el encabezado es lo que permite distinguirlos:
+
+| Estado | `X-Comfy-Error-Type` | Qué hacer |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | La llamada original para esta clave sigue en ejecución. Espera `Retry-After` y vuelve a enviar la misma clave. |
+| `409` | `invalid_input` | Inspecciona el conflicto. Restaura la solicitud original si la cambiaste. Una clave consumida y no reutilizable no puede recuperar el resultado; usa una clave nueva solo si pretendes realizar una generación nueva, potencialmente facturable. |
+| `429` | `concurrency_limit_exceeded` | Demasiadas llamadas en curso, o se alcanzó el límite de gasto comprometido (consulta los encabezados `X-Committed-Spend-*`). Se libera cuando finaliza una de tus propias llamadas. |
+| `429` | `rate_limited` | Espera `Retry-After` antes de reintentar. |
+| `504` | `deadline_exceeded` | Límite propio del router de 10 minutos. Con `Retry-After`, vuelve a enviar la misma clave para recuperar la generación en curso. |
+| `504` | `provider_timeout` | El Socio agotó el tiempo de espera. Sigue la [orientación sobre reintentos y facturación](/es/development/comfy-router/errors#resultados-de-reintento); no lo interpretes como una garantía de que no se cobrará. |
+
+## Next
+
+- [Quickstart](/es/development/comfy-router/quickstart): envía una solicitud y lee el resultado.
+- [Usar la API de Comfy Router](/es/development/comfy-router/api): descubrimiento de modelos, esquemas, errores, reintentos y facturación.
+- [Referencia de la API](/es/development/comfy-router/reference): el contrato generado en el que se definen estas cabeceras.
+- [Limitaciones](/es/development/comfy-router/limitations): qué no hace Router hoy y qué usar en su lugar.

@@ -1,0 +1,480 @@
+---
+title: "SDK de Comfy: clientes de Python y TypeScript para ComfyUI"
+description: "Ejecuta flujos de trabajo de ComfyUI desde Python o TypeScript en Comfy Cloud, tu propio despliegue: recursos, tareas, eventos en vivo y reintentos idempotentes."
+sidebarTitle: "SDK"
+icon: "code"
+translationSourceHash: fd912955
+translationFrom: development/api-development/sdks.mdx
+translationBlockHashes:
+  "_intro": c92c7b51
+  "Install": da9a0a57
+  "Quickstart": 02297586
+  "Choosing a base URL": 0e77e81c
+  "Retrying a submit: the idempotency key": 7c83d78f
+  "Watching a job run": 34d74bcc
+  "Tracing an output back to its workflow": b01886a3
+  "Label jobs and find them later": 5e8d85e5
+  "What the SDKs cover today": 69ebfcc7
+  "Reference": 71489703
+  "Feedback": 14dd521e
+---
+
+import SdkSurfaces from "/snippets/es/sdk/surfaces.mdx";
+import SdkVersions from "/snippets/es/sdk/versions.mdx";
+
+<Note>
+  Comfy API v2 tiene versionado. Los cambios dentro de v2 son aditivos; los cambios disruptivos se publican como v3. Reporta problemas a través de [Feedback](#retroalimentación).
+</Note>
+
+<SdkSurfaces />
+
+Esta página documenta la segunda fila: el cliente de Comfy Cloud y Comfy API v2. Para el enrutador de modelos, comienza en el [inicio rápido de Comfy Router](/es/development/comfy-router/quickstart).
+
+Los SDK de Comfy permiten que tu aplicación ejecute flujos de trabajo de ComfyUI y obtenga los resultados. Envías un flujo de trabajo, ComfyUI lo ejecuta y descargas las salidas. El mismo código funciona con Comfy Cloud o con una instancia de ComfyUI que alojes tú mismo. Solo cambia la URL base, excepto las [etiquetas de tareas](#etiquetar-tareas-y-encontrarlas-más-tarde), que funcionan solo en una implementación de Comfy API, y la lista de tareas, que Comfy Cloud todavía no ofrece.
+
+Los SDK son clientes de la [Comfy API v2](/es/api-reference/v2/overview), una API HTTP con versionado que tenemos la intención de mantener a largo plazo. Las nuevas versiones de ComfyUI no romperán las integraciones construidas sobre ella.
+
+Cosas que se construyen de esta manera:
+
+- Plugins que generan contenido dentro de otra aplicación, como Blender o Krita
+- Aplicaciones de consumo que ejecutan la generación en nombre de sus usuarios
+- Pipelines por lotes, por ejemplo, ejecutar un flujo de trabajo sobre cada fotograma de un video
+- Servicios de backend que necesitan muchos flujos de trabajo en ejecución a la vez
+
+<Note>
+  Estos SDK controlan ComfyUI **desde fuera**. Si escribes nodos personalizados o extensiones de frontend que se ejecutan **dentro** de ComfyUI, lo que buscas es [Desarrollar Nodos Personalizados](/es/custom-nodes/overview). Esas son un conjunto de APIs aparte.
+</Note>
+
+## Instalar
+
+<CodeGroup>
+```bash Python
+pip install comfy-sdk
+```
+
+```bash TypeScript
+npm i @comfyorg/sdk
+```
+</CodeGroup>
+
+Python 3.10 o posterior. Node 22 o posterior.
+
+<SdkVersions />
+
+## Inicio rápido
+
+Sube una imagen de entrada, ejecuta un flujo de trabajo y escribe los resultados en disco.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Comfy Cloud
+client = Comfy(api_key="comfyui-...")
+
+wf = client.workflows.from_file("workflow_api.json")
+
+asset = client.assets.from_file("photo.png")
+wf.set_input("10", "image", asset)
+
+job = client.run(wf)
+for output in job.get_outputs("9"):
+    output.to_file(output.name)
+```
+
+```typescript TypeScript
+import { Comfy } from "@comfyorg/sdk";
+
+// Comfy Cloud
+const client = new Comfy({ apiKey: "comfyui-..." });
+
+const wf = await client.workflows.fromFile("workflow_api.json");
+
+const asset = client.assets.fromFile("photo.png");
+wf.setInput("10", "image", asset);
+
+const job = await client.run(wf);
+await job.getOutputs("9")[0].toFile("out.png");
+```
+</CodeGroup>
+
+`workflow_api.json` es un flujo de trabajo guardado en [formato API](/es/development/api-development/workflow-api-format). `"10"` y `"9"` son IDs de nodo de ese archivo: el nodo al que llega la imagen de entrada y el nodo de salida cuyos resultados quieres.
+
+Los manejadores de recursos son diferidos. `photo.png` se hashea localmente y solo se sube si el servidor no tiene ya esos bytes, así que volver a ejecutar con la misma entrada no cuesta nada.
+
+`run()` envía la tarea y espera a que llegue a un estado terminal. Para trabajar mientras se ejecuta, usa `submit()` en su lugar y observa el [flujo de eventos](#observar-la-ejecución-de-una-tarea).
+
+Para ejecutar contra tu propio ComfyUI, configura `COMFY_BASE_URL` y quita la clave. Consulta más abajo.
+
+## Elegir una URL base
+
+| Superficie | URL base | Clave API |
+|---|---|---|
+| **Comfy Cloud** | `https://cloud.comfy.org` (el valor predeterminado) | Requerida |
+| **Despliegue de Comfy API** | `https://<deployment>.run.comfy.app` | Requerida |
+| **Tu propio ComfyUI** | `http://127.0.0.1:8189` (el proxy local) | Ninguna de forma predeterminada. Token bearer estático opcional |
+
+La URL base proviene de la variable de entorno `COMFY_BASE_URL`, no de un argumento del constructor:
+
+```bash
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # Despliegue de Comfy API
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # proxy autoalojado
+```
+
+Se lee cada vez que se crea un cliente, debe ser una URL `http(s)` y, si no está definida o está vacía, se usa Comfy Cloud. Por eso el cliente es el mismo en todas partes:
+
+<CodeGroup>
+```python Python
+client = Comfy(api_key="comfyui-...")
+```
+
+```typescript TypeScript
+const client = new Comfy({ apiKey: "comfyui-..." });
+```
+</CodeGroup>
+
+<Note>
+  ¿Actualizas desde una versión temprana? `Comfy("<url>", "<key>")` ahora es `Comfy(api_key="<key>")` con `COMFY_BASE_URL` configurada. `api_key` solo se puede pasar por nombre, así que la llamada posicional anterior lanza `TypeError` en lugar de leer silenciosamente una URL como clave.
+</Note>
+
+### Comfy Cloud
+
+Funciona sin configuración adicional. Crea una [clave API](/es/development/api-development/getting-an-api-key) y pásala al cliente.
+
+<Note>
+  El acceso a la API requiere una suscripción de pago a Comfy Cloud. El plan gratuito no lo incluye. Cuántas tareas puedes ejecutar a la vez depende de tu plan. Consulta [Límites de simultaneidad](/es/development/deploy/cloud-usage#tareas-simultáneas).
+</Note>
+
+<a id="serverless-deployment"></a>
+
+### Despliegue de Comfy API
+
+Un flujo de trabajo que desplegaste mediante la [plataforma para desarrolladores](https://platform.comfy.org) obtiene su propio endpoint. Apunta `COMFY_BASE_URL` a ese endpoint y usa tu clave API, exactamente igual que con Comfy Cloud. Todo en esta guía funciona de la misma manera, excepto las [etiquetas de tareas y la lista de tareas](#etiquetar-tareas-y-encontrarlas-más-tarde), que Comfy Cloud todavía no admite.
+
+Un despliegue de Comfy API puede ejecutar varios flujos de trabajo con los modelos y nodos personalizados incluidos en su Build. Para cada tarea, `get_workflow()` devuelve una respuesta de flujo de trabajo con `format: "api"` y el gráfico ejecutado en su propiedad `.graph`.
+
+### Tu propio ComfyUI
+
+La API v2 se sirve en ComfyUI autoalojado mediante [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), un pequeño servicio de código abierto que se ejecuta junto a tu ComfyUI. Instálalo, ejecútalo y configura `COMFY_BASE_URL="http://127.0.0.1:8189"`:
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+export COMFY_BASE_URL="http://127.0.0.1:8189"
+```
+
+Consulta la página [API Proxy for Self-Hosted ComfyUI](/es/development/comfyui-server/api-proxy) para ver los detalles de configuración y autenticación.
+
+## Reintentar un envío: la clave de idempotencia
+
+`submit()` y `run()` envían una `Idempotency-Key` en cada envío, y el contrato de Comfy API v2 para esa clave es **rechazar el duplicado, no grabar y reproducir**. Lee esto antes de envolver un envío en un bucle de reintentos.
+
+- **Cada llamada genera una clave nueva.** Llamar a `submit()` dos veces con el mismo flujo de trabajo son dos envíos, dos tareas y dos cobros. Un `for attempt in range(3)` ingenuo alrededor de `submit()` es un doble cobro, no un reintento.
+- **Una clave reutilizada se rechaza, no se reproduce.** Pasa tu propia `idempotency_key` (`idempotencyKey` en TypeScript) para hacer idempotente un reintento, y la segunda solicitud con esa clave falla con `422 idempotency_key_reuse` en lugar de devolver la primera tarea. Los SDK lanzan `IdempotencyKeyReuse`. Eso es lo contrario de lo que suele significar "reintento idempotente", así que manéjalo de forma explícita.
+- **La recuperación consiste en ir a buscar la tarea, no en reenviar.** Ante `IdempotencyKeyReuse`, es muy posible que el primer intento ya haya creado una tarea. Recupérala con `client.jobs.get(job_id)`. Esa consulta necesita un id que ya hayas guardado, así que solo recupera el caso en que el envío devolvió y persististe el id antes del fallo. Si la conexión se cortó antes de registrar el id, no hay nada que buscar ni recuperación automática: los ejemplos siguientes vuelven a lanzar la excepción para manejarla a mano en lugar de reenviar con una clave reclamada.
+- **La clave se libera cuando el envío falló de forma definitiva.** Un error de validación, un rechazo por falta de créditos o un rechazo por cola llena no crean ninguna tarea y liberan la clave, así que reenviar con ella es válido. Tras un fallo *ambiguo* (un timeout de lectura, una conexión cortada a mitad de la solicitud) la clave sigue reclamada: busca la tarea en lugar de reenviar.
+- **Las claves caducan a las 24 horas** y deben ser ASCII imprimible no vacío y respetar el límite de longitud. Una clave inválida lanza `ValueError` antes de realizar ninguna solicitud, así que un `""` explícito nunca recurre en silencio a una clave generada.
+
+Por lo tanto, un reintento que sea seguro de ejecutar más de una vez tiene que llevar dos cosas de un intento a otro: la clave, para que el servidor pueda distinguir un reintento de un envío nuevo, y el ID de trabajo, para que puedas encontrar la tarea que una clave reclamada ya creó.
+
+<CodeGroup>
+```python Python
+import uuid
+from comfy_sdk import IdempotencyKeyReuse
+
+# Ambos valores pertenecen a tu propio almacén, indexados por lo que la solicitud
+# signifique para ti. `key` se genera una sola vez, en el primer intento; `job_id`
+# se rellena en cuanto un envío devuelve.
+state = load_submission_state()  # {"key": ..., "job_id": ...} or {}
+key = state.get("key") or str(uuid.uuid4())
+save_submission_state(key=key)
+
+try:
+    job = client.submit(wf, idempotency_key=key)
+    save_submission_state(key=key, job_id=job.id)
+except IdempotencyKeyReuse:
+    # Un intento anterior con esta clave ya llegó al envío, así que puede
+    # existir una tarea. No reenvíes: ve a buscarla.
+    job_id = state.get("job_id")
+    if job_id is None:
+        raise  # no hay nada registrado que buscar; esto necesita a una persona
+    job = client.jobs.get(job_id)
+```
+
+```typescript TypeScript
+import { IdempotencyKeyReuse } from "@comfyorg/sdk";
+
+// Ambos valores pertenecen a tu propio almacén, indexados por lo que la solicitud
+// signifique para ti. `key` se genera una sola vez, en el primer intento; `jobId`
+// se rellena en cuanto un envío devuelve.
+const state = await loadSubmissionState(); // { key?, jobId? }
+const key = state.key ?? crypto.randomUUID();
+await saveSubmissionState({ key });
+
+let job;
+try {
+  job = await client.submit(wf, { idempotencyKey: key });
+  await saveSubmissionState({ key, jobId: job.id });
+} catch (err) {
+  // Un intento anterior con esta clave ya llegó al envío, así que puede
+  // existir una tarea. No reenvíes: ve a buscarla.
+  if (!(err instanceof IdempotencyKeyReuse) || !state.jobId) throw err;
+  job = await client.jobs.get(state.jobId);
+}
+```
+</CodeGroup>
+
+`client.jobs.get(job_id)` es la ruta de rehidratación del SDK y necesita un id, y por eso grabar el id en el momento en que un envío devuelve es lo que hace que esto sea recuperable. Consulta [Comfy API v2](/es/api-reference/v2/overview) para ver el contrato completo de la clave en `POST /api/v2/jobs`.
+
+<Note>
+  La `Idempotency-Key` de Comfy Router se comporta **de forma diferente**. En Router la clave es un identificador de reproducción en lugar de un token de un solo uso: reenviar un envío en cola con la misma clave devuelve la solicitud original en lugar de encolar una segunda. Consulta [idempotencia y facturación en cola](/es/development/comfy-router/queue#idempotencia-y-facturación) y [resultados de reintento en Router](/es/development/comfy-router/errors#resultados-de-reintento). Ambas superficies comparten el nombre de una cabecera, no un contrato.
+</Note>
+
+## Observar la ejecución de una tarea
+
+`job.events()` te ofrece una transmisión en vivo del estado de la tarea: progreso de nodos y pasos, fotogramas de vista previa y cada salida en el momento en que se confirma. Se reconecta por su cuenta si la conexión se cae.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Progress, Preview, OutputReady, StatusChange
+
+job = client.submit(wf)
+
+for event in job.events():
+    match event:
+        case Progress() as p:
+            print(f"{p.value:.0%} {p.message}")
+        case Preview() as pv:
+            image = pv.to_pil()
+        case OutputReady() as o:
+            o.output.to_file(f"partial/{o.output.name}")
+        case StatusChange(status="succeeded"):
+            break
+
+result = job.result()
+```
+
+```typescript TypeScript
+const job = await client.submit(wf);
+
+// La etiqueta es requerida: un `break` sin etiqueta dentro de un switch sale del switch,
+// no del bucle.
+eventLoop: for await (const event of job.events()) {
+  switch (event.kind) {
+    case "progress":
+      console.log(event.value);
+      break;
+    case "outputReady":
+      await event.output.toFile(`${event.output.name}`);
+      break;
+    case "statusChange":
+      if (event.status === "succeeded") break eventLoop;
+  }
+}
+```
+</CodeGroup>
+
+`Preview.to_pil()` requiere el extra opcional de Pillow: `pip install "comfy-sdk[pil]"`.
+
+`result()` devuelve la tarea finalizada o lanza `JobFailed` con el detalle a nivel de nodo si la ejecución falla. Consulta el [SDK README](#referencia) de tu idioma para ver el catálogo completo de eventos.
+
+### `events()` no es `subscribe()`
+
+Existen tres cosas con nombres parecidos en las dos superficies, y solo una de ellas aparece en esta página:
+
+| Llamada | Superficie | Qué produce |
+|---|---|---|
+| `job.events()` | Comfy Cloud (esta página) | Una transmisión SSE en vivo de una tarea de flujo de trabajo: `Progress`, `Preview`, `OutputReady`, `StatusChange`. Se reconecta de forma automática y recurre al sondeo si es necesario. |
+| `handle.events()` (TypeScript) / `handle.iter_events()` (Python) | [Entrega en cola de Comfy Router](/es/development/comfy-router/queue) | Observaciones de la cola para una solicitud de Router: estado y posición en la cola. Consulta la ruta de estado mediante sondeo; no hay transmisión ni eventos de progreso o vista previa. |
+| `comfy.models.subscribe(...)` | [Entrega en cola de Comfy Router](/es/development/comfy-router/queue) | No es un iterador. Envía, sondea y recopila en una sola llamada, con una devolución de llamada `on_queue_update` / `onQueueUpdate`, y se resuelve con el resultado. |
+
+No existe `subscribe()` en el cliente de Comfy Cloud, ni `job.subscribe()` en ningún lado. El equivalente de `subscribe` en Cloud es `run()`: envía y espera un estado terminal.
+
+La transmisión es un feed en vivo, no un registro reproducible. Existe para que puedas mostrar el progreso, no para que dependas de ella para obtener resultados. Lo que manda es el sondeo de la tarea, y `run()`, `wait()` y `result()` recurren al sondeo de forma automática. Consulta las [Notas de diseño](/es/development/api-development/sdks-design#consulta-primero-transmite-para-el-progreso) para saber por qué.
+
+## Rastrear una salida hasta su flujo de trabajo
+
+Las salidas llevan el id de la tarea que las produjo, así que puedes partir de un archivo y trabajar hacia atrás sin mantener una tabla aparte.
+
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # la tarea que produjo este archivo
+```
+
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // la tarea que produjo este archivo
+```
+</CodeGroup>
+
+El mismo id está en un recurso obtenido por separado, así que un archivo que encuentres más tarde igual te lleva de vuelta a su tarea. Es `None` (en TypeScript: `undefined`) para un recurso que subiste, ya que no tiene una tarea que lo haya producido.
+
+Desde la tarea puedes pedir el flujo de trabajo que está detrás. Esto funciona para una tarea que no enviaste en este proceso, rehidratada por id:
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # el flujo de trabajo tal como se creó, con el diseño del lienzo y los nodos Note intactos
+else:
+    ...  # el gráfico ejecutado en formato API
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // el flujo de trabajo tal como se creó, con el diseño del lienzo y los nodos Note intactos
+} else {
+  // el gráfico ejecutado en formato API
+}
+```
+</CodeGroup>
+
+**Ramifica siempre según `format`.** La forma que devuelve depende de cómo se envió la tarea, no de nada que controles por solicitud:
+
+| `format` | Qué obtienes | Cuándo |
+|---|---|---|
+| `save` | El flujo de trabajo de autoría en la versión en que se ejecutó la tarea, con el diseño del lienzo y los nodos exclusivos del editor, como Note | Tareas enviadas desde el editor de Comfy Cloud, que fija una versión del flujo de trabajo |
+| `api` | El gráfico ejecutado. Las construcciones exclusivas del editor desaparecen y los nodos Get/Set se expanden | Todo lo demás, incluidas todas las tareas enviadas a través de estos SDKs hoy |
+
+Las tareas que envías a través del SDK siempre devuelven `api`, porque el envío v2 todavía no tiene campos para fijar la versión. Eso cambiará; el discriminador está ahí para que tu código no tenga que ocuparse de ello.
+
+## Etiquetar tareas y encontrarlas más tarde
+
+Una etiqueta es una clave y un valor que adjuntas a una tarea al enviarla, como `client: acme` o `project: spring`. Usa las etiquetas para registrar para cuál de tus clientes o proyectos se ejecutó una tarea. Después puedes listar las tareas de un cliente sin mantener tu propia tabla de ids de tareas. Las etiquetas y la lista de tareas necesitan la versión actual del SDK, la que se indica en la nota de versión en [Instalar](#instalar).
+
+Las etiquetas funcionan en tareas enviadas a un [despliegue de Comfy API](#despliegue-de-comfy-api), así que configura `COMFY_BASE_URL` con la dirección del despliegue como se muestra en [Elegir una URL base](#elegir-una-url-base). Comfy Cloud las rechaza por ahora y responde a la lista de tareas con `501` y el código `not_implemented`. Un [comfy-api-proxy](#tu-propio-comfyui) autoalojado tampoco las guarda: su propio campo `metadata` es una sola cadena de texto, así que rechaza un mapa de etiquetas. Su lista de tareas ignora los filtros de etiquetas, por lo que una llamada de lista del SDK con etiquetas no devuelve ninguna tarea allí, y los mismos filtros por HTTP devuelven todas las tareas.
+
+Los límites:
+
+- Hasta 16 etiquetas por tarea.
+- Una clave tiene de 1 a 40 caracteres: letras, dígitos, `_`, `-` y `.`.
+- Un valor es una cadena de hasta 256 bytes (UTF-8).
+- Las etiquetas se establecen al enviar la tarea y no se pueden cambiar después.
+
+Un envío que incumpla un límite falla con `422` y el código `metadata_invalid`, y no se crea ninguna tarea. El mensaje de error indica la clave que incumplió la regla, o da la cuenta cuando hay más de 16 etiquetas. Los SDK no comprueban los límites por sí mismos. Lanzan un error que lleva el código y el mensaje del servidor.
+
+<Warning>
+  Cualquiera en tu espacio de trabajo que pueda ver una tarea puede ver sus etiquetas. No pongas credenciales ni datos personales en ellas.
+</Warning>
+
+Pasa `metadata` al enviar. La tarea lleva las etiquetas cuando la vuelves a leer:
+
+<CodeGroup>
+```python Python
+job = client.submit(wf, metadata={"client": "acme", "project": "spring"})
+job.metadata  # {"client": "acme", "project": "spring"}
+```
+
+```typescript TypeScript
+const job = await client.submit(wf, {
+  metadata: { client: "acme", project: "spring" },
+});
+job.metadata; // { client: "acme", project: "spring" }
+```
+</CodeGroup>
+
+Una tarea enviada sin etiquetas tiene un `metadata` vacío.
+
+Para encontrar las tareas de un cliente, lista las tareas filtrando por etiqueta. La lista cubre solo las tareas enviadas al despliegue de tu URL base. Los resultados llegan con las más recientes primero, y el SDK obtiene la página siguiente por ti mientras iteras:
+
+<CodeGroup>
+```python Python
+for job in client.list_jobs(metadata={"client": "acme"}):
+    print(job.id, job.status)
+```
+
+```typescript TypeScript
+for await (const job of client.listJobs({ metadata: { client: "acme" } })) {
+  console.log(job.id, job.status);
+}
+```
+</CodeGroup>
+
+Puedes filtrar por hasta 3 etiquetas a la vez, y una tarea debe coincidir exactamente con todas ellas. Los elementos de la lista no incluyen salidas. Para obtener las salidas de una tarea, lee la tarea por su id con `client.jobs.get(job.id)`.
+
+### Por HTTP
+
+Envía `metadata` en el cuerpo de `POST /api/v2/jobs`:
+
+```bash
+curl -X POST "https://<deployment>.run.comfy.app/api/v2/jobs" \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow": { ... },
+    "metadata": { "client": "acme", "project": "spring" }
+  }'
+```
+
+Filtra `GET /api/v2/jobs` con un parámetro de consulta `metadata[<key>]=<value>` por etiqueta. La opción `-g` evita que curl interprete los corchetes como un patrón:
+
+```bash
+curl -g "https://<deployment>.run.comfy.app/api/v2/jobs?metadata[client]=acme" \
+  -H "Authorization: Bearer $COMFY_API_KEY"
+```
+
+La respuesta contiene una página de tareas y, cuando existen más páginas, un `next_cursor`. Pásalo de vuelta como `cursor`, junto con los mismos filtros `metadata[...]`, para obtener la página siguiente. Un cursor enviado sin sus filtros devuelve tareas sin filtrar. Usa `limit` para establecer el tamaño de página (como máximo 500).
+
+```json
+{
+  "jobs": [
+    {
+      "id": "6f1c2b9e-...",
+      "status": "succeeded",
+      "metadata": { "client": "acme", "project": "spring" }
+    }
+  ],
+  "next_cursor": "eyJ..."
+}
+```
+
+Más de 3 filtros de etiquetas, o una clave que incumpla la regla de claves, falla con `400` y el código `invalid_metadata_filter`. Consulta la [referencia de Comfy API v2](/es/api-reference/v2/overview) para ver todos los campos de la tarea y de la lista.
+
+## Qué cubren los SDK hoy
+
+La primera versión hace una cosa bien: ejecutar un flujo de trabajo y devolver los resultados.
+
+- **Recursos.** Crea handles de entrada a partir de un archivo, bytes, un stream o una URL. Los handles son perezosos y se direccionan por contenido, así que volver a ejecutar con la misma entrada no la vuelve a subir.
+- **Envío.** Envía un gráfico en formato API. El envío es idempotente, y si la cola está llena se reintenta por ti dentro de un presupuesto acotado.
+- **Ejecución.** Consulta con `wait()` o sigue `events()` para ver el progreso en vivo.
+- **Salidas.** Escribe en disco, acumula en memoria, obtén un rango de bytes o consigue una URL de descarga de corta duración. `getDownloadUrl()` devuelve una URL firmada que cualquiera puede leer sin una clave API, válida durante unas 6 horas. Lee [URLs de salida y cuánto duran](/es/api-reference/v2/overview#url-de-salida-y-cuánto-tiempo-duran) antes de guardar una: para seguir mostrando una salida más tarde, vuelve a alojar los bytes o genera de nuevo la URL bajo demanda.
+- **Trazabilidad.** Cada salida lleva el id de la tarea que la produjo, y una tarea puede devolver el flujo de trabajo que tiene detrás.
+- **Eliminar recursos.** Elimina un recurso que hayas subido, por handle o por id.
+- **Errores.** Excepciones tipadas como `JobFailed`, `Unauthorized`, `InsufficientCredits` y `QueueFull`, en lugar de códigos de estado en bruto.
+- **Cancelación.** Las tareas se pueden cancelar mientras se ejecutan. TypeScript además acepta un `AbortSignal` en cualquier llamada.
+
+Python incluye un cliente `Comfy` síncrono y un cliente `AsyncComfy` con la misma superficie. TypeScript es solo asíncrono.
+
+No están en esta versión: la gestión de flujos de trabajo guardados, la biblioteca de modelos, la introspección de nodos y los parámetros con nombre de los flujos de trabajo. [Notas de diseño](/es/development/api-development/sdks-design#alcance-de-la-primera-versión) explica por qué la superficie empieza siendo tan pequeña.
+
+## Referencia
+
+Los README de los SDK son la referencia completa para cada idioma, e incluyen autenticación, recursos, errores y los mecanismos de escape de bajo nivel.
+
+<CardGroup cols={2}>
+  <Card title="SDK de Python" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
+    <code>comfy-sdk</code> en PyPI. Clientes síncronos y asíncronos.
+  </Card>
+  <Card title="SDK de TypeScript" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
+    <code>@comfyorg/sdk</code> en npm. Tipado, asíncrono y con un cliente de bajo nivel.
+  </Card>
+  <Card title="Referencia de Comfy API v2" icon="code" href="/es/api-reference/v2/overview">
+    La API HTTP que sustenta ambos SDK. Úsala directamente desde cualquier idioma.
+  </Card>
+  <Card title="Notas de diseño" icon="compass" href="/es/development/api-development/sdks-design">
+    Por qué existe esta API, cómo se relaciona con las API de ComfyUI existentes y qué viene después.
+  </Card>
+  <Card title="Comfy Router" icon="shuffle" href="/es/development/comfy-router/quickstart">
+    La otra interfaz del mismo paquete: <code>comfy.models.run</code> para modelos de socios como Flux, Veo y Gemini.
+  </Card>
+</CardGroup>
+
+## Retroalimentación
+
+Reporta lo que resulte incómodo, lo que esperabas encontrar y no encontraste, y lo que tuviste que sortear. El canal `#developer-platform` en [nuestro Discord](https://discord.com/invite/comfyorg) es el lugar para hacerlo.
+
+Si quieres un SDK de primera mano en otro idioma, dilo ahí. Ambos SDK se apoyan en el mismo contrato HTTP documentado, así que hoy cualquier idioma puede comunicarse con la API, pero preferimos saber dónde está la demanda.

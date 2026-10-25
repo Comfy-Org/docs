@@ -1,0 +1,117 @@
+---
+title: "Guía de inversión del modelo de ejecución"
+sidebarTitle: "Inversión del modelo de ejecución"
+icon: "code-branch"
+description: "Cambios importantes en monkey patching y validación de entradas opcionales, con evaluación diferida y expansión de nodos en ComfyUI."
+translationSourceHash: 7b21c2f1
+translationFrom: development/comfyui-server/execution_model_inversion_guide.mdx
+translationBlockHashes:
+  "_intro": 03f1bf08
+  "Breaking Changes": 1ef26168
+  "New Functionality": b06c1a30
+---
+[PR #2666](https://github.com/Comfy-Org/ComfyUI/pull/2666) invierte el modelo de ejecución: pasa de un modelo recursivo de atrás hacia adelante a un ordenamiento topológico de adelante hacia atrás. Aunque la mayoría de los nodos personalizados debería seguir funcionando sin problemas, esta página sirve como guía para los creadores de nodos personalizados sobre las cosas que *podrían* romperse.
+
+## Cambios importantes
+### Monkey patching
+
+Es probable que cualquier código que haya aplicado monkey patching al modelo de ejecución deje de funcionar. Ten en cuenta que el rendimiento de la ejecución con este PR supera al de los parches de mono más populares, por lo que muchos de ellos serán innecesarios.
+
+### Validación de entradas opcionales
+
+Antes de este PR, solo se validaban realmente los nodos que estaban conectados a las salidas exclusivamente a través de una cadena de entradas `"required"`. Si tenías nodos personalizados que solo se conectaban a entradas `"optional"`, antes no habrías visto que fallaran la validación.
+
+<Tip>Si las salidas de tus nodos ya podían conectarse a entradas `"required"`, es poco probable que algo en esta sección se aplique a ti. Se aplicará principalmente a autores de nodos personalizados que usan tipos personalizados y exclusivamente entradas `"optional"`.</Tip>
+
+Estas son algunas de las cosas que podrían hacer que falles la validación, junto con soluciones recomendadas:
+
+- Uso de [Parámetros adicionales](/es/custom-nodes/backend/datatypes#parámetros-adicionales) reservados como `min` y `max` en tipos que no son comparables (por ejemplo, diccionarios) para configurar widgets personalizados.
+    - Cambia los parámetros adicionales usados a claves no reservadas como `uiMin` y `uiMax`. *(Solución recomendada)*
+        ```python
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "my_size": ("VEC2", {"uiMin": 0.0, "uiMax": 1.0}),
+                }
+            }
+        ```
+
+    - Define una función personalizada [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate_inputs) con esta entrada para que se omita su validación. *(Solución rápida)* 
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, my_size):
+            return True
+        ```
+
+- Uso de tipos compuestos (por ejemplo, `CUSTOM_A,CUSTOM_B`)
+    - (Cuando se usa como salida) Define y usa un contenedor como `MakeSmartType` [visto aquí en las pruebas unitarias del PR](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R2)
+        ```python
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": (MakeSmartType("FOO,BAR"), {}),
+                    }
+                }
+
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+    - (Cuando se usa como entrada) Define una función personalizada [VALIDATE_INPUTS](/es/custom-nodes/backend/server_overview#validate_inputs) que tome un argumento `input_types` para que se omita la validación de tipo.
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, input_types):
+            return True
+        ```
+    - (Compatible con ambos, conveniente) Define y usa el decorador `@VariantSupport` [visto aquí en las pruebas unitarias del PR](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R15)
+        ```python
+        @VariantSupport
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": ("FOO,BAR", {}),
+                    }
+                }
+            
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+
+- El uso de listas (por ejemplo, `[1, 2, 3]`) como constantes en la definición del gráfico (por ejemplo, para representar una entrada `VEC3` constante). Esto habría requerido una extensión del front-end antes. Anteriormente, las listas de tamaño exactamente `2` habrían fallado de todos modos, ya que se habrían tratado como conexiones rotas.
+    - Envuelve las listas en un diccionario como `{ "value": [1, 2, 3] }`
+
+### Orden de ejecución
+
+El orden de ejecución siempre ha cambiado según qué nodos tengan qué IDs, pero ahora también puede cambiar según qué valores estén en caché. En general, el orden de ejecución debe considerarse no determinista y sujeto a cambios (más allá de lo que impone la estructura del gráfico).
+
+No dependas del orden de ejecución.
+
+*HIC SUNT DRACONES*
+
+## Nueva funcionalidad
+
+### Cambios en la validación
+
+Se agregaron varias funciones a la función `VALIDATE_INPUTS` para reducir el impacto de la [Validación de entradas opcionales](#validación-de-entradas-opcionales) mencionada anteriormente.
+
+- Ahora se omitirá la validación predeterminada para las entradas que recibe la función `VALIDATE_INPUTS`.
+- La función `VALIDATE_INPUTS` ahora puede aceptar `**kwargs`, lo que hace que el creador del nodo trate todas las entradas como validadas.
+- La función `VALIDATE_INPUTS` puede aceptar una entrada llamada `input_types`. Esta entrada será un dict que asigna cada entrada (conectada mediante una conexión) al tipo de la salida conectada. Cuando existe este argumento, se omite la validación de tipos de las entradas del nodo.
+
+Puedes leer más en [VALIDATE_INPUTS](/custom-nodes/backend/server_overview#validate_inputs).
+
+### Evaluación diferida
+
+Las entradas se pueden evaluar de forma diferida (es decir, puedes esperar a ver si se necesitan antes de evaluar el nodo conectado y todos sus ancestros). Consulta [Evaluación diferida](/es/custom-nodes/backend/lazy_evaluation) para obtener más información.
+
+### Expansión de nodos
+
+En tiempo de ejecución, los nodos pueden expandirse en un subgrafo de nodos. Esto es lo que permite implementar bucles (mediante recursión de cola). Consulta [Expansión de nodos](/es/custom-nodes/backend/expansion) para obtener más información.

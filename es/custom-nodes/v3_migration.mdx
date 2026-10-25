@@ -1,0 +1,979 @@
+---
+title: "Migración a V3"
+description: "Cómo migrar tus nodos V1 existentes al nuevo esquema V3."
+translationSourceHash: 0a3a0a17
+translationFrom: custom-nodes/v3_migration.mdx
+translationBlockHashes:
+  "Overview": 109e87b3
+---
+
+## Descripción general
+
+El esquema V3 de ComfyUI introduce una forma más organizada de definir nodos, y las futuras extensiones de las funciones de los nodos solo se agregarán al esquema V3. Puedes usar esta guía para migrar tus nodos V1 existentes al nuevo esquema V3.
+
+## Conceptos básicos
+
+El esquema V3 se mantiene en la nueva API versionada de Comfy, lo que significa que las futuras revisiones del esquema serán compatibles hacia atrás. ```comfy_api.latest``` apuntará a la última API numerada que aún está en desarrollo; la versión anterior a latest es la que se puede considerar «estable». La versión ```v0_0_2``` es la versión actual (y la primera) de la API, así que se le harán más cambios sin previo aviso. Cuando se considere estable, se creará una nueva versión ```v0_0_3``` para que ```latest``` apunte a ella.
+
+```python
+# usa la API más reciente de ComfyUI
+from comfy_api.latest import ComfyExtension, io, ui
+
+# usa una versión específica de la API de ComfyUI
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### Arquitectura V1 frente a V3
+
+Los cambios más importantes del esquema V3 son:
+- Las entradas y salidas se definen con objetos en lugar de un diccionario.
+- El método de ejecución queda fijado con el nombre 'execute' y es un método de clase.
+- La función ```def comfy_entrypoint()```, que devuelve un objeto ComfyExtension, define los nodos expuestos en lugar de NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS
+- Los objetos nodo no exponen 'state': ```def __init__(self)``` no tendrá efecto sobre lo que se expone en las funciones del nodo, ya que todas son métodos de clase. La clase del nodo también se sanea antes de ejecutarse.
+
+#### V1 (heredado)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (moderno)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## Pasos de migración
+
+Pasar de V1 a V3 debería ser sencillo en la mayoría de los casos y es simplemente un cambio de sintaxis.
+
+### Paso 1: Cambiar la clase base
+
+Todos los nodos del esquema V3 deben heredar de ```ComfyNode```. Se permiten varias capas de herencia siempre que en la parte superior de la cadena haya un padre ```ComfyNode```.
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # No hace falta __init__
+```
+
+### Paso 2: Convertir INPUT_TYPES en define_schema
+
+Las propiedades del nodo, como el id del nodo, el nombre visible, la categoría, etc., que antes se asignaban en distintos lugares del código (diccionarios y propiedades de clase), ahora se mantienen juntas mediante la clase ```Schema```.
+
+Se espera que la función ```define_schema(cls)``` devuelva un objeto ```Schema```, de forma muy parecida a como funcionaba INPUT_TYPES(s) en V1.
+
+Los tipos de entrada y salida principales compatibles se guardan y documentan en ```comfy_api/{version}``` dentro de ```_io.py```, que por defecto usa el espacio de nombres ```io```. Como ahora las entradas y salidas se definen con clases en lugar de diccionarios o cadenas, los tipos personalizados se admiten definiendo tu propia clase o usando la función auxiliar ```Custom``` de ```io```.
+
+Los tipos personalizados se explican en una sección más abajo.
+
+Una clase de tipo tiene las siguientes propiedades:
+- ```class Input``` para las entradas (por ejemplo, ```Model.Input(...)```).
+- ```class Output``` para las salidas (por ejemplo, ```Model.Output(...)```). Ten en cuenta que no todos los tipos admiten ser salida.
+- ```Type``` para obtener la anotación de tipo del tipo (por ejemplo, ```Model.Type```). Ten en cuenta que algunas anotaciones son solo ```any```, lo que puede cambiar en el futuro. Estas anotaciones no se aplican y solo sirven como documentación útil.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # manejo de tipos arbitrarios en V1
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # manejo de tipos arbitrarios en V3
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### Paso 3: Actualizar el método de ejecución
+
+Todas las funciones de ejecución en V3 se llaman ```execute``` y son métodos de clase.
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # Procesar
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # Procesar
+    image = 1.0 - image
+
+    # Devolver con vista previa de UI opcional
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### Paso 4: Convertir las propiedades del nodo
+
+Aquí tienes algunos ejemplos de nombres de propiedades; consulta el código fuente en ```comfy_api.latest._io``` para más detalles.
+
+| Propiedad V1 | Campo del esquema V3 | Notas |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | `outputs` en el Schema | Lista de objetos Output |
+| `RETURN_NAMES` | `display_name` en Output | Nombres visibles por salida |
+| `FUNCTION` | Siempre `execute` | El nombre del método está estandarizado |
+| `CATEGORY` | `category` en el Schema | Valor de cadena |
+| `OUTPUT_NODE` | `is_output_node` en el Schema | Indicador booleano |
+| `DEPRECATED` | `is_deprecated` en el Schema | Indicador booleano |
+| `EXPERIMENTAL` | `is_experimental` en el Schema | Indicador booleano |
+
+### Paso 5: Gestionar los métodos especiales
+
+Se admiten los mismos métodos especiales que en V1, pero en minúsculas o con nombres completamente nuevos para que sean más claros. Su uso sigue siendo el mismo.
+
+#### Validación (V1 → V3)
+
+La función de validación de entradas se renombró a ```validate_inputs```.
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # Lógica de validación
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # Devuelve True si es válido, o una cadena de error si no
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### Evaluación diferida (V1 → V3) {#lazy-evaluation-v1-v3}
+
+La función ```check_lazy_status``` pasa a ser un método de clase y por lo demás no cambia.
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### Control de caché (V1 → V3)
+
+La funcionalidad del control de caché sigue siendo la misma que en V1, pero el nombre original era muy engañoso respecto a cómo operaba.
+
+La función ```IS_CHANGED``` de V1 indica a la ejecución que no vuelva a ejecutar el nodo si el valor devuelto es IGUAL al de la última vez que se ejecutó el nodo.
+
+Por eso la función ```IS_CHANGED``` se renombró a ```fingerprint_inputs```. Uno de los errores más comunes de los desarrolladores era pensar que, si devolvías ```True```, el nodo se volvería a ejecutar siempre. Como ```True``` se devolvería siempre, tenía el efecto contrario: hacer que el nodo se ejecutara una sola vez y reutilizara los valores en caché.
+
+Un ejemplo del uso de esta función es el nodo LoadImage. Devuelve el hash del archivo seleccionado, de modo que, si el archivo cambia, el nodo se ve obligado a volver a ejecutarse.
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### Paso 6: Crear la extensión y el punto de entrada
+
+En lugar de definir diccionarios que vinculan el id del nodo con la clase y el nombre visible, ahora hay una clase ```ComfyExtension``` y una función ```comfy_entrypoint``` que se debe definir.
+
+En el futuro se podrán agregar más funciones a ComfyExtension para registrar más cosas además de nodos mediante ```get_node_list```.
+
+```comfy_entrypoint``` puede ser async o no, pero ```get_node_list``` debe definirse como async.
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # debe declararse como async
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # Agrega más nodos aquí
+        ]
+
+# puede declararse como async o no, ambas formas funcionan
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Referencia de tipos de entrada
+
+Ya se explicó en el paso 2, pero aquí tienes algunas comparaciones de tipos entre V1 y V3. Consulta ```comfy_api.latest._io``` para ver las declaraciones completas de los tipos.
+
+### Tipos básicos
+
+| Tipo V1 | Tipo V3 | Ejemplo |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+#### control_after_generate
+
+Las entradas Int y Combo admiten un parámetro `control_after_generate` que agrega un widget de control para cambiar el valor automáticamente después de cada generación. En V1 era un simple `bool`; en V3 puedes usar la enumeración `io.ControlAfterGenerate` para un control explícito. Pasar `True` equivale a `io.ControlAfterGenerate.randomize`.
+
+| Valor | Comportamiento |
+|-------|----------|
+| `io.ControlAfterGenerate.fixed` | El valor se mantiene igual después de cada generación. |
+| `io.ControlAfterGenerate.increment` | El valor se incrementa según el step después de cada generación. |
+| `io.ControlAfterGenerate.decrement` | El valor se decrementa según el step después de cada generación. |
+| `io.ControlAfterGenerate.randomize` | El valor se aleatoriza después de cada generación. |
+
+```python
+# Activa el widget de control (el usuario elige el modo en la UI)
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, control_after_generate=True)
+
+# Establece un modo predeterminado específico
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
+    control_after_generate=io.ControlAfterGenerate.randomize)
+```
+
+### Tipos de ComfyUI
+
+| Tipo V1 | Tipo V3 | Ejemplo |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="Input image")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### Combo (desplegables y listas de selección)
+
+Los tipos Combo en V3 requieren una definición explícita de clase.
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## Referencia de Schema
+
+La dataclass ```Schema``` define todas las propiedades de un nodo V3. Aquí tienes una referencia completa de todos los campos disponibles:
+
+| Campo | Tipo | Predeterminado | Descripción |
+|-------|------|---------|-------------|
+| `node_id` | `str` | *obligatorio* | ID único global del nodo. Los nodos personalizados deberían agregar un prefijo o sufijo para evitar colisiones. |
+| `display_name` | `str` | `None` | Nombre visible que se muestra en la UI. Si no se define, se usa `node_id`. |
+| `category` | `str` | `"sd"` | Categoría en el menú «Agregar nodo» (por ejemplo, `"image/transform"`). |
+| `description` | `str` | `""` | Información emergente que se muestra al pasar el cursor sobre el nodo. |
+| `inputs` | `list[Input]` | `[]` | Lista de definiciones de entrada. |
+| `outputs` | `list[Output]` | `[]` | Lista de definiciones de salida. |
+| `hidden` | `list[Hidden]` | `[]` | Lista de entradas ocultas que se solicitan (consulta [Entradas ocultas](#entradas-ocultas)). |
+| `search_aliases` | `list[str]` | `[]` | Nombres alternativos para la búsqueda. Útil para sinónimos o nombres antiguos después de renombrar. |
+| `is_output_node` | `bool` | `False` | Marca el nodo como nodo de salida, lo que hace que se ejecute él y sus dependencias. |
+| `is_input_list` | `bool` | `False` | Cuando es True, todas las entradas pasan a ser `list[type]` sin importar cuántos elementos se pasen. |
+| `is_deprecated` | `bool` | `False` | Marca el nodo como obsoleto y señala a los usuarios que busquen alternativas. |
+| `is_experimental` | `bool` | `False` | Marca el nodo como experimental y advierte a los usuarios de que puede cambiar. |
+| `is_dev_only` | `bool` | `False` | Oculta el nodo de la búsqueda y los menús a menos que el modo desarrollador esté activado. |
+| `is_api_node` | `bool` | `False` | Marca el nodo como nodo de API para los servicios de la API de Comfy. |
+| `not_idempotent` | `bool` | `False` | Cuando es True, el nodo se vuelve a ejecutar siempre y nunca reutiliza salidas en caché de otro nodo idéntico del gráfico. |
+| `enable_expand` | `bool` | `False` | Permite que `NodeOutput` incluya una propiedad `expand` para la expansión del nodo. |
+| `accept_all_inputs` | `bool` | `False` | Cuando es True, todas las entradas del prompt se pasan como kwargs, aunque no estén definidas en el esquema. |
+
+### Parámetros comunes de entrada
+
+Todos los tipos de entrada comparten estos parámetros base:
+
+| Parámetro | Tipo | Predeterminado | Descripción |
+|-----------|------|---------|-------------|
+| `id` | `str` | *obligatorio* | Identificador único de la entrada, que se usa como nombre del kwarg en `execute`. |
+| `display_name` | `str` | `None` | Etiqueta que se muestra en la UI. Por defecto es `id`. |
+| `optional` | `bool` | `False` | Indica si la entrada es opcional. |
+| `tooltip` | `str` | `None` | Texto de la información emergente al pasar el cursor. |
+| `lazy` | `bool` | `None` | Marca la entrada para la evaluación diferida (consulta [Evaluación diferida](#lazy-evaluation-v1-v3)). |
+| `raw_link` | `bool` | `None` | Cuando es True, pasa la información del vínculo sin procesar en lugar del valor resuelto. |
+| `advanced` | `bool` | `None` | Cuando es True, la entrada se oculta detrás de un interruptor «Avanzado» en la UI. |
+
+Las entradas de widget (Int, Float, String, Boolean, Combo) además admiten:
+
+| Parámetro | Tipo | Predeterminado | Descripción |
+|-----------|------|---------|-------------|
+| `default` | varía | `None` | Valor predeterminado del widget. |
+| `socketless` | `bool` | `None` | Cuando es True, oculta el socket de entrada (solo widget, sin conexiones de entrada). |
+| `force_input` | `bool` | `None` | Cuando es True, obliga a que el widget se muestre como entrada de socket. |
+
+## Funciones avanzadas
+
+### Entradas ocultas
+
+Las entradas ocultas dan acceso al contexto de ejecución, como los metadatos del prompt, el ID del nodo y otros valores internos. No son visibles en la UI.
+
+En V1, las entradas ocultas se declaraban con una clave `"hidden"` en `INPUT_TYPES`. En V3 se declaran con el parámetro `hidden` del Schema y sus valores se consultan con `cls.hidden`.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {...},
+        "hidden": {
+            "unique_id": "UNIQUE_ID",
+            "prompt": "PROMPT",
+            "extra_pnginfo": "EXTRA_PNGINFO",
+        }
+    }
+
+def execute(self, unique_id, prompt, extra_pnginfo, ...):
+    # los valores ocultos se pasan como argumentos normales
+    print(unique_id)
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="MyNode",
+        inputs=[...],
+        hidden=[io.Hidden.unique_id, io.Hidden.prompt, io.Hidden.extra_pnginfo],
+    )
+
+@classmethod
+def execute(cls, ...) -> io.NodeOutput:
+    # se accede a los valores ocultos con cls.hidden
+    print(cls.hidden.unique_id)
+    print(cls.hidden.prompt)
+    print(cls.hidden.extra_pnginfo)
+```
+
+Valores ocultos disponibles:
+
+| Enumeración oculta | Descripción |
+|-------------|-------------|
+| `io.Hidden.unique_id` | El identificador único del nodo, que coincide con el id en el cliente. |
+| `io.Hidden.prompt` | El prompt completo que envía el cliente. |
+| `io.Hidden.extra_pnginfo` | Diccionario que se copia en los metadatos de los archivos `.png` guardados. |
+| `io.Hidden.dynprompt` | Instancia de `DynamicPrompt` que puede mutar durante la ejecución. |
+| `io.Hidden.auth_token_comfy_org` | Token obtenido al iniciar sesión con una cuenta de ComfyOrg en el frontend. |
+| `io.Hidden.api_key_comfy_org` | Clave de API generada por ComfyOrg que permite omitir el inicio de sesión en el frontend. |
+
+<Note>
+Algunos valores ocultos se agregan automáticamente según los indicadores del Schema. Los nodos de salida (`is_output_node=True`) reciben automáticamente `prompt` y `extra_pnginfo`. Los nodos de API (`is_api_node=True`) reciben automáticamente los tokens de autenticación.
+</Note>
+
+### Ayudantes de UI
+
+V3 incluye ayudantes de UI en el módulo `ui` para gestionar patrones comunes, como la vista previa y el guardado de archivos. Se pasan a `io.NodeOutput` con el parámetro `ui`.
+
+#### Ayudantes de vista previa
+
+Los ayudantes de vista previa guardan archivos temporales y devuelven datos de UI para mostrarlos dentro del nodo.
+
+```python
+from comfy_api.latest import ui
+
+# Vista previa de una imagen en el nodo
+return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+
+# Vista previa de una máscara (se convierte automáticamente a 3 canales para mostrarla)
+return io.NodeOutput(mask, ui=ui.PreviewMask(mask, cls=cls))
+
+# Vista previa de audio
+return io.NodeOutput(audio, ui=ui.PreviewAudio(audio, cls=cls))
+
+# Vista previa de texto
+return io.NodeOutput(ui=ui.PreviewText("Some text value"))
+
+# Vista previa de un modelo 3D
+return io.NodeOutput(ui=ui.PreviewUI3D(model_file, camera_info))
+```
+
+#### Ayudantes de guardado
+
+Los ayudantes de guardado ofrecen métodos para guardar archivos en el directorio de salida con una incrustación correcta de metadatos. Normalmente se usan en los nodos de salida.
+
+```python
+from comfy_api.latest import ui, io
+
+# Guarda imágenes y devuelve datos de UI (el patrón más común)
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_images_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,  # pasa prompt y extra_pnginfo ocultos para los metadatos
+    )
+)
+
+# Guarda un PNG animado
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_png_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        compress_level=4,
+    )
+)
+
+# Guarda un WebP animado
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_webp_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        lossless=True,
+        quality=80,
+        method=4,
+    )
+)
+
+# Guarda audio (admite flac, mp3 y opus)
+return io.NodeOutput(
+    ui=ui.AudioSaveHelper.get_save_audio_ui(
+        audio=audio,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        format="flac",
+    )
+)
+```
+
+<Tip>
+Pasar `cls=cls` a los ayudantes de guardado y vista previa les permite incrustar automáticamente los metadatos del flujo de trabajo (prompt, extra_pnginfo) en los archivos guardados. Asegúrate de incluir `io.Hidden.prompt` y `io.Hidden.extra_pnginfo` en la lista de entradas ocultas de tu esquema, o de establecer `is_output_node=True`, que las agrega automáticamente.
+</Tip>
+
+#### Devolver diccionarios de UI sin procesar
+
+Si necesitas devolver datos de UI que no tienen un ayudante, puedes pasar un diccionario directamente:
+
+```python
+return io.NodeOutput(ui={"images": results})
+```
+
+### Nodos de salida
+
+Para los nodos que producen efectos secundarios (como guardar archivos). Igual que en V1, marcar un nodo como salida muestra un botón de reproducción `run` en la ventana contextual del nodo, lo que permite ejecutar el gráfico parcialmente.
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # No es necesario que esté vacío.
+        is_output_node=True  # Marca el nodo como nodo de salida
+    )
+```
+
+### Tipos personalizados
+
+Crea tipos de entrada y salida personalizados con una definición de clase o con la función auxiliar ```Custom```.
+
+```python
+from comfy_api.latest import io
+
+# Método 1: usar el decorador con una clase
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Anotación de tipo de Python
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# Método 2: usar el ayudante Custom
+# Por comodidad, también se puede usar el ayudante directamente sin guardarlo antes en una variable
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```
+
+### Entradas MultiType
+
+`MultiType` permite que una entrada acepte más de un tipo. Es útil cuando un nodo puede operar sobre distintos tipos de datos a través de la misma ranura de entrada.
+
+Si el primer argumento (`id`) es una instancia de una clase `Input` en lugar de una cadena, esa entrada se usa para crear un widget con sus valores sobrescritos. En caso contrario, la entrada es solo de socket.
+
+```python
+# Entrada multi-tipo solo de socket (sin widget)
+io.MultiType.Input("input", types=[io.Image, io.Mask])
+
+# Entrada multi-tipo con un widget de respaldo (se muestra el widget String cuando no hay nada conectado)
+io.MultiType.Input(
+    io.String.Input("model_file", default="", multiline=False),
+    types=[io.File3DGLB, io.File3DGLTF, io.File3DOBJ],
+    tooltip="3D model file or path string",
+)
+```
+
+### MatchType (coincidencia de tipos genérica)
+
+`MatchType` crea entradas y salidas vinculadas por tipo. Cuando un usuario conecta un tipo específico a una entrada MatchType, todas las demás entradas y salidas que comparten la misma plantilla se restringen automáticamente a ese tipo. Así funcionan los nodos como Switch y Create List con cualquier tipo.
+
+```python
+@classmethod
+def define_schema(cls):
+    # Crea una plantilla: todas las entradas y salidas que la compartan coincidirán en tipo
+    template = io.MatchType.Template("switch")
+    return io.Schema(
+        node_id="SwitchNode",
+        display_name="Switch",
+        category="logic",
+        inputs=[
+            io.Boolean.Input("switch"),
+            io.MatchType.Input("on_false", template=template, lazy=True),
+            io.MatchType.Input("on_true", template=template, lazy=True),
+        ],
+        outputs=[
+            io.MatchType.Output(template=template, display_name="output"),
+        ],
+    )
+```
+
+También puedes restringir qué tipos se permiten:
+
+```python
+# Solo permite los tipos Image, Mask o Latent
+template = io.MatchType.Template("input_type", allowed_types=[io.Image, io.Mask, io.Latent])
+```
+
+### Entradas dinámicas {#dynamic-inputs}
+
+V3 incorpora tipos de entrada dinámicos que cambian las entradas disponibles según la interacción del usuario. No hay equivalente en V1 para estas funciones.
+
+#### Autogrow
+
+`Autogrow` crea un número variable de entradas que crecen automáticamente a medida que el usuario conecta más. Hay dos tipos de plantilla:
+
+**TemplatePrefix** genera entradas con un prefijo numerado (por ejemplo, `image0`, `image1`, `image2`...):
+
+```python
+@classmethod
+def define_schema(cls):
+    autogrow_template = io.Autogrow.TemplatePrefix(
+        input=io.Image.Input("image"),  # plantilla para cada entrada
+        prefix="image",                  # prefijo para los nombres de las entradas generadas
+        min=2,                           # número mínimo de entradas mostradas
+        max=50,                          # número máximo de entradas permitidas
+    )
+    return io.Schema(
+        node_id="BatchImagesNode",
+        display_name="Batch Images",
+        category="image",
+        inputs=[io.Autogrow.Input("images", template=autogrow_template)],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, images: io.Autogrow.Type) -> io.NodeOutput:
+    # 'images' es un diccionario que asigna nombres de entrada a sus valores
+    image_list = list(images.values())
+    return io.NodeOutput(batch(image_list))
+```
+
+**TemplateNames** genera entradas con nombres específicos:
+
+```python
+template = io.Autogrow.TemplateNames(
+    input=io.Float.Input("float"),
+    names=["x", "y", "z"],  # nombres explícitos para cada entrada
+    min=1,                    # número mínimo de entradas mostradas
+)
+```
+
+Autogrow se puede combinar con MatchType para crear listas de entradas con tipos coincidentes:
+
+```python
+@classmethod
+def define_schema(cls):
+    template_matchtype = io.MatchType.Template("type")
+    template_autogrow = io.Autogrow.TemplatePrefix(
+        input=io.MatchType.Input("input", template=template_matchtype),
+        prefix="input",
+    )
+    return io.Schema(
+        node_id="CreateList",
+        display_name="Create List",
+        category="logic",
+        is_input_list=True,
+        inputs=[io.Autogrow.Input("inputs", template=template_autogrow)],
+        outputs=[
+            io.MatchType.Output(
+                template=template_matchtype,
+                is_output_list=True,
+                display_name="list",
+            ),
+        ],
+    )
+```
+
+#### DynamicCombo
+
+`DynamicCombo` crea un desplegable que muestra u oculta distintas entradas según la opción seleccionada. Es útil para nodos en los que distintos modos requieren parámetros diferentes.
+
+```python
+@classmethod
+def define_schema(cls):
+    return io.Schema(
+        node_id="ResizeNode",
+        display_name="Resize",
+        category="transform",
+        inputs=[
+            io.Image.Input("image"),
+            io.DynamicCombo.Input("resize_type", options=[
+                io.DynamicCombo.Option("scale by dimensions", [
+                    io.Int.Input("width", default=512, min=0, max=8192),
+                    io.Int.Input("height", default=512, min=0, max=8192),
+                ]),
+                io.DynamicCombo.Option("scale by multiplier", [
+                    io.Float.Input("multiplier", default=1.0, min=0.01, max=8.0),
+                ]),
+                io.DynamicCombo.Option("scale to megapixels", [
+                    io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0),
+                ]),
+            ]),
+        ],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, image, resize_type: dict) -> io.NodeOutput:
+    # resize_type es un diccionario con la clave de la opción seleccionada y sus entradas
+    selected = resize_type["resize_type"]
+    if selected == "scale by dimensions":
+        width = resize_type["width"]
+        height = resize_type["height"]
+        # ...
+    elif selected == "scale by multiplier":
+        multiplier = resize_type["multiplier"]
+        # ...
+```
+
+Las opciones de DynamicCombo también se pueden anidar:
+
+```python
+io.DynamicCombo.Input("combo", options=[
+    io.DynamicCombo.Option("option1", [io.String.Input("string")]),
+    io.DynamicCombo.Option("option2", [
+        io.DynamicCombo.Input("subcombo", options=[
+            io.DynamicCombo.Option("sub_opt1", [io.Float.Input("x"), io.Float.Input("y")]),
+            io.DynamicCombo.Option("sub_opt2", [io.Mask.Input("mask", optional=True)]),
+        ])
+    ]),
+])
+```
+
+### Ejecución asíncrona
+
+V3 admite métodos `execute` asíncronos. Es útil para nodos que realizan operaciones de E/S, llamadas a API u otro trabajo asíncrono. Basta con declarar `execute` como `async`:
+
+```python
+@classmethod
+async def execute(cls, prompt, **kwargs) -> io.NodeOutput:
+    result = await some_async_operation(prompt)
+    return io.NodeOutput(result)
+```
+
+### Servicios de ejecución de la API de Comfy {#comfyapi}
+
+La clase `ComfyAPI` da acceso a los servicios de ejecución de ComfyUI, como el informe de progreso y el registro de reemplazo de nodos. Impórtala y crea una instancia:
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+```
+
+#### Informe de progreso
+
+Informa del progreso de la ejecución desde el método `execute` de un nodo. La barra de progreso se muestra en la interfaz de ComfyUI. Esto reemplaza el patrón de V1 que usaba `comfy.utils.PROGRESS_BAR_HOOK`.
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+
+@classmethod
+async def execute(cls, images, **kwargs) -> io.NodeOutput:
+    total = len(images)
+    for i, image in enumerate(images):
+        process(image)
+        await api.execution.set_progress(
+            value=i + 1,
+            max_value=total,
+            preview_image=image,  # opcional: muestra la vista previa durante el progreso
+        )
+    return io.NodeOutput(result)
+```
+
+<Note>
+`set_progress` acepta una imagen PIL, un tensor `ImageInput` o `None` en el parámetro `preview_image`. Cuando se llama desde `execute`, el `node_id` se determina automáticamente a partir del contexto de ejecución.
+</Note>
+
+#### Reemplazo de nodos
+
+El reemplazo de nodos permite asignar nodos antiguos u obsoletos a nodos nuevos, de modo que los flujos de trabajo existentes se actualicen automáticamente. Registra los reemplazos con `ComfyAPI` en el método `on_load` de tu extensión.
+
+```python
+from comfy_api.latest import ComfyAPI, ComfyExtension, io
+
+api = ComfyAPI()
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await api.node_replacement.register(io.NodeReplace(
+            new_node_id="MyNewNode",
+            old_node_id="MyOldNode",
+            old_widget_ids=["param1", "param2"],  # IDs de widgets en orden para el mapeo posicional
+            input_mapping=[
+                {"new_id": "image", "old_id": "input_image"},       # renombra la entrada
+                {"new_id": "method", "set_value": "lanczos"},       # establece un valor fijo
+            ],
+            output_mapping=[
+                {"new_idx": 0, "old_idx": 0},  # mapea la salida por índice
+            ],
+        ))
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNewNode]
+```
+
+El parámetro `old_widget_ids` es importante: el JSON del flujo de trabajo guarda los valores de los widgets por índice de posición, no por nombre. Esta lista asigna esos índices de posición a los IDs de entrada para que el sistema de reemplazo pueda identificar correctamente los valores de los widgets durante la migración.
+
+Para los nodos que usan entradas dinámicas (como Autogrow), usa rutas con punto en el mapeo:
+
+```python
+input_mapping=[
+    {"new_id": "images.image0", "old_id": "image1"},
+    {"new_id": "images.image1", "old_id": "image2"},
+]
+```
+
+### Ciclo de vida de la extensión
+
+La clase `ComfyExtension` admite ganchos de ciclo de vida además de `get_node_list`:
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        """Se llama cuando se carga la extensión.
+        Úsalo para la inicialización única: registrar reemplazos de nodos,
+        configurar recursos globales, etc.
+        """
+        pass
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        """Devuelve la lista de clases de nodo que ofrece esta extensión."""
+        return [MyNode]
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+### NodeOutput
+
+La clase `NodeOutput` es el valor de retorno estandarizado de `execute`. Admite varios patrones:
+
+```python
+# Devuelve un solo valor de salida
+return io.NodeOutput(image)
+
+# Devuelve varios valores de salida (el orden coincide con la lista outputs del esquema)
+return io.NodeOutput(width, height, batch_size)
+
+# Devuelve solo datos de UI (sin valores de salida)
+return io.NodeOutput(ui=ui.PreviewImage(images, cls=cls))
+
+# Devuelve valores de salida y datos de UI
+return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+
+# Devuelve None o vacío (para nodos sin salidas)
+return io.NodeOutput()
+```
+
+## Ejemplo completo
+
+Aquí tienes un ejemplo completo de un archivo de extensión V3 con varios nodos:
+
+```python
+from comfy_api.latest import ComfyExtension, io, ui
+
+class InvertImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_InvertImage",  # con prefijo para evitar colisiones
+            display_name="Invert Image",
+            category="my_pack/image",
+            description="Inverts the colors of an image.",
+            inputs=[
+                io.Image.Input("image"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="inverted"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image) -> io.NodeOutput:
+        inverted = 1.0 - image
+        return io.NodeOutput(inverted, ui=ui.PreviewImage(inverted, cls=cls))
+
+
+class SaveImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_SaveImage",
+            display_name="Save Image",
+            category="my_pack/image",
+            is_output_node=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.String.Input("filename_prefix", default="ComfyUI"),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls, images, filename_prefix) -> io.NodeOutput:
+        return io.NodeOutput(
+            ui=ui.ImageSaveHelper.get_save_images_ui(
+                images=images,
+                filename_prefix=filename_prefix,
+                cls=cls,
+            )
+        )
+
+
+class MyPackExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [InvertImage, SaveImage]
+
+async def comfy_entrypoint() -> MyPackExtension:
+    return MyPackExtension()
+```
