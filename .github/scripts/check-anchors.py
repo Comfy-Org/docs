@@ -318,7 +318,7 @@ def main():
                 if f in changed_abs:
                     continue
                 rel = os.path.relpath(f, root)
-                if rel.split('/')[0] in ('ja', 'ko', 'zh', 'es'):
+                if rel.split('/')[0] in ('ja', 'ko', 'zh'):
                     continue  # translations swept separately
                 for url, _match, _ln in iter_links(f):
                     target, anchor = resolve_target(f, url, root)

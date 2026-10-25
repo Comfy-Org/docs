@@ -111,10 +111,8 @@ test("pricing check validates all locales without writing them", () => {
 });
 
 test("keepLinksInsideLocale keeps an untranslated target inside the locale", () => {
-  // Fixture uses a model slug that is not in the tree, so no translation sync can
-  // turn this page into a translated one and silently invert the expectation.
   const untranslated =
-    "See [Ideogram 9.9](/ja/development/comfy-router/models/ideogram/ideogram-9-9/code).";
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code).";
   const kept = keepLinksInsideLocale(untranslated, "ja");
   expect(kept).toContain("](/ja/development/comfy-router/models)");
   expect(kept).not.toContain("/development/comfy-router/models/ideogram");
@@ -128,7 +126,7 @@ test("keepLinksInsideLocale keeps the exact target and fragment when it exists",
 
 test("keepLinksInsideLocale drops the fragment when it falls back to an ancestor page", () => {
   const fallback =
-    "See [Ideogram 9.9](/ja/development/comfy-router/models/ideogram/ideogram-9-9/code#examples).";
+    "See [Ideogram 4.5](/ja/development/comfy-router/models/ideogram/ideogram-4-5/code#examples).";
   const kept = keepLinksInsideLocale(fallback, "ja");
   expect(kept).toContain("](/ja/development/comfy-router/models)");
   expect(kept).not.toContain("#examples");
