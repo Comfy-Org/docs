@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { compactOptions, displayProvider, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion } from "./gen-router-pricing.ts";
+import { checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
@@ -60,8 +61,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -83,8 +84,8 @@ describe("public Router pricing", () => {
     const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
-    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Runware", "WaveSpeed"]);
-    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
+    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Pika", "Runware", "WaveSpeed"]);
+    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield", "Tencent"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
@@ -153,7 +154,7 @@ describe("public Router pricing", () => {
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
       "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
     ]) {
-      expect(cell(id)).toStartWith("Usage-based");
+      expect(cell(id)).toBe("0.266 / GPU-second");
     }
   });
 
@@ -178,10 +179,26 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
+  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+    const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
+      .flatMap((table) => table.rows);
+    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
+      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
+    expect(comfyUsageRows.length).toBeGreaterThan(0);
+    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
+    expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
+    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
+    expect(alternateUsageRows.length).toBeGreaterThan(0);
+    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
+    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
+  });
+
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(616);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(585);
+    expect(snapshot.rates).toHaveLength(693);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(662);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -243,8 +260,12 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Audio input:");
     expect(page).not.toContain("Image input / Text input / Video input:");
     expect(page).not.toContain("Text output / Reasoning:");
-    expect(creditsPanel).toContain("Reasoning: 2262.975");
-    expect(creditsPanel).not.toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).toContain("Text / Reasoning: 2262.975");
+    expect(creditsPanel).not.toMatch(/\| Reasoning: 2262\.975/);
+    expect(render("ja")).toContain("テキスト / 推論: 2262.975");
+    const tokenRate = (conditions: string) => ({ model_id: "m", serving_provider: "p", kind: "metered" as const, unit: "per 1M tokens", credits: "10", conditions, effective_from: "2026-01-01" });
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "en", "credits", 211)).toBe("Text / Reasoning: 10");
+    expect(tokenPriceCell([tokenRate("Reasoning tokens"), tokenRate("Output text tokens")], "output", "ko", "credits", 211)).toBe("텍스트 / 추론: 10");
     for (const table of tables.filter((table) => table.headers.some((header) => header.startsWith("Input credits")))) {
       for (const row of table.rows) {
         for (const cell of row.slice(2)) expect(cell).not.toContain(" / 1M tokens");
@@ -482,6 +503,37 @@ describe("public Router pricing", () => {
     ]);
   });
 
+  test("publishes Luma Ray 3.2 HDR tiers without EXR and notes that EXR export is not available yet", () => {
+    const hdrRates = snapshot.rates.filter((rate) => rate.model_id === "luma_2/ray-3.2" && /dynamic_range=hdr(;|$)/.test(rate.conditions ?? ""));
+    const byConditions = Object.fromEntries(hdrRates.map((rate) => [rate.conditions, { price_usd: rate.price_usd, credits: rate.credits }]));
+    expect(byConditions).toEqual({
+      "type=video; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "0.6", credits: "126.6" },
+      "type=video; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "2.4", credits: "506.4" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "2.16", credits: "455.76" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=10s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=10s": { price_usd: "8.64", credits: "1823.04" },
+    });
+    expect(snapshot.rates.filter((rate) => rate.conditions?.includes("dynamic_range=hdr_exr"))).toEqual([]);
+
+    const rayCredits = tables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    const rayUsd = usdTables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "126.6", "506.4"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "455.76", "911.52"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "911.52", "1823.04"],
+    ]) expect(rayCredits.displayRows).toContainEqual(row);
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "&#36;0.60", "&#36;2.40"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "&#36;2.16", "&#36;4.32"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "&#36;4.32", "&#36;8.64"],
+    ]) expect(rayUsd.displayRows).toContainEqual(row);
+    for (const row of [...rayCredits.displayRows, ...rayUsd.displayRows]) expect(row.join(" ")).not.toContain("EXR");
+    expect(sourcePage.match(/Ray 3\.2 EXR export is not available yet\./g)).toHaveLength(2);
+  });
+
   test("groups Ideogram versions and pivots quality prices into columns", () => {
     const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
     expect(ideogram.headers).toEqual([
@@ -668,5 +720,111 @@ describe("public Router pricing", () => {
     const description = page.match(/^description: "(.+)"$/m)![1];
     expect(description.length).toBeGreaterThanOrEqual(40);
     expect(description.length).toBeLessThanOrEqual(160);
+  });
+});
+
+describe("Router pricing coverage guard", () => {
+  const route = { model_id: "acme/video-1", provider: "Pika" };
+  const reason = "Router refuses dispatch: no classification row.";
+  const status = "catalog_only_not_dispatchable";
+  const evidence = "Comfy-Org/cloud@abc1234 routerresult/classification.go (no row)";
+
+  test("fails on an unpriced route that has no waiver, naming the model, provider, and fix", () => {
+    const errors = checkPricingCoverage([route], []);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("acme/video-1");
+    expect(errors[0]).toContain("provider Pika");
+    expect(errors[0]).toContain("Not published");
+    expect(errors[0]).toContain("router-pricing/metronome-rates.json");
+    expect(errors[0]).toContain("add a waiver with a status, reason and evidence");
+  });
+
+  test("passes when every unpriced route is waived with a reason", () => {
+    expect(checkPricingCoverage([route], [{ ...route, reason, status, evidence }])).toEqual([]);
+  });
+
+  test("a waiver covers only its own provider leg", () => {
+    const errors = checkPricingCoverage([route, { ...route, provider: "Comfy" }], [{ ...route, reason, status, evidence }]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("provider Comfy");
+  });
+
+  test("fails on a waiver with an empty or missing reason", () => {
+    for (const badReason of ["", "   ", undefined]) {
+      const errors = checkPricingCoverage([route], [{ ...route, status, evidence, reason: badReason as unknown as string }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("has no reason");
+      expect(errors[0]).toContain("acme/video-1");
+    }
+  });
+
+  test("fails on a waiver with empty or missing evidence", () => {
+    for (const badEvidence of ["", "   ", undefined]) {
+      const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence: badEvidence as unknown as string }]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("has no evidence");
+      expect(errors[0]).toContain("acme/video-1");
+    }
+  });
+
+  test("rejects a waiver for a live route or with an unknown status", () => {
+    const live = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "live" }]);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toContain("live route cannot be waived");
+    const unknown = checkPricingCoverage([route], [{ ...route, reason, evidence, status: "" }]);
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]).toContain("needs a status");
+    expect(checkPricingCoverage([route], [{ ...route, reason, evidence, status: "embargoed" }])).toEqual([]);
+  });
+
+  test("fails on a stale waiver whose route now has a price, so the list can only shrink", () => {
+    const errors = checkPricingCoverage([], [{ ...route, reason, status, evidence }]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("stale waiver");
+    expect(errors[0]).toContain("acme/video-1");
+  });
+
+  test("reports a null, primitive or array waiver entry instead of throwing", () => {
+    for (const bad of [null, "acme/video-1", 42, [route]]) {
+      const errors = checkPricingCoverage([route], [bad as unknown as UnpricedWaiver]);
+      expect(errors.some((error) => error.includes("must be an object with a model_id and a provider"))).toBe(true);
+      expect(errors.some((error) => error.includes("acme/video-1 (provider Pika) would render"))).toBe(true);
+    }
+  });
+
+  test("fails on a duplicate waiver", () => {
+    const errors = checkPricingCoverage([route], [{ ...route, reason, status, evidence }, { ...route, reason, status, evidence }]);
+    expect(errors.some((error) => error.includes("duplicate waiver"))).toBe(true);
+  });
+
+  test("finds every route the page renders as unavailable, per provider leg", () => {
+    const models = [
+      { id: "openai/gpt-image-2", title: "GPT Image 2", page: "p", providers: ["Comfy", "Pika"], category: "images" as const },
+      { id: "pika/pika-2.5-text-to-video", title: "Pika", page: "p", providers: ["Comfy"], category: "video" as const },
+    ];
+    const rate = { kind: "metered" as const, unit: "per second", price_usd: "0.04", credits: "8.44", effective_from: "2026-10-10" };
+    expect(findUnpricedRoutes(models, [])).toEqual([
+      { model_id: "openai/gpt-image-2", provider: "Comfy" },
+      { model_id: "openai/gpt-image-2", provider: "Pika" },
+      { model_id: "pika/pika-2.5-text-to-video", provider: "Comfy" },
+    ]);
+    expect(findUnpricedRoutes(models, [
+      { ...rate, model_id: "openai/gpt-image-2", serving_provider: "pika" },
+      { ...rate, model_id: "pika/pika-2.5-text-to-video", serving_provider: "Pika" },
+    ])).toEqual([{ model_id: "openai/gpt-image-2", provider: "Comfy" }]);
+  });
+
+  test("every checked-in waiver is current, reasoned, and for a route Router does not dispatch", () => {
+    const unpriced = findUnpricedRoutes(catalog, snapshot.rates);
+    // Unwaived live routes are reported by router-pricing:check, not here.
+    expect(checkPricingCoverage(unpriced, loadUnpricedWaivers()).filter((error) => error.startsWith("router-pricing/unpriced-waivers.json:"))).toEqual([]);
+    const unavailableRows = (creditsPage.match(/\| Not published \|/g) ?? []).length;
+    expect(unavailableRows).toBe(unpriced.length);
+  });
+
+  test("publishes every Pika route", () => {
+    const unpriced = findUnpricedRoutes(catalog, snapshot.rates);
+    expect(unpriced.filter((candidate) => candidate.provider === "Pika" || candidate.model_id.startsWith("pika/"))).toEqual([]);
+    expect(loadUnpricedWaivers().filter((waiver) => waiver.provider === "Pika" || waiver.model_id.startsWith("pika/"))).toEqual([]);
   });
 });

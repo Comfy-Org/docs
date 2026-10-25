@@ -37,12 +37,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Checks on a commit pushed with GITHUB_TOKEN wait for a maintainer to
+      # approve them, so Sync PR Auto-merge never sees them pass. Push as
+      # cloud-code-bot instead, which starts them normally. The mint is
+      # continue-on-error: an unset vars.APP_ID or
+      # secrets.CLOUD_CODE_BOT_PRIVATE_KEY falls back to GITHUB_TOKEN.
+      - name: Mint the cloud-code-bot token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.CLOUD_CODE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Warn that the push falls back to GITHUB_TOKEN
+        if: steps.app-token.outcome == 'failure'
+        run: echo "::warning::cloud-code-bot token mint failed; pushing with GITHUB_TOKEN, so checks on the new commit need manual approval. Check vars.APP_ID and secrets.CLOUD_CODE_BOT_PRIVATE_KEY."
+
       - name: Check out the PR branch
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -64,9 +82,16 @@ jobs:
       - name: Commit locale pages to the PR branch
         env:
           PR_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          APP_TOKEN_MINTED: ${{ steps.app-token.outputs.token != '' }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The committer follows the token that pushes.
+          if [ "$APP_TOKEN_MINTED" = "true" ]; then
+            git config user.name "cloud-code-bot[bot]"
+            git config user.email "234529496+cloud-code-bot[bot]@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fi
           git add development/comfy-router/pricing.mdx ja/development/comfy-router/pricing.mdx zh/development/comfy-router/pricing.mdx ko/development/comfy-router/pricing.mdx
           if git diff --cached --quiet; then
             echo "Router pricing data and translations are already up to date."

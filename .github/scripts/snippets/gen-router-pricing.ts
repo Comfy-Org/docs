@@ -6,9 +6,12 @@ import { formatAmount, formatDate, formatOption, formatUnit, pricingCopy, type P
 
 const ROOT = join(import.meta.dir, "../../..");
 const METRONOME_FILE = join(ROOT, "router-pricing/metronome-rates.json");
+const WAIVER_PATH = "router-pricing/unpriced-waivers.json";
+const WAIVER_FILE = join(ROOT, WAIVER_PATH);
 const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
+const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
 
 type CatalogModel = {
   id: string;
@@ -70,6 +73,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   moonvalley: "Moonvalley",
   openai: "OpenAI",
   openrouter: "OpenRouter",
+  pika: "Pika",
   pruna: "Pruna",
   qwen: "Qwen",
   recraft: "Recraft",
@@ -346,10 +350,12 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
+  // Every modality sharing an amount is named, including text next to reasoning, in all locales.
+  // Reasoning sorts last so the label reads "Text / Reasoning" whatever the source order.
+  const reasoning = label("Reasoning tokens");
   return ordered.map(([, group]) => {
-    const groupLabels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))];
-    const labels = group.some((rate) => rate.conditions === "Reasoning tokens")
-      ? groupLabels.filter((value) => value !== "Text") : groupLabels;
+    const labels = [...new Set(group.map((rate) => label(rate.conditions ?? "")).filter(Boolean))]
+      .sort((a, b) => Number(a === reasoning) - Number(b === reasoning));
     const prefix = labels.length ? `${tableCell(labels.join(" / "))}: ` : "";
     return `${prefix}${formatRateAmount(group[0], currency, creditsPerUsd)}`;
   }).join("<br />") || "-";
@@ -438,6 +444,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     kreaGenerationRates: replaceCreditLabel(baseCopy.kreaGenerationRates),
   } : baseCopy;
   const amount = (rate: MetronomeRate) => formatRateAmount(rate, currency, data.credits_per_usd);
+  const comfyGpuRate = currency === "credits"
+    ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
+    : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
   const modelIds = new Set(models.map((model) => model.id));
   const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
@@ -484,7 +493,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
-          const credits = rate.kind === "usage" ? `${copy.variable}<br />${unit}` : `${amount(rate)} / ${priceUnit}`;
+          const credits = rate.kind === "usage"
+            ? provider === "Comfy" ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
@@ -511,7 +522,8 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           const oneImagePerGeneration = item.unit === "per image"
             && ["wan/wan2.5-i2i-preview", "wan/wan2.5-t2i-preview"].includes(item.modelId.slice(1, -1));
           const unitCanBeShortened = headerUnit === item.unit
-            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration));
+            || (headerUnit === "per generation" && (item.unit === "per request" || oneImagePerGeneration
+              || (category === "images" && ["per image", "per output image"].includes(item.unit))));
           const credits = headerUnit && unitCanBeShortened && item.kind !== "usage"
             ? priceWithoutUnit(item.credits, item.unit, locale)
             : item.credits;
@@ -547,7 +559,10 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
           ? `| ${copy.model} | ${copy.modelId} | ${columns.map((unit) => rateHeader("", ` / ${formatUnit(unit, locale)}`)).join(" | ")} |\n| --- | --- | ${columns.map(() => "---:").join(" | ")} |\n${matrixModels.map(([modelId, model]) => `| ${model.name} | ${modelId} | ${columns.map((unit) => model.values.get(unit) ?? "-").join(" | ")} |`).join("\n")}`
           : "";
         const fallbackRows = items.filter((row) => fallbackIds.has(row.modelId));
-        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true) : ""].filter(Boolean).join("\n\n");
+        // A model with several output-image prices keeps one row per price; its
+        // amounts are still generations, like the matrix above.
+        const fallbackUnit = fallbackRows.every((row) => row.kind !== "usage" && unitForRow(row) === "per generation") ? "per generation" : undefined;
+        return [table, fallbackRows.length ? renderOrdinaryRows(fallbackRows, true, fallbackUnit) : ""].filter(Boolean).join("\n\n");
       };
       const ordinaryGroups = new Map<string, typeof ordinaryRows>();
       for (const row of ordinaryRows) {
@@ -888,9 +903,15 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
       }
       const switchxImageRates = switchxRatesByUnit.get("per generated image");
       const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
+      // Price-cell modality prefixes follow the page locale (EN keeps "Image"/"Video").
+      const modalityLabels: Record<string, [string, string, string, string]> = {
+        Image: ["Image", "画像", "图像", "이미지"],
+        Video: ["Video", "動画", "视频", "동영상"],
+      };
+      const modalityName = (kind: "Image" | "Video") => modalityLabels[kind][["en", "ja", "zh", "ko"].indexOf(locale)];
       const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
       const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
-        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `Image: ${switchxImageRates.get(resolution) ?? "-"}<br />Video: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
+        ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `${modalityName("Image")}: ${switchxImageRates.get(resolution) ?? "-"}<br />${modalityName("Video")}: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
         : "";
       const switchxResolutionRows = new Set(switchxResolutionGroups);
       // Different model families can expose unrelated size bands under one provider.
@@ -905,6 +926,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         const { group } = row;
         const unit = group.tiers.values().next().value!.rate.unit;
         const optionHeader = row.option === "-" ? copy.option
+          : /^\d+s$/.test(row.option) ? copy.duration
           : group.conditions.includes("draft=") ? copy.mode
           : /generate_?Audio=|generate_audio=/.test(group.conditions) ? copy.audio
           : group.conditions.includes("video_type=") ? copy.inputType
@@ -1061,9 +1083,14 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         });
       }
       const hasSubgroups = tableSections.length > 1;
-      const tables = tableSections.map(({ title, body }) => `${hasSubgroups ? `#### ${title}\n\n` : ""}${body}`).join("\n\n");
+      const tables = tableSections.map(({ title, body }) => {
+        const comfyUsageNote = provider === "Comfy" && title === copy.usageRates
+          ? `${copy.comfyGpuUsageNote}\n\n` : "";
+        return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
+      }).join("\n\n");
       const durationNote = routes.some(({ model }) => model.id === "minimax/minimax-h3") ? `${copy.videoDuration}\n\n` : "";
-      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${tables}\n</Accordion>`;
+      const rayExrNote = routes.some(({ model }) => model.id === "luma_2/ray-3.2") ? `${copy.rayExrNote}\n\n` : "";
+      return `<Accordion title="${provider}"${defaultOpen ? " defaultOpen" : ""}>\n\n${durationNote}${rayExrNote}${tables}\n</Accordion>`;
     }).join("\n\n");
     return `<Tab title="${copy.categories[category]}">\n\n<AccordionGroup>\n\n${sections}\n\n</AccordionGroup>\n\n</Tab>`;
   }).join("\n\n");
@@ -1100,9 +1127,93 @@ ${copy.updated}: ${formatDate(data.snapshot_at, locale)}.
 `;
 }
 
+export type UnpricedRoute = { model_id: string; provider: string };
+export const WAIVABLE_STATUSES = ["embargoed", "catalog_only_not_dispatchable"] as const;
+export type UnpricedWaiver = UnpricedRoute & { reason: string; status: string; evidence: string };
+
+const routeKey = (route: UnpricedRoute) => `${route.model_id} @ ${route.provider}`;
+
+/**
+ * Every model/provider route the page lists that has no rate, i.e. every row
+ * that would render the "Not published" value. Mirrors renderCurrencyView: one
+ * row per model and per serving provider on its page, priced by the rates that
+ * map to that provider.
+ */
+function findUnpricedRoutes(models: CatalogModel[], rates: MetronomeRate[]): UnpricedRoute[] {
+  const priced = new Set<string>();
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  for (const rate of rates) {
+    const model = modelsById.get(rate.model_id);
+    if (!model) continue;
+    priced.add(routeKey({ model_id: model.id, provider: displayProvider(model.id, model.providers, rate.serving_provider) }));
+  }
+  return models.flatMap((model) => model.providers
+    .map((provider) => ({ model_id: model.id, provider }))
+    .filter((route) => !priced.has(routeKey(route))));
+}
+
+function loadUnpricedWaivers(): UnpricedWaiver[] {
+  if (!existsSync(WAIVER_FILE)) return [];
+  const data = JSON.parse(readFileSync(WAIVER_FILE, "utf8")) as { waivers?: UnpricedWaiver[] };
+  if (!Array.isArray(data.waivers)) throw new Error(`${WAIVER_FILE}: expected a "waivers" array`);
+  return data.waivers;
+}
+
+/**
+ * A published, billable Router route must show a price. Returns one message per
+ * problem: an unwaived unpriced route, a waiver without a reason or evidence, a duplicate
+ * waiver, or a stale waiver (its route is now priced or no longer listed), so
+ * the waiver list can only shrink.
+ */
+function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver[]): string[] {
+  const errors: string[] = [];
+  const unpricedKeys = new Set(unpriced.map(routeKey));
+  const waived = new Set<string>();
+  for (const waiver of waivers) {
+    if (waiver === null || typeof waiver !== "object" || Array.isArray(waiver) || !waiver.model_id || !waiver.provider) {
+      errors.push(`${WAIVER_PATH}: every waiver must be an object with a model_id and a provider (got ${JSON.stringify(waiver)})`);
+      continue;
+    }
+    const key = routeKey(waiver);
+    if (typeof waiver.reason !== "string" || !waiver.reason.trim()) {
+      errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no reason; say why this route has no published price`);
+    }
+    if (typeof waiver.evidence !== "string" || !waiver.evidence.trim()) {
+      errors.push(`${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) has no evidence; cite the Comfy-Org/cloud file and line that shows its status`);
+    }
+    if (!(WAIVABLE_STATUSES as readonly string[]).includes(waiver.status)) {
+      errors.push(waiver.status === "live"
+        ? `${WAIVER_PATH}: ${waiver.model_id} (provider ${waiver.provider}) is live on Router, and a live route cannot be waived; publish its price in router-pricing/metronome-rates.json`
+        : `${WAIVER_PATH}: waiver for ${waiver.model_id} (provider ${waiver.provider}) needs a status of ${WAIVABLE_STATUSES.join(" or ")} (got ${JSON.stringify(waiver.status)})`);
+    }
+    if (waived.has(key)) errors.push(`${WAIVER_PATH}: duplicate waiver for ${waiver.model_id} (provider ${waiver.provider})`);
+    waived.add(key);
+    if (!unpricedKeys.has(key)) {
+      errors.push(`${WAIVER_PATH}: stale waiver for ${waiver.model_id} (provider ${waiver.provider}); the page no longer shows it as unpriced, so remove the waiver`);
+    }
+  }
+  for (const route of unpriced) {
+    if (waived.has(routeKey(route))) continue;
+    errors.push(`${route.model_id} (provider ${route.provider}) would render "${pricingCopy.en.unavailable}" on the Router pricing page. Add its rates to router-pricing/metronome-rates.json, or, only if Router does not dispatch it (embargoed or catalog-only), add a waiver with a status, reason and evidence to ${WAIVER_PATH}`);
+  }
+  return errors;
+}
+
+function pricingCoverageErrors(): string[] {
+  const data = loadMetronomeData();
+  return checkPricingCoverage(findUnpricedRoutes(loadCatalog(), data.rates), loadUnpricedWaivers());
+}
+
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   const output = render();
+  const coverageErrors = pricingCoverageErrors();
+  if (coverageErrors.length) {
+    for (const error of coverageErrors) console.error(error);
+    // Generation still writes the page so a contributor can see the gap;
+    // --check (CI) fails until every listed route is priced or waived.
+    if (check) process.exit(1);
+  }
   if (check) {
     if (!existsSync(OUTPUT_FILE) || readFileSync(OUTPUT_FILE, "utf8") !== output) {
       console.error(`${OUTPUT_FILE}: stale or missing, run pnpm router-pricing:gen`);
@@ -1115,4 +1226,4 @@ if (import.meta.main) {
   }
 }
 
-export { compactOptions, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, validateCreditConversion };
+export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
