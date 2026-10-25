@@ -18,7 +18,8 @@
  *     omit: [webhook_url, webhook_secret]            # provider fields we deliberately do not document
  *
  * Errors (exit 1): a documented field the provider does not have; a type, default,
- * enum, bound or required-ness that disagrees with the provider; a single documented
+ * enum or required-ness that disagrees with the provider; a bound WIDER than the
+ * provider's (a narrower one only warns, since Router may enforce a tighter range); a single documented
  * `default` for a field whose provider default is PER-VARIANT. Warnings: provider
  * fields we do not document (errors under --strict), provider shapes that are
  * opaque (`{}`) where we document structure, and a per-variant provider default the
@@ -144,7 +145,8 @@ async function providerShapes(ps: ProviderSpec): Promise<{ input: any; output: a
   }
   if (!ps.operation) throw new Error(`provider_spec.operation is required: ${ps.url} is an OpenAPI document, which names operations rather than schemas`);
   const op = findOperation(doc, ps.operation);
-  const req = op.requestBody?.content?.["application/json"]?.schema;
+  // Multipart-only operations (e.g. Ideogram 4 generate) carry the same field set as a form schema.
+  const req = op.requestBody?.content?.["application/json"]?.schema ?? op.requestBody?.content?.["multipart/form-data"]?.schema;
   const resOp = ps.response_operation ? findOperation(doc, ps.response_operation) : op;
   const res = resOp.responses?.["200"]?.content?.["application/json"]?.schema;
   return { input: norm(req), output: norm(res) };
@@ -211,7 +213,13 @@ export function compare(ours: any, theirs: any, where: string, omit: Set<string>
     }
     if (o.enum && t.enum) { const extra = o.enum.filter((v: unknown) => !t.enum.includes(v)); if (extra.length) rep.errors.push(`${where}: \`${path}\` enum values ${JSON.stringify(extra)} are not in the provider's ${JSON.stringify(t.enum)}`); const missing = t.enum.filter((v: unknown) => !o.enum.includes(v) && !String(v).endsWith("UNSPECIFIED")); if (missing.length) rep.warnings.push(`${where}: \`${path}\` provider also allows ${JSON.stringify(missing)}`); }
     if (t.enum && !o.enum && t.enum.length <= 12) rep.warnings.push(`${where}: \`${path}\` provider enumerates ${JSON.stringify(t.enum)} but we document a free ${o.type}`);
-    for (const b of ["minimum", "maximum"] as const) if (o[b] !== undefined && t[b] !== undefined && Number(o[b]) !== Number(t[b])) rep.errors.push(`${where}: \`${path}\` ${b} ${o[b]} vs provider ${t[b]}`);
+    // Router may enforce a tighter range than the provider allows (BFL raised `safety_tolerance` to 7; Router still validates 4),
+    // so only a documented bound WIDER than the provider's is an error: that would advertise values the provider rejects.
+    for (const b of ["minimum", "maximum"] as const) {
+      if (o[b] === undefined || t[b] === undefined || Number(o[b]) === Number(t[b])) continue;
+      const wider = b === "maximum" ? Number(o[b]) > Number(t[b]) : Number(o[b]) < Number(t[b]);
+      (wider ? rep.errors : rep.warnings).push(`${where}: \`${path}\` ${b} ${o[b]} vs provider ${t[b]}${wider ? "" : " (narrower than the provider; fine if Router enforces it)"}`);
+    }
     if (o.properties) compare(o, t, where, omit, rep, path, noRequired);
     if (o.items?.properties) compare(o.items, t.items, where, omit, rep, `${path}[]`, noRequired);
   }

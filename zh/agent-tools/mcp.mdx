@@ -3,24 +3,20 @@ title: "Comfy MCP：将 AI 智能体连接到 ComfyUI"
 sidebarTitle: "Comfy MCP"
 description: "通过模型上下文协议（MCP）将 AI 智能体连接到 ComfyUI。可生成图像、视频、音频和 3D，并在 Comfy Cloud 或本机运行真实工作流。"
 icon: "bolt"
-translationSourceHash: 9798d920
+translationSourceHash: 4c4bb38e
 translationFrom: agent-tools/mcp.mdx
 translationBlockHashes:
-  "_intro": 340316c1
   "Overview": 64064e0e
-  "Comfy Cloud MCP Connection": f820ca16
+  "Comfy Cloud MCP Connection": 9270a2f0
   "Local Comfy MCP Connection": 59170570
   "Related resources": 2a86e2c5
-  "Related: Comfy Agent": b0cb71e9
-  "Feedback": 25a3d53f
-  "FAQ": 5c144ebc
+  "Related: Comfy Agent": 76253cf0
+  "Feedback": 282a338c
+  "FAQ": 44b6d2b3
 ---
 
 
 
-<Info>
-  **公共测试版。** Comfy MCP 目前处于公共测试版阶段。API、工具和行为可能会在迭代过程中发生变化。请参阅[反馈](#反馈)来报告问题或分享建议。
-</Info>
 
 ## 概览
 
@@ -261,6 +257,34 @@ https://cloud.comfy.org/mcp
 
       在 shell 或系统环境中设置 `COMFY_API_KEY`。不要将密钥提交到版本控制。
     </Accordion>
+
+    <Accordion title="Codex 反复要求重新登录（invalid_grant 或刷新令牌重用）">
+      **症状：** Codex 反复将你从 Comfy Cloud 登出并要求重新认证，有时每隔几分钟就会发生一次。Codex 的警告或日志中可能出现 `invalid_grant`、刷新令牌已被使用或已被吊销，或 OAuth 令牌刷新失败等信息。
+
+      **原因：** 这是 Codex 存储和刷新 MCP OAuth 凭据的方式导致的，而不是 Comfy Cloud 的问题。当多个 Codex 进程（TUI 会话、应用服务器、`codex mcp` 命令）共用同一个 OAuth 服务器时，某个进程可能会使用已被另一个进程轮换掉的令牌进行刷新。授权服务器会将其视为令牌重用并结束会话。其他 OAuth MCP 服务器的用户也报告了相同的现象。以下问题在 Codex 仓库中仍处于开启状态，你可以自行查看其最新进展：
+
+      - [openai/codex#46028](https://github.com/openai/codex/issues/46028)：长时间运行的客户端重用已轮换的刷新令牌
+      - [openai/codex#48507](https://github.com/openai/codex/issues/48507)：并发进程在刷新令牌轮换时发生竞争，下次启动时出现 `invalid_grant`
+      - [openai/codex#41133](https://github.com/openai/codex/issues/41133)：关闭时可能丢失已轮换的刷新令牌
+      - [openai/codex#17265](https://github.com/openai/codex/issues/17265)：Codex 不会刷新已存储的 MCP OAuth 令牌
+
+      **变通方法 1：开启 Codex 的刷新协调标志。** Codex 提供一个功能标志 `mcp_oauth_refresh_coordination`，用于在多个 Codex 进程之间协调 OAuth 令牌刷新。这是 Codex 的设置，而不是 Comfy 的设置。Codex 将其标记为开发中且默认关闭，Codex 和 Comfy 都不将其作为官方支持的修复方案。在 openai/codex#46028 中，开启该标志后，报告者的测试中不再出现过期令牌重用。如果你的 Codex 版本仍默认关闭该标志，请将其添加到 `~/.codex/config.toml`：
+
+      ```toml
+      [features]
+      mcp_oauth_refresh_coordination = true
+      ```
+
+      关闭并重新启动所有正在运行的 Codex 会话，使它们都加载该标志。如果 Codex 已显示 **comfy-cloud** 处于登出状态，请再登录一次（运行 `codex mcp login comfy-cloud`，或在设置中点击 **Authenticate**）。如果后续的 Codex 版本默认开启了该功能或移除了该标志，可以跳过此步骤。
+
+      **变通方法 2：让每个服务器只由一个 Codex 进程负责刷新。** 如果该标志不可用或没有效果，请将 `[mcp_servers.comfy-cloud]` 条目从全局 `~/.codex/config.toml` 移到受信任项目中的 `.codex/config.toml`，这样只有该项目中的会话会加载并刷新它。避免同时运行多个连接 Comfy Cloud 的 Codex 会话，并在重启电脑前关闭 Codex 会话。这是 openai/codex#48507 中报告的变通方法。
+
+      移动条目并不会停止已经加载全局配置的 Codex 进程，这些进程会继续刷新旧的服务器定义。移动后，请关闭所有正在运行的 Codex 会话并停止 Codex 应用服务器，然后只在包含该条目的项目中启动 Codex。
+
+      如果你不需要 OAuth，上面的 API 密钥设置不会使用刷新令牌。
+
+      这些步骤可以减少被登出的次数，但不一定能完全避免。我们也在 Comfy Cloud 端进行改进，以减少此类情况的发生。
+    </Accordion>
   </Tab>
 
   <Tab title="OpenClaw">
@@ -443,7 +467,7 @@ https://cloud.comfy.org/mcp
 | --- | --- |
 | `get_billing_status` | 检查您的积分余额、订阅层级和账单链接 |
 | `get_server_info` | 确认智能体连接到的服务器：环境、主机、版本和认证状态 |
-| `submit_feedback` | 获取测试版反馈问卷链接 |
+| `submit_feedback` | 获取反馈问卷链接 |
 | `report_session_summary` | 与 Comfy 团队分享匿名的会话摘要（**仅在您明确同意后**；智能体必须先询问，且不包含提示、文件路径或个人信息） |
 
 **提示（Claude Desktop）**
@@ -663,17 +687,17 @@ pip install comfy-mcp
 | [Comfy CLI](/zh/agent-tools/cli) | 命令行工具，用于本地 ComfyUI 的安装/启动，以及从脚本或 CI 调用托管的合作节点（`comfy generate`，测试版）。作为 MCP 的补充，适用于需要终端或自动化工作流的场景。 |
 | [在 Comfy Cloud 上分享工作流](/zh/cloud/share-workflow) | 通过 Comfy Cloud UI 分享工作流（MCP 的 `share_workflow` 工具在智能体会话中也可实现分享）。 |
 
-## 相关：Comfy 应用内智能体
+## 相关：Comfy Agent
 
-想要**在** Comfy Cloud 内部获得智能体体验（聊天，可以构建和编辑你的画面），而不是通过外部 MCP 客户端吗？
+想要**在** ComfyUI 内部获得智能体体验，而不是使用外部 MCP 客户端吗？
 
-<Card title="Comfy 应用内智能体" icon="comments" href="/zh/agent-tools/in-app-agent">
-  Comfy Cloud 上的私有 Alpha 测试。加入候补名单以请求访问。
+<Card title="Comfy Agent" icon="comments" href="/zh/agent-tools/in-app-agent">
+  内置的 ComfyUI 助手，用于构建、编辑和运行工作流。**云端已正式发布。** 本地版（Comfy Desktop）即将推出。
 </Card>
 
 ## 反馈
 
-Comfy MCP 目前是公开测试版。请试试看，并告诉我们哪些地方好用，哪些地方需要改进：
+欢迎试用 Comfy MCP，并告诉我们哪些地方好用，哪些地方需要改进：
 
 - **[反馈调查](https://links.comfy.org/cloudmcpbeta)**：反馈 bug、请求功能，或分享常规印象。
 - **Discord**：[#comfy-mcp-and-cli](https://discord.gg/xWJn6nhE3R)（位于 Comfy Discord 上），用于问题咨询和讨论。
@@ -709,7 +733,7 @@ Comfy MCP 目前是公开测试版。请试试看，并告诉我们哪些地方�
     在 **Mac** 上，请使用云端连接进行生成：如今的开放权重模型体积过大，无法在 Apple GPU 上以可用速度运行。在**配备独立显卡的 PC** 上，24 GB 或以上的 VRAM 可以处理大多数任务，包括视频；8–24 GB 适合图像生成，但视频生成会较慢，或无法装入显存；低于 8 GB 时，请使用云端。
   </Accordion>
   <Accordion title="它是否已正式发布？">
-    云端连接目前处于**公开测试版**阶段。在我们迭代期间，API、工具和行为可能会发生变化。本地连接适用于本地 ComfyUI 安装。如需反馈问题，请参阅[反馈](#反馈)。
+    是的。云端连接已正式发布，本地连接适用于本地 ComfyUI 安装。如需反馈问题或分享建议，请参阅[反馈](#反馈)。
   </Accordion>
 </AccordionGroup>
 

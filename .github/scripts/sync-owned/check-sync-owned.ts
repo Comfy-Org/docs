@@ -13,11 +13,18 @@
  *
  * The guarded list mirrors the sync's own final status check, which runs
  * `git status --porcelain --untracked-files=all` over: `openapi-v2.yaml`,
- * `development/comfy-router/reference.mdx`, `development/comfy-router/quickstart.mdx`,
- * `development/comfy-router/limitations.mdx`, `router-schemas`,
- * `development/comfy-router/models`, `development/comfy-router/models.mdx` and
- * `docs.json`. Two of those are deliberately NOT guarded here, because the sync
- * only owns part of them:
+ * `router-openapi.yaml`, `development/comfy-router/reference.mdx`,
+ * `development/comfy-router/quickstart.mdx`, `development/comfy-router/limitations.mdx`,
+ * `development/comfy-router/higgsfield-byok.mdx`, `development/comfy-router/pricing.mdx`,
+ * `router-schemas`, `development/comfy-router/models`,
+ * `development/comfy-router/models.mdx`, `development/comfy-router/providers.mdx` and
+ * `docs.json`. When the sync gains a path, add a rule here in the same change, or
+ * an edit to the new page passes this check and is reverted by the next sync.
+ *
+ * `router-openapi.yaml` IS guarded: it is the Router-only projection of the same
+ * contract as `openapi-v2.yaml`, its own header says not to hand-edit it, and
+ * nothing in it is this repository's to change. Three of the sync's paths are
+ * deliberately NOT guarded here, because the sync does not own all of them:
  *
  *   - `docs.json` is co-owned. The sync rewrites the `Models` nav group and the
  *     model-page redirects; everything else in it is this repository's to edit.
@@ -25,9 +32,15 @@
  *     inputs that live inside the generated tree. Only the sibling `code.mdx`
  *     pages are generated, so `code.yaml` stays editable and is in fact where an
  *     edit to a generated model page belongs.
+ *   - `development/comfy-router/pricing.mdx` is GENERATED in this repository by
+ *     `bun run router-pricing:gen` from `router-pricing/metronome-rates.json` and
+ *     the model pages, so a change to the generator or the rate snapshot has to
+ *     commit it. `bun run router-pricing:check` in `code-pages-check.yml` fails a
+ *     hand-edit that does not match the generator's output.
  *
- * The two GENERATED page kinds (`development/comfy-router/models.mdx` and the
- * per-model `code.mdx`) are guarded CONDITIONALLY, on FRESHNESS. Committing them
+ * The three GENERATED page kinds (`development/comfy-router/models.mdx`, the
+ * per-model `code.mdx`, and `development/comfy-router/providers.mdx`) are guarded
+ * CONDITIONALLY, on FRESHNESS. Committing them
  * is mandatory whenever a generator input changes, so guarding them
  * unconditionally would make a `code.yaml` edit unshippable and would fail an
  * honest "regenerate to restore freshness" pull request as well. A page that
@@ -80,6 +93,12 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
       "Vendored projection of the public Comfy API v2 specification. Edit the API contract upstream; the sync reprojects this file on every run.",
   },
   {
+    id: "router-openapi",
+    test: (p) => p === "router-openapi.yaml",
+    guidance:
+      "Vendored Router-only projection of the public Comfy API contract. Edit the API contract upstream; the sync reprojects this file on every run.",
+  },
+  {
     id: "reference",
     test: (p) => p === "development/comfy-router/reference.mdx",
     guidance:
@@ -98,6 +117,12 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
       "Hand-written upstream and published here verbatim. Edit the upstream limitations.mdx.",
   },
   {
+    id: "higgsfield-byok",
+    test: (p) => p === "development/comfy-router/higgsfield-byok.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream higgsfield-byok.mdx.",
+  },
+  {
     id: "router-schemas",
     test: (p) => p === "router-schemas" || p.startsWith("router-schemas/"),
     guidance:
@@ -108,6 +133,13 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === `${MODELS_DIR}.mdx`,
     guidance:
       "GENERATED provider index, and it does not match the generator's output, so this is a hand-edit. Change a model's code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
+    generated: true,
+  },
+  {
+    id: "providers-index",
+    test: (p) => p === "development/comfy-router/providers.mdx",
+    guidance:
+      "GENERATED serving-provider index, and it does not match the generator's output, so this is a hand-edit. Change the upstream alt-provider contract and re-run `bun run code-pages:gen`.",
     generated: true,
   },
   {

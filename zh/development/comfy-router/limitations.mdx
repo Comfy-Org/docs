@@ -1,21 +1,31 @@
 ---
-title: "Comfy Router 的局限性"
-description: "Comfy Router 目前无法做到的事、存在替代方案时该改用何种方案，以及其中哪些限制预计将会改变。"
-translationSourceHash: 1a4e4a4c
+title: "Comfy Router 的能力与限制"
+sidebarTitle: "能力与限制"
+description: "选择 Comfy Router 还是合作伙伴代理，为长时间运行的调用做好规划，并了解恢复、速率限制与资产存储。"
+translationSourceHash: b40af72c
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
-  "What Router supports": f7da4bd0
-  "Queued submission": bfb591cc
-  "Calls are cut off at a server deadline": 2466a237
-  "Recovery depends on the provider": 610f0ec8
-  "Requests are rate limited per caller": 421194d9
+  "What Router supports": 2cc63403
+  "Queued submission": d0798008
+  "Calls are cut off at a server deadline": 6dd44c43
+  "Recovery depends on the provider": da9d8904
+  "Request bodies are capped": 675b77c8
+  "Requests are rate limited per caller": 249d4d51
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": 90cd7670
-  "Router does not cover every partner operation": 4de37c36
+  "Comfy charges and usage": ed49ddec
+  "Models without a pre-flight estimate": 7373adf0
+  "Router does not cover every partner operation": 97d31362
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
+
+
+
+
+
+
 
 Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个已排队的请求运行：你提交请求，稍后再收集结果。当你的应用能够等待一个已完成的结果，或稍后收集结果，并且能够处理模型自身的输入和输出字段时，就使用它。
 
@@ -24,11 +34,12 @@ Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个�
 | 需求 | Router 支持情况 | 备选方案或后续步骤 |
 | --- | --- | --- |
 | 通过单个请求生成 | `POST /v2/models/{provider}/{model}` 返回已完成的结果。 | 从[快速入门](/zh/development/comfy-router/quickstart)开始。 |
-| 提交任务并稍后收集结果 | 已执行投递：`POST /v2/models/{provider}/{model}/requests` 返回一个 `request_id`，可用于轮询并收集结果。不提供完成 webhook。 | 使用[已执行投递](/zh/development/comfy-router/queue)。具备提交并轮询操作的合作伙伴代理会公开提供商自身的控制项。 |
+| 提交任务并稍后收集结果 | 队列投递：`POST /v2/models/{provider}/{model}/requests` 返回一个 `request_id`，可用于轮询并收集结果。没有完成 webhook。 | 使用[队列投递](/zh/development/comfy-router/queue)。具备提交和轮询操作的合作伙伴代理会公开提供商自身的控制项。 |
 | 显示进度或流式输出 | 调用期间没有实时进度、流式传输或预览帧。 | 显示不确定状态，或使用受支持的代理操作。 |
-| 连接丢失后恢复 | 当 Router 保留了已接受生成的句柄时，可使用同键收集。 | 保留该键并遵循[重试引导](/zh/development/comfy-router/api#retry-outcomes)。 |
-| 对账 Comfy 费用 | 响应中没有通用的 Comfy 成本或信用余额字段。 | 使用[工作区计费](https://platform.comfy.org)。 |
+| 连接丢失后恢复 | 当 Router 保留了已接受生成的句柄时，可使用同键收集。 | 保留该键并遵循[重试引导](/zh/development/comfy-router/errors#重试结果)。 |
+| 对账 Comfy 费用 | 响应中没有通用的 Comfy 成本或积分余额字段。 | 使用[工作区计费](https://platform.comfy.org)。 |
 | 永久存储结果 | 资产 URL 可能会过期，包括重新托管和重放的 URL。 | 下载资产；参见[结果资产](/zh/development/comfy-router/reference#结果资产)。 |
+| 内联发送大型媒体 | 请求体有大小上限，base64 编码的媒体也计入该上限。 | 将请求体保持在上限之内；参见[请求体大小](#请求正文设有上限)。 |
 
 <span id="no-queued-submission" />
 
@@ -38,34 +49,46 @@ Router 通过一次同步 HTTP 调用运行合作伙伴模型，或通过一个�
 
 如果你的请求无法保持打开足够长的时间，就把它放入队列。当你需要使用提供商自己的提交与轮询控制时，请使用[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)。
 
-目前有两个模型仅支持同步方式，若将它们提交到队列，会被以 `403` / `not_enabled` 拒绝：`elevenlabs/eleven_sfx_v2` 和 `elevenlabs/eleven_v3`。它们返回的是原始音频字节，而不是 JSON 结果文档，队列投递无处存储这些内容。请在同步路由上运行它们，该路由会正常返回这些字节。
+目前有四个模型仅支持同步方式，若将它们提交到队列，会被以 `403` / `not_enabled` 拒绝：`elevenlabs/eleven_sfx_v2`、`elevenlabs/eleven_v3`、`elevenlabs/eleven_v4` 和 `elevenlabs/eleven_v4_turbo`。它们返回的是原始音频字节，而不是 JSON 结果文档，队列投递无处存储这些内容。请在同步路由上运行它们，该路由会正常返回这些字节。
 
 LTX v1 的文生视频和图生视频操作出于同样的原因返回原始视频字节，队列投递同样无法存储它们，但它们只能通过位于 `/proxy/ltx/v1/…` 的[合作伙伴代理](#router-并不覆盖每个合作伙伴操作)访问，而不能通过 Router 模型 ID 访问：每个 `ltx/*` 目录模型都会解析为可排队的 v2 提交与轮询操作。
 
 ## 调用会在服务器截止时间被中断
 
-Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。请将你的客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
+Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。请将客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
 
-`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收费](/zh/development/comfy-router/api#timeouts-and-collection)。
+`504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收集](/zh/development/comfy-router/errors#超时与收集)。
 
 <span id="no-way-to-resume-a-call-you-lost" />
 
 ## 恢复取决于提供商
 
-对于一次已被接受的「提交并轮询」式生成，Router 可以保留提供商句柄。复用同一个 `Idempotency-Key` 即可稍后收集结果；已完成且可重放的响应也可以从该 key 记录中获取。
+只要提供商接受了提交，Router 就会为“提交并轮询”式生成保留提供商句柄。如果在此之后连接中断，使用相同的 `Idempotency-Key` 和相同的请求体重新发送，会取回原始生成的结果，而不是启动第二次生成，也不会再次计费。当 Router 结束调用时（自身的截止时间，或你的客户端挂断）这一行为成立；在几乎所有情况下，处理该调用的 Router 服务器在调用中途重新启动时也同样成立。例外情况是：在提供商接受提交与 Router 记录该提交之间的短暂瞬间发生重新启动，此时该 key 会被保留最多 15 分钟，超过之后重新发送就会启动一次新的生成并产生费用。重新启动之后，在 Router 确认原始处理程序已消失的过程中，重新发送可能会在最长约一分钟内收到 `409` / `concurrency_limit_exceeded` 以及 `Retry-After`；持续用同一个 key 重新发送，即可取回结果。已完成且可重放的响应也可以来自该 key 记录。
 
-并非每个已断开连接的调用都可恢复。在发送之前先保存请求和 key，然后使用[重试结果表](/zh/development/comfy-router/api#retry-outcomes)。使用新的 key 会创建新的调用，并可能产生额外费用。
+并非每个已断开连接的调用都可恢复。请在发送之前保存请求和 key，然后查阅[重试结果表](/zh/development/comfy-router/errors#重试结果)。使用新的 key 会创建新的调用，并可能产生额外费用。
+
+## 请求正文设有上限
+
+Router 会拒绝正文大于 **100 MiB（104,857,600 字节）** 的请求。该上限针对你发送的原始字节，在 Router 解析任何内容之前测量，因此适用于所有路由，也适用于同步投递与队列投递。
+
+调用方通常会在内联媒体上遇到这一限制。Base64 编码会将二进制数据膨胀约 4/3，因此，携带编码媒体的正文在实际图像、音频或视频字节约为 **75 MB** 时仍能通过上限。要按编码后的字符串计算大小，而不是按磁盘上的文件，并统计一次调用中的所有输入：一个携带两张参考图像的请求会同时在两者上消耗额度，提示词、参数和 JSON 结构也计入其中。
+
+**拒绝的形态。** 返回 `413`，并在 `X-Comfy-Error-Type` 上带有 `invalid_input`，`X-Comfy-Request-Id` 也像其他任何响应一样设置。正文是一个 [`RouterErrorResponse`](/zh/development/comfy-router/reference#routererrorresponse)，其 `detail` 描述被超出的是哪项上限。应根据 `error_type` 进行分支处理，而不是解析 `detail`；如果 API 返回值与本文在数值上出现分歧，以 API 返回值为准。Router 在分发任何内容之前就抛出拒绝，因此没有运行生成，也没有产生费用。
+
+该上限适用于每个请求，无论其是否携带 `Idempotency-Key`。它不是幂等性限制，重新发送相同的键不会改变结果：过大的正文在每次尝试时都过大。
+
+**提供商可能会施加自己的更低限制，而在这一上限处通常正是如此。** 提供商发布各自对内联媒体的上限，具有约束力的限制取两者中较小者。例如，Google 的模型最多接受 20 MB（十进制，20,000,000 字节）的内联负载，Google 模型页面上的 `Size limit: 20MB` 一行，就是引自 Google 自身规范的 Google 逐字段限制，而不是 Router 对整个请求正文的限制。Router 的上限被有意设在其所对接的每一项合作伙伴限制之上，因此对于单个内联资产，通常你先碰到的是提供商自己的限制；而 Router 的上限在单次正文包含多个资产时才会起作用。能通过 Router 的上限但超出提供商自身限制的正文，会被提供商而非 Router 拒绝，并会作为提供商错误返回，而不是 `413`。
 
 ## 请求按调用方进行速率限制
 
 | 响应 | 原因 | 操作 |
 | --- | --- | --- |
-| `429` / `concurrency_limit_exceeded` | 并发调用过多，或在承诺支出上限之下余量不足。 | 减少并发工作。支出响应头可将支出上限与调用次数限制区分开来。 |
+| `429` / `concurrency_limit_exceeded` | 并发调用过多，或承诺支出上限下的余量不足。 | 减少并发工作。支出响应头可将支出上限与调用次数限制区分开。 |
 | `429` / `rate_limited` | 请求额度已耗尽。 | 等待 `Retry-After` 后再重试。 |
 
-请求速率限制适用于调用以及目录/schema 读取，包括在生成之前就被拒绝的请求。它跟随经过身份验证的调用方，而不是来源 IP。使用调用方自己的提供商密钥的调用不受此限制；提供商自身的限制仍然适用。
+请求速率限制适用于调用以及目录和 schema 读取，包括在生成前即被拒绝的请求。它按经过身份验证的调用方计算，而不是按来源 IP 计算。使用调用方自己的提供商密钥发起的调用不受此限制；提供商侧的限制仍然适用。
 
-缓存目录与 schema 读取。使用 `ETag` 和 `If-None-Match` 重新验证 schema。重试字段与承诺支出字段见[响应头](/zh/development/comfy-router/headers)。
+缓存目录和 schema 读取结果。使用 `ETag` 和 `If-None-Match` 重新验证这些结果。有关重试和承诺支出字段的说明，请参阅[响应头](/zh/development/comfy-router/headers)。
 
 ## 调用运行期间没有进度更新
 
@@ -77,13 +100,70 @@ Router 只返回最终响应，不提供流式 token、服务器发送事件、�
 
 ## Comfy 费用与用量
 
-响应可能包含提供商的用量或成本字段。它们并不代表通用的 Comfy 计费。`X-Comfy-Credits-Used` 是可选的，并且不会被重放。请使用 Comfy 平台查询余额、用量和发票。
+响应中可能包含提供商的用量或成本字段，但它们并不代表通用的 Comfy 收费。`X-Comfy-Credits-Used` 是可选响应头：缺失该响应头意味着成本未被报告，而不是该次运行免费。重放的响应（`Idempotent-Replayed: true`）不会再次计费，但可能重复给出原始运行的数字，因此不要将同一个 `Idempotency-Key` 的多次重试中的该响应头累加。请使用 Comfy 平台查询余额、用量和发票。
 
-目录提供的是计费事实，包括 `billing.charges_on_policy_rejection`，而不是价格。请显式处理 `yes`、`no` 和 `unknown`。参见[计费](/zh/development/comfy-router/api#model-billing-facts)。
+模型目录提供计费事实，包括 `billing.charges_on_policy_rejection`，但不提供价格。请显式处理 `yes`、`no` 和 `unknown`。参见[计费](/zh/development/comfy-router/billing#模型计费事实)。
+
+要在运行之前查看价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。在估算功能逐步推出的期间，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中会省略 `estimate`。两者的价格都来自 Comfy 为该次运行计费所依据的费率卡，但该数字只是估算值，并非最终收费；最终以你工作区的用量与计费记录中的结算金额为准。它也不是价格锁定。使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍然只是一次运行的事后四舍五入数字，而不是收据。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检费用预估)。无法在运行前定价的模型列在[没有预检估算的模型](#无法预先估算的模型)中。
+
+## 无法预先估算的模型
+
+Router 目前还无法在运行前可靠地为对以下模型的调用定价，因此对于这些模型，`/estimate` 以及排队提交的 `estimate` 都会返回 `source: unknown`，不过其中一些模型针对特定请求体可能会返回具体数额。`unknown` 表示未给出数额，而不是说明该次运行免费。[Comfy 计费与用量](#comfy-费用与用量) 规则仍然适用：使用你自己的提供商密钥运行不会由 Comfy 计费，并且 `X-Comfy-Credits-Used` 是可选的，因此缺少该响应头意味着费用未被报告。未列在此处的模型针对特定请求体同样可能返回 `unknown`，所以请对每次估算都查看 `source`。
+
+随着估算覆盖范围不断扩大，这个列表会逐渐缩短。它由 Router 自身的定价代码生成，且未公开提供的模型永远不会被列出。
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **bfl**: `bfl/erase-v1`, `bfl/flux-2-max`, `bfl/flux-2-pro`, `bfl/flux-3-image`, `bfl/flux-3-video`, `bfl/flux-kontext-max`, `bfl/flux-kontext-pro`, `bfl/flux-pro-1.0-expand`, `bfl/flux-pro-1.0-fill`, `bfl/flux-pro-1.1`, `bfl/flux-pro-1.1-ultra`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplus**: `byteplus/seed-audio-1.0`, `byteplus/seed-audio-1.0-multilingual`
+- **elevenlabs**: `elevenlabs/eleven_sfx_v2`
+- **fal**: `fal/crystal-upscaler`, `fal/crystal-video-upscaler`, `fal/fal-gpt-image-2`, `fal/fal-gpt-image-2.5-flare`, `fal/fal-gpt-image-2.5-sunburst`, `fal/fal-nano-banana-2`, `fal/fal-nano-banana-pro`, `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`, `fal/flux-3-max`, `fal/patina`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`, `ideogram/p-image-ideogram`
+- **kling**: `kling/kling-3.0-turbo`, `kling/kling-image-o1`, `kling/kling-v2-5-turbo`, `kling/kling-v2-6`, `kling/kling-v3`, `kling/kling-v3-omni`, `kling/kling-video-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **luma**: `luma/photon-1`, `luma/photon-flash-1`, `luma/ray-2`, `luma/ray-flash-2`
+- **meshy**: `meshy/animations`, `meshy/meshy-5`, `meshy/meshy-6`, `meshy/meshy-7`, `meshy/meshy-7.1`, `meshy/remesh`, `meshy/rigging`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **recraft**: `recraft/recraftv2`, `recraft/recraftv3`, `recraft/recraftv4`, `recraft/recraftv4_1`, `recraft/recraftv4_1_pro`, `recraft/recraftv4_1_pro_vector`, `recraft/recraftv4_1_utility`, `recraft/recraftv4_1_utility_pro`, `recraft/recraftv4_1_utility_pro_vector`, `recraft/recraftv4_1_utility_vector`, `recraft/recraftv4_1_vector`, `recraft/recraftv4_pro`, `recraft/recraftv4_styles`, `recraft/recraftv4_styles_pro`, `recraft/recraftv4_styles_pro_vector`, `recraft/recraftv4_styles_vector`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **runway**: `runway/gen4_image`
+- **synclabs**: `synclabs/sync-3`
+- **veed**: `veed/clean-audio`, `veed/clean-audio-video`, `veed/fabric-1.0`, `veed/lipsync-2.0`, `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **wavespeed**: `wavespeed/flashvsr`, `wavespeed/seedvr2`, `wavespeed/ultimate-image-upscaler`, `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
+- **xai**: `xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`, `xai/grok-imagine-image-pro`, `xai/grok-imagine-image-quality`, `xai/grok-imagine-video`, `xai/grok-imagine-video-1.5`, `xai/grok-imagine-video-1.5-lite`, `xai/grok-imagine-video-1.5-preview`
+
+{/* END GENERATED: models without a pre-flight estimate */}
 
 ## Router 并不覆盖每个合作伙伴操作
 
-Router 运行模型。文件上传、账户读取、资产管理、流式传输以及提供商任务控制可能需要 `/proxy/…` 下的合作伙伴代理路由。请查阅 [Comfy API 规范](/openapi-v2.yaml)；支持情况因提供商而异。
+Router 运行模型。文件上传、账户读取、资产管理、流式传输以及提供商任务控制可能需要位于 `/proxy/…` 下的合作伙伴代理路由，这些路由处在 Router 之外，Router 的契约也不涵盖它们。Router 自身对外提供的接口以 [Comfy Router 规范](/router-openapi.yaml) 为准；支持情况因提供商而异。
+
+### Krea 3 的参考图像必须先上传
+
+`krea/krea-3` 不接受任意图像链接。`image_urls` 中的每一项都必须是 `POST /proxy/krea/assets` 返回的 `image_url`，也就是一个 `https://app-uploads.krea.ai/...` URL。Router 只检查该链接能否解析为 `https` URL，并且其主机名恰好是 `app-uploads.krea.ai`（不能是其他主机，也不能带显式端口）：任何其他链接，包括你自己托管的公共 `https` URL，都会在模型运行前被拒绝，并返回 `400` `invalid_input`。通过了该检查但并非仍然有效的上传链接（已过期、已删除或输入有误）仍会通过，随后 Router 无法读取图像尺寸，并返回 `5xx` 错误而不是 `400`，因此请始终原样传入上传返回的 `image_url`。
+
+1. 将每张参考图像以 `multipart/form-data` 上传，图像放在表单字段 `file` 中（JPEG、PNG 或 WebP，最大 75 MB）。使用与 Router 相同的方式进行身份验证，即使用 `X-API-Key` 或 `Authorization: Bearer`。
+
+   ```bash
+   curl -X POST https://api.comfy.org/proxy/krea/assets \
+     -H "X-API-Key: $COMFY_API_KEY" \
+     -F "file=@reference.png"
+   ```
+
+2. 从 JSON 响应中读取 `image_url`，并将其传入 `image_urls`：
+
+   ```json
+   {
+     "prompt": "Place the product on a clean studio background",
+     "resolution": "1k",
+     "image_urls": ["<image_url from step 1>"]
+   }
+   ```
+
+文生图调用会省略 `image_urls`，无需上传。
 
 ## 模型输出与存储资产
 
