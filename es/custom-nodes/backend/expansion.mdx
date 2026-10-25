@@ -1,0 +1,57 @@
+---
+title: "Expansión de nodos"
+description: "Domina la expansión de nodos de Comfy para devolver nuevos subgrafos en tus nodos personalizados de backend. Conoce los requisitos de GraphBuilder y las técnicas de caché."
+translationSourceHash: 02e00d1f
+translationFrom: custom-nodes/backend/expansion.mdx
+translationBlockHashes:
+  "Node Expansion": 0cf67de0
+  "See Also": b5ebf5ed
+---
+## Expansión de nodos
+
+Normalmente, cuando se ejecuta un nodo, esa función de ejecución devuelve inmediatamente los resultados de salida de ese nodo. La "expansión de nodos" es una técnica relativamente avanzada que permite que los nodos devuelvan un nuevo subgráfico de nodos que deben ocupar su lugar en el gráfico. Esta técnica es la que permite que los Nodos Personalizados implementen bucles.
+
+### Un ejemplo simple
+
+Primero, aquí tienes un ejemplo simple de cómo se ve la expansión de nodos:
+
+<Tip>Recomendamos encarecidamente usar la clase `GraphBuilder` al crear subgráficos. No es obligatorio, pero te evita cometer muchos errores fáciles.</Tip>
+```python
+def load_and_merge_checkpoints(self, checkpoint_path1, checkpoint_path2, ratio):
+    from comfy_execution.graph_utils import GraphBuilder # Normalmente al inicio del archivo
+    graph = GraphBuilder()
+    checkpoint_node1 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path1)
+    checkpoint_node2 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path2)
+    merge_model_node = graph.node("ModelMergeSimple", model1=checkpoint_node1.out(0), model2=checkpoint_node2.out(0), ratio=ratio)
+    merge_clip_node = graph.node("ClipMergeSimple", clip1=checkpoint_node1.out(1), clip2=checkpoint_node2.out(1), ratio=ratio)
+    return {
+        # Devolviendo las salidas (MODEL, CLIP, VAE)
+        "result": (merge_model_node.out(0), merge_clip_node.out(0), checkpoint_node1.out(2)),
+        "expand": graph.finalize(),
+    }
+```
+
+Aunque este mismo nodo antes se podía implementar llamando manualmente a las partes internas de ComfyUI, usar la expansión significa que cada subnodo se almacenará en caché por separado (así que si cambias `model2`, no tienes que volver a cargar `model1`).
+
+### Requisitos
+
+Para realizar la expansión de nodos, un nodo debe devolver un diccionario con las siguientes claves:
+1. `result`: una tupla con las salidas del nodo. Puede ser una mezcla de valores finalizados (como los que devolverías desde un nodo normal) y salidas de nodos.
+2. `expand`: el gráfico finalizado sobre el que se realiza la expansión. Consulta a continuación si no usas `GraphBuilder`.
+
+#### Requisitos adicionales si no usas GraphBuilder
+
+El formato que espera la clave `expand` es el mismo que el del formato de API de ComfyUI. Los siguientes requisitos los gestiona `GraphBuilder`, pero debes gestionarlos manualmente si decides prescindir de él:
+
+1. Los IDs de nodo deben ser únicos en todo el gráfico. (Esto incluye entre varias ejecuciones del mismo nodo debido al uso de listas.)
+2. Los IDs de nodo deben ser deterministas y consistentes entre varias ejecuciones del gráfico (incluidas las ejecuciones parciales debidas al almacenamiento en caché).
+
+Incluso si no quieres usar `GraphBuilder` para construir realmente el gráfico (por ejemplo, porque cargas el json sin procesar del gráfico desde un archivo), puedes usar la función `GraphBuilder.alloc_prefix()` para generar un prefijo y `comfy.graph_utils.add_graph_prefix` para corregir gráficos existentes de modo que cumplan estos requisitos.
+
+### Almacenamiento en caché eficiente de subgráficos
+
+Aunque puedes pasar entradas no literales a los nodos dentro del subgráfico (como tensores de torch), esto puede inhibir el almacenamiento en caché *dentro* del subgráfico. Cuando sea posible, deberías pasar conexiones a los objetos del subgráfico en lugar del nodo en sí. (Puedes declarar una entrada como `rawLink` dentro de los [Parámetros adicionales](./datatypes#parámetros-adicionales) de la entrada para hacerlo fácilmente.)
+
+## Véase también
+
+- [Subgraphs (Guía para desarrolladores)](/es/custom-nodes/js/subgraphs): Guía del frontend para autores de extensiones

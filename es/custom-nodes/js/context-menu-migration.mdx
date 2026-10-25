@@ -1,0 +1,328 @@
+---
+title: "Guía de migración del menú contextual"
+sidebarTitle: "Migración del menú contextual"
+description: "Migra extensiones de ComfyUI del monkey-patching obsoleto a la API del menú contextual: menús del lienzo y nodos, elementos condicionales, submenús y depuración."
+translationSourceHash: 07ff20d5
+translationFrom: custom-nodes/js/context-menu-migration.mdx
+translationBlockHashes:
+  "_intro": 490e9066
+  "Migrating Canvas Menus": e50eec10
+  "Migrating Node Menus": e70e5cae
+  "Additional Resources": cd3bcadb
+---
+
+Esta guía te ayuda a migrar del enfoque obsoleto de monkey-patching a la nueva API de extensión del menú contextual.
+
+El enfoque anterior de monkey-patching de `LGraphCanvas.prototype.getCanvasMenuOptions` y `nodeType.prototype.getExtraMenuOptions` está obsoleto:
+
+<Tip>Si ves advertencias de obsolescencia en la consola de tu navegador, tu extensión está usando la API antigua y deberías migrarla.</Tip>
+
+## Migrar los menús del lienzo
+
+### Enfoque anterior (obsoleto)
+
+El enfoque anterior modificaba el prototipo durante la configuración de la extensión:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    // ❌ ANTIGUO: modificar el prototipo (monkey-patching)
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+
+      options.push(null) // separador
+      options.push({
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      })
+
+      return options
+    }
+  }
+})
+```
+
+### Enfoque nuevo (recomendado)
+
+El enfoque nuevo usa un hook dedicado de la extensión:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ NUEVO: usa el hook getCanvasMenuItems
+  getCanvasMenuItems(canvas) {
+    return [
+      null, // separador
+      {
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      }
+    ]
+  }
+})
+```
+
+### Diferencias clave
+
+| Enfoque anterior | Enfoque nuevo |
+|--------------|-------------|
+| Modificado en `setup()` | Usa el hook `getCanvasMenuItems()` |
+| Envuelve la función existente | Devuelve los elementos del menú directamente |
+| Modifica el arreglo `options` | Devuelve un arreglo nuevo |
+| Acceso al lienzo mediante `this` | Lienzo recibido como parámetro |
+
+## Migrar los menús de nodos
+
+### Enfoque anterior (obsoleto)
+
+El enfoque anterior modificaba el prototipo del tipo de nodo:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeType.comfyClass === "KSampler") {
+      // ❌ ANTERIOR: modificar el prototipo del nodo
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
+        original?.apply(this, arguments)
+
+        options.push({
+          content: "Randomize Seed",
+          callback: () => {
+            const seedWidget = this.widgets.find(w => w.name === "seed")
+            if (seedWidget) {
+              seedWidget.value = Math.floor(Math.random() * 1000000)
+            }
+          }
+        })
+      }
+    }
+  }
+})
+```
+
+### Enfoque nuevo (recomendado)
+
+El enfoque nuevo usa un hook de extensión dedicado:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ NUEVO: usa el hook getNodeMenuItems
+  getNodeMenuItems(node) {
+    const items = []
+
+    // Añade elementos solo para tipos de nodo específicos
+    if (node.comfyClass === "KSampler") {
+      items.push({
+        content: "Randomize Seed",
+        callback: () => {
+          const seedWidget = node.widgets.find(w => w.name === "seed")
+          if (seedWidget) {
+            seedWidget.value = Math.floor(Math.random() * 1000000)
+          }
+        }
+      })
+    }
+
+    return items
+  }
+})
+```
+
+### Diferencias clave
+
+| Enfoque anterior | Enfoque nuevo |
+|--------------|-------------|
+| Se modificaba en `beforeRegisterNodeDef()` | Usa el hook `getNodeMenuItems()` |
+| Específico por tipo mediante una comprobación `if` | Específico por tipo mediante una comprobación `if` en el hook |
+| Modifica el array `options` | Devuelve un array nuevo |
+| Se accede al nodo mediante `this` | El nodo se pasa como parámetro |
+
+## Common Patterns
+
+### Conditional Menu Items
+
+Both approaches support conditional items, but the new API is cleaner:
+
+```javascript
+// ✅ NEW: Clean conditional logic
+getCanvasMenuItems(canvas) {
+  const items = []
+
+  if (canvas.selectedItems.size > 0) {
+    items.push({
+      content: `Process ${canvas.selectedItems.size} Selected Nodes`,
+      callback: () => {
+        // Process nodes
+      }
+    })
+  }
+
+  return items
+}
+```
+
+### Adding Separators
+
+Separators are added the same way in both approaches:
+
+```javascript
+getCanvasMenuItems(canvas) {
+  return [
+    null, // Separator (horizontal line)
+    {
+      content: "My Action",
+      callback: () => {}
+    }
+  ]
+}
+```
+
+### Creating Submenus
+
+The recommended way to create submenus is using the declarative `submenu` property:
+
+```javascript
+getNodeMenuItems(node) {
+  return [
+    {
+      content: "Advanced Options",
+      submenu: {
+        options: [
+          { content: "Option 1", callback: () => {} },
+          { content: "Option 2", callback: () => {} }
+        ]
+      }
+    }
+  ]
+}
+```
+
+This declarative approach is cleaner and matches the patterns used throughout the ComfyUI codebase.
+
+<Tip>While a callback-based approach with `has_submenu: true` and `new LiteGraph.ContextMenu()` is also supported, the declarative `submenu` property is preferred for better maintainability.</Tip>
+
+### Accessing State
+
+```javascript
+// ✅ NEW: State access is clearer
+getCanvasMenuItems(canvas) {
+  // Access canvas properties
+  const selectedCount = canvas.selectedItems.size
+  const graphMousePos = canvas.graph_mouse
+
+  return [/* menu items */]
+}
+
+getNodeMenuItems(node) {
+  // Access node properties
+  const nodeType = node.comfyClass
+  const isDisabled = node.mode === 2
+  const widgets = node.widgets
+
+  return [/* menu items */]
+}
+```
+
+## Troubleshooting
+
+### How to Identify Old API Usage
+
+Look for these patterns in your code:
+
+```javascript
+// ❌ Signs of old API:
+LGraphCanvas.prototype.getCanvasMenuOptions = function() { /* ... */ }
+nodeType.prototype.getExtraMenuOptions = function() { /* ... */ }
+```
+
+### Understanding Deprecation Warnings
+
+If you see this warning in the console:
+
+```
+[DEPRECATED] Monkey-patching getCanvasMenuOptions is deprecated. (Extension: "MyExtension")
+Please use the new context menu API instead.
+See: https://docs.comfy.org/custom-nodes/js/context-menu-migration
+```
+
+Your extension is using the old approach and should be migrated.
+
+### Verifying Migration Success
+
+After migration:
+
+1. Remove all prototype modifications from `setup()` and `beforeRegisterNodeDef()`
+2. Add `getCanvasMenuItems()` and/or `getNodeMenuItems()` hooks
+3. Test that your menu items still appear correctly
+4. Verify no deprecation warnings appear in the console
+
+### Complete Migration Example
+
+**Before:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+      options.push({ content: "Action", callback: () => {} })
+      return options
+    }
+  },
+  async beforeRegisterNodeDef(nodeType) {
+    if (nodeType.comfyClass === "KSampler") {
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(_, options) {
+        original?.apply(this, arguments)
+        options.push({ content: "Node Action", callback: () => {} })
+      }
+    }
+  }
+})
+```
+
+**After:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  getCanvasMenuItems(canvas) {
+    return [
+      { content: "Action", callback: () => {} }
+    ]
+  },
+  getNodeMenuItems(node) {
+    if (node.comfyClass === "KSampler") {
+      return [
+        { content: "Node Action", callback: () => {} }
+      ]
+    }
+    return []
+  }
+})
+```
+
+## Recursos adicionales
+
+- [Ejemplos comentados](./javascript_examples): más ejemplos con la nueva API
+- [Ganchos de extensión](./javascript_hooks): lista completa de los ganchos de extensión disponibles
+- [Comandos y atajos de teclado](./javascript_commands_keybindings): agrega atajos de teclado a las acciones de tu menú

@@ -1,0 +1,191 @@
+---
+title: "Errores y reintentos de Comfy Router"
+sidebarTitle: "Errores y reintentos"
+description: "Consulta las respuestas de error y los detalles de validación de Comfy Router, reintenta con la misma Idempotency-Key y recupérate tras los timeouts."
+translationSourceHash: 4aa30beb
+translationFrom: development/comfy-router/errors.mdx
+translationBlockHashes:
+  "_intro": c6490339
+  "Read errors defensively": 65a4930f
+  "Validation errors": 24eacd50
+  "Retry safely": e9469646
+  "Retry outcomes": 4ce558e5
+  "Timeouts and collection": cb83f8f6
+  "Next": 2ae95bd4
+---
+Una llamada al Router fallida incluye su estado HTTP, una categoría de error en `X-Comfy-Error-Type` y un ID de solicitud en `X-Comfy-Request-Id`. Conserva los tres datos, además de la `Idempotency-Key` que enviaste, antes de decidir si reintentar.
+
+## Leer los errores de forma defensiva
+
+Una solicitud fallida puede devolver la página de error HTML de un proxy, JSON truncado o texto sin formato. No dejes que un error de análisis de JSON oculte el estado HTTP ni el ID de solicitud. Estos auxiliares usan un `httpx.Response` en Python y un `Response` de Fetch en TypeScript; los SDK ya exponen campos de error para las llamadas normales del SDK.
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+```swift
+// Agrégalo a tu Package.swift:
+//   .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
+import ComfySwiftSDK
+
+// El SDK lee la respuesta de forma defensiva por ti: un fallo del Router se lanza
+// como ComfyError.router con el estado HTTP, el ID de solicitud, el bucket de error
+// y cualquier detalle de validación por campo ya extraídos, incluso cuando el cuerpo
+// era una página de error HTML o JSON truncado. Captúralo desde cualquier llamada a client.models.
+struct RouterErrorInfo {
+    let status: Int
+    let requestId: String?
+    let errorType: String
+    let message: String
+    let validation: [RouterValidationErrorDetail]
+}
+
+// `client.models.run` es `async throws`, así que un `catch` sin tipo vincula `Error`.
+// Toma `Error` aquí para que el valor capturado se pueda pasar directamente.
+func readRouterError(_ error: Error) -> RouterErrorInfo? {
+    guard let comfyError = error as? ComfyError,
+          case .router(let router) = comfyError else { return nil }
+    return RouterErrorInfo(
+        status: router.httpStatus,
+        requestId: router.requestId,
+        errorType: router.errorType.rawValue,
+        message: router.detail,
+        validation: router.validationErrors
+    )
+}
+```
+
+</CodeGroup>
+
+## Errores de validación
+
+Un `422` de Router significa que la validación falló antes de la llamada al proveedor y no se factura. Su cuerpo tiene un arreglo `detail[]`, con una entrada por cada campo rechazado. La categoría del error está en `X-Comfy-Error-Type`, no en el cuerpo. Por ejemplo:
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+Esta es una forma de ejemplo. Los modelos con un esquema de entrada permisivo pueden reenviar un campo faltante al proveedor en lugar de devolver un `422` de Router.
+
+| Campo | Significado |
+| --- | --- |
+| `loc` | Ruta al campo rechazado, con el segmento más externo primero. |
+| `msg` | Motivo del fallo legible para humanos. |
+| `type` | Motivo específico del proveedor, como `missing`, `greater_than` o `image_too_small`. |
+| `ctx` | Límite o datos adicionales opcionales para ese error del proveedor. |
+
+`400` describe un problema a nivel de solicitud, como un cursor mal formado, en lugar de este cuerpo de validación por campo. La [referencia de errores](/es/development/comfy-router/reference#categorías-de-error) enumera las categorías admitidas. Trata una categoría desconocida como `internal_error` para el control de flujo, pero conserva el valor original para el diagnóstico. No rechaces de forma estricta un nuevo valor de error ni implementes categorías de error previstas como si ya ocurrieran.
+
+## Reintentar de forma segura
+
+Conserva la clave junto con el ID del modelo y el cuerpo de la solicitud **antes de enviar**. Reutilízala en cada intento de esa llamada lógica. Router no te devuelve el `Idempotency-Key` en su respuesta. El SDK de Python incluye su clave en las excepciones generadas; en TypeScript, conserva tú mismo la clave que proporcionaste.
+
+Las claves se comparten dentro del espacio de trabajo que incluye la credencial, o se limitan al usuario cuando esta no incluye ningún espacio de trabajo. Usa un UUID único en todo ese ámbito y reintenta con la misma credencial. Reutilizar la clave de otro miembro del espacio de trabajo puede devolver su resultado registrado o un conflicto; cambiar las credenciales puede iniciar una llamada independiente y facturable.
+
+Router conserva el estado de respuesta o de colección vinculado a la clave durante 24 horas; un reintento no inicia una nueva ventana de retención. Una vez que ese estado expire, no esperes que la clave anterior recupere un resultado ni que impida un nuevo envío. Una clave tampoco vuelve a habilitar una URL de recurso que haya expirado.
+
+## Resultados de reintento
+
+| Estado | Categoría | Qué significa | Qué hacer |
+| --- | --- | --- | --- |
+| `200` | Encabezado `Idempotent-Replayed: true` | El router reprodujo un resultado o devolvió una generación recopilada. | Usa el resultado; la reproducción no es un segundo cargo de Comfy. |
+| `409` | `concurrency_limit_exceeded` | La llamada original para esa clave sigue en ejecución. | Espera `Retry-After` y luego reenvía la misma clave. |
+| `504` | `deadline_exceeded`, con `Retry-After` | El router conservó un identificador del trabajo aceptado por el proveedor. | Espera el intervalo indicado y reenvía la misma solicitud y clave para recopilarlo. Es posible que siga en ejecución. |
+| `429` | `rate_limited` | Se agotó la cuota de solicitudes. | Espera `Retry-After` y luego reintenta con la misma clave. |
+| `429` | `concurrency_limit_exceeded` | El límite de llamadas simultáneas o de gasto comprometido rechazó la solicitud. | Reduce la concurrencia reintenta con la misma clave. Revisa los encabezados de gasto. |
+| `409` | `invalid_input` | La solicitud difiere de la solicitud original de la clave, o su registro no se puede reproducir. | Revisa el conflicto. Restaura la solicitud original si cambió. Inicia una nueva clave solo cuando quieras hacer una llamada nueva, que podría ser facturable. |
+| `504` sin indicio de recopilación, otro `5xx`, o sin respuesta | Varía | El estado por sí solo no identifica si el trabajo se aceptó, se conservó o se liberó. | Conserva la misma clave y la misma solicitud. Usa una política de reintento acotada; no se garantiza la recuperación. |
+
+Los conflictos comparan el método, la ruta del modelo, los parámetros de consulta y el cuerpo. Una clave puede volverse no reproducible después de una respuesta demasiado grande, de un error al escribir la respuesta o de un recurso que no se puede reproducir de forma segura. Esperar no recupera un resultado ya consumido. Una nueva clave inicia una nueva llamada; no recupera la salida anterior.
+
+Un rechazo antes del despacho al proveedor libera la clave. Una llamada despachada puede conservar un identificador del proveedor o volverse no reproducible. No deduzcas el estado de la clave ni la facturación a partir del código de estado únicamente.
+
+No generes una clave completamente nueva solo porque una llamada agotó el tiempo de espera o la conexión se interrumpió. Si el router ya aceptó la generación, una nueva clave puede crear una segunda ejecución lógica y, por lo tanto, un segundo resultado facturable. Reutiliza la misma clave hasta que sepas que la llamada original no se puede recuperar.
+
+## Tiempos de espera y recopilación
+
+Una llamada a Router puede mantener la conexión durante 10 minutos de forma predeterminada. Configura el tiempo de espera de tu cliente por encima de ese límite para conservar el `504` tipado y el ID de solicitud en lugar de un aborto local opaco. Si tu aplicación no puede mantener una conexión durante tanto tiempo, [entrega en cola](/es/development/comfy-router/queue) devuelve un `request_id` de inmediato y te permite recopilar el resultado más tarde.
+
+`deadline_exceeded` es el límite de espera de Router; `provider_timeout` es el plazo límite del proveedor. Una generación del proveedor que se completa puede facturarse aunque el llamador haya recibido un tiempo de espera agotado o se haya desconectado. La cancelación del cliente detiene la espera y los reintentos del SDK, pero no necesariamente cancela el trabajo ya aceptado por el proveedor.
+
+Para los proveedores de tipo enviar y consultar, un identificador conservado permite que una solicitud con la misma clave siga recopilando la generación original. Las llamadas despachadas y cortadas sin un identificador recuperable pueden consumir la clave sin un resultado reproducible; un reintento con la misma clave devuelve entonces `409`. Las fallas transitorias atribuidas al proveedor sin un éxito capturado aún pueden liberar la clave para otro intento. La ausencia de un identificador por sí sola no te indica cuál de los resultados aplica.
+
+Los SDK reintentan algunas fallas dentro de un presupuesto acotado. Una vez que devuelven un error, conserva la solicitud y la clave en lugar de generar una nueva. Para HTTP sin procesar, este ejemplo reintenta solo las dos pistas explícitas de recopilación:
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+Pasa el modelo, el cuerpo y la clave guardada originales. Esto limita los intentos, no el tiempo total transcurrido: cada llamada puede durar hasta el tiempo de espera del cliente y cada espera sigue el valor de `Retry-After`. Los errores HTTP conservan la respuesta para su inspección; los errores de transporte se propagan sin reemplazar la clave. Programa la recopilación posterior con la clave guardada si tu aplicación necesita una ventana de recuperación más larga.
+
+## Siguiente
+
+- [Facturación](/es/development/comfy-router/billing): qué cuesta un rechazo, un tiempo de espera agotado o una repetición.
+- [Encabezados](/es/development/comfy-router/headers): idempotencia, IDs de solicitud y encabezados de cadencia de reintentos.
+- [Referencia de API](/es/development/comfy-router/reference#categorías-de-error): cada categoría de errores que devuelve Router.

@@ -1,0 +1,78 @@
+---
+title: "Notas de diseño"
+description: "Por qué existe Comfy API v2, cómo se relaciona con las APIs de ComfyUI existentes y qué viene después"
+sidebarTitle: "Notas de diseño"
+icon: "compass"
+translationSourceHash: 39d03940
+translationFrom: development/api-development/sdks-design.mdx
+translationBlockHashes:
+  "_intro": 2ba7fb25
+  "Why a new API": 7291cd07
+  "Why not wrap the endpoints that already exist": 29068809
+  "Poll first, stream for progress": a30e855f
+  "Relationship to the existing APIs": abe8074f
+  "Scope of the first version": 5978d997
+  "The local proxy": a8eec09f
+  "Why Python and TypeScript first": 2d0132b9
+  "What we want from you": e9660749
+---
+Fondo para los [Comfy SDKs](/es/development/api-development/sdks) y la [Comfy API v2](/es/api-reference/v2/overview) que estos llaman. No necesitas nada de esto para usar los SDKs. Léelo si estás decidiendo si construir sobre la nueva API o sobre las existentes.
+
+## Por qué una nueva API
+
+Ya puedes manejar ComfyUI por HTTP llamando a `/prompt` y `/history`. Esos endpoints existen para servir a la interfaz web de ComfyUI, y construir sobre ellos significa depender de detalles internos que nunca se te prometieron. La API v2 agrega tres cosas que esos endpoints no pueden ofrecerte.
+
+**Un compromiso.** La v2 está versionada, documentada y cuenta con soporte. Los cambios dentro de v2 son aditivos; cualquier cosa que rompa la compatibilidad se lanzaría como v3. Las nuevas versiones de ComfyUI no romperán tu integración.
+
+**Portabilidad.** El mismo comportamiento con un ComfyUI local, con Comfy Cloud y con un despliegue de Comfy API. El mismo código, distinta URL base.
+
+**Una forma que sobrevive en producción.** IDs de tarea duraderos, envío idempotente, errores tipados, salidas normalizadas y contrapresión real, en lugar de que cada integración reinvente las cinco cosas sobre `prompt_id` y `/history`.
+
+## Por qué no encapsular los endpoints que ya existen
+
+Porque suponen una única instancia de ComfyUI que ejecuta un flujo de trabajo a la vez, y esa suposición está incrustada en `prompt_id`, `/history` y el protocolo websocket.
+
+La API v2 no parte de esa suposición. Que haya muchos flujos de trabajo en curso a la vez, cada uno identificado por un ID de trabajo persistente, es el caso predeterminado y no la excepción.
+
+## Consulta primero, transmite para el progreso
+
+Todas las capacidades de v2 están disponibles con solicitudes GET simples. `GET /api/v2/jobs/{id}` devuelve el estado actual, la última instantánea de progreso y cada salida registrada hasta el momento. Es la vista autoritativa de una tarea y permanece disponible hasta el `expires_at` de la tarea.
+
+El flujo SSE en `GET /api/v2/jobs/{id}/events`, expuesto como `job.events()` en ambos SDK, es una mejora en tiempo real que se suma a eso. Úsalo para controlar una barra de progreso. No lo uses como tu fuente de verdad: no incluye IDs de evento, no tiene cursor de reanudación y las tramas emitidas mientras estabas desconectado se pierden.
+
+Dos razones por las que la ruta autoritativa es una consulta periódica y no un flujo o un webhook:
+
+- Los flujos de trabajo pueden tardar mucho en ejecutarse. Una conexión que falla durante tres segundos nunca debería hacerte perder un resultado.
+- Los webhooks funcionan bien para un servicio con una dirección pública. No funcionan para un complemento de Blender en el escritorio de alguien que no está escuchando en un puerto, y no deberían hacerlo.
+
+El efecto práctico es que puedes reanudar cada paso. Si tu proceso falla en medio de una tarea, puedes volver una hora más tarde y `GET /api/v2/jobs/{id}` seguirá teniendo el estado y las salidas. Más tarde podrían añadirse otros transportes para los casos que les convengan; este es el que funciona en todas partes.
+
+## Relación con las APIs existentes
+
+Las APIs existentes, incluida la [Cloud API](/es/development/cloud/overview), continuarán funcionando. `/prompt`, `/history`, `/ws` y el resto seguirán funcionando. Si tu integración funciona hoy, nada de esto la romperá. Ambas conviven en paralelo.
+
+| | Comfy API v2 | APIs existentes |
+|---|---|---|
+| **Compatibilidad** | Versionada. Solo cambios aditivos dentro de v2 | Sin garantía de compatibilidad entre versiones |
+| **Modelo de concurrencia** | Muchas tareas en curso, cada una con un ID duradero | Una instancia, un flujo de trabajo a la vez |
+| **Se ejecuta en** | Comfy Cloud, implementaciones de Comfy API y ComfyUI autoalojado, con el mismo contrato | Cloud API y ComfyUI Server API difieren |
+| **Clientes oficiales** | SDKs de Python y TypeScript | Ninguno |
+| **Ideal para** | Integraciones nuevas | Integraciones que ya funcionan |
+
+## Alcance de la primera versión
+
+Una sola cosa, bien hecha: ejecutar un flujo de trabajo y obtener los resultados. Subir entradas, enviar un gráfico en formato API, verlo ejecutarse y descargar las salidas.
+
+Ese es todo el alcance a propósito. Los flujos de trabajo guardados, la gestión de la biblioteca de modelos, la introspección de nodos y los parámetros de flujo de trabajo con nombre todavía no están aquí. Preferimos entregar una superficie pequeña con la que realmente podamos comprometernos en todas las formas de despliegue de ComfyUI, en lugar de una grande que solo funciona bien en una de ellas. Crecierá a partir de aquí.
+
+## El proxy local
+
+ComfyUI autoalojado habla v2 a través de [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), que se ejecuta junto a tu instancia y sirve el contrato v2 delante de ella. El proxy es de código abierto. Consulta la [guía de API Proxy](/es/development/comfyui-server/api-proxy) para ver las instrucciones de configuración.
+
+## Por qué Python y TypeScript primero
+
+Ahí es donde estaba la demanda cuando preguntamos a quienes ya ejecutan ComfyUI a escala. Ambos SDK se basan en el mismo contrato HTTP documentado, así que cualquier lenguaje puede hablar con la API ahora mismo. Si quieres un SDK oficial en otro lenguaje, avísanos en el canal `#developer-platform` de [nuestro Discord](https://discord.com/invite/comfyorg).
+
+## Lo que queremos de ti
+
+Agradecemos tus comentarios sobre los SDK y la API. Cuéntanos qué resulta incómodo, qué esperabas encontrar y qué tuviste que sortear. Consulta [Retroalimentación](/es/development/api-development/sdks#retroalimentación).

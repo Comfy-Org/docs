@@ -1,0 +1,646 @@
+---
+title: "Usar FLUX.1 Kontext con Comfy Router"
+description: "Fragmentos de Python, TypeScript y cURL para llamar a FLUX.1 Kontext Pro y Kontext Max con Comfy Router, con campos y formato del resultado"
+sidebarTitle: "FLUX.1 Kontext"
+translationSourceHash: 56e30528
+translationFrom: development/comfy-router/models/black-forest-labs/flux-1-kontext/code.mdx
+---
+
+{/* ARCHIVO GENERADO. Edita code.yaml en este directorio y ejecuta `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/es/comfy-router/model-code-footer.mdx";
+
+Referencia de API de FLUX.1 Kontext. FLUX.1 Kontext es el modelo de edición de imágenes guiado por instrucciones de Black Forest Labs: envía una imagen y una instrucción de texto y recupera la imagen editada con el resto de la escena intacta.
+
+**Entrada:** Imagen, Texto · **Salida:** Imagen
+
+## Inicio rápido
+
+Crea una clave en [tu espacio de trabajo de Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) y expórtala como `COMFY_API_KEY`. Los fragmentos de Python y TypeScript usan los SDK de Comfy (`pip install comfy-sdk` y `npm install @comfyorg/sdk`); el fragmento de cURL es la misma llamada por HTTP sin procesar.
+
+Elige el modelo que quieres llamar. Todo lo que sigue, desde los fragmentos hasta el esquema y los ejemplos, depende de tu elección.
+
+<Tabs>
+  <Tab title="Kontext Pro">
+**ID del modelo:** `bfl/flux-kontext-pro`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Lee COMFY_API_KEY del entorno.
+# El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/flux-kontext-pro",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Lee COMFY_API_KEY del entorno.
+// El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+type Result = { result: { sample: string } };
+const result = await comfy.models.run<Result>("bfl/flux-kontext-pro", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Enviar a la cola y recoger después">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) recorre el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Lee COMFY_API_KEY del entorno.
+# Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/flux-kontext-pro",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+        print("request_id:", handle.request_id)  # con el ID del modelo, es todo lo que necesita otro proceso
+
+        # Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # La carga propia del proveedor, el mismo valor que devuelve models.run().
+        # Una solicitud que falló o se canceló lanza aquí el error tipado de Router.
+        result = await handle.get()
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Lee COMFY_API_KEY del entorno.
+// Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-pro", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // con el ID del modelo, es todo lo que necesita otro proceso
+
+// Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// El mismo resultado que devuelve models.run(). Una solicitud que falló o se canceló se rechaza aquí.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Envía. Router responde 201 con request_id, status_url, response_url y cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Consulta hasta que el estado sea COMPLETED, esperando los segundos de Retry-After que indica cada respuesta.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Recoge. 200 con la salida nativa del modelo, 202 con el cuerpo de estado mientras sigue en ejecución.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-pro/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+<h2>Esquema</h2>
+
+<h3>Entrada</h3>
+
+<ParamField body="aspect_ratio" type="string">
+  Relación de aspecto de la salida, entre 21:9 y 9:21, por ejemplo 16:9. Si se proporciona una imagen de entrada, se usa por defecto su relación de aspecto; de lo contrario, 1:1.
+</ParamField>
+
+<ParamField body="input_image" type="string">
+  Imagen que se va a editar, como imagen codificada en base64 o como URL http(s). Es opcional; sin ella, el modelo genera solo a partir del prompt.
+</ParamField>
+
+<ParamField body="input_image_2" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="input_image_3" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="input_image_4" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="output_format" type="string" default="&quot;png&quot;">
+  Formato de la imagen de salida.
+
+  Valores posibles: `jpeg`, `png`, `webp`
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  Prompt de texto que describe la edición que se aplicará a input_image, o la imagen que se generará cuando no se proporciona input_image.
+</ParamField>
+
+<ParamField body="prompt_upsampling" type="boolean" default="false">
+  Si se debe aplicar upsampling al prompt. Cuando está activo, el prompt se modifica automáticamente para una generación más creativa.
+</ParamField>
+
+<ParamField body="safety_tolerance" type="integer" default="2">
+  Nivel de tolerancia para la moderación de la entrada y la salida, entre 0 (el más estricto) y 6 (el menos estricto).
+
+  Rango: `0` a `6`
+</ParamField>
+
+<ParamField body="seed" type="integer">
+  Semilla opcional para la reproducibilidad. Si se omite, se usa una semilla aleatoria.
+</ParamField>
+
+<ParamField body="webhook_secret" type="string">
+  Secreto opcional para verificar la firma del webhook.
+</ParamField>
+
+<ParamField body="webhook_url" type="string (uri)">
+  URL que recibe las notificaciones del webhook.
+
+  Formato: `uri`
+</ParamField>
+
+Generado a partir del esquema que Router sirve en `GET /v2/models/bfl/flux-kontext-pro/openapi.json`, el mismo documento con el que valida una llamada antes de que la solicitud llegue al proveedor.
+
+<h3>Salida</h3>
+
+<ResponseField name="cost" type="number">
+  Costo en créditos informado por el proveedor, que se completa cuando la tarea está Ready.
+
+  Formato: `float`
+</ResponseField>
+
+<ResponseField name="id" type="string" required>
+  Identificador de la tarea de BFL.
+</ResponseField>
+
+<ResponseField name="progress" type="number">
+  Progreso de generación opcional informado por BFL.
+
+  Rango: `0` a `1`
+
+  Formato: `float`
+</ResponseField>
+
+<ResponseField name="result" type="object" required>
+  La generación finalizada. Aquí no admite nulo: la entrada `required` de este componente es una promesa de que un `200` incluye el resultado, y un `result` que admitiera nulo la reduciría a una simple comprobación de presencia de la clave.
+</ResponseField>
+
+<ResponseField name="result.cost" type="number">
+  Costo de la generación informado por el proveedor. Es la cifra de BFL, no el cargo de Comfy.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.duration" type="number">
+  Duración de la generación en segundos, informada por el proveedor.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.end_time" type="number">
+  Hora de finalización de la generación informada por el proveedor, en segundos desde la época Unix. Es `double` por la misma razón que `start_time`.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.prompt" type="string">
+  El prompt con el que realmente se ejecutó la generación, después de cualquier upsampling del prompt.
+</ResponseField>
+
+<ResponseField name="result.sample" type="string (uri)">
+  URL firmada del recurso generado. Router vuelve a alojar el recurso en el almacenamiento de Comfy y reescribe este campo, así que normalmente es una URL alojada en Comfy válida hasta 24 horas: se firma por 24 horas al emitirse y se reproduce desde una memoria de 23 horas, de modo que una consulta posterior puede devolver una con tan solo una hora de vigencia. Si no se pudo volver a alojar un modelo hoja, este conserva la URL de entrega de corta duración de BFL: unas dos horas para video y unos diez minutos para imágenes. En cualquier caso, el enlace caduca, así que descarga el recurso en lugar de guardar la URL.
+
+  Formato: `uri`
+</ResponseField>
+
+<ResponseField name="result.seed" type="integer">
+  La semilla que usó la generación, ya la hayas proporcionado tú o la haya elegido el proveedor. Se declara `int64` porque BFL devuelve semillas superiores a 2^31 (por ejemplo, 2784347701), que un `integer` sin formato genera como un campo de 32 bits en muchos generadores de SDK.
+
+  Formato: `int64`
+</ResponseField>
+
+<ResponseField name="result.start_time" type="number">
+  Hora de inicio de la generación informada por el proveedor, en segundos desde la época Unix. Es `double`, no `float`: el espaciado de float32 cerca de un valor de época actual es de ~128 segundos, lo que reduce todo el intervalo de una generación a un único valor decodificado.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Estado de la tarea: Pending, Reasoning, Generating, Ready, Request Moderated, Content Moderated, Error o Task not found.
+</ResponseField>
+
+<h2>Ejemplos</h2>
+
+<h3>Entrada</h3>
+
+```json
+{
+  "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+  "input_image": "<base64 of input.jpg>",
+  "aspect_ratio": "1:1"
+}
+```
+
+<h3>Salida</h3>
+
+```json
+{
+  "id": "0a1b2c3d-...",
+  "status": "Ready",
+  "result": {
+    "sample": "https://.../out.png",
+    "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+    "seed": 1234567890
+  }
+}
+```
+
+La URL es temporal. Descarga la imagen cuanto antes si necesitas conservarla.
+  </Tab>
+  <Tab title="Kontext Max">
+**ID del modelo:** `bfl/flux-kontext-max`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Lee COMFY_API_KEY del entorno.
+# El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/flux-kontext-max",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Lee COMFY_API_KEY del entorno.
+// El SDK crea automáticamente una clave de idempotencia y la reutiliza para los reintentos automáticos.
+type Result = { result: { sample: string } };
+const result = await comfy.models.run<Result>("bfl/flux-kontext-max", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Enviar a la cola y recoger después">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) recorre el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+import base64
+from comfy_sdk import AsyncComfy
+
+with open("input.jpg", "rb") as f:
+    input_image = base64.b64encode(f.read()).decode()
+
+# Lee COMFY_API_KEY del entorno.
+# Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/flux-kontext-max",
+            {
+                "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+                "input_image": input_image,
+                "aspect_ratio": "1:1",
+            },
+        )
+        print("request_id:", handle.request_id)  # con el ID del modelo, es todo lo que necesita otro proceso
+
+        # Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # La carga propia del proveedor, el mismo valor que devuelve models.run().
+        # Una solicitud que falló o se canceló lanza aquí el error tipado de Router.
+        result = await handle.get()
+
+    print("image:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+import { readFile } from "node:fs/promises";
+
+const inputImage = (await readFile("input.jpg")).toString("base64");
+
+// Lee COMFY_API_KEY del entorno.
+// Cada llamada a submit() genera su propia Idempotency-Key y la reutiliza para los reintentos automáticos.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-kontext-max", {
+  prompt: "replace the background with a sunlit beach, keep the subject unchanged",
+  input_image: inputImage,
+  aspect_ratio: "1:1",
+});
+console.log("requestId:", handle.requestId); // con el ID del modelo, es todo lo que necesita otro proceso
+
+// Consulta hasta que la solicitud se complete, esperando el Retry-After que indica el servidor.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// El mismo resultado que devuelve models.run(). Una solicitud que falló o se canceló se rechaza aquí.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+INPUT_IMAGE=$(base64 < input.jpg | tr -d '\n')
+
+# 1. Envía. Router responde 201 con request_id, status_url, response_url y cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"prompt\": \"replace the background with a sunlit beach, keep the subject unchanged\", \"input_image\": \"$INPUT_IMAGE\", \"aspect_ratio\": \"1:1\"}"
+
+# 2. Consulta hasta que el estado sea COMPLETED, esperando los segundos de Retry-After que indica cada respuesta.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Recoge. 200 con la salida nativa del modelo, 202 con el cuerpo de estado mientras sigue en ejecución.
+curl https://api.comfy.org/v2/models/bfl/flux-kontext-max/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+<h2>Esquema</h2>
+
+<h3>Entrada</h3>
+
+<ParamField body="aspect_ratio" type="string">
+  Relación de aspecto de la salida, entre 21:9 y 9:21, por ejemplo 16:9. Si se proporciona una imagen de entrada, se usa por defecto su relación de aspecto; de lo contrario, 1:1.
+</ParamField>
+
+<ParamField body="input_image" type="string">
+  Imagen que se va a editar, como imagen codificada en base64 o como URL http(s). Es opcional; sin ella, el modelo genera solo a partir del prompt.
+</ParamField>
+
+<ParamField body="input_image_2" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="input_image_3" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="input_image_4" type="string">
+  Imagen de referencia adicional, codificada en base64 o como URL http(s) (multirreferencia experimental).
+</ParamField>
+
+<ParamField body="output_format" type="string" default="&quot;png&quot;">
+  Formato de la imagen de salida.
+
+  Valores posibles: `jpeg`, `png`, `webp`
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+  Prompt de texto que describe la edición que se aplicará a input_image, o la imagen que se generará cuando no se proporciona input_image.
+</ParamField>
+
+<ParamField body="prompt_upsampling" type="boolean" default="false">
+  Si se debe aplicar upsampling al prompt. Cuando está activo, el prompt se modifica automáticamente para una generación más creativa.
+</ParamField>
+
+<ParamField body="safety_tolerance" type="integer" default="2">
+  Nivel de tolerancia para la moderación de la entrada y la salida, entre 0 (el más estricto) y 6 (el menos estricto).
+
+  Rango: `0` a `6`
+</ParamField>
+
+<ParamField body="seed" type="integer">
+  Semilla opcional para la reproducibilidad. Si se omite, se usa una semilla aleatoria.
+</ParamField>
+
+<ParamField body="webhook_secret" type="string">
+  Secreto opcional para verificar la firma del webhook.
+</ParamField>
+
+<ParamField body="webhook_url" type="string (uri)">
+  URL que recibe las notificaciones del webhook.
+
+  Formato: `uri`
+</ParamField>
+
+Generado a partir del esquema que Router sirve en `GET /v2/models/bfl/flux-kontext-max/openapi.json`, el mismo documento con el que valida una llamada antes de que la solicitud llegue al proveedor.
+
+<h3>Salida</h3>
+
+<ResponseField name="cost" type="number">
+  Costo en créditos informado por el proveedor, que se completa cuando la tarea está Ready.
+
+  Formato: `float`
+</ResponseField>
+
+<ResponseField name="id" type="string" required>
+  Identificador de la tarea de BFL.
+</ResponseField>
+
+<ResponseField name="progress" type="number">
+  Progreso de generación opcional informado por BFL.
+
+  Rango: `0` a `1`
+
+  Formato: `float`
+</ResponseField>
+
+<ResponseField name="result" type="object" required>
+  La generación finalizada. Aquí no admite nulo: la entrada `required` de este componente es una promesa de que un `200` incluye el resultado, y un `result` que admitiera nulo la reduciría a una simple comprobación de presencia de la clave.
+</ResponseField>
+
+<ResponseField name="result.cost" type="number">
+  Costo de la generación informado por el proveedor. Es la cifra de BFL, no el cargo de Comfy.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.duration" type="number">
+  Duración de la generación en segundos, informada por el proveedor.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.end_time" type="number">
+  Hora de finalización de la generación informada por el proveedor, en segundos desde la época Unix. Es `double` por la misma razón que `start_time`.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="result.prompt" type="string">
+  El prompt con el que realmente se ejecutó la generación, después de cualquier upsampling del prompt.
+</ResponseField>
+
+<ResponseField name="result.sample" type="string (uri)">
+  URL firmada del recurso generado. Router vuelve a alojar el recurso en el almacenamiento de Comfy y reescribe este campo, así que normalmente es una URL alojada en Comfy válida hasta 24 horas: se firma por 24 horas al emitirse y se reproduce desde una memoria de 23 horas, de modo que una consulta posterior puede devolver una con tan solo una hora de vigencia. Si no se pudo volver a alojar un modelo hoja, este conserva la URL de entrega de corta duración de BFL: unas dos horas para video y unos diez minutos para imágenes. En cualquier caso, el enlace caduca, así que descarga el recurso en lugar de guardar la URL.
+
+  Formato: `uri`
+</ResponseField>
+
+<ResponseField name="result.seed" type="integer">
+  La semilla que usó la generación, ya la hayas proporcionado tú o la haya elegido el proveedor. Se declara `int64` porque BFL devuelve semillas superiores a 2^31 (por ejemplo, 2784347701), que un `integer` sin formato genera como un campo de 32 bits en muchos generadores de SDK.
+
+  Formato: `int64`
+</ResponseField>
+
+<ResponseField name="result.start_time" type="number">
+  Hora de inicio de la generación informada por el proveedor, en segundos desde la época Unix. Es `double`, no `float`: el espaciado de float32 cerca de un valor de época actual es de ~128 segundos, lo que reduce todo el intervalo de una generación a un único valor decodificado.
+
+  Formato: `double`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Estado de la tarea: Pending, Reasoning, Generating, Ready, Request Moderated, Content Moderated, Error o Task not found.
+</ResponseField>
+
+<h2>Ejemplos</h2>
+
+<h3>Entrada</h3>
+
+```json
+{
+  "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+  "input_image": "<base64 of input.jpg>",
+  "aspect_ratio": "1:1"
+}
+```
+
+<h3>Salida</h3>
+
+```json
+{
+  "id": "0a1b2c3d-...",
+  "status": "Ready",
+  "result": {
+    "sample": "https://.../out.png",
+    "prompt": "replace the background with a sunlit beach, keep the subject unchanged",
+    "seed": 1234567890
+  }
+}
+```
+
+La URL es temporal. Descarga la imagen cuanto antes si necesitas conservarla.
+  </Tab>
+</Tabs>
+
+<RouterCodeFooter />

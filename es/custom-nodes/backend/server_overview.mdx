@@ -1,0 +1,198 @@
+---
+title: "Propiedades de un nodo personalizado"
+sidebarTitle: "Propiedades del nodo"
+description: "Define un nodo personalizado de ComfyUI con el esquema V1: INPUT_TYPES, RETURN_TYPES, CATEGORY, FUNCTION, control de ejecución y validación de entradas."
+translationSourceHash: 4d53e76a
+translationFrom: custom-nodes/backend/server_overview.mdx
+---
+
+<Info>
+Las definiciones de nodos de esta página usan el esquema heredado V1 (`INPUT_TYPES` / `RETURN_TYPES`), que sigue siendo totalmente compatible. Los nodos nuevos también se pueden escribir con el esquema moderno V3 (`io.ComfyNode` con `define_schema` y una función `comfy_entrypoint`), que es como está escrito el archivo incluido [`custom_nodes/example_node.py.example`](https://github.com/comfyanonymous/ComfyUI/blob/master/custom_nodes/example_node.py.example). Para ver las diferencias y cómo migrar, consulta la [guía de migración a V3](/custom-nodes/v3_migration).
+</Info>
+
+### Ejemplo simple
+
+Aquí está el código del nodo Invert Image, que ofrece una visión general de los conceptos clave del desarrollo de nodos personalizados.
+
+```python
+class InvertImageNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "image_in" : ("IMAGE", {}) },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image_out",)
+    CATEGORY = "examples"
+    FUNCTION = "invert"
+
+    def invert(self, image_in):
+        image_out = 1 - image_in
+        return (image_out,)
+```
+
+### Propiedades principales
+
+Cada nodo personalizado es una clase de Python con las siguientes propiedades clave:
+
+#### INPUT_TYPES
+
+`INPUT_TYPES`, como su nombre indica, define las entradas del nodo. El método devuelve un `dict`
+que _debe_ contener la clave `required` y _puede_ incluir también las claves `optional` y/o `hidden`. La única diferencia
+entre las entradas `required` y `optional` es que las `optional` pueden quedar sin conectar. 
+Para más información sobre las entradas `hidden`, consulta [Entradas ocultas](./more_on_inputs#entradas-ocultas).
+
+Cada clave tiene como valor otro `dict`, en el que los pares clave-valor especifican los nombres y tipos de las entradas.
+Los tipos se definen con una `tuple`, cuyo primer elemento define el tipo de dato 
+y cuyo segundo elemento es un `dict` de parámetros adicionales. 
+
+Aquí solo tenemos una entrada requerida, llamada `image_in`, de tipo `IMAGE`, sin parámetros adicionales.
+
+Ten en cuenta que, a diferencia de los siguientes atributos, este `INPUT_TYPES` es un `@classmethod`. Esto permite
+que las opciones de los widgets desplegables (como el nombre del checkpoint que se va a cargar) las calcule Comfy en tiempo de ejecución.
+Veremos esto con más detalle más adelante. {/* TODO link when written */}
+
+#### RETURN_TYPES
+
+Una `tuple` de `str` que define los tipos de datos que devuelve el nodo. 
+Si el nodo no tiene salidas, aun así debes indicarlo: `RETURN_TYPES = ()`
+<Warning>Si tienes exactamente una salida, recuerda la coma final: `RETURN_TYPES = ("IMAGE",)`. 
+Python la necesita para que sea una `tuple`</Warning> 
+
+#### RETURN_NAMES
+
+Los nombres con los que se etiquetan las salidas. Es opcional; si lo omites, los nombres son simplemente los `RETURN_TYPES` en minúsculas.
+
+#### CATEGORY
+
+Dónde se encontrará el nodo en el menú **Add Node** de ComfyUI. Los submenús se pueden especificar como una ruta, por ejemplo `examples/trivial`.
+
+#### FUNCTION
+
+El nombre de la función de Python de la clase que se debe llamar cuando se ejecuta el nodo.
+
+La función se llama con argumentos con nombre. Se incluirán todas las entradas `required` (y las `hidden`); 
+las entradas `optional` se incluirán solo si están conectadas, así que debes darles valores predeterminados en la
+definición de la función (o capturarlas con `**kwargs`).
+
+La función devuelve una tupla que corresponde a `RETURN_TYPES`. Esto es obligatorio aunque no devuelvas nada (`return ()`). 
+De nuevo, si solo tienes una salida, ¡recuerda la coma final `return (image_out,)`!
+
+### Extras de control de ejecución
+
+Una gran característica de Comfy es que almacena las salidas en caché 
+y solo ejecuta los nodos que podrían producir un resultado distinto al de la ejecución anterior.
+Esto puede acelerar mucho muchos flujos de trabajo.
+
+En esencia, funciona identificando qué nodos producen una salida (estos, en particular los nodos Image Preview y Save Image, siempre se ejecutan) y luego trabajando
+hacia atrás para identificar qué nodos aportan datos que podrían haber cambiado desde la última ejecución.
+
+Dos características opcionales de un nodo personalizado ayudan en este proceso.
+
+#### OUTPUT_NODE
+
+De forma predeterminada, un nodo no se considera una salida. Establece `OUTPUT_NODE = True` para indicar que lo es. 
+
+#### IS_CHANGED
+
+De forma predeterminada, Comfy considera que un nodo ha cambiado si ha cambiado alguna de sus entradas o widgets. 
+Normalmente esto es correcto, pero puede que necesites sobrescribirlo si, por ejemplo, el nodo usa un número 
+aleatorio (y no especifica una seed; en ese caso lo mejor es tener una entrada de seed para que 
+el usuario controle la reproducibilidad y evite ejecuciones innecesarias), o carga una entrada que puede haber
+cambiado externamente, o a veces ignora entradas (así que no necesita ejecutarse solo porque esas entradas hayan cambiado).
+
+<Warning>A pesar del nombre, IS_CHANGED no debe devolver un `bool`</Warning> 
+
+A `IS_CHANGED` se le pasan los mismos argumentos que a la función principal definida en `FUNCTION`, y puede devolver cualquier 
+objeto de Python. Ese objeto se compara con el devuelto en la ejecución anterior (si hay) y el nodo
+se considerará cambiado si `is_changed != is_changed_old` (si quieres indagar, este código está en `execution.py`).
+
+Como `True == True`, ¡un nodo que devuelve `True` para decir que ha cambiado se considerará que no ha cambiado! Seguro que esto
+se cambiaría en el código de Comfy si no fuera porque hacerlo podría romper nodos existentes. 
+
+Para indicar que tu nodo siempre debe considerarse cambiado (algo que conviene evitar si es posible, porque 
+impide que Comfy optimice lo que se ejecuta), usa `return float("NaN")`. Esto devuelve un valor `NaN`, que no es igual
+a nada, ni siquiera a otro `NaN`.
+
+Un buen ejemplo de comprobación real de cambios es el código del nodo integrado LoadImage, que carga la imagen y devuelve un hash
+```python
+    @classmethod
+    def IS_CHANGED(s, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, 'rb') as f:
+            m.update(f.read())
+        return m.digest().hex()
+```
+
+#### SEARCH_ALIASES
+
+Opcional. Una lista de nombres alternativos que los usuarios podrían buscar al buscar este nodo.
+Se incluye en la respuesta de la API `/object_info` como `search_aliases`.
+
+```python
+SEARCH_ALIASES = ["text concat", "join text", "merge strings"]
+```
+
+### Otros atributos
+
+Hay otros tres atributos que se pueden usar para modificar el tratamiento predeterminado que Comfy da a un nodo.
+
+#### INPUT_IS_LIST, OUTPUT_IS_LIST
+
+Se usan para controlar el procesamiento secuencial de los datos y se describen [más adelante](./lists).
+
+### VALIDATE_INPUTS
+
+Si se define un método de clase `VALIDATE_INPUTS`, se llamará antes de que el flujo de trabajo empiece a ejecutarse.
+`VALIDATE_INPUTS` debe devolver `True` si las entradas son válidas, o un mensaje (como `str`) que describa el error (lo que impedirá la ejecución).
+
+#### Validar constantes
+<Warning>Ten en cuenta que `VALIDATE_INPUTS` solo recibirá las entradas definidas como constantes dentro del flujo de trabajo. Las entradas que provengan de otros nodos *no* estarán disponibles en `VALIDATE_INPUTS`.</Warning>
+
+Se llama a `VALIDATE_INPUTS` solo con las entradas que pide su firma (las que devuelve `inspect.getfullargspec(obj_class.VALIDATE_INPUTS).args`). Cualquier entrada recibida de esta forma *no* pasará por las reglas de validación predeterminadas. Por ejemplo, en el siguiente fragmento, el front-end usará los valores `min` y `max` especificados de la entrada `foo`, pero el back-end no los aplicará. 
+    
+```python
+class CustomNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "foo" : ("INT", {"min": 0, "max": 10}) },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, foo):
+        # YOLO, ¡todo vale!
+        return True
+```
+
+Además, si la función toma una entrada `**kwargs`, recibirá *todas* las entradas disponibles y todas omitirán la validación como si se hubieran especificado explícitamente.
+
+#### Validar tipos
+
+Si el método `VALIDATE_INPUTS` recibe un argumento llamado `input_types`, se le pasará un diccionario en el que la clave es el nombre de cada entrada conectada a una salida de otro nodo y el valor es el tipo de esa salida.
+
+Cuando este argumento está presente, se omite toda la validación predeterminada de los tipos de entrada. Aquí tienes un ejemplo que aprovecha que el front-end permite especificar varios tipos:
+
+```python
+class AddNumbers:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input1" : ("INT,FLOAT", {"min": 0, "max": 1000})
+                "input2" : ("INT,FLOAT", {"min": 0, "max": 1000})
+            },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        # Los min y max de input1 e input2 se siguen validando porque
+        # no tomamos `input1` ni `input2` como argumentos
+        if input_types["input1"] not in ("INT", "FLOAT"):
+            return "input1 must be an INT or FLOAT type"
+        if input_types["input2"] not in ("INT", "FLOAT"):
+            return "input2 must be an INT or FLOAT type"
+        return True
+```

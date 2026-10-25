@@ -1,0 +1,250 @@
+---
+title: "Guía de generación de video con MiniMax H3 en ComfyUI"
+description: "Usa MiniMax H3 de pesos abiertos en ComfyUI: flujos de texto a video, imagen a video y referencia a video con audio estéreo nativo y Sage Attention."
+sidebarTitle: "Descripción general"
+translationSourceHash: 6baf68cb
+translationFrom: tutorials/video/minimax/minimax-h3.mdx
+translationBlockHashes:
+  "_intro": 94f54ee8
+  "Key features": 8ca92280
+  "Getting started": eed90954
+  "Choosing the checkpoint precision": 4a53fdf9
+  "Workflow index": bdc3b9f8
+  "Setting the output resolution": db770c15
+  "Clip length": d9104665
+  "Step count": d2a8a6f8
+  "Sampler and scheduler": 79c739c3
+  "Speeding up generation with Sage Attention": 24cc9a70
+  "Speeding up generation with sparse attention": cd054e87
+  "Commercial licensing": 201e2de5
+---
+import UpdateReminder from "/snippets/es/tutorials/update-reminder.mdx";
+
+[MiniMax H3](https://www.minimax.io/blog/minimax-h3) es el modelo omni-modal de pesos abiertos de MiniMax. Comprende texto, imágenes, video y audio en un solo contexto, y genera video con **audio estéreo nativo** (voz, efectos de sonido y música en una sola pasada). Los pesos abiertos apuntan a cerca de 1 megapíxel (768 px en el lado corto) a 24 fps, durante un máximo de ~15 segundos. 2K es una salida del servicio alojado y requiere un paso de upscale aparte en ComfyUI.
+
+La documentación se reparte en seis páginas:
+
+- **Descripción general** (esta página): capacidades, checkpoints, índice de flujos de trabajo, resolución, duración del clip, pasos, sampler y aceleraciones
+- **[Flujos de trabajo nativos](/es/tutorials/video/minimax/minimax-h3-native)**: T2V, I2V, R2V y técnicas con nodos nativos
+- **[Referencia multifotograma](/es/tutorials/video/minimax/minimax-h3-multiframe)**: fija fotogramas de referencia en la línea de tiempo
+- **[Fun ControlNet Union](/es/tutorials/video/minimax/minimax-h3-fun-controlnet)**: controla el video o haz relleno inteligente con una máscara
+- **[Guía de prompts](/es/tutorials/video/minimax/minimax-h3-prompt-guide)**: guías oficiales, consejos y embeddings
+- **[FastH3](/es/tutorials/video/minimax/minimax-h3-fastvideo)**: checkpoints de atención dispersa de FastVideo
+
+<UpdateReminder/>
+<Note>
+Los pesos abiertos de H3 te permiten ejecutar el modelo de forma local. El uso comercial de las salidas generadas localmente requiere una [licencia comercial de MiniMax](https://comfy.org/minimax/license), disponible a través de Comfy, el único revendedor oficial. Las generaciones en Comfy Cloud ya incluyen derechos comerciales. Consulta [Licencias comerciales](#licencia-comercial) para ver los niveles y los precios.
+</Note>
+
+## Características clave
+
+- **Audio estéreo nativo**: Diálogos, SFX y música en un solo MP4
+- **Contexto multimodal**: combina referencias de texto, imagen, video y audio
+- **Generación guiada por referencias**: fija la identidad, el estilo, el movimiento, la cámara o la voz a partir de referencias
+- **Seguimiento de instrucciones**: describe las relaciones entre referencias y tomas en lenguaje natural
+- **Renderizado de texto preciso**: texto legible bien escrito y elementos de marca
+- **Pesos abiertos**: control local total en ComfyUI
+
+## Primeros pasos
+
+1. Actualizar ComfyUI: las plantillas base T2V/I2V/R2V necesitan **0.30.0+**; Multiframe Reference **0.34.0+**; Fun ControlNet Union, atención dispersa y Model Attention Backend **0.35.0+**; FastH3 **0.36.0+**
+2. **Template Library** > **Video** > elige un flujo de trabajo de MiniMax H3
+3. Descarga los modelos desde la ventana emergente (decenas de GB; deja tiempo y espacio en disco)
+
+Los pesos están en Hugging Face: [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3).
+
+<Note>
+Usa checkpoints **pruned** cuando existan tanto compilaciones full como pruned. Las compilaciones pruned guardan adaln en una tabla de curvas compartida (`adaln_t_table`) que ComfyUI lee del archivo; las plantillas cargan `minimax_h3_*_pruned_int8_convrot.safetensors`. Los LoRA destilados sobre compilaciones **full** llevan tensores adaln que no existen en las compilaciones pruned (discrepancia de forma; esos pesos se omiten). Los LoRA Turbo no tienen tensores adaln y funcionan en cualquiera de las dos compilaciones.
+</Note>
+
+## Elegir la precisión del checkpoint
+
+Elige la variante más pequeña que quepa en la VRAM. Cambia solo el archivo de `UNETLoader`; ComfyUI lee la cuantización desde el checkpoint. Los LoRA deben coincidir con la familia de la variante (los LoRA para la variante completa pierden adaln en las podadas).
+
+| Variante (fl2va / ref2va) | Tamaño | Notas |
+| --- | --- | --- |
+| [`pruned_w6a8`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors) | 16 GB | La más pequeña; ruta INT8; ComfyUI 0.38.0+ |
+| [`pruned_int8_convrot`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) | 21 GB | Predeterminada en las plantillas |
+| [`pruned_fp8_scaled`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors) | 21 GB | Mismo tamaño que INT8 |
+| [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | Poda sin cuantizar |
+| [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | Compilación completa sin cuantizar |
+
+Los enlaces corresponden a `fl2va` (T2V/I2V); los archivos `ref2va` están en la misma carpeta y con los mismos tamaños. **La Atención de Comfy Kitchen no puede ejecutar checkpoints `int8_convrot`**; usa una variante `bf16` con ese backend.
+
+Si la VRAM va justa, baja un nivel de tamaño: el offload a CPU cuesta más que renunciar a precisión. En las RTX de la serie 30, las operaciones matriciales INT8 son ~2× más rápidas que FP16 y no hay ruta FP8, así que INT8 suele superar a FP8 con el mismo tamaño de archivo.
+
+H3 también necesita VAE de video y de audio: [video fp16 / int8_convrot](https://huggingface.co/Comfy-Org/MiniMax-H3/tree/main/vae) y [audio fp32](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors). Las plantillas usan video int8 + audio fp32; el video int8 decodifica ~2× más rápido en ComfyUI 0.36.0+. Cambia los archivos en `VAELoader` igual que el modelo de difusión.
+
+## Índice de flujos de trabajo
+
+Hoy se incluyen seis flujos de trabajo de plantilla (son ejemplos, no una lista exhaustiva). La biblioteca también incluye una variante de continuación I2V (`video_minimax_h3_i2v_continuation`).
+
+<CardGroup cols={2}>
+  <Card title="Texto a video (T2V)" icon="type" href="/es/tutorials/video/minimax/minimax-h3-native#minimax-h3-texto-a-video-t2v">
+    Genera videos a partir de prompts de texto con audio estéreo nativo
+  </Card>
+  <Card title="Imagen a video (I2V)" icon="image" href="/es/tutorials/video/minimax/minimax-h3-native#minimax-h3-imagen-a-video-i2v">
+    Genera videos a partir de una imagen de entrada, con control opcional de primer y último fotograma
+  </Card>
+  <Card title="Referencia a video (R2V)" icon="link" href="/es/tutorials/video/minimax/minimax-h3-native#minimax-h3-referencia-a-video-r2v">
+    Fija un personaje, un estilo, un movimiento, un movimiento de cámara o una voz a partir de imágenes, videos y audio de referencia
+  </Card>
+  <Card title="Referencia multifotograma" icon="film" href="/es/tutorials/video/minimax/minimax-h3-multiframe">
+    Ancla fotogramas de referencia en puntos concretos de la línea de tiempo de salida con nodos Add Guide encadenados
+  </Card>
+  <Card title="Fun ControlNet Union" icon="person" href="/es/tutorials/video/minimax/minimax-h3-fun-controlnet">
+    Controla H3 con un video de control Canny, Depth, HED, MLSD o Pose, o realiza relleno inteligente de video con una máscara
+  </Card>
+</CardGroup>
+
+**MiniMax H3 Imagen a Video** cubre T2V y la I2V de primer y último fotograma (`t2va` / `fl2va`). **MiniMax H3 Referencia a Video** cubre R2V (`ref2va`).
+
+<Note>
+El acondicionamiento de referencia solo se aplica cuando llega al sampler. Las plantillas T2V/I2V muestrean dentro de un subgrafo conectado únicamente a **Image to Video**. Un nodo **Reference to Video** en el lienzo se ignora sin generar ningún error. Usa la plantilla R2V (o un flujo de trabajo creado a partir de ella) para obtener resultados guiados por referencias.
+</Note>
+
+Recursos de prompts: [guía de prompts](/es/tutorials/video/minimax/minimax-h3-prompt-guide).
+
+## Establecer la resolución de salida {#setting-the-output-resolution}
+
+**Resolution Selector** establece `width` y `height` en el nodo H3:
+
+- **Aspect ratio**: Ajustes preestablecidos como `16:9 (Widescreen)`, `9:16 (Portrait Widescreen)`, `1:1 (Square)`
+- **Megapixels**: Recuento total de píxeles (mayor = más grande, más lento)
+- **Multiple**: Redondea a esta cuadrícula; mantén **32** para H3
+
+Las plantillas comienzan con **Megapixels** **0.4**: **864×480** en 16:9, **640×640** en 1:1 (el valor predeterminado de I2V). Un render de 0.4 MP es rápido y suficiente para borradores; aumenta **Megapixels** antes de un render final.
+
+Para calidad nativa en 16:9, establece **0.98** (~1344×768) o ingresa **1344 × 768** en el nodo. Evita **1.0** MP (1376×768 supera el límite de 768×1344). H3 está entrenado cerca de 1 MP; aumentar el tamaño no añade detalle. Para 2K, genera en tamaño nativo y amplía por separado.
+
+### Ampliar a mayor resolución
+
+Usa un **ampliador latente** sobre el latente de video de 24 canales para evitar el efecto fantasma del recorrido de ida y vuelta por VAE. [Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) (no oficial) necesita [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) en `ComfyUI/models/latent_upscale_models/` y su [nodo personalizado](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). Encadena **Minimax H3 Latent Upscaler (3D)** después de una pasada de baja resolución (`scale` 1.0–4.0, predeterminado 2.0) y luego vuelve a muestrear a la resolución objetivo.
+
+La ampliación latente ahorra tiempo, no pico de VRAM (el refinamiento se sigue ejecutando en el tamaño objetivo). Trata el refinamiento como un denoise parcial: `denoise` **0.1–0.5** conserva la composición; sube más solo para rehacer la primera pasada. Dale al sampler de refinamiento suficientes pasos para reconstruir el historial de varios pasos (consulta Sampler y scheduler).
+
+Los latentes de video y audio son independientes (24 + 32 canales). El ampliador solo agranda espacialmente el video; el audio no cambia hasta que el refinamiento aplica denoise a ambos. Un `denoise` de refinamiento bajo conserva el audio de la primera pasada. Para conservar el audio exactamente, decodifica la primera pasada con `VAEDecodeAudio` antes del refinamiento y conecta esa pista al `CreateVideo` final (agrega `SaveAudioAdvanced` para una exportación sin pérdida).
+
+## Duración del clip
+
+H3 está entrenado con clips cortos; los nodos nativos aceptan un rango más amplio sin bloquear las solicitudes que exceden la duración.
+
+Las plantillas exponen `duration` en segundos, convertidos a fotogramas en la cuadrícula `17k+5` a 24 fps.
+
+| Ajuste | Alcance |
+| --- | --- |
+| Entrada `length` | 5–3600 fotogramas (~0.2 s–150 s) |
+| Rango entrenado | ~124–362 fotogramas (~5–15 s) |
+| Cuadrícula de fotogramas | `17k+5` a 24 fps (124 fotogramas = 5 s) |
+| Valor predeterminado de la plantilla | 5 s → 124 fotogramas |
+
+Los clips largos a resolución completa agotan la VRAM primero; reduce los megapíxeles para ajustarlos.
+
+### Encadenar clips
+
+Más allá del rango entrenado, encadena continuaciones I2V desde el último fotograma de cada clip. Los errores se acumulan (los rostros pierden textura primero); los schedules turbo/destilados muestran el burn antes.
+
+Usa `video_minimax_h3_i2v_continuation` (prompt vacío): carga el último fotograma anterior y describe el siguiente segmento. Prefiere tomas cortas y continuas, y corta antes de que aparezca el burn. Para cadenas más largas, usa [H3-Anti-Burn-LoRA](https://huggingface.co/Imagineer13/H3-Anti-Burn-LoRA/blob/main/h3_antiburn_universal_v1.safetensors) en los clips posteriores al primero con `strength_model` ~0.5 (ajusta según tu estilo de continuación).
+
+## Cantidad de pasos
+
+Valores predeterminados (Lightning LoRA **desactivado**): **20 pasos**. Con turbo activado: **8** para T2V/I2V (y continuación), **4** para R2V, Multiframe y Fun ControlNet. En los subgrafos T2V/I2V, `turbo_mode`, `turbo_steps` y `turbo_model_strength` controlan el LoRA destilado. La lista también incluye un archivo fl2va de 4 pasos: [`minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors) con `turbo_steps` **4**.
+
+Las tomas de referencia necesitan más pasos: los tokens de referencia viajan en cada paso, así que el turbo de 4 pasos apenas puede aplicar las referencias (deriva de pose y rostro). Para un ajuste preciso de la referencia, mantén el turbo desactivado o aumenta hacia **25**.
+
+Los schedules destilados suavizan el detalle fino (piel, tela, cabello) frente a la base de 20 pasos. Cada archivo turbo es específico de un modo; prueba con una semilla fija antes de apilar LoRAs de estilo. `turbo_steps` y `turbo_model_strength` son ajustables: más pasos + menor fuerza (menos de 1) te acercan de nuevo a la calidad base y consumen tiempo. Ejemplo: archivo de 4 pasos a 6–8 pasos, fuerza ~0.8.
+
+Los LoRA turbo acortan el schedule, no el tiempo por paso (se fusionan al cargar). Ejecutar un LoRA de 4 pasos a 20 pasos tarda aproximadamente lo mismo que la base de 20 pasos.
+
+Orientación según el contenido:
+
+- Tomas simples: **12–16** pasos suelen ser suficientes
+- Detalle de alta frecuencia (cota de malla, filigrana, muchos objetos pequeños): mejora hasta ~**50**; por debajo de eso, aparecen artefactos de cuadrícula triangular en movimiento (peor con turbo)
+- La mayor parte de la mejora en movimiento/prompt se logra al paso **16**; hay poco cambio visible después de **50**
+- Los fotogramas suaves en resolución nativa suelen ser un problema de resolución, no de pasos
+
+El audio converge más tarde que el video en el denoise conjunto. El habla y el timbre necesitan **12+** pasos; con **8** pasos el audio suele ser el eslabón débil.
+
+## Sampler y scheduler
+
+Las plantillas usan **`res_multistep`** + **`simple`**. T2V/I2V/FastH3 los ocultan dentro del subgrafo; R2V, Multiframe y Fun ControlNet exponen `KSamplerSelect` y `BasicScheduler` en el lienzo.
+
+`res_multistep` es multistep de segundo orden (el primer paso es Euler). Dividir la programación entre dos samplers descarta el historial multistep: el primer paso del segundo sampler vuelve a ser de primer orden. Mantén una sola ejecución del sampler, o dale al segundo suficientes pasos para calentar.
+
+Los desplazamientos H3 predeterminados son `shift` **12** y `audio_shift` **3** según la definición del modelo (sin nodo adicional). Las plantillas FastH3 configuran **MiniMax H3 Sigma Shift** con `shift_video` **10**, `shift_audio` **3**. Un valor de shift de video incorrecto en versiones destiladas (p. ej., **3** en lugar de **10** en 8 pasos) puede mostrar artefactos de cuadrícula. Los finetunes personalizados pueden necesitar su propio par en **MiniMax H3 Sigma Shift** (consulta la tarjeta de modelo del archivo). [LoRA DMAD de 4 pasos](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) usa `shift` **12**, `audio_shift` **2**, **`lcm`** + **`simple`**.
+
+## Acelerar la generación con Sage Attention
+
+[Sage Attention](https://github.com/woct0rdho/SageAttention) puede acelerar aproximadamente **2×** con un pequeño impacto en la calidad (instalación opcional):
+
+1. Ejecuta `pip install` con el wheel que coincida con tu PyTorch/CUDA desde [releases](https://github.com/woct0rdho/SageAttention/releases)
+2. Instala [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) para `Patch Sage Attention KJ`
+3. Insértalo entre `UNETLoader` y `BasicGuider`; establece `sage_attention` en `auto`
+4. O inicia con `--use-sage-attention`
+
+Sage necesita float16/bfloat16; algunas capas de H3 usan otros dtypes y recurren a la atención de PyTorch (las advertencias en la consola son normales).
+
+### Degradación de la calidad con atención INT8
+
+La deformación al final del clip o el texto distorsionado en pantalla con Sage suelen venir de la cuantización de la atención INT8 (canales calientes en los bloques finales).
+
+- Las plantillas usan checkpoints **`int8_convrot`**. **Comfy Kitchen no les da soporte** ([problema #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)). Usa la atención predeterminada o cambia `UNETLoader` a **`pruned_bf16`** y luego cambia el backend.
+- En checkpoints **bf16**, la **atención de Comfy Kitchen** (rotación de canales antes de cuantizar) elimina los artefactos a una velocidad similar.
+
+Añade **Backend de atención del modelo** (`comfy kitchen attention`) en la ruta del modelo hacia `BasicGuider` (después de LoRA/turbo), o usa `--use-ck-attention` (0.32.0+). Requiere los kernels INT8 de `comfy-kitchen` en tu hardware.
+
+## Acelerar la generación con atención dispersa
+
+**Atención dispersa por bloques del modelo** (0.35.0+, experimental) reduce el costo de atención en clips largos. Para H3 base, usa `method` **`sol-attn`** (`sla`/`vsa` necesitan pesos correspondientes). Requiere CUDA + `sol_attn` de `comfy-kitchen`; de lo contrario, las capas permanecen densas.
+
+- Valores predeterminados: `start_percent` **0.2**, `end_percent` **1.0**. Un inicio más tardío (~**0.4**) y un final más temprano (~**0.9**) protegen los fotogramas de apertura y cierre.
+- Mantén **`sink_conditioning`** en **`exact_kv_and_rows`** en H3 (protege las filas empaquetadas de texto, audio y referencia).
+- **`tau`**: un valor más alto = más disperso y rápido (`1.0` ~16% de bloques exactos, `1.3` predeterminado, `2.0` ~2.7%).
+- Las secuencias cortas por debajo de `min_tokens` (predeterminado **12288**) obtienen poca mejora.
+
+FastH3 usa **`vsa`** con `keep_percent` **10**; consulta la [página de FastH3](/es/tutorials/video/minimax/minimax-h3-fastvideo).
+
+### Comprobar si la atención dispersa está activa
+
+Las plantillas base de H3 no incluyen el nodo. Agrega **Model Sparse Attention** entre `UNETLoader` y `BasicGuider`, y luego activa **`verbose`** (en Avanzado, desactivado de forma predeterminada) para registrar una línea por cada forma de atención.
+
+Las llamadas que siguen en modo denso registran `dense (<n> tokens): <reason>` o `dense (<b>, <n>, <h>, <d>): <reason>`. Solo se informa la primera condición que falla:
+
+| Motivo registrado | Qué cambiar |
+| --- | --- |
+| `no compiled sol_attn kernel for this GPU` | El `comfy-kitchen` instalado no tiene kernel para tu GPU. Actualízalo o deja el nodo fuera en esa máquina. |
+| `<n> tokens < min_tokens <value>` | Aumenta la resolución o la duración del clip, o baja `min_tokens` (predeterminado **12288**). |
+| `sigma <x> outside the start/end window` | Amplía `start_percent` y `end_percent`. |
+| `block <i> in dense_blocks` | Quita ese índice de bloque de `dense_blocks`. |
+| `no H3 layout for this call` | Solo `vsa`. Selecciona `sol-attn`. |
+
+Las llamadas que tienen éxito registran `sparse (<b>, <n>, <h>, <d>), sinks <k>/<q>` o `sparse producer path: <n> tokens, <mode>`.
+
+Hay tres condiciones que nunca registran nada, incluso con `verbose` activado: las activaciones que no son bfloat16 en la ruta de H3, un `head_dim` distinto de **128** y las frecuencias de rope ausentes se degradan en silencio.
+
+`vsa` está ligado al checkpoint de FastH3. Lee una rama gruesa aprendida de las capas `to_gate_compress` que solo traen esos pesos, así que en cualquier otro checkpoint de H3 el nodo imprime `VSA: the model has no to_gate_compress layers; running the fine stage without the coarse branch` y ejecuta solo la etapa fina. Esa advertencia no depende de `verbose`.
+
+## Licencia comercial
+
+Los pesos abiertos de H3 puedes descargarlos y ejecutarlos gratis. Para usar comercialmente las salidas generadas en local necesitas una [licencia comercial de MiniMax](https://comfy.org/minimax/license), que se vende a través de Comfy, el único revendedor oficial. Las generaciones en Comfy Cloud ya incluyen derechos comerciales, así que la licencia solo es necesaria para uso local.
+
+¿Necesitas una?
+
+- **Comfy Cloud**: el uso comercial está incluido. No hay nada que comprar.
+- **Tu propio hardware, fuera de EE. UU., la UE, el Reino Unido y Corea, con ingresos anuales inferiores a $20M**: la licencia comunitaria gratuita de MiniMax cubre el uso comercial. Muestra un crédito "Powered by MiniMax H3"; la misma regla de territorio se aplica al lugar donde se usan tus salidas.
+- **Tu propio hardware en EE. UU., la UE, el Reino Unido o Corea, o con ingresos anuales superiores a $20M**: necesitas una de las dos licencias que aparecen abajo.
+
+Las licencias vienen en dos niveles:
+
+|                           | Profesional           | Empresa                                                   |
+| ------------------------- | ---------------------- | ------------------------------------------------------------ |
+| Precio                     | Desde $5,000 al mes    | Personalizado, contrato anual, con precio según tu volumen    |
+| Vigencia                   | Mensual                | Mínimo de 12 meses                                            |
+| Usuarios con licencia      | Hasta 10               | Sin límite                                                    |
+| Dominios                   | 1                      | Personalizado                                                 |
+| Versiones del modelo       | Pesos abiertos destilados | Todas las versiones, pesos no destilados y nuevos lanzamientos incluidos |
+| Uso comercial de las salidas | Derechos comerciales completos | Derechos comerciales completos                      |
+| Ajuste fino y LoRA         | Incluido               | Incluido                                                      |
+| Trabajo para clientes y aguas abajo | Incluido      | Incluido                                                      |
+
+Profesional comienza en $5,000 al mes. Empresa no tiene un precio de lista fijo: el precio se ajusta a tu volumen de generación y a tu equipo. Ambos niveles cubren MiniMax H3 y MiniMax Audio & Music bajo un mismo acuerdo. [Solicita una licencia](https://comfy.org/contact) para obtener una cotización.

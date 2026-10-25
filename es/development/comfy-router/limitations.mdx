@@ -1,0 +1,175 @@
+---
+title: "Capacidades y límites de Comfy Router"
+sidebarTitle: "Capacidades y límites"
+description: "Elige Router o un proxy socio, planifica llamadas largas y entiende la recuperación, los límites de tasa y el almacenamiento de recursos."
+translationSourceHash: 4e0a5a98
+translationFrom: development/comfy-router/limitations.mdx
+translationBlockHashes:
+  "_intro": 6b871cf3
+  "What Router supports": 2cc63403
+  "Queued submission": d0798008
+  "Calls are cut off at a server deadline": 6dd44c43
+  "Recovery depends on the provider": da9d8904
+  "Request bodies are capped": 675b77c8
+  "Requests are rate limited per caller": 249d4d51
+  "No progress while a call runs": 75d42d8d
+  "Comfy charges and usage": ed49ddec
+  "Models without a pre-flight estimate": b9174050
+  "Router does not cover every partner operation": 97d31362
+  "Model outputs and stored assets": 06c737c1
+  "Next": be85b789
+---
+Router ejecuta un modelo socio a través de una llamada HTTP síncrona o mediante una solicitud en cola que envías y recoges más tarde. Úsalo cuando tu aplicación pueda esperar un resultado finalizado o recogerlo más tarde, y pueda manejar los campos de entrada y salida propios del modelo.
+
+## Qué admite Router
+
+| Requisito | Soporte de Router | Alternativa o siguiente paso |
+| --- | --- | --- |
+| Generar con una sola solicitud | `POST /v2/models/{provider}/{model}` devuelve el resultado final. | Comienza con el [Inicio rápido](/es/development/comfy-router/quickstart). |
+| Enviar una tarea y recogerla más tarde | Entrega en cola: `POST /v2/models/{provider}/{model}/requests` devuelve un `request_id` para consultar y recoger. No hay webhook de finalización. | Usa la [entrega en cola](/es/development/comfy-router/queue). Un proxy de socio con operaciones de envío y consulta expone los controles propios del proveedor. |
+| Mostrar el progreso o transmitir la salida | No hay progreso en vivo, transmisión ni fotogramas de vista previa durante la llamada. | Muestra un estado indeterminado o usa una operación de proxy compatible. |
+| Recuperarte tras perder la conexión | La recogida con la misma clave está disponible cuando Router conservó un identificador de una generación aceptada. | Conserva la clave y sigue la [orientación de reintentos](/es/development/comfy-router/errors#resultados-de-reintento). |
+| Conciliar los cargos de Comfy | No hay un campo universal de costo o de saldo de créditos de Comfy en la respuesta. | Usa la [facturación del espacio de trabajo](https://platform.comfy.org). |
+| Almacenar los resultados de forma permanente | Las URL de los recursos pueden caducar, incluidas las realojadas y las reproducidas. | Descarga los recursos; consulta [recursos de resultados](/es/development/comfy-router/reference#recursos-del-resultado). |
+| Enviar archivos multimedia grandes en línea | El cuerpo de la solicitud tiene un límite y los archivos multimedia codificados en base64 cuentan para ese límite. | Mantén los cuerpos por debajo del límite; consulta [el tamaño del cuerpo de la solicitud](#los-cuerpos-de-las-solicitudes-tienen-un-límite). |
+
+<span id="no-queued-submission" />
+
+## Envío en cola
+
+La ruta síncrona mantiene la conexión abierta mientras el modelo se ejecuta; con proveedores asíncronos, Router envía la tarea y consulta internamente. La entrega en cola (envías, obtienes un `request_id`, consultas y recoges el resultado) es la alternativa: consulta [Entrega en cola](/es/development/comfy-router/queue). Está limitada al espacio de trabajo al que pertenece la credencial, así que necesita una clave creada en tu espacio de trabajo de Comfy. Una clave clásica sin espacio de trabajo, una solicitud con tu propia clave (bring-your-own-key) o un modelo que la cola no puede ejecutar responden `403` con `not_enabled` en la ruta de envío. Ninguno de los dos modos ofrece callback ni webhook.
+
+Si tu solicitud no puede permanecer abierta el tiempo suficiente, ponla en cola. Usa un [proxy de socio](#router-no-cubre-todas-las-operaciones-de-los-socios) cuando necesites los controles propios del proveedor para enviar y consultar.
+
+Cuatro modelos son solo síncronos por ahora y se rechazan con `403` / `not_enabled` si los envías a la cola: `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4` y `elevenlabs/eleven_v4_turbo`. Devuelven bytes de audio sin procesar en lugar de un documento de resultado JSON, que la entrega en cola no tiene dónde almacenar. Ejecútalos en la ruta síncrona, que devuelve esos bytes con normalidad.
+
+Las operaciones de texto a video e imagen a video de LTX v1 devuelven bytes de video sin procesar por la misma razón, y la entrega en cola tampoco puede almacenarlos, pero solo están disponibles mediante el [proxy de socio](#router-no-cubre-todas-las-operaciones-de-los-socios) en `/proxy/ltx/v1/…`, no mediante un id de modelo de Router: todos los modelos del catálogo `ltx/*` resuelven a la operación de envío y consulta v2, que sí se puede poner en cola.
+
+## Las llamadas se cortan por un plazo límite del servidor
+
+El plazo límite predeterminado de Router es de **10 minutos**, configurable según el despliegue. Configura el timeout de tu cliente por encima de ese valor para que Router pueda devolver primero su error y el ID de la solicitud.
+
+`504` / `deadline_exceeded` significa que Router dejó de esperar; `504` / `provider_timeout` significa que el proveedor agotó el tiempo de espera. Un timeout o una conexión perdida no demuestra que una generación no se haya facturado, y no cancela el trabajo aceptado por el proveedor. Lee [timeouts and collection](/es/development/comfy-router/errors#tiempos-de-espera-y-recopilación) antes de reintentar.
+
+<span id="no-way-to-resume-a-call-you-lost" />
+
+## La recuperación depende del proveedor
+
+Router conserva el handle del proveedor de una generación de enviar y consultar en cuanto el proveedor acepta el envío. Si la conexión se pierde después de ese punto, un reenvío con la misma `Idempotency-Key` y el mismo cuerpo recoge la generación original en lugar de iniciar una segunda, y no se cobra de nuevo. Esto se cumple cuando Router termina la llamada (por su límite de tiempo o porque tu cliente cuelga) y también, en casi todos los casos, cuando el servidor de Router que atiende la llamada se reinicia a mitad de la llamada. La excepción es un reinicio en el breve instante entre que el proveedor acepta el envío y Router lo graba: en ese caso la clave se retiene hasta 15 minutos y, pasado ese tiempo, un reenvío inicia una nueva generación que sí se cobra. Después de un reinicio, un reenvío puede obtener `409` / `concurrency_limit_exceeded` con `Retry-After` durante hasta aproximadamente un minuto mientras Router confirma que el manejador original ya no está; si sigues reenviando la misma clave, recogerá el resultado. Las respuestas completadas que se pueden reproducir también pueden venir del registro de la clave.
+
+No toda llamada desconectada se puede recuperar. Conserva la solicitud y la clave antes de enviar, y luego usa la [tabla de resultados de reintento](/es/development/comfy-router/errors#resultados-de-reintento). Una clave nueva crea una llamada nueva y puede generar otro cargo.
+
+## Los cuerpos de las solicitudes tienen un límite
+
+Router rechaza una solicitud cuyo cuerpo supere los **100 MiB (104,857,600 bytes)**. El límite se aplica a los bytes sin procesar que envías, medidos antes de que Router analice nada, así que rige para todas las rutas y tanto para la entrega síncrona como para la entrega en cola.
+
+El contenido multimedia en línea es donde quienes hacen la llamada se topan con él. La codificación Base64 infla los datos binarios en aproximadamente 4/3, así que un cuerpo que transporta contenido multimedia codificado alcanza el límite con unos **75 MB de bytes reales de imagen, audio o video**. Calcula el tamaño de la cadena codificada, no del archivo en disco, y cuenta cada entrada de una llamada: una solicitud con dos imágenes de referencia consume el margen con ambas, y el prompt, los parámetros y la estructura JSON también cuentan.
+
+**Cómo se ve el rechazo.** `413`, con `invalid_input` en `X-Comfy-Error-Type` y `X-Comfy-Request-Id` establecidos como en cualquier otra respuesta. El cuerpo es un [`RouterErrorResponse`](/es/development/comfy-router/reference#routererrorresponse) cuyo `detail` describe el límite que se excedió. Bifurca según `error_type` en lugar de analizar `detail`, y considera autoritativo lo que devuelve la API si esta página y la respuesta llegaran a discrepar sobre la cifra. Router emite el rechazo antes de despachar nada, así que no se ejecutó ninguna generación ni se cobró nada.
+
+El límite se aplica a todas las solicitudes, lleven o no un `Idempotency-Key`. No es un límite de idempotencia, y reenviar la misma clave no cambia el resultado: un cuerpo demasiado grande lo es en todos los intentos.
+
+**Un proveedor puede imponer un límite propio más bajo y, con este límite, normalmente lo hace.** Los proveedores publican sus propios límites para el contenido multimedia en línea, y la restricción efectiva es la que sea menor. Los modelos de Google, por ejemplo, aceptan hasta 20 MB (decimal, 20,000,000 bytes) de carga útil en línea, y la línea `Size limit: 20MB` de las páginas de los modelos de Google es ese límite por campo de Google citado de la especificación propia de Google, no el límite de Router sobre todo el cuerpo de la solicitud. El límite de Router se sitúa deliberadamente por encima de todos los límites de los socios que intermedia, así que para un único recurso en línea normalmente lo primero que encuentras es el límite del propio proveedor; el límite de Router aplica cuando hay varios recursos en un mismo cuerpo. Un cuerpo que queda por debajo del límite de Router pero supera el límite propio de un proveedor es rechazado por el proveedor y no por Router, y vuelve como error del proveedor en lugar de un `413`.
+
+## Límite de tasa de solicitudes por solicitante
+
+| Respuesta | Causa | Acción |
+| --- | --- | --- |
+| `429` / `concurrency_limit_exceeded` | Demasiadas llamadas concurrentes, o margen insuficiente bajo el techo de gasto comprometido. | Reduce el trabajo concurrente. Los encabezados de gasto distinguen el techo de gasto del límite de cantidad de llamadas. |
+| `429` / `rate_limited` | Se agotó la cuota de solicitudes. | Espera el tiempo indicado en `Retry-After` antes de reintentar. |
+
+El límite de tasa de solicitudes aplica a la invocación y a las lecturas de catálogo y esquema, incluidas las solicitudes rechazadas antes de la generación. Sigue al solicitante autenticado, no a la IP de origen. Las llamadas con la clave de proveedor del solicitante están exentas; los límites del proveedor siguen aplicando.
+
+Almacena en caché las lecturas de catálogo y esquema. Revalídalas con `ETag` e `If-None-Match`. Consulta [Encabezados](/es/development/comfy-router/headers) para los campos de reintento y de gasto comprometido.
+
+## Sin progreso mientras se ejecuta una llamada
+
+Router devuelve una respuesta final, sin tokens en streaming, eventos enviados por el servidor, actualizaciones de porcentaje ni fotogramas de vista previa intermedios. Router no reenvía el estado de sondeo interno de un proveedor durante la solicitud.
+
+Muestra un indicador de progreso indeterminado. Si necesitas progreso o streaming, usa una operación de proxy de socio que exponga esa información.
+
+<span id="no-cost-or-credit-figures-on-a-response" />
+
+## Cargos y uso de Comfy
+
+La respuesta puede contener campos de uso o costo del proveedor. No representan un cargo universal de Comfy. `X-Comfy-Credits-Used` es opcional: que falte el encabezado significa que el costo no se informó, no que la ejecución haya sido gratis. Una respuesta reproducida (`Idempotent-Replayed: true`) nunca se cobra de nuevo, pero puede repetir la cifra de la ejecución original, así que no sumes el encabezado entre reintentos de una misma `Idempotency-Key`. Usa la plataforma de Comfy para saldos, uso y facturas.
+
+El catálogo proporciona datos de facturación, incluido `billing.charges_on_policy_rejection`, pero no precios. Maneja `yes`, `no` y `unknown` de forma explícita. Consulta [facturación](/es/development/comfy-router/billing#datos-de-facturación-de-los-modelos).
+
+Para ver un precio antes de una ejecución, llama a `POST /v2/models/{provider}/{model}/estimate`, o lee el objeto `estimate` en el `201` de un envío en cola. Mientras la estimación se está desplegando, la ruta responde `403` con `error_type: not_enabled` y el envío omite `estimate`. Cada uno se calcula a partir de la tarjeta de tarifas contra la que Comfy factura la ejecución, pero la cifra es una estimación, no el cargo final, y el cargo liquidado en los registros de uso y facturación de tu espacio de trabajo es definitivo. Tampoco es un bloqueo de precio. Comfy no factura una ejecución realizada con tu propia clave de proveedor, incluso cuando `/estimate` devuelve una cifra para ella, y una estimación `unknown` no incluye ninguna cifra; eso no significa que sea gratis. `X-Comfy-Credits-Used` sigue siendo una cifra redondeada calculada a posteriori para una ejecución, no un recibo. Consulta [Estimaciones de costo antes de la ejecución](/es/development/comfy-router/reference#estimaciones-de-costos-previas-a-la-ejecución) para saber cómo interpretar `exact`, `estimated` y `unknown`. Los modelos cuyo precio no se puede calcular antes de una ejecución se enumeran en [modelos sin una estimación previa a la ejecución](#modelos-sin-estimación-previa).
+
+## Modelos sin estimación previa
+
+Router todavía no puede calcular de forma fiable el precio de una llamada a los modelos siguientes antes de ejecutarla, así que es posible que `/estimate` y el campo `estimate` de un envío en cola respondan `source: unknown` para ellos, aunque algunos pueden devolver una cifra para un cuerpo concreto. `unknown` significa que no se dio ninguna cifra, no que la ejecución sea gratis. Las reglas de [Cargos y uso de Comfy](#cargos-y-uso-de-comfy) siguen aplicándose: una ejecución con tu propia clave de proveedor no se factura a través de Comfy, y `X-Comfy-Credits-Used` es opcional, así que una cabecera faltante significa que no se informó del costo. Un modelo que no aparezca en esta lista puede responder igualmente `unknown` para un cuerpo concreto, así que revisa `source` en cada estimación.
+
+Esta lista se reduce a medida que crece la cobertura de estimaciones. Se genera a partir del propio código de precios de Router, y los modelos que no están disponibles públicamente nunca aparecen en ella.
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **bfl**: `bfl/erase-v1`, `bfl/flux-2-max`, `bfl/flux-2-pro`, `bfl/flux-3-image`, `bfl/flux-3-video`, `bfl/flux-kontext-max`, `bfl/flux-kontext-pro`, `bfl/flux-pro-1.0-expand`, `bfl/flux-pro-1.0-fill`, `bfl/flux-pro-1.1`, `bfl/flux-pro-1.1-ultra`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplus**: `byteplus/seed-audio-1.0`, `byteplus/seed-audio-1.0-multilingual`
+- **elevenlabs**: `elevenlabs/eleven_sfx_v2`
+- **fal**: `fal/crystal-upscaler`, `fal/crystal-video-upscaler`, `fal/fal-gpt-image-2`, `fal/fal-gpt-image-2.5-flare`, `fal/fal-gpt-image-2.5-sunburst`, `fal/fal-nano-banana-2`, `fal/fal-nano-banana-pro`, `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`, `fal/flux-3-max`, `fal/patina`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`, `ideogram/p-image-ideogram`
+- **kling**: `kling/kling-3.0-turbo`, `kling/kling-image-o1`, `kling/kling-v2-5-turbo`, `kling/kling-v2-6`, `kling/kling-v3`, `kling/kling-v3-omni`, `kling/kling-video-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **luma**: `luma/photon-1`, `luma/photon-flash-1`, `luma/ray-2`, `luma/ray-flash-2`
+- **meshy**: `meshy/animations`, `meshy/meshy-5`, `meshy/meshy-6`, `meshy/meshy-7`, `meshy/meshy-7.1`, `meshy/remesh`, `meshy/rigging`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **recraft**: `recraft/recraftv2`, `recraft/recraftv3`, `recraft/recraftv4`, `recraft/recraftv4_1`, `recraft/recraftv4_1_pro`, `recraft/recraftv4_1_pro_vector`, `recraft/recraftv4_1_utility`, `recraft/recraftv4_1_utility_pro`, `recraft/recraftv4_1_utility_pro_vector`, `recraft/recraftv4_1_utility_vector`, `recraft/recraftv4_1_vector`, `recraft/recraftv4_pro`, `recraft/recraftv4_styles`, `recraft/recraftv4_styles_pro`, `recraft/recraftv4_styles_pro_vector`, `recraft/recraftv4_styles_vector`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **runway**: `runway/gen4_image`
+- **synclabs**: `synclabs/sync-3`
+- **veed**: `veed/clean-audio`, `veed/clean-audio-video`, `veed/fabric-1.0`, `veed/lipsync-2.0`, `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **wavespeed**: `wavespeed/flashvsr`, `wavespeed/seedvr2`, `wavespeed/ultimate-image-upscaler`, `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
+- **xai**: `xai/grok-imagine-image`, `xai/grok-imagine-image-2.0`, `xai/grok-imagine-image-pro`, `xai/grok-imagine-image-quality`, `xai/grok-imagine-video`, `xai/grok-imagine-video-1.5`, `xai/grok-imagine-video-1.5-lite`, `xai/grok-imagine-video-1.5-preview`
+
+{/* END GENERATED: models without a pre-flight estimate */}
+
+## Router no cubre todas las operaciones de los socios
+
+Router ejecuta modelos. La carga de archivos, la lectura de cuentas, la gestión de recursos, el streaming y el control de tareas del proveedor pueden requerir rutas de proxy de socio bajo `/proxy/…`, que quedan fuera de Router y no están descritas en su contrato. La superficie propia de Router es la [especificación de Comfy Router](/router-openapi.yaml); el soporte varía según el proveedor.
+
+### Las imágenes de referencia de Krea 3 deben subirse primero
+
+`krea/krea-3` no acepta enlaces de imagen arbitrarios. Cada entrada de `image_urls` debe ser un `image_url` devuelto por `POST /proxy/krea/assets`, es decir, una URL `https://app-uploads.krea.ai/...`. Router solo comprueba que el enlace se analice como una URL `https` cuyo host sea exactamente `app-uploads.krea.ai` (ningún otro host y ningún puerto explícito): cualquier otro enlace, incluida una URL `https` pública que alojes tú mismo, se rechaza con `400` `invalid_input` antes de que se ejecute el modelo. Un enlace que pase esa comprobación pero que no sea una carga activa (expirada, eliminada o escrita incorrectamente) también la supera, y entonces Router no consigue leer el tamaño de la imagen y responde con un error `5xx`, no con un `400`, así que pasa siempre el `image_url` exactamente tal como lo devolvió la carga.
+
+1. Sube cada imagen de referencia como `multipart/form-data`, con la imagen en el campo de formulario `file` (JPEG, PNG o WebP, hasta 75 MB). Autentícate igual que en Router, con `X-API-Key` o `Authorization: Bearer`.
+
+   ```bash
+   curl -X POST https://api.comfy.org/proxy/krea/assets \
+     -H "X-API-Key: $COMFY_API_KEY" \
+     -F "file=@reference.png"
+   ```
+
+2. Lee `image_url` de la respuesta JSON y pásalo en `image_urls`:
+
+   ```json
+   {
+     "prompt": "Place the product on a clean studio background",
+     "resolution": "1k",
+     "image_urls": ["<image_url from step 1>"]
+   }
+   ```
+
+Las llamadas de texto a imagen omiten `image_urls` y no requieren subir nada.
+
+## Salidas del modelo y recursos almacenados
+
+Los campos de entrada y salida varían según el modelo. Pasar de un SDK de proveedor o de un proxy puede cambiar tanto la ruta como la forma en que lees el resultado.
+
+Comfy vuelve a alojar algunos recursos en su almacenamiento; otros son URL del proveedor o bytes en línea. Consulta [Recursos de resultado](/es/development/comfy-router/reference#recursos-del-resultado) para conocer los tiempos de vida y el comportamiento de reproducción.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/es/development/comfy-router/quickstart">
+    Genera tu primera imagen con Comfy Router.
+  </Card>
+  <Card title="Using the Router API" icon="code" href="/es/development/comfy-router/api">
+    Elige un modelo, revisa su esquema y gestiona los resultados y los reintentos.
+  </Card>
+</CardGroup>
