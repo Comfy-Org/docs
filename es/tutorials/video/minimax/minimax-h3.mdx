@@ -115,15 +115,17 @@ Recursos de prompts: [guía de prompts](/es/tutorials/video/minimax/minimax-h3-p
 
 Las plantillas comienzan con **Megapixels** **0.4**: **864×480** en 16:9, **640×640** en 1:1 (el valor predeterminado de I2V). Un render de 0.4 MP es rápido y suficiente para borradores; aumenta **Megapixels** antes de un render final.
 
-Para calidad nativa en 16:9, establece **0.98** (~1344×768) o ingresa **1344 × 768** en el nodo. Evita **1.0** MP (1376×768 supera el límite de 768×1344). H3 está entrenado cerca de 1 MP; aumentar el tamaño no añade detalle. Para 2K, genera en tamaño nativo y amplía por separado.
+Para calidad nativa en 16:9, establece **Megapixels** en **0.98** o introduce **1344 × 768** en el nodo. H3 está entrenado cerca de 1 MP, con un borde corto de 768 píxeles y hasta un área de 768×1344. Los tamaños por encima de 768×1344 se renderizan más despacio sin añadir detalle, y la calidad baja cuanto más te alejas de la resolución de entrenamiento. Para 2K, genera en tamaño nativo y haz upscale por separado.
+
+Los nodos de H3 no tienen un límite de 768×1344 en el tamaño de salida: `width` y `height` avanzan de **32** en **32** hasta 16384 por eje. Los videos de referencia en **Reference to Video** se reducen para caber en un borde corto de 768 px y un área de 768×1344. Las imágenes de referencia siguen `ref_image_size`: **match** las escala al área de píxeles de la generación y **max** a un borde corto de 2048 px.
 
 ### Ampliar a mayor resolución
 
-Usa un **ampliador latente** sobre el latente de video de 24 canales para evitar el efecto fantasma del recorrido de ida y vuelta por VAE. [Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) (no oficial) necesita [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) en `ComfyUI/models/latent_upscale_models/` y su [nodo personalizado](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). Encadena **Minimax H3 Latent Upscaler (3D)** después de una pasada de baja resolución (`scale` 1.0–4.0, predeterminado 2.0) y luego vuelve a muestrear a la resolución objetivo.
+Usa un **latent upscaler** sobre el latent de video de 24 canales para evitar el efecto fantasma del recorrido de ida y vuelta por VAE. [Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) (no oficial) necesita [minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/blob/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors) en `ComfyUI/models/latent_upscale_models/` y su [nodo personalizado](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler). Encadena **Minimax H3 Latent Upscaler (3D)** después de una pasada de baja resolución (`scale` 1.0–4.0, predeterminado 2.0) y luego vuelve a muestrear a la resolución objetivo.
 
-La ampliación latente ahorra tiempo, no pico de VRAM (el refinamiento se sigue ejecutando en el tamaño objetivo). Trata el refinamiento como un denoise parcial: `denoise` **0.1–0.5** conserva la composición; sube más solo para rehacer la primera pasada. Dale al sampler de refinamiento suficientes pasos para reconstruir el historial de varios pasos (consulta Sampler y scheduler).
+El upscale en latent ahorra tiempo, no pico de VRAM (el refinamiento se sigue ejecutando en el tamaño objetivo). Trata el refinamiento como un denoise parcial: `denoise` **0.1–0.5** conserva la composición; sube más solo para rehacer la primera pasada. Dale al sampler de refinamiento suficientes pasos para reconstruir el historial de varios pasos (consulta Sampler y scheduler).
 
-Los latentes de video y audio son independientes (24 + 32 canales). El ampliador solo agranda espacialmente el video; el audio no cambia hasta que el refinamiento aplica denoise a ambos. Un `denoise` de refinamiento bajo conserva el audio de la primera pasada. Para conservar el audio exactamente, decodifica la primera pasada con `VAEDecodeAudio` antes del refinamiento y conecta esa pista al `CreateVideo` final (agrega `SaveAudioAdvanced` para una exportación sin pérdida).
+Los latents de video y audio son independientes (24 + 32 canales). El upscaler solo agranda espacialmente el video; el audio no cambia hasta que el refinamiento aplica denoise a ambos. Un `denoise` de refinamiento bajo conserva el audio de la primera pasada. Para conservar el audio exactamente, decodifica la primera pasada con `VAEDecodeAudio` antes del refinamiento y conecta esa pista al `CreateVideo` final (agrega `SaveAudioAdvanced` para una exportación sin pérdida).
 
 ## Duración del clip
 
@@ -135,8 +137,10 @@ Las plantillas exponen `duration` en segundos, convertidos a fotogramas en la cu
 | --- | --- |
 | Entrada `length` | 5–3600 fotogramas (~0.2 s–150 s) |
 | Rango entrenado | ~124–362 fotogramas (~5–15 s) |
-| Cuadrícula de fotogramas | `17k+5` a 24 fps (124 fotogramas = 5 s) |
+| Cuadrícula de fotogramas | `17k+5` a 24 fps (124 fotogramas ≈ 5.2 s) |
 | Valor predeterminado de la plantilla | 5 s → 124 fotogramas |
+
+`duration` y `length` se redondean **hacia arriba** al siguiente valor `17k+5`: una solicitud de 5 s genera 124 fotogramas (5.17 s), y un `length` de 120 también genera 124. Los fotogramas se empaquetan desde el fotograma 0 en bloques de 17, así que los 5 fotogramas sobrantes son el último bloque, no el primero. Las solicitudes que caen entre los mismos dos puntos de la cuadrícula generan el mismo clip.
 
 Los clips largos a resolución completa agotan la VRAM primero; reduce los megapíxeles para ajustarlos.
 
