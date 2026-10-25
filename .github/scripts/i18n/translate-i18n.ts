@@ -472,7 +472,7 @@ function buildTranslationInstructions(lang: LangConfig): string {
       ? "Spanish headings use sentence case: capitalize only the first word and proper nouns, product names or UI labels. Never copy English Title Case into a Spanish heading. Start task headings with the infinitive (`Instalar el administrador`, `Guardar y compartir flujos de trabajo`), not the gerund (`Instalando`, `Guardando`), which is an English -ing calque."
       : "",
     lang.code === "es"
-      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Use `video`, never `vídeo`. Avoid passive reflexive calques (`se pueden pasar`) and empty `el mismo/la misma` where Spanish reads better with a direct subject."
+      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Load Image`, `Reroute`, `Run`, `Run (On Change)`, `Run (Instant)`, `Unsupported Node Packs`, `Install All`, `Apply Changes`, `View in Manager`, `Download`, `Download all`, `Give Feedback`, `Docs`, `Help & Support`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Use `video`, never `vídeo`. Avoid passive reflexive calques (`se pueden pasar`) and empty `el mismo/la misma` where Spanish reads better with a direct subject."
       : "",
     lang.code === "es"
       ? "Spanish runs 20 to 30 percent longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact."
