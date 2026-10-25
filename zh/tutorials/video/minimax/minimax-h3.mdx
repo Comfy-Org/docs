@@ -2,7 +2,7 @@
 title: "ComfyUI MiniMax H3 视频生成指南"
 description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
 sidebarTitle: "概述"
-translationSourceHash: 6baf68cb
+translationSourceHash: e95e545e
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
   "_intro": 94f54ee8
@@ -10,12 +10,12 @@ translationBlockHashes:
   "Getting started": eed90954
   "Choosing the checkpoint precision": 4a53fdf9
   "Workflow index": bdc3b9f8
-  "Setting the output resolution": db770c15
-  "Clip length": d9104665
+  "Setting the output resolution": 1fda252d
+  "Clip length": 2d495d82
   "Step count": d2a8a6f8
   "Sampler and scheduler": 79c739c3
   "Speeding up generation with Sage Attention": 24cc9a70
-  "Speeding up generation with sparse attention": cd054e87
+  "Speeding up generation with sparse attention": 801c9acf
   "Commercial licensing": 201e2de5
 ---
 
@@ -116,7 +116,9 @@ H3 的开放权重可在本地运行。对本地生成的输出进行商业使�
 
 模板默认 **Megapixels** 为 **0.4**：16:9 下 **864×480**，1:1 下 **640×640**（I2V 默认）。0.4 MP 出片快，适合草稿；正式出片前请调高 **Megapixels**。
 
-16:9 原生画质：设 **0.98**（约 1344×768）或在节点填 **1344 × 768**。避免 **1.0** MP（1376×768 超出 768×1344 上限）。训练约 1 MP，放大画布不会增加细节；2K 请原生生成后单独放大。
+16:9 原生画质：**Megapixels** 设 **0.98**，或在节点填 **1344 × 768**。H3 的训练分辨率约为 1 MP，短边 768px，面积上限 768×1344。超过 768×1344 只会更慢，不增加细节；离训练分辨率越远，画质越差。2K 请原生生成后单独放大。
+
+H3 节点不会对输出尺寸设 768×1344 上限：`width` 与 `height` 以 **32** 为步长，单边最大 16384。**Reference to Video** 的参考视频会缩小到短边 768px、面积 768×1344 的范围。参考图像按 `ref_image_size` 处理：**match** 缩放到本次生成的像素面积，**max** 缩放到短边 2048px。
 
 ### 放大到更高分辨率
 
@@ -136,12 +138,14 @@ H3 在短片段上训练；节点接受更宽范围且不阻止超长请求。
 | --- | --- |
 | `length` 输入 | 5–3600 帧（约 0.2 s–150 s） |
 | 训练范围 | 约 124–362 帧（约 5–15 s） |
-| 帧网格 | 24fps 下 `17k+5`（124 帧 = 5 s） |
+| 帧网格 | 24fps 下 `17k+5`（124 帧 ≈ 5.2 s） |
 | 模板默认 | 5 s → 124 帧 |
+
+`duration` 与 `length` 都向上取整到 `17k+5` 网格：5 s 渲染 124 帧（5.17 s），`length` 填 120 也是 124 帧。帧从第 0 帧起按 17 帧分块，余下的 5 帧在最后一块，不在开头。落在同两个网格值之间的请求得到相同片段。
 
 长片段在满分辨率下先耗尽显存；可降低 Megapixels。
 
-### 链接片段
+### 片段衔接
 
 超出训练范围时用 I2V 续接上一段末帧。误差会累积（面部纹理先劣化）；turbo/蒸馏步数更早出现「烧片」。
 
@@ -204,6 +208,26 @@ Turbo 缩短的是 schedule，不是单步耗时（加载时合并）。4 步 Lo
 - 短于 `min_tokens`（默认 **12288**）收益很小。
 
 FastH3 用 **`vsa`**、`keep_percent` **10**；见 [FastH3 页面](/zh/tutorials/video/minimax/minimax-h3-fastvideo)。
+
+### 稀疏注意力是否生效
+
+基座 H3 模板不含此节点。在 `UNETLoader` 与 `BasicGuider` 之间加入 **Model Sparse Attention**，再打开 **`verbose`**（高级选项，默认关闭），每个 attention 形状会输出一行日志。
+
+保持稠密的调用会输出 `dense (<n> tokens): <reason>` 或 `dense (<b>, <n>, <h>, <d>): <reason>`，只报告第一个不满足的条件：
+
+| 日志原因 | 处理方式 |
+| --- | --- |
+| `no compiled sol_attn kernel for this GPU` | 已安装的 `comfy-kitchen` 没有该 GPU 的 kernel。更新它，或在该机器上不使用此节点。 |
+| `<n> tokens < min_tokens <value>` | 提高分辨率或片段长度，或调低 `min_tokens`（默认 **12288**）。 |
+| `sigma <x> outside the start/end window` | 放宽 `start_percent` 与 `end_percent`。 |
+| `block <i> in dense_blocks` | 从 `dense_blocks` 中移除该 block 序号。 |
+| `no H3 layout for this call` | 仅 `vsa` 会出现。改用 `sol-attn`。 |
+
+成功的调用输出 `sparse (<b>, <n>, <h>, <d>), sinks <k>/<q>` 或 `sparse producer path: <n> tokens, <mode>`。
+
+有三种情况即使打开 `verbose` 也不会输出日志：H3 路径上的激活值不是 bfloat16、`head_dim` 不是 **128**、缺少 rope 频率，都会静默退回稠密。
+
+`vsa` 绑定在 FastH3 检查点上。它要读取只有该权重才有的 `to_gate_compress` 层提供的粗粒度分支，所以在其他 H3 检查点上节点会输出 `VSA: the model has no to_gate_compress layers; running the fine stage without the coarse branch`，只跑细粒度阶段。该警告不受 `verbose` 控制。
 
 ## 商业许可
 
