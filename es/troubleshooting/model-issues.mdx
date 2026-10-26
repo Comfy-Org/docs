@@ -1,0 +1,153 @@
+---
+title: "Cómo solucionar problemas de modelos en ComfyUI"
+description: "Soluciona problemas de modelos: arquitecturas incompatibles, modelos faltantes y errores de carga"
+icon: "cube"
+sidebarTitle: "Problemas de modelos"
+translationSourceHash: 719b9600
+translationFrom: troubleshooting/model-issues.mdx
+translationBlockHashes:
+  "Missing Models Error": ec98bd75
+  "Model Loading Errors": dd723562
+  "Model Performance Issues": f8467439
+---
+
+## Desajuste de arquitectura del modelo
+
+**Síntomas:** errores de dimensión de tensores durante la generación, especialmente en la etapa de decodificación del VAE
+
+**Mensajes de error comunes:**
+- `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [4, 4, 1, 1], expected input[1, 16, 144, 112] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [320, 4, 3, 3], expected input[2, 16, 192, 128] to have 4 channels, but got 16 channels instead`
+- `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
+- `Tensors must have same number of dimensions: got 2 and 3`
+- `mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)`
+
+**Causa principal:** usar juntos modelos de familias de arquitectura distintas
+
+### Soluciones
+
+1. **Verifica la compatibilidad de la familia de modelos:**
+   - **Los modelos Flux** usan un espacio latente de 16 canales con conditioning de doble codificador de texto (CLIP-L + T5-XXL)
+   - **Los modelos SD1.5** usan un espacio latente de 4 canales con un único codificador de texto CLIP ViT-L/14
+   - **Los modelos SDXL** usan un espacio latente de 4 canales con doble codificador de texto (CLIP ViT-L/14 + OpenCLIP ViT-bigG/14)
+   - **Los modelos SD3** usan un espacio latente de 16 canales con conditioning de triple codificador de texto (CLIP-L + OpenCLIP bigG + T5-XXL)
+   - **Los modelos ControlNet** deben coincidir con la arquitectura del checkpoint base (los ControlNets de SD1.5 solo funcionan con checkpoints SD1.5, los ControlNets de SDXL solo funcionan con checkpoints SDXL, etc.)
+
+2. **Escenarios de desajuste habituales y sus soluciones:**
+
+   **Flux + VAE equivocado:**
+   ```
+   Problem: Using taesd or sdxl_vae.safetensors with Flux checkpoint
+   Fix: Use ae.safetensors (Flux VAE) from Hugging Face Flux releases
+   ```
+
+   **Flux + configuración de CLIP incorrecta:**
+   ```
+   Problem: Using t5xxl_fp8_e4m3fn.safetensors in both CLIP slots of DualClipLoader
+   Fix: Use t5xxl_fp8_e4m3fn.safetensors in one slot and clip_l.safetensors in the other
+   ```
+
+   **Desajuste de arquitectura de ControlNet:**
+   ```
+   Problem: SD1.5 ControlNet with SDXL checkpoint (or vice versa)
+   Error: "mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)"
+   Fix: Use ControlNet models designed for your checkpoint architecture
+        - SD1.5 checkpoints require SD1.5 ControlNets
+        - SDXL checkpoints require SDXL ControlNets
+   ```
+
+3. **Diagnóstico rápido:**
+   ```bash
+   # Check if error occurs at VAE decode stage
+   # Look for "expected input[X, Y, Z] to have N channels, but got M channels"
+   # Y value indicates channel count: 4 = SD models, 16 = Flux models
+   ```
+
+4. **Estrategias de prevención:**
+   - Mantén todos los modelos de un flujo de trabajo dentro de la misma familia de arquitectura
+   - Descarga paquetes de modelos completos de la misma fuente o versión (a menudo están todos en un mismo repositorio de Hugging Face)
+   - Cuando pruebes modelos nuevos, empieza con las plantillas de flujos de trabajo o con los ejemplos de flujos de trabajo oficiales de ComfyUI antes de personalizarlos
+
+## Error de modelos faltantes
+
+**Mensaje de error de ejemplo:**
+```
+Prompt execution failed
+Prompt outputs failed validation:
+CheckpointLoaderSimple:
+- Value not in list: ckpt_name: 'model-name.safetensors' not in []
+```
+
+### Soluciones
+
+1. **Descarga los modelos requeridos:**
+   - Usa ComfyUI Manager para descargar modelos de forma automática
+   - Verifica que los modelos estén en las subcarpetas correctas
+
+2. **Verifica las rutas de los modelos:**
+   - **Checkpoints**: `models/checkpoints/`
+   - **VAE**: `models/vae/`
+   - **LoRA**: `models/loras/`
+   - **ControlNet**: `models/controlnet/`
+   - **Embeddings**: `models/embeddings/`
+
+3. **Comparte modelos entre interfaces o usa rutas personalizadas:**
+   - Consulta [Compartir modelos de ComfyUI y configuración de directorios de modelos personalizados](/es/installation/comfyui_portable_windows#agregar-rutas-de-modelos-adicionales) para ver las instrucciones detalladas
+   - Edita el archivo `extra_model_paths.yaml` para agregar directorios de modelos personalizados
+
+### Configuración de rutas de búsqueda de modelos
+
+Si tienes modelos en ubicaciones personalizadas, consulta la guía detallada sobre [Compartir modelos de ComfyUI y configuración de directorios de modelos personalizados](/es/installation/comfyui_portable_windows#agregar-rutas-de-modelos-adicionales) para configurar ComfyUI para que los encuentre.
+
+## Errores al cargar modelos
+
+**Mensaje de error:** "Error while deserializing header"
+
+### Soluciones
+
+1. **Vuelve a descargar el modelo** - El archivo puede estar dañado durante la descarga
+2. **Verifica el espacio disponible en disco** - Asegúrate de tener suficiente espacio para cargar el modelo (los modelos pueden ocupar de 2 a 15 GB o más)
+3. **Revisa los permisos de archivo** - Asegúrate de que ComfyUI pueda leer los archivos del modelo
+4. **Prueba con un modelo diferente** - Verifica si el problema es específico del modelo o afecta a todo el sistema
+
+## Problemas de rendimiento de los modelos
+
+### Carga lenta de modelos
+
+**Síntomas:** Demoras prolongadas al cambiar de modelo o al iniciar la generación
+
+**Soluciones:**
+1. **Usa un almacenamiento más rápido:**
+   - Mueve los modelos a un SSD si usas un HDD
+   - Usa un SSD NVMe para obtener el mejor rendimiento
+
+2. **Ajusta la configuración de la caché:**
+   ```bash
+   python main.py --cache-classic       # Usa el almacenamiento en caché de estilo antiguo (agresivo). 
+   python main.py --cache-lru 10         # Aumenta el tamaño de la caché LRU
+   ```
+
+### Problemas de memoria con modelos grandes
+
+**"RuntimeError: CUDA out of memory":**
+
+```bash
+# Reducción progresiva de memoria
+python main.py --lowvram          # Primera opción
+python main.py --novram           # Si lowvram no es suficiente  
+python main.py --cpu              # Último recurso
+```
+
+**Optimización de memoria específica por modelo:**
+```bash
+# Fuerza una precisión más baja
+python main.py --force-fp16
+
+# Reduce el uso de memoria de la atención
+python main.py --use-pytorch-cross-attention
+```
+
+<Note>
+Para obtener más información sobre la configuración y la puesta en marcha de modelos, consulta la [documentación de modelos](/es/basic-concepts/models).
+</Note>

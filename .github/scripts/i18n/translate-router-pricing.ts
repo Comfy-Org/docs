@@ -10,7 +10,7 @@ import { computeSyncedContent } from "./sync-hash-i18n.ts";
 
 const ENGLISH_PATH = "development/comfy-router/pricing.mdx";
 const ENGLISH_FILE = join(REPO_ROOT, ENGLISH_PATH);
-const LOCALES = ["ja", "zh", "ko"] as const;
+const LOCALES = ["ja", "zh", "ko", "es"] as const;
 type PricingLocale = (typeof LOCALES)[number];
 
 /**

@@ -1,0 +1,1258 @@
+---
+title: "Usa Google Gemini con Comfy Router"
+description: "Fragmentos de Python, TypeScript y cURL para llamar a modelos de texto de Google Gemini por HTTP con Comfy Router; campos de solicitud y forma del resultado."
+sidebarTitle: "Google Gemini"
+translationSourceHash: 205c4660
+translationFrom: development/comfy-router/models/google/gemini/code.mdx
+translationBlockHashes:
+  "_intro": 10922fe1
+  "Schema": e3abcc1c
+  "Examples": 4bb73c12
+---
+{/* ARCHIVO GENERADO. Edita code.yaml en este directorio y ejecuta `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/es/comfy-router/model-code-footer.mdx";
+
+Referencia de API para Google Gemini. Google Gemini es la familia de modelos de texto multimodales de Google, que abarca desde el borrador rápido hasta el razonamiento profundo en los niveles Flash y Pro.
+
+**Entrada:** Texto, Imagen, Audio, Video · **Salida:** Texto
+
+## Inicio rápido
+
+Crea una clave en [tu espacio de trabajo de Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) y expórtala como `COMFY_API_KEY`. Los fragmentos de Python y TypeScript usan los SDK de Comfy (`pip install comfy-sdk` y `npm install @comfyorg/sdk`); el fragmento de cURL es la misma llamada por HTTP directo.
+
+Elige el modelo que quieres llamar. Los modelos comparten una misma forma de solicitud y respuesta, documentada una sola vez más abajo.
+
+<Tabs>
+  <Tab title="Gemini 3.1 Pro">
+**ID del modelo:** `vertexai/gemini-3.1-pro-preview`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-3.1-pro-preview",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-3.1-pro-preview", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Encolar y recoger más tarde">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) explica el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-3.1-pro-preview",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-3.1-pro-preview", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.1-pro-preview/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+  </Tab>
+  <Tab title="Gemini 3.5 Flash">
+**ID del modelo:** `vertexai/gemini-3.5-flash`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-3.5-flash",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-3.5-flash", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Encolar y recoger más tarde">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) explica el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-3.5-flash",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-3.5-flash", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3.5-flash/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+  </Tab>
+  <Tab title="Gemini 2.5 Pro">
+**ID del modelo:** `vertexai/gemini-2.5-pro`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-2.5-pro",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-2.5-pro", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Encolar y recoger más tarde">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) explica el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-2.5-pro",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-2.5-pro", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-pro/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+  </Tab>
+  <Tab title="Gemini 2.5 Flash">
+**ID del modelo:** `vertexai/gemini-2.5-flash`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Esperar el resultado">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# The SDK automatically creates an idempotency key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-2.5-flash",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// The SDK automatically creates an idempotency key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-2.5-flash", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Encolar y recoger más tarde">
+El mismo cuerpo, enviado a `POST https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash/requests`. Router responde `201` con un `request_id` en cuanto se admite la ejecución, y el resultado se recoge cuando está listo, desde este proceso o desde otro. [Entrega en cola](/es/development/comfy-router/queue) explica el estado, la cancelación y la recogida.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Reads COMFY_API_KEY from the environment.
+# Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-2.5-flash",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "Describe a single red maple leaf on a white background in one sentence.",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "maxOutputTokens": 256,
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # with the model ID, all another process needs
+
+        # Poll until the request completes, waiting the Retry-After the server names.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # The provider's own payload, the same value models.run() returns.
+        # A request that failed or was cancelled raises the typed Router error here.
+        result = await handle.get()
+
+    print("text:", result["candidates"][0]["content"]["parts"][0]["text"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type Result = { candidates: { content: { parts: { text: string }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-2.5-flash", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "Describe a single red maple leaf on a white background in one sentence.",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    maxOutputTokens: 256,
+  },
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("text:", result.data.candidates[0].content.parts[0].text);
+```
+
+```bash cURL
+# 1. Submit. Router answers 201 with request_id, status_url, response_url and cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Describe a single red maple leaf on a white background in one sentence.\"}]}], \"generationConfig\": {\"temperature\":0.7,\"maxOutputTokens\":256}}"
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the model's native output, 202 with the status body while it is still running.
+curl https://api.comfy.org/v2/models/vertexai/gemini-2.5-flash/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+  </Tab>
+</Tabs>
+
+## Esquema
+
+### Entrada
+
+<ParamField body="contents" type="object[]" required>
+  El contenido de la conversación actual con el modelo. Para consultas de un solo turno, es una única instancia. Para consultas de varios turnos, es un campo repetido que contiene el historial de la conversación y la última solicitud.
+</ParamField>
+
+<ParamField body="contents[].parts" type="object[]" required>
+   
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData" type="object">
+  Datos basados en URI.
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.fileUri" type="string">
+  URI
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.mimeType" type="string">
+  El tipo de medio del archivo especificado en los campos data o fileUri. Los valores aceptables incluyen los siguientes. Para gemini-2.0-flash-lite y gemini-2.0-flash, la longitud máxima de un archivo de audio es de 8.4 horas y la longitud máxima de un archivo de video (sin audio) es de una hora. Para obtener más información, consulta los requisitos de audio y video de Gemini. Los archivos de texto deben estar codificados en UTF-8. El contenido del archivo de texto cuenta para el límite de tokens. No hay límite en la resolución de las imágenes.
+
+  Posibles valores: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData" type="object">
+  Datos en línea en bytes sin procesar. Para gemini-2.0-flash-lite y gemini-2.0-flash, puedes especificar hasta 3000 imágenes usando inlineData.
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.data" type="string (byte)">
+  La codificación base64 de la imagen, el PDF o el video que se va a incluir en línea en el prompt. Cuando incluyes medios en línea, también debes especificar el tipo de medio (mimeType) de los datos. Límite de tamaño: 20MB
+
+  Formato: `byte`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.mimeType" type="string">
+  El tipo de medio del archivo especificado en los campos data o fileUri. Los valores aceptables incluyen los siguientes. Para gemini-2.0-flash-lite y gemini-2.0-flash, la longitud máxima de un archivo de audio es de 8.4 horas y la longitud máxima de un archivo de video (sin audio) es de una hora. Para obtener más información, consulta los requisitos de audio y video de Gemini. Los archivos de texto deben estar codificados en UTF-8. El contenido del archivo de texto cuenta para el límite de tokens. No hay límite en la resolución de las imágenes.
+
+  Posibles valores: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].mediaProcessing" type="string">
+  Cómo lee el modelo el video de esta parte. Configura "AGENTIC" para que el modelo decida qué segmentos inspeccionar, en lugar de usar un muestreo de fotogramas a tasa fija. Omítelo para usar el muestreo de tasa fija predeterminado. Compatible con gemini-3.7-flash y modelos Flash más recientes.
+</ParamField>
+
+<ParamField body="contents[].parts[].text" type="string">
+  Un prompt de texto o un fragmento de código.
+</ParamField>
+
+<ParamField body="contents[].parts[].thought" type="boolean">
+  Indica que esta parte es un paso de pensamiento o razonamiento del modelo.
+</ParamField>
+
+<ParamField body="contents[].role" type="string">
+  Posibles valores: `user`, `model`
+</ParamField>
+
+<ParamField body="generationConfig" type="object">
+  Configuraciones de muestreo, longitud y salida para la generación. Todos los campos son opcionales: los campos siguientes que declaran un `default` lo aplican cuando se omiten, y el resto recurre al comportamiento propio del modelo.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig" type="object">
+  Configuración para la generación de imágenes
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.aspectRatio" type="string">
+  Relación de aspecto de las imágenes generadas
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions" type="object">
+  Opcional. El formato de salida de las imágenes generadas.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.compressionQuality" type="integer">
+  Opcional. La calidad de compresión de la imagen de salida.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.mimeType" type="string">
+  Opcional. El formato de imagen con el que se debe guardar la salida, en las rutas de Vertex AI: las solicitudes atendidas con las credenciales propias de Comfy y las solicitudes BYOK autenticadas con una cuenta de servicio de GCP. Allí los valores aceptados son `image/png` y `image/jpeg`, que se comparan sin distinguir mayúsculas y se normalizan a minúsculas antes de reenviar la solicitud; cualquier otro valor se rechaza con un error 400 que nombra este campo. Si se omite, el valor predeterminado es `image/png`. La excepción es una solicitud BYOK autenticada con una clave API de Google AI Studio: ese upstream no tiene tal propiedad y rechaza toda la llamada si está presente, así que el campo se elimina de la solicitud en lugar de respetarse o rechazarse, y el formato de salida es el que elija AI Studio. En todas las rutas, lee el tipo de medio desde la parte de la respuesta que recibes (`inlineData.mimeType`, o `fileData.mimeType` cuando `uploadImagesToStorage` está configurado) en lugar de suponer el valor que enviaste.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageSize" type="string">
+  Opcional. Especifica el tamaño de las imágenes generadas. Los valores admitidos son 1K, 2K y 4K. Si no se especifica, el modelo usará el valor predeterminado 1K.
+</ParamField>
+
+<ParamField body="generationConfig.maxOutputTokens" type="integer">
+  Número máximo de tokens que se pueden generar en la respuesta. Un token equivale aproximadamente a 4 caracteres. 100 tokens corresponden a unas 60-80 palabras.
+
+  Rango: `16` a `65536`
+</ParamField>
+
+<ParamField body="generationConfig.responseModalities" type="`TEXT`, `IMAGE`[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.seed" type="integer">
+  Cuando la semilla se fija en un valor específico, el modelo hace su mejor esfuerzo por ofrecer la misma respuesta ante solicitudes repetidas. No se garantiza una salida determinista. Además, cambiar el modelo o las configuraciones de los parámetros, como la temperatura, puede provocar variaciones en la respuesta incluso cuando usas el mismo valor de semilla. De forma predeterminada, se usa un valor de semilla aleatorio. Disponible para los siguientes modelos:, gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-preview-04-1, gemini-2.5-pro-preview-05-0, gemini-2.0-flash-lite-00, gemini-2.0-flash-001
+</ParamField>
+
+<ParamField body="generationConfig.stopSequences" type="string[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.temperature" type="number" default="1">
+  La temperatura se usa para el muestreo durante la generación de la respuesta, que ocurre cuando se aplican topP y topK. La temperatura controla el grado de aleatoriedad en la selección de tokens. Las temperaturas más bajas son buenas para prompts que requieren una respuesta menos abierta o creativa, mientras que las temperaturas más altas pueden dar lugar a resultados más diversos o creativos. Una temperatura de 0 significa que siempre se seleccionan los tokens de mayor probabilidad. En este caso, las respuestas a un prompt dado son en su mayoría deterministas, pero todavía es posible una pequeña cantidad de variación. Si el modelo devuelve una respuesta demasiado genérica, demasiado corta, o da una respuesta de reserva, prueba a aumentar la temperatura
+
+  Rango: `0` a `2`
+
+  Formato: `float`
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig" type="object">
+  Opcional. Configuración para las funciones de pensamiento. El pensamiento es un proceso en el que el modelo descompone una tarea compleja en pasos más pequeños para generar una respuesta de mayor calidad.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.includeThoughts" type="boolean">
+  Opcional. Si es verdadero, el modelo incluirá sus pensamientos en la respuesta.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingBudget" type="integer">
+  Opcional. El presupuesto de tokens para el proceso de pensamiento del modelo. El modelo hará su mejor esfuerzo por mantenerse dentro de este presupuesto.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingLevel" type="string">
+  Opcional. El nivel de pensamiento del modelo.
+
+  Valores posibles: `THINKING_LEVEL_UNSPECIFIED`, `LOW`, `MEDIUM`, `HIGH`, `MINIMAL`
+</ParamField>
+
+<ParamField body="generationConfig.topK" type="integer" default="40">
+  Top-K cambia cómo el modelo selecciona los tokens para la salida. Un top-K de 1 significa que el siguiente token seleccionado es el más probable entre todos los tokens del vocabulario del modelo. Un top-K de 3 significa que el siguiente token se selecciona entre los 3 tokens más probables usando la temperatura.
+
+  Rango: `1` a `…`
+</ParamField>
+
+<ParamField body="generationConfig.topP" type="number" default="0.95">
+  Si se especifica, se usa el muestreo de núcleo (nucleus sampling).
+Top-P cambia cómo el modelo selecciona los tokens para la salida. Los tokens se seleccionan del más (ver top-K) al menos probable hasta que la suma de sus probabilidades iguale el valor de top-P. Por ejemplo, si los tokens A, B y C tienen una probabilidad de 0.3, 0.2 y 0.1 y el valor de top-P es 0.5, entonces el modelo seleccionará A o B como el siguiente token usando la temperatura y excluirá a C como candidato.
+Especifica un valor más bajo para respuestas menos aleatorias y un valor más alto para respuestas más aleatorias.
+
+  Rango: `0` a `1`
+
+  Formato: `float`
+</ParamField>
+
+<ParamField body="safetySettings" type="object[]">
+  Configuraciones por solicitud para bloquear contenido no seguro. Se aplican en GenerateContentResponse.candidates.
+</ParamField>
+
+<ParamField body="safetySettings[].category" type="string" required>
+  Valores posibles: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ParamField>
+
+<ParamField body="safetySettings[].threshold" type="string" required>
+  Valores posibles: `OFF`, `BLOCK_NONE`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_ONLY_HIGH`
+</ParamField>
+
+<ParamField body="systemInstruction" type="object">
+  Instrucciones para orientar al modelo hacia un mejor rendimiento. Por ejemplo, "Responde de la forma más concisa posible" o "No uses términos técnicos en tu respuesta". Las cadenas de texto cuentan para el límite de tokens. El campo role de systemInstruction se ignora y no afecta al rendimiento del modelo. Nota: Solo se debe usar texto en las partes y el contenido de cada parte debe ir en un párrafo aparte.
+</ParamField>
+
+<ParamField body="systemInstruction.parts" type="object[]" required>
+  Una lista de partes ordenadas que componen un solo mensaje. Las distintas partes pueden tener diferentes tipos MIME de IANA. Para conocer los límites de las entradas, como el número máximo de tokens o el número de imágenes, consulta las especificaciones del modelo en la página de modelos de Google.
+</ParamField>
+
+<ParamField body="systemInstruction.parts[].text" type="string">
+  Un prompt de texto o un fragmento de código.
+</ParamField>
+
+<ParamField body="systemInstruction.role" type="string">
+  La identidad de la entidad que crea el mensaje. Se admiten los siguientes valores: user: indica que el mensaje lo envía una persona real, normalmente un mensaje generado por el usuario. model: indica que el mensaje lo genera el modelo. El valor model se usa para insertar mensajes del modelo en la conversación durante conversaciones de varios turnos. En conversaciones que no son de varios turnos, este campo puede dejarse en blanco o sin definir.
+
+  Valores posibles: `user`, `model`
+</ParamField>
+
+<ParamField body="tools" type="object[]">
+  Un fragmento de código que permite al sistema interactuar con sistemas externos para realizar una acción, o un conjunto de acciones, fuera del conocimiento y el alcance del modelo. Consulta Llamada a funciones.
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations" type="object[]">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].description" type="string">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].name" type="string" required>
+   
+</ParamField><ParamField body="tools[].functionDeclarations[].parameters" type="object">
+  Esquema JSON de los parámetros de la función
+</ParamField>
+
+<ParamField body="uploadImagesToStorage" type="boolean">
+  Si es verdadero, las imágenes generadas se cargarán en el almacenamiento en la nube y se devolverán como URLs firmadas en lugar de datos base64 en línea. Las URLs expiran después de 24 horas.
+</ParamField>
+
+<ParamField body="videoMetadata" type="object">
+  Para entrada de video, el desplazamiento de inicio y fin del video en formato Duration. Por ejemplo, para especificar un clip de 10 segundos que inicia en 1:00, establece "startOffset": \{ "seconds": 60 } y "endOffset": \{ "seconds": 70 }. Los metadatos solo deben especificarse mientras los datos del video se presentan en inlineData o fileData.
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset" type="object">
+  Representa un desplazamiento de duración para posiciones de la línea de tiempo del video.
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.nanos" type="integer">
+  Fracciones de segundo con signo a resolución de nanosegundos. Los valores negativos de segundos con fracciones deben seguir teniendo valores de nanos no negativos.
+
+  Rango: `0` a `999999999`
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.seconds" type="integer">
+  Segundos con signo del intervalo de tiempo. Debe estar entre -315,576,000,000 y +315,576,000,000 inclusive.
+
+  Rango: `-315576000000` a `315576000000`
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset" type="object">
+  Representa un desplazamiento de duración para posiciones de la línea de tiempo del video.
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.nanos" type="integer">
+  Fracciones de segundo con signo a resolución de nanosegundos. Los valores negativos de segundos con fracciones deben seguir teniendo valores de nanos no negativos.
+
+  Rango: `0` a `999999999`
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.seconds" type="integer">
+  Segundos con signo del intervalo de tiempo. Debe estar entre -315,576,000,000 y +315,576,000,000 inclusive.
+
+  Rango: `-315576000000` a `315576000000`
+</ParamField>
+
+Generado a partir del esquema que Router publica en `GET /v2/models/vertexai/gemini-3.1-pro-preview/openapi.json`, el mismo documento contra el que valida una llamada antes de que la solicitud llegue al proveedor.
+
+### Salida
+
+<ResponseField name="candidates" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].authors" type="string[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].endIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].license" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].publicationDate" type="string (date)">
+  Formato: `date`
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].startIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].title" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].uri" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content" type="object">
+  El contenido de la conversación actual con el modelo. Para consultas de un solo turno, es una única instancia. Para consultas de varios turnos, es un campo repetido que contiene el historial de la conversación y la última solicitud.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts" type="object[]" required>
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData" type="object">
+  Datos basados en URI.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.fileUri" type="string">
+  URI
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.mimeType" type="string">
+  El tipo de medio del archivo especificado en los campos data o fileUri. Los valores aceptables incluyen los siguientes. Para gemini-2.0-flash-lite y gemini-2.0-flash, la duración máxima de un archivo de audio es de 8.4 horas y la duración máxima de un archivo de video (sin audio) es de una hora. Para obtener más información, consulta los requisitos de audio y video de Gemini. Los archivos de texto deben estar codificados en UTF-8. El contenido del archivo de texto cuenta para el límite de tokens. No hay límite en la resolución de las imágenes.
+
+  Valores posibles: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData" type="object">
+  Datos insertados en bytes sin procesar. Para gemini-2.0-flash-lite y gemini-2.0-flash, puedes especificar hasta 3000 imágenes usando inlineData.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.data" type="string (byte)">
+  La codificación base64 de la imagen, el PDF o el video que se incluye insertado en el prompt. Cuando incluyes medios insertados, también debes especificar el tipo de medio (mimeType) de los datos. Límite de tamaño: 20MB
+
+  Formato: `byte`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.mimeType" type="string">
+  El tipo de medio del archivo especificado en los campos data o fileUri. Los valores aceptables incluyen los siguientes. Para gemini-2.0-flash-lite y gemini-2.0-flash, la duración máxima de un archivo de audio es de 8.4 horas y la duración máxima de un archivo de video (sin audio) es de una hora. Para obtener más información, consulta los requisitos de audio y video de Gemini. Los archivos de texto deben estar codificados en UTF-8. El contenido del archivo de texto cuenta para el límite de tokens. No hay límite en la resolución de las imágenes.
+
+  Valores posibles: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].mediaProcessing" type="string">
+  Cómo lee el modelo el video de esta parte. Establece "AGENTIC" para que el modelo decida qué segmentos inspeccionar, en lugar del muestreo de fotogramas a tasa fija. Omite este campo para usar el muestreo a tasa fija predeterminado. Compatible con gemini-3.7-flash y modelos Flash más recientes.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].text" type="string">
+  Un prompt de texto o un fragmento de código.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].thought" type="boolean">
+  Indica que esta parte es un paso de pensamiento/razonamiento del modelo.
+</ResponseField>
+
+<ResponseField name="candidates[].content.role" type="string">
+  Valores posibles: `user`, `model`
+</ResponseField>
+
+<ResponseField name="candidates[].finishReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].category" type="string">
+  Valores posibles: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].probability" type="string">
+  La probabilidad de que el contenido infrinja la categoría de seguridad especificada
+
+  Valores posibles: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="createTime" type="string">
+  Marca de tiempo de cuándo se creó la respuesta.
+</ResponseField>
+
+<ResponseField name="modelVersion" type="string">
+  La versión del modelo usada para generar la respuesta.
+</ResponseField>
+
+<ResponseField name="promptFeedback" type="object">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReasonMessage" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].category" type="string">
+  Valores posibles: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].probability" type="string">
+  La probabilidad de que el contenido infrinja la categoría de seguridad especificada
+
+  Valores posibles: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="responseId" type="string">
+  Identificador único de la respuesta.
+</ResponseField>
+
+<ResponseField name="usageMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="usageMetadata.cachedContentTokenCount" type="integer">
+  Solo salida. Número de tokens en la parte almacenada en caché de la entrada (el contenido en caché).
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokenCount" type="integer">
+  Número de tokens en la respuesta o respuestas.
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails" type="object[]">
+  Desglose de los tokens de candidatos por modalidad.
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].modality" type="string">
+  Tipo de modalidad del contenido de entrada o salida.
+
+  Valores posibles: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].tokenCount" type="integer">
+  Número de tokens para la modalidad indicada.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokenCount" type="integer">
+  Número de tokens en la solicitud. Cuando cachedContent está establecido, este sigue siendo el tamaño total efectivo del prompt, lo que significa que incluye el número de tokens del contenido en caché.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails" type="object[]">
+  Desglose de los tokens del prompt por modalidad.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].modality" type="string">
+  Tipo de modalidad del contenido de entrada o salida.
+
+  Valores posibles: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].tokenCount" type="integer">
+  Número de tokens para la modalidad indicada.
+</ResponseField>
+
+<ResponseField name="usageMetadata.thoughtsTokenCount" type="integer">
+  Número de tokens presentes en la salida de pensamientos.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokenCount" type="integer">
+  Número de tokens presentes en el prompt o prompts de uso de herramientas.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails" type="object[]">
+  Desglose de los tokens del prompt de uso de herramientas por modalidad.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].modality" type="string">
+  Tipo de modalidad del contenido de entrada o salida.
+
+  Valores posibles: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].tokenCount" type="integer">
+  Número de tokens para la modalidad indicada.
+</ResponseField>
+
+<ResponseField name="usageMetadata.totalTokenCount" type="integer">
+  Número total de tokens (prompt + candidatos).
+</ResponseField>
+
+<ResponseField name="usageMetadata.trafficType" type="string">
+  Tipo de tráfico usado para la solicitud (p. ej., PROVISIONED_THROUGHPUT).
+</ResponseField>
+
+## Ejemplos
+
+### Entrada
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Describe a single red maple leaf on a white background in one sentence."
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.7,
+    "maxOutputTokens": 256
+  }
+}
+```
+
+### Salida
+
+```json
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "A single red maple leaf rests on a plain white background, its edges sharp and its color deep."
+          }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 18,
+    "candidatesTokenCount": 24
+  }
+}
+```
+
+<RouterCodeFooter />

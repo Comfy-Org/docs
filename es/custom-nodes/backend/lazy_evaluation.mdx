@@ -1,0 +1,148 @@
+---
+title: "Evaluación diferida"
+description: "Aprende a aplazar la evaluación de entradas en ComfyUI (v0.2.0+), optimizar la VRAM y usar lazy: True en tus nodos personalizados."
+translationSourceHash: e3b0c442
+translationFrom: custom-nodes/backend/lazy_evaluation.mdx
+translationBlockHashes:
+---
+
+## Evaluación diferida
+
+De forma predeterminada, todas las entradas `required` y `optional` se evalúan antes de que un nodo pueda ejecutarse. A veces, sin embargo, una
+entrada no se usará necesariamente y evaluarla supondría un procesamiento innecesario. Aquí tienes algunos ejemplos
+de nodos en los que la evaluación diferida puede resultar beneficiosa:
+1. Un nodo `ModelMergeSimple` en el que el ratio es `0.0` (en cuyo caso no es necesario cargar el primer modelo)
+o `1.0` (en cuyo caso no es necesario cargar el segundo modelo).
+2. Una interpolación entre dos imágenes en la que el ratio (o la máscara) es enteramente `0.0` o enteramente `1.0`.
+3. Un nodo Switch en el que una entrada determina cuál de las demás entradas se dejará pasar.
+
+<Tip>Hacer que una entrada sea diferida tiene muy poco coste. Si es algo que puedes hacer, por lo general deberías hacerlo.</Tip>
+
+### Crear entradas diferidas
+
+Hay dos pasos para convertir una entrada en una entrada "diferida". Son estos:
+
+1. Marca la entrada como diferida en el diccionario que devuelve `INPUT_TYPES`
+2. Define un método llamado `check_lazy_status` (nota: *no* es un método de clase) que se llamará antes de la evaluación para determinar si se necesitan más entradas.
+
+Para demostrarlo, crearemos un nodo "MixImages" que interpola entre dos imágenes según una máscara. Si toda la máscara es `0.0`, no necesitamos evaluar ninguna parte del árbol que conduce a la segunda imagen. Si toda la máscara es `1.0`, podemos omitir la evaluación de la primera imagen.
+
+#### Definir `INPUT_TYPES`
+
+Declarar que una entrada es diferida es tan simple como añadir un par clave-valor `lazy: True` al diccionario de opciones de la entrada.
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+En este ejemplo, `image1` e `image2` están marcadas como entradas diferidas, pero `mask` siempre se evaluará.
+
+#### Definir `check_lazy_status`
+
+Se llama a un método `check_lazy_status` si hay una o más entradas diferidas que todavía no están disponibles. Este método recibe los mismos argumentos que la función de ejecución estándar. Todas las entradas disponibles se pasan con sus valores finales, mientras que las entradas diferidas no disponibles tienen un valor de `None`.
+
+La responsabilidad de la función `check_lazy_status` es devolver una lista con los nombres de las entradas diferidas que se necesitan para continuar. Si todas las entradas diferidas están disponibles, la función debe devolver una lista vacía.
+
+Ten en cuenta que `check_lazy_status` puede llamarse varias veces. (Por ejemplo, tras evaluar una entrada diferida puedes descubrir que necesitas evaluar otra.)
+
+<Tip>Ten en cuenta que, como la función usa los valores reales de las entradas, *no* es un método de clase.</Tip>
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### Ejemplo completo
+
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # Not trying to handle different batch sizes here just to keep the demo simple
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        result = image1 * (1. - mask) + image2 * mask,
+        return (result[0],)
+```
+
+## Bloqueo de la ejecución
+
+Aunque la evaluación diferida es la forma recomendada de "desactivar" parte de un grafo, hay ocasiones en las que quieres desactivar un nodo `OUTPUT` que no implementa la evaluación diferida por sí mismo. Si es un nodo de salida que has desarrollado tú, simplemente deberías añadir la evaluación diferida de la siguiente manera:
+
+1. Añade una entrada `enabled` requerida (si es un nodo nuevo) u opcional (si te importa la compatibilidad hacia atrás) que tenga `True` por defecto
+2. Convierte todas las demás entradas en entradas `lazy`
+3. Evalúa las demás entradas solo si `enabled` es `True`
+
+Si no es un nodo que controles, puedes usar un `comfy_execution.graph.ExecutionBlocker`. Este objeto especial se puede devolver como salida desde cualquier conector. Cualquier nodo que reciba un `ExecutionBlocker` como entrada omitirá la ejecución y devolverá ese `ExecutionBlocker` en todas sus salidas.
+
+<Tip>**Deliberadamente no hay forma de impedir que un ExecutionBlocker se propague hacia delante.** Si crees que quieres esto, en realidad deberías usar la evaluación diferida.</Tip>
+
+### Uso
+
+Hay dos formas de construir y usar un `ExecutionBlocker`
+
+1. Pasa `None` al constructor para bloquear la ejecución de forma silenciosa. Esto es útil en los casos en los que bloquear la ejecución forma parte de una ejecución exitosa, como desactivar una salida.
+```python
+def silent_passthrough(self, passthrough, blocked):
+    if blocked:
+        return (ExecutionBlocker(None),)
+    else:
+        return (passthrough,)
+```
+
+2. Pasa una cadena al constructor para mostrar un mensaje de error cuando un nodo se bloquea por recibir el objeto. Esto puede ser útil si quieres mostrar un mensaje de error significativo cuando alguien usa una salida sin sentido, por ejemplo, la salida `VAE` al cargar un modelo que no contiene VAE.
+
+```python
+def load_checkpoint(self, ckpt_name):
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # This error is more useful than a "'NoneType' has no attribute" error
+        # in a later node
+        vae = ExecutionBlocker(f"No VAE contained in the loaded model {ckpt_name}")
+    return (model, clip, vae)
+```

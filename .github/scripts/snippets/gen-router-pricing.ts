@@ -329,24 +329,24 @@ function tokenPriceCell(rates: MetronomeRate[], direction: "input" | "output" | 
     ?? (direction === "cached" ? selected.find((rate) => rate.conditions === "Cached input tokens") : undefined)
     ?? (groups.size === 1 ? selected[0] : undefined);
   const primary = baseline ? formatRateAmount(baseline, currency, creditsPerUsd) : undefined;
-  const localeIndex = ["en", "ja", "zh", "ko"].indexOf(locale);
+  const localeIndex = ["en", "ja", "zh", "ko", "es"].indexOf(locale);
   const hasCachedWrite = direction === "cached" && selected.some((rate) =>
     /cache-write|^(?:5-minute|1-hour)/i.test(rate.conditions ?? ""));
   const label = (condition: string) => {
-    if (/^Cached input/.test(condition)) return hasCachedWrite ? ["Read", "読み取り", "读取", "읽기"][localeIndex] : "";
-    if (condition === "Input text tokens" || condition === "Output text tokens") return ["Text", "テキスト", "文本", "텍스트"][localeIndex];
+    if (/^Cached input/.test(condition)) return hasCachedWrite ? ["Read", "読み取り", "读取", "읽기", "Lectura"][localeIndex] : "";
+    if (condition === "Input text tokens" || condition === "Output text tokens") return ["Text", "テキスト", "文本", "텍스트", "Texto"][localeIndex];
     const modality = condition.match(/^(?:Input|Output|Cached input) (text|audio|image|video) tokens$/)?.[1];
     const labels: Record<string, string[]> = {
-      text: ["Text", "テキスト", "文本", "텍스트"],
-      audio: ["Audio", "音声", "音频", "오디오"],
-      image: ["Image", "画像", "图像", "이미지"],
-      video: ["Video", "動画", "视频", "동영상"],
+      text: ["Text", "テキスト", "文本", "텍스트", "Texto"],
+      audio: ["Audio", "音声", "音频", "오디오", "Audio"],
+      image: ["Image", "画像", "图像", "이미지", "Imagen"],
+      video: ["Video", "動画", "视频", "동영상", "Video"],
     };
     if (modality) return labels[modality][localeIndex];
-    if (condition.startsWith("5-minute")) return ["Write (5m)", "書き込み（5 分）", "写入（5 分钟）", "쓰기(5분)"][localeIndex];
-    if (condition.startsWith("1-hour")) return ["Write (1h)", "書き込み（1 時間）", "写入（1 小时）", "쓰기(1시간)"][localeIndex];
-    if (condition.startsWith("Cache-write")) return ["Write", "書き込み", "写入", "쓰기"][localeIndex];
-    if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론"][localeIndex];
+    if (condition.startsWith("5-minute")) return ["Write (5m)", "書き込み（5 分）", "写入（5 分钟）", "쓰기(5분)", "Escritura (5 min)"][localeIndex];
+    if (condition.startsWith("1-hour")) return ["Write (1h)", "書き込み（1 時間）", "写入（1 小时）", "쓰기(1시간)", "Escritura (1 h)"][localeIndex];
+    if (condition.startsWith("Cache-write")) return ["Write", "書き込み", "写入", "쓰기", "Escritura"][localeIndex];
+    if (condition === "Reasoning tokens") return ["Reasoning", "推論", "推理", "추론", "Razonamiento"][localeIndex];
     return formatOption(condition, locale);
   };
   const ordered = [...groups].sort(([a], [b]) => a === primary ? -1 : b === primary ? 1 : 0);
@@ -905,10 +905,10 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
       const switchxVideoRates = switchxRatesByUnit.get("per 30 output frames, rounded up");
       // Price-cell modality prefixes follow the page locale (EN keeps "Image"/"Video").
       const modalityLabels: Record<string, [string, string, string, string]> = {
-        Image: ["Image", "画像", "图像", "이미지"],
-        Video: ["Video", "動画", "视频", "동영상"],
+        Image: ["Image", "画像", "图像", "이미지", "Imagen"],
+        Video: ["Video", "動画", "视频", "동영상", "Video"],
       };
-      const modalityName = (kind: "Image" | "Video") => modalityLabels[kind][["en", "ja", "zh", "ko"].indexOf(locale)];
+      const modalityName = (kind: "Image" | "Video") => modalityLabels[kind][["en", "ja", "zh", "ko", "es"].indexOf(locale)];
       const switchxRoute = imageRoutes.find(({ model }) => model.id === "beeble/switchx");
       const switchxRateTable = switchxRoute && switchxImageRates && switchxVideoRates && switchxResolutions.length
         ? `| ${copy.model} | ${copy.modelId} | ${switchxResolutions.map((resolution) => rateHeader(`${resolution} `)).join(" | ")} |\n| --- | --- | ${switchxResolutions.map(() => "---:").join(" | ")} |\n| [${tableCell(displayTitle(switchxRoute.model))}](/${switchxRoute.model.page}) | \`${switchxRoute.model.id}\` | ${switchxResolutions.map((resolution) => `${modalityName("Image")}: ${switchxImageRates.get(resolution) ?? "-"}<br />${modalityName("Video")}: ${switchxVideoRates.get(resolution) ?? "-"}`).join(" | ")} |`
