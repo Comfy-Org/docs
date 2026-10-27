@@ -2,10 +2,10 @@
 title: "Guía de generación de video con MiniMax H3 en ComfyUI"
 description: "Usa MiniMax H3 de pesos abiertos en ComfyUI: flujos de texto a video, imagen a video y referencia a video con audio estéreo nativo y Sage Attention."
 sidebarTitle: "Descripción general"
-translationSourceHash: eb426452
+translationSourceHash: fa293eed
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": 94f54ee8
+  "_intro": 71cca49e
   "Key features": 8ca92280
   "Getting started": eed90954
   "Choosing the checkpoint precision": 4a53fdf9
@@ -13,6 +13,7 @@ translationBlockHashes:
   "Setting the output resolution": 1fda252d
   "Clip length": 2d495d82
   "Step count": 184c83d7
+  "Generating the soundtrack first": 7f97b544
   "Sampler and scheduler": 79c739c3
   "Speeding up generation with Sage Attention": 24cc9a70
   "Speeding up generation with sparse attention": 801c9acf
@@ -24,7 +25,7 @@ import UpdateReminder from "/snippets/es/tutorials/update-reminder.mdx";
 
 La documentación se reparte en seis páginas:
 
-- **Descripción general** (esta página): capacidades, checkpoints, índice de flujos de trabajo, resolución, duración del clip, pasos, sampler y aceleraciones
+- **Descripción general** (esta página): capacidades, checkpoints, índice de flujos de trabajo, resolución, duración del clip, pasos, audio primero, sampler y aceleraciones
 - **[Flujos de trabajo nativos](/es/tutorials/video/minimax/minimax-h3-native)**: T2V, I2V, R2V y técnicas con nodos nativos
 - **[Referencia multifotograma](/es/tutorials/video/minimax/minimax-h3-multiframe)**: fija fotogramas de referencia en la línea de tiempo
 - **[Fun ControlNet Union](/es/tutorials/video/minimax/minimax-h3-fun-controlnet)**: controla el video o haz relleno inteligente con una máscara
@@ -170,13 +171,23 @@ Orientación según el contenido:
 
 El audio converge más tarde que el video en el denoise conjunto. El habla y el timbre necesitan **12+** pasos; con **8** pasos el audio suele ser el eslabón débil.
 
+## Generar primero la banda sonora
+
+El audio y el video se generan en el mismo denoise, así que los schedules cortos y los LoRAs turbo dañan el audio antes que la imagen. Dos pasadas los separan: fija el audio en un lienzo pequeño y después condiciona el video con él.
+
+1. Haz una pasada de texto a video del clip a **32 × 32**, con turbo desactivado, **40–50** pasos y la misma duración que tendrá el plano final. Los fotogramas latentes de audio dependen de la duración del clip, no del tamaño del lienzo, así que la pasada produce una pista completa por un coste cercano al de un solo paso a resolución completa. Desconecta Resolution Selector e introduce el tamaño en los `width` y `height` que alimentaba; su **Megapixels** solo baja hasta **0.1**. De esta pasada solo se conserva el audio.
+2. Decodifícalo con `VAEDecodeAudio` y guárdalo con `SaveAudioAdvanced`.
+3. En el flujo R2V, añade `LoadAudio`, conéctalo a `ref_audio` y deja `audio_vae` conectado. Cita la pista como `<Audio 1>` e indica la relación: `fully_copy` conserva el audio de referencia y `reference` solo toma la voz, en cuyo caso el diálogo lo escribes tú (ver la [guía de prompts](/es/tutorials/video/minimax/minimax-h3-prompt-guide)). La pasada de video trabaja entonces con una voz y un ritmo ya fijados en lugar de inventar habla en 4 a 8 pasos.
+
+El tamaño del lienzo intercambia calidad de voz por tiempo. **32 × 32** es casi gratis, pero la voz puede adoptar un tono robótico. **256 × 256** acerca el timbre a un render a resolución completa. Por encima, la pasada cuesta tanto como el render al que alimenta, así que sube solo cuando la voz tenga que ser de calidad final. El habla y las letras suelen sobrevivir al lienzo pequeño; los efectos y la música ligados a la acción en pantalla no, así que genéralos en la pasada final.
+
 ## Sampler y scheduler
 
 Las plantillas usan **`res_multistep`** + **`simple`**. T2V/I2V/FastH3 los ocultan dentro del subgrafo; R2V, Multiframe y Fun ControlNet exponen `KSamplerSelect` y `BasicScheduler` en el lienzo.
 
 `res_multistep` es multistep de segundo orden (el primer paso es Euler). Dividir la programación entre dos samplers descarta el historial multistep: el primer paso del segundo sampler vuelve a ser de primer orden. Mantén una sola ejecución del sampler, o dale al segundo suficientes pasos para calentar.
 
-Los desplazamientos H3 predeterminados son `shift` **12** y `audio_shift` **3** según la definición del modelo (sin nodo adicional). Las plantillas FastH3 configuran **MiniMax H3 Sigma Shift** con `shift_video` **10**, `shift_audio` **3**. Un valor de shift de video incorrecto en versiones destiladas (p. ej., **3** en lugar de **10** en 8 pasos) puede mostrar artefactos de cuadrícula. Los finetunes personalizados pueden necesitar su propio par en **MiniMax H3 Sigma Shift** (consulta la tarjeta de modelo del archivo). [LoRA DMAD de 4 pasos](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) usa `shift` **12**, `audio_shift` **2**, **`lcm`** + **`simple`**.
+Los desplazamientos H3 predeterminados son `shift` **12** y `audio_shift` **3** según la definición del modelo (sin nodo adicional). Las plantillas FastH3 configuran **ModelSamplingMiniMaxH3** con `shift_video` **10**, `shift_audio` **3**. Un valor de shift de video incorrecto en versiones destiladas (p. ej., **3** en lugar de **10** en 8 pasos) puede mostrar artefactos de cuadrícula. Los finetunes personalizados pueden necesitar su propio par en **ModelSamplingMiniMaxH3** (consulta la tarjeta de modelo del archivo). [LoRA DMAD de 4 pasos](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) usa `shift` **12**, `audio_shift` **2**, **`lcm`** + **`simple`**.
 
 ## Acelerar la generación con Sage Attention
 
@@ -196,11 +207,11 @@ La deformación al final del clip o el texto distorsionado en pantalla con Sage 
 - Las plantillas usan checkpoints **`int8_convrot`**. **Comfy Kitchen no les da soporte** ([problema #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)). Usa la atención predeterminada o cambia `UNETLoader` a **`pruned_bf16`** y luego cambia el backend.
 - En checkpoints **bf16**, la **atención de Comfy Kitchen** (rotación de canales antes de cuantizar) elimina los artefactos a una velocidad similar.
 
-Añade **Backend de atención del modelo** (`comfy kitchen attention`) en la ruta del modelo hacia `BasicGuider` (después de LoRA/turbo), o usa `--use-ck-attention` (0.32.0+). Requiere los kernels INT8 de `comfy-kitchen` en tu hardware.
+Añade **Model Attention Backend** (`comfy kitchen attention`) en la ruta del modelo hacia `BasicGuider` (después de LoRA/turbo), o usa `--use-ck-attention` (0.32.0+). Requiere los kernels INT8 de `comfy-kitchen` en tu hardware.
 
 ## Acelerar la generación con atención dispersa
 
-**Atención dispersa por bloques del modelo** (0.35.0+, experimental) reduce el costo de atención en clips largos. Para H3 base, usa `method` **`sol-attn`** (`sla`/`vsa` necesitan pesos correspondientes). Requiere CUDA + `sol_attn` de `comfy-kitchen`; de lo contrario, las capas permanecen densas.
+**Model Sparse Attention** (0.35.0+, experimental) reduce el costo de atención en clips largos. Para H3 base, usa `method` **`sol-attn`** (`sla`/`vsa` necesitan pesos correspondientes). Requiere CUDA + `sol_attn` de `comfy-kitchen`; de lo contrario, las capas permanecen densas.
 
 - Valores predeterminados: `start_percent` **0.2**, `end_percent` **1.0**. Un inicio más tardío (~**0.4**) y un final más temprano (~**0.9**) protegen los fotogramas de apertura y cierre.
 - Mantén **`sink_conditioning`** en **`exact_kv_and_rows`** en H3 (protege las filas empaquetadas de texto, audio y referencia).
