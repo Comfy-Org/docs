@@ -197,8 +197,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(692);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(661);
+    expect(snapshot.rates).toHaveLength(678);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(647);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -281,10 +281,10 @@ describe("public Router pricing", () => {
     expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
     expect(geminiRow[3]).toContain("Text: 527.5");
-    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
+    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1.5`")!;
     expect(gptImage).toHaveLength(4);
-    expect(gptImage[2]).toBe("Text: 1055<br />Image: 2110");
-    expect(gptImage[3]).toBe("Image: 8440");
+    expect(gptImage[2]).toBe("Text: 1055<br />Image: 1688");
+    expect(gptImage[3]).toBe("Text: 2110<br />Image: 6752");
   });
 
   test("orders LLM model versions numerically newest first", () => {
@@ -300,7 +300,7 @@ describe("public Router pricing", () => {
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-image-1.5`"))!;
     const imageIndex = (modelId: string) => imageTokens.rows.findIndex((row) => row[1] === `\`${modelId}\``);
-    expect(imageIndex("openai/gpt-image-1.5")).toBeLessThan(imageIndex("openai/gpt-image-1"));
+    expect(imageIndex("openai/gpt-image-2.5-flare")).toBeLessThan(imageIndex("openai/gpt-image-1.5"));
   });
 
   test("collapses request-priced image operations into columns", () => {
