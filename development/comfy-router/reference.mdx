@@ -211,7 +211,7 @@ The partner model's native JSON input. Without `model_provider` the request runs
 <ResponseField name="400" type="RouterErrorResponse">
   Invalid request. Check the error type and request body.
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -284,7 +284,7 @@ The partner model's native JSON input. Without `model_provider` the request runs
 
 **Price a model call before running it, without running it.**
 
-Returns a pre-flight estimate, in US dollars, of what running this body on this model will cost, priced from the same rate card the run is billed against. It is an estimate, not the final charge: the settled charge in your workspace's usage and billing records is what you pay. The body is validated against the model's input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model's schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`.
+Returns a pre-flight estimate, in US dollars, of what running this body on this model will cost, priced from the same rate card the run is billed against (a model billed the cost its vendor reports is estimated from the vendor's published price list instead). It is an estimate, not the final charge: the settled charge in your workspace's usage and billing records is what you pay. The body is validated against the model's input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model's schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`.
 
 **Parameters**
 
@@ -739,7 +739,7 @@ The poll endpoint. It answers with the request's current state and never with th
 <ResponseField name="200" type="RouterQueueStatusResponse">
   OK - the request's current queue state.
 
-  Body: [`RouterQueueStatusResponse`](#routerqueuestatusresponse) -- Headers: `X-Comfy-Request-Id`, `Retry-After`, `X-Comfy-Estimated-Duration-Seconds`, `X-Comfy-Estimated-Duration-P90-Seconds`, `X-Comfy-Estimate-Source`
+  Body: [`RouterQueueStatusResponse`](#routerqueuestatusresponse) -- Headers: `X-Comfy-Request-Id`, `Retry-After`, `X-Comfy-Credits-Used`, `X-Comfy-Estimated-Duration-Seconds`, `X-Comfy-Estimated-Duration-P90-Seconds`, `X-Comfy-Estimate-Source`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -816,6 +816,7 @@ Raised by Router itself, before or around the call to the model.
 | `queue_timeout` | A queued request waited past its queue timeout without ever being admitted. |
 | `request_not_found` | The `request_id` names no request of the caller's under this model. |
 | `queue_backlog_full` | The caller already has too many queued requests waiting to run, so this submit was refused. |
+| `result_expired` | The request existed and finished, but its result is no longer stored, so the collect has nothing to return. |
 
 ## Response headers
 
@@ -945,7 +946,7 @@ Raised by Router itself, before or around the call to the model.
 
 ## Pre-flight cost estimates
 
-`POST /v2/models/{provider}/{model}/estimate` prices a body without running it, and a queued submit (`POST /v2/models/{provider}/{model}/requests`) returns the same [`RouterCostEstimate`](#routercostestimate) as `estimate` on its `201`. Both are priced from the rate card Comfy bills the run against. Every figure either returns is an estimate, not the final charge: the settled charge in your workspace's usage and billing records is final. A run on your own provider key is not billed by Comfy (see below). While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit response omits `estimate`. The catalog still carries no prices.
+`POST /v2/models/{provider}/{model}/estimate` prices a body without running it, and a queued submit (`POST /v2/models/{provider}/{model}/requests`) returns the same [`RouterCostEstimate`](#routercostestimate) as `estimate` on its `201`. Both are priced from the rate card Comfy bills the run against, except a model billed the cost its vendor reports, which is `estimated` from the vendor's published price list. Every figure either returns is an estimate, not the final charge: the settled charge in your workspace's usage and billing records is final. A run on your own provider key is not billed by Comfy (see below). While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit response omits `estimate`. The catalog still carries no prices.
 
 Read `source` before any amount. A missing figure never means free.
 
@@ -972,8 +973,8 @@ Where the estimate fails closed:
 
 Limits of the estimate. A `200` figure is not a promise that the run is accepted, or that it is charged exactly that:
 
-- `/estimate` takes no `strict_mode` or `reject_unknown_fields`, so it checks the model's native contract only: a body a `strict_mode=true` run accepts in the alternate provider's own schema can get a `422` here, and an undeclared top-level field a `reject_unknown_fields=true` run would refuse is priced here.
-- `pricing_as_of` is when the rate card was fetched (or, when none was read, when the estimate was answered). It is not a price lock: the run is charged at the rates in force when it is rated.
+- `/estimate` takes no `strict_mode` or `reject_unknown_fields`, so it checks the model's native contract only: a body a `strict_mode=true` run accepts in the alternate provider's own schema can get a `422` here, and an undeclared top-level field a `reject_unknown_fields=true` run would refuse is priced here. An Anthropic Messages model is the exception: its schema allows undeclared fields, so a `reject_unknown_fields=true` run refuses none, and the estimate prices only the undeclared top-level fields `tools`, `tool_choice`, `temperature`, `top_p`, `top_k`, `stop_sequences`, `metadata`, `thinking` and an empty `mcp_servers`. Any other undeclared top-level field makes it answer `unknown` with `reason: not_quotable`.
+- `pricing_as_of` is when the rate card was fetched, or for an `estimated` quote taken from the vendor's published price list, the date that list was read (when neither was read, it is when the estimate was answered). It is not a price lock: the run is charged at the rates in force when it is rated.
 - `/estimate` quotes the leg `model_provider` names, or the native provider. It takes no `fallback_provider` or `strict_mode` parameter. A synchronous run whose fallback retry lands on another provider is charged at that provider's rate, which the estimate did not quote; `X-Comfy-Router-Fallback-Provider` on the run's response says it happened. A queued submit has no fallback, so its `estimate` quotes the leg that runs.
 - `/estimate` and a queued submit's `estimate` can price slightly different documents for the same body on a `model_provider` leg, or for a body that runs on a sibling operation. The submit's `estimate` is priced on the document the run sends.
 - `/estimate` always quotes the platform charge. A run on your own provider key is not billed by Comfy, but `/estimate` does not detect that and still returns a figure; only a queued submit answers `reason: byok`.
@@ -1010,6 +1011,24 @@ Read each model's fields from `GET /v2/models/{provider}/{model}/openapi.json`. 
 
 ## Schemas
 
+### RouterBilledWorkspace
+
+The wallet a refused call would have charged, on `RouterErrorResponse.billed_workspace`. Answers "which wallet is empty?" - it is not necessarily the workspace the caller's UI currently has selected, and a team member's personal credential names their personal wallet here even while a funded team is open. Present only alongside `denied_reason`.
+
+**Fields**
+
+<ResponseField name="id" type="string">
+  The Cloud workspace id. Absent on the legacy rail.
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `personal` or `team`. An open string: treat any other value as personal.
+</ResponseField>
+
+<ResponseField name="rail" type="string">
+  `legacy` when the call bills the caller's pre-workspace Metronome customer rather than a Cloud workspace; that customer has no workspace id. Absent for a Cloud workspace.
+</ResponseField>
+
 ### RouterChargesOnPolicyRejection
 
 Whether a content-policy refusal is charged for this model. Treat an unknown value as potentially charged.
@@ -1018,7 +1037,7 @@ Type: `string`
 
 ### RouterCostEstimate
 
-A pre-flight estimate of what this call will cost, in US dollars, priced before dispatch from the same rate card the run is billed against. It is not the final charge: the settled charge in your workspace's usage and billing records is what you pay. `X-Comfy-Credits-Used`, reported after the run, is a rounded post-hoc figure, not a receipt. `source` says how much to trust the number: `exact` carries `amount`; `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.
+A pre-flight estimate of what this call will cost, in US dollars, priced before dispatch from the same rate card the run is billed against (or, for a model billed the cost its vendor reports, estimated from the vendor's published price list). It is not the final charge: the settled charge in your workspace's usage and billing records is what you pay. `X-Comfy-Credits-Used`, reported after the run, is a rounded post-hoc figure, not a receipt. `source` says how much to trust the number: `exact` carries `amount`; `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.
 
 **Fields**
 
@@ -1077,7 +1096,7 @@ A pre-flight estimate of what this call will cost, in US dollars, priced before 
 </ResponseField>
 
 <ResponseField name="pricing_as_of" type="string" required>
-  When the rate card this quote was priced from was fetched. The estimate is not a price lock: the run is charged at the rates in force when it is rated, not at this instant. Whenever no rate card was read (`reason: pricing_unavailable`, `byok`, or a `not_quotable` call that cannot be priced from any card), this is when the quote was answered.
+  When the rate card this quote was priced from was fetched. The estimate is not a price lock: the run is charged at the rates in force when it is rated, not at this instant. An `estimated` quote taken from the vendor's published price list (a model billed the cost the vendor reports) carries the date that list was read instead; one whose billed quantity is predicted from that list and then priced from the rate card (a model billed the credits its vendor reports) carries the older of the two dates. Whenever no rate card was read (`reason: pricing_unavailable`, `byok`, or a `not_quotable` call that cannot be priced from any card), this is when the quote was answered.
 
   date-time
 </ResponseField>
@@ -1097,7 +1116,7 @@ Error body for authentication, access, model lookup, quota, and provider transpo
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at nineteen values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found` and `queue_backlog_full`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
+  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at twenty values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found`, `queue_backlog_full` and `result_expired`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
 
   Type: [`RouterErrorType`](#routererrortype)
 </ResponseField>
@@ -1108,6 +1127,20 @@ Error body for authentication, access, model lookup, quota, and provider transpo
 
 <ResponseField name="refusal_subject" type="string">
   Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals, and for the MiniMax Router's Nano Banana legs' Gemini refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.
+</ResponseField>
+
+<ResponseField name="denied_reason" type="string">
+  Billing's policy branch for a partner-node spend denial - `no_funds` when the billed wallet is empty, `unspecified` when the call was refused without a funds reading saying so. Present only when `error_type` is `insufficient_credits` and the deployment reports wallet facts; absent otherwise. A machine-readable code, not display text: show `detail`, branch on this.
+</ResponseField>
+
+<ResponseField name="billed_workspace" type="RouterBilledWorkspace">
+  The wallet a refused call would have charged, on `RouterErrorResponse.billed_workspace`. Answers "which wallet is empty?" - it is not necessarily the workspace the caller's UI currently has selected, and a team member's personal credential names their personal wallet here even while a funded team is open. Present only alongside `denied_reason`.
+
+  Type: [`RouterBilledWorkspace`](#routerbilledworkspace)
+</ResponseField>
+
+<ResponseField name="credential_kind" type="string">
+  How the refused request authenticated - `personal_api_key`, `team_api_key`, `personal_session` or `team_session`. Answers "which credential do I switch to bill the other wallet?". It is not a permission and grants nothing. Present only alongside `denied_reason`.
 </ResponseField>
 
 ### RouterErrorType
@@ -1123,7 +1156,7 @@ Billing behavior to check before invoking a model. It does not include prices or
 **Fields**
 
 <ResponseField name="charges_on_policy_rejection" type="RouterChargesOnPolicyRejection" required>
-  Whether a call this model refuses on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore.
+  Whether a call this model refuses on content-policy grounds is nevertheless charged to the caller. Providers differ, the difference is invisible at call time, and a user who sees an error and a charge for the same call has no way to have known - so it is stated per model, before the call, rather than left to per-provider folklore. When it is `yes`, a `content_policy_violation` error on the synchronous route can carry `X-Comfy-Credits-Used`: it does when the provider refused the model's generated output and Comfy recorded usage for that refused generation, and carries that amount. An input-side refusal and a same-key replay (`Idempotent-Replayed: true`) do not carry it; a refusal without the header is not reported, not proof it was free.
 
   Type: [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection)
 </ResponseField>
