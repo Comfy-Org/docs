@@ -2,17 +2,17 @@
 title: "Comfy Router API 参考"
 description: "每个 Comfy Router 端点、参数、响应体和错误分类，均由 Comfy API 契约生成。"
 sidebarTitle: "API 参考"
-translationSourceHash: 1b971d1c
+translationSourceHash: 7bdc66a2
 translationFrom: development/comfy-router/reference.mdx
 translationBlockHashes:
   "_intro": 3f6e5d23
-  "Endpoints": fbcaaf0e
-  "Error buckets": 36170340
+  "Endpoints": 222fd740
+  "Error buckets": 02a09cb4
   "Response headers": 403c8bf5
-  "Pre-flight cost estimates": 3ecabac6
+  "Pre-flight cost estimates": 862a49f8
   "Result assets": 65fc939b
   "Per-model input and output schemas": 61c6bde8
-  "Schemas": 77cfa4db
+  "Schemas": 0c65163b
 ---
 
 
@@ -233,7 +233,7 @@ Comfy API 密钥也可以作为 Bearer token 发送。当同时提供两个凭�
 <ResponseField name="400" type="RouterErrorResponse">
   请求无效。请检查错误类型和请求体。
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`、`X-Comfy-Request-Id`、`X-Comfy-Upstream-Status`、`X-Comfy-Upstream-Detail`、`X-Comfy-Refusal-Subject`、`Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`、`X-Comfy-Request-Id`、`X-Comfy-Upstream-Status`、`X-Comfy-Upstream-Detail`、`X-Comfy-Refusal-Subject`、`X-Comfy-Credits-Used`、`Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -839,6 +839,7 @@ Router 错误的机器可读类别，同时也会在 `X-Comfy-Error-Type` 响应
 | `queue_timeout` | 已排队的请求等待超过了其队列超时时间，始终未被准入。 |
 | `request_not_found` | `request_id` 未指向该调用方在此模型下的任何请求。 |
 | `queue_backlog_full` | 调用方已有过多等待运行的排队请求，因此此次提交被拒绝。 |
+| `result_expired` | 请求存在且已完成，但其结果已不再存储，因此收集时没有可返回的内容。 |
 
 ## 响应头
 
@@ -1033,6 +1034,24 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 
 ## Schemas
 
+### RouterBilledWorkspace
+
+被拒绝的调用本会扣费的电子钱包，位于 `RouterErrorResponse.billed_workspace`。它回答“哪个钱包余额不足？”，但未必是调用方界面当前所选的工作区：即使正在使用一个有余额的团队，团队成员的个人凭证在这里也会指向其个人钱包。仅在同时存在 `denied_reason` 时出现。
+
+**字段**
+
+<ResponseField name="id" type="string">
+  Cloud 工作区 id。在旧式计费通道上不存在。
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `personal` 或 `team`。这是一个开放字符串：其他任何值都按 personal 处理。
+</ResponseField>
+
+<ResponseField name="rail" type="string">
+  当该调用向调用方在工作区出现之前的 Metronome 客户计费、而不是向 Cloud 工作区计费时为 `legacy`；该客户没有工作区 id。Cloud 工作区不出现此字段。
+</ResponseField>
+
 ### RouterChargesOnPolicyRejection
 
 内容政策拒绝是否会对该模型计费。请将未知值视为可能计费。
@@ -1100,7 +1119,7 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 </ResponseField>
 
 <ResponseField name="pricing_as_of" type="string" required>
-  该报价定价所依据的费率卡片的获取时间。该预估不是价格锁定：运行按评级时生效的费率计费，而非此时间点的费率。每当未读取任何费率卡片时（`reason: pricing_unavailable`、`byok`，或无法从任何卡片定价的 `not_quotable` 调用），这里就是该报价被应答的时间。
+  该报价定价所依据的费率卡片的获取时间。该预估不是价格锁定：运行按评级时生效的费率计费，而非此时间点的费率。从提供商公布的价格清单取得的 `estimated` 报价（按提供商上报成本计费的模型）会带有该清单的读取日期；而计费数量由该清单预测、再按费率卡片定价的报价（按提供商上报积分计费的模型）则取两个日期中较早的一个。每当未读取任何费率卡片时（`reason: pricing_unavailable`、`byok`，或无法从任何卡片定价的 `not_quotable` 调用），这里就是该报价被应答的时间。
 
   date-time
 </ResponseField>
@@ -1120,7 +1139,7 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  对 Router 失败的粗粒度、机器可读的分类，同时镜像到 `X-Comfy-Error-Type` 响应头，以便调用方无需解析响应体即可分支判断。该集合目前是封闭的，共十九个值：六个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，以及传输层的 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found` 和 `queue_backlog_full`。“封闭”描述的是当前文档所记录的集合，并不是一个永远成立的界限：该集合预计还会增长，因此这里刻意使用普通字符串而不是 `enum`，客户端必须将无法识别的值视为 `internal_error`，而不是对上面的列表做穷举 switch，并在下次新增取值时出错。
+  对 Router 失败的粗粒度、机器可读的分类，同时镜像到 `X-Comfy-Error-Type` 响应头，以便调用方无需解析响应体即可分支判断。该集合目前是封闭的，共二十个值：六个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，以及传输层的 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found`、`queue_backlog_full` 和 `result_expired`。“封闭”描述的是当前文档所记录的集合，并不是一个永远成立的界限：该集合预计还会增长，因此这里刻意使用普通字符串而不是 `enum`，客户端必须将无法识别的值视为 `internal_error`，而不是对上面的列表做穷举 switch，并在下次新增取值时出错。
 
   类型：[`RouterErrorType`](#routererrortype)
 </ResponseField>
@@ -1131,6 +1150,20 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 
 <ResponseField name="refusal_subject" type="string">
   内容策略拒绝针对的是哪个输入或输出，采用 Router 层面的封闭词表：`input`、`output`、`input_text`、`input_image`、`input_video`、`input_audio`、`output_text`、`output_image`、`output_video`、`output_audio`。当提供商未指明具体模态时，仅用 `input` / `output` 这两个值来指明是哪一侧。仅当 `error_type` 为 `content_policy_violation` 且提供商以机器可读代码指明了被拒绝的对象时才存在；否则不存在。绝不会是提供商原文。目前已为 BytePlus、Runway、BFL、Gemini、Veo、Vertex、xAI 和 Wan（万相）的拒绝给出该字段，也为 MiniMax Router 的 Nano Banana 链路中的 Gemini 拒绝给出该字段；如果提供商的拒绝未说明针对哪一侧，该字段就会缺失。它与 `X-Comfy-Refusal-Subject` 响应头对应。
+</ResponseField>
+
+<ResponseField name="denied_reason" type="string">
+  计费侧针对合作伙伴节点支出拒绝的策略分支：`no_funds` 表示计费钱包为空，`unspecified` 表示该调用在没有资金读数的情形下被拒绝。仅当 `error_type` 为 `insufficient_credits` 且部署会上报钱包事实时出现；否则不出现。这是机器可读的代码而非展示文本：展示 `detail`，按此字段分支。
+</ResponseField>
+
+<ResponseField name="billed_workspace" type="RouterBilledWorkspace">
+  被拒绝的调用本会扣费的电子钱包，位于 `RouterErrorResponse.billed_workspace`。它回答“哪个钱包余额不足？”，但未必是调用方界面当前所选的工作区：即使正在使用一个有余额的团队，团队成员的个人凭证在这里也会指向其个人钱包。仅在同时存在 `denied_reason` 时出现。
+
+  类型：[`RouterBilledWorkspace`](#routerbilledworkspace)
+</ResponseField>
+
+<ResponseField name="credential_kind" type="string">
+  被拒绝的请求以何种方式完成认证：`personal_api_key`、`team_api_key`、`personal_session` 或 `team_session`。它回答“该换成哪份凭证来向另一个钱包计费？”。它不是权限，也不授予任何权限。仅在同时存在 `denied_reason` 时出现。
 </ResponseField>
 
 ### RouterErrorType
@@ -1146,7 +1179,7 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 **字段**
 
 <ResponseField name="charges_on_policy_rejection" type="RouterChargesOnPolicyRejection" required>
-  模型以内容政策为由拒绝的调用，是否仍向调用方计费。各提供商的做法不尽相同，而这种差异在调用时无法察觉，因此用户即使同时看到同一次调用的错误与扣费，也无从事先得知。所以这里在调用之前按模型明确说明，而不是留待各提供商各自口口相传。
+  模型以内容政策为由拒绝的调用，是否仍向调用方计费。各提供商的做法不尽相同，而这种差异在调用时无法察觉，因此用户即使同时看到同一次调用的错误与扣费，也无从事先得知。所以这里在调用之前按模型明确说明，而不是留待各提供商各自口口相传。当该值为 `yes` 时，同步路由上的 `content_policy_violation` 错误可能带有 `X-Comfy-Credits-Used`：当提供商拒绝了模型生成的输出，且 Comfy 记录了该次被拒生成的用量时会带上它，并携带该金额。输入侧的拒绝与同键重放（`Idempotent-Replayed: true`）不带此头；没有该头的拒绝不会上报，也不能证明是免费的。
 
   类型：[`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection)
 </ResponseField>

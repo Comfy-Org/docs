@@ -2,15 +2,16 @@
 title: "将 Comfy Router 与 LiteLLM 配合使用"
 sidebarTitle: "LiteLLM"
 description: "将 Comfy Router 置于 LiteLLM Proxy 之后作为直通端点，并从 x-litellm-response-cost 响应头中记录每次运行的确切美元成本，无需维护价格表。"
-translationSourceHash: e35cd883
+translationSourceHash: 8183ff58
 translationFrom: development/comfy-router/litellm.mdx
 translationBlockHashes:
   "_intro": 1ddb0d0a
   "Configure the pass-through": 380c3ae3
-  "How spend is recorded": f852c18c
+  "How spend is recorded": 699ed64b
   "Queued delivery": 46044c93
   "Notes": 50e3cf6b
 ---
+
 
 如果你已经使用 [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through) 跟踪支出，就可以把 Comfy Router 作为又一个透传端点添加进来。调用方继续使用自己的 LiteLLM 密钥，而你的 Comfy API 密钥则保留在代理上。
 
@@ -83,7 +84,7 @@ translationBlockHashes:
 
 ## 支出如何记录
 
-报告成本的运行会携带以下响应头：对于同步运行，它们出现在运行响应中；对于排队运行，它们出现在结果收集响应中：
+一次报告成本的运行会携带以下响应头：对于同步运行，它们出现在运行响应中；对于排队运行，它们出现在结果收集响应中：
 
 ```http
 X-Comfy-Credits-Used: 12.5
@@ -99,14 +100,14 @@ X-Litellm-Total-Tokens: 0
 
 有些运行不会携带 `x-litellm-response-cost`。它与 `X-Comfy-Credits-Used` 在相同的情况下缺失：
 
-- 使用你自己的提供商密钥计费、而不是计入你的 Comfy 积分的运行
+- 计入你自己的提供商密钥、而不是计入你的 Comfy 积分的运行
 - 尚未列入 Router 会报告每次运行积分价格的模型列表中的模型。该列表较为保守，有些提供商完全不在其中
 - 未进入 Comfy 计费环节的扣费
-- 错误响应
+- 错误响应。来自 `billing.charges_on_policy_rejection` 为 `yes` 的模型的同步 `content_policy_violation`，可以携带 `X-Comfy-Credits-Used`，其值为被拒绝那次生成的价格；它永远不会携带 `x-litellm-response-cost`，因为错误不是 LiteLLM 应当记账的结果
 
 当 Router 针对使用相同 `Idempotency-Key` 的重试（通过代理发送时为 `x-pass-Idempotency-Key`）重放已存储的结果时，该响应头也会缺失。该重试不会再次计费，因此这次重放不会第二次报告该次运行的确切成本。出于同样的原因，排队运行的结果收集中只有一次会携带该响应头，即该次运行的价格被记录后的第一次收集；再次收集同一结果仍会返回 `X-Comfy-Credits-Used`，但不会返回 `x-litellm-response-cost`。
 
-当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、使用你自己的提供商密钥计费的运行以及幂等重放，都会按你设置的估值记录，即使 Comfy 并未为此扣除你的积分。请将 `cost_per_request` 设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费，同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已被定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
+当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、计入你自己的提供商密钥的运行以及幂等重放，都会按你的估值记录。这些运行大多并未从你的积分中扣除费用，但并非全部如此：一次携带 `X-Comfy-Credits-Used` 的内容政策拒绝已经定过价，所以应从该响应头读取其成本；另外少数其他失败情况，例如 Router 无法将生成结果交还给你的情况，也可能被计费却不报告成本。请以工作区的用量记录为准核对。请将 `cost_per_request` 设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费，同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
 
 ## 队列投递
 

@@ -2,17 +2,17 @@
 title: "Comfy Router API リファレンス"
 description: "Comfy API 契約から生成済みの、Comfy Router のすべてのエンドポイント、パラメータ、レスポンスボディ、エラーバケット。"
 sidebarTitle: "API リファレンス"
-translationSourceHash: 1b971d1c
+translationSourceHash: 7bdc66a2
 translationFrom: development/comfy-router/reference.mdx
 translationBlockHashes:
   "_intro": 3f6e5d23
-  "Endpoints": fbcaaf0e
-  "Error buckets": 36170340
+  "Endpoints": 222fd740
+  "Error buckets": 02a09cb4
   "Response headers": 403c8bf5
-  "Pre-flight cost estimates": 3ecabac6
+  "Pre-flight cost estimates": 862a49f8
   "Result assets": 65fc939b
   "Per-model input and output schemas": 61c6bde8
-  "Schemas": 77cfa4db
+  "Schemas": 0c65163b
 ---
 
 
@@ -234,7 +234,7 @@ Comfy API キーは Bearer トークンとして送信することもできま�
 <ResponseField name="400" type="RouterErrorResponse">
   無効なリクエストです。エラータイプとリクエストボディを確認してください。
 
-  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `Idempotent-Replayed`
+  Body: [`RouterErrorResponse`](#routererrorresponse) -- Headers: `X-Comfy-Error-Type`, `X-Comfy-Request-Id`, `X-Comfy-Upstream-Status`, `X-Comfy-Upstream-Detail`, `X-Comfy-Refusal-Subject`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`
 </ResponseField>
 
 <ResponseField name="401" type="RouterErrorResponse">
@@ -840,6 +840,7 @@ Router が受け付けたものの、完了できなかったリクエストに�
 | `queue_timeout` | キュー中のリクエストが、一度も受け入れられることなくキュータイムアウトを超えて待機し続けました。 |
 | `request_not_found` | `request_id` が、このモデルにおける呼び出し元のどのリクエストも指していません。 |
 | `queue_backlog_full` | 呼び出し元が既に実行待ちのキュー中リクエストを抱えすぎているため、この送信は拒否されました。 |
+| `result_expired` | リクエストは存在し完了していましたが、その結果はもう保存されていないため、収集時に返せるものがありません。 |
 
 ## レスポンスヘッダー
 
@@ -1034,6 +1035,24 @@ Router が実行前にまだ価格を算出できないモデルは、[事前見
 
 ## スキーマ
 
+### RouterBilledWorkspace
+
+拒否された呼び出しで課金されるはずだったウォレットです（`RouterErrorResponse.billed_workspace`）。「どのウォレットが空なのか」に答えるものであり、呼び出し元の UI が現在選択しているワークスペースとは限りません。残高のあるチームを開いていても、チームメンバーの個人認証情報はここではその個人ウォレットを示します。`denied_reason` と同時にのみ存在します。
+
+**フィールド**
+
+<ResponseField name="id" type="string">
+  Cloud ワークスペースの id。レガシーレールでは存在しません。
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `personal` または `team`。オープンな文字列であり、それ以外の値は personal として扱ってください。
+</ResponseField>
+
+<ResponseField name="rail" type="string">
+  呼び出しが Cloud ワークスペースではなく、呼び出し元のワークスペース導入前の Metronome 顧客に課金される場合は `legacy`。その顧客にはワークスペース id がありません。Cloud ワークスペースでは存在しません。
+</ResponseField>
+
 ### RouterChargesOnPolicyRejection
 
 このモデルでコンテンツポリシーによる拒否が課金されるかどうか。不明な値は課金される可能性があるものとして扱ってください。
@@ -1101,7 +1120,7 @@ Router が実行前にまだ価格を算出できないモデルは、[事前見
 </ResponseField>
 
 <ResponseField name="pricing_as_of" type="string" required>
-  この見積もりの価格算出に使用したレートカードを取得した日時。実行は、評価された時点で有効な料率で課金され、この瞬間の料率で課金されるわけではありません。レートカードが読まれなかった場合（`reason: pricing_unavailable`、`byok`、またはどのカードからも価格を算出できない `not_quotable` の呼び出し）は、見積もりが返された日時を示します。
+  この見積もりの価格算出に使用したレートカードを取得した日時。実行は、評価された時点で有効な料率で課金され、この瞬間の料率で課金されるわけではありません。ベンダーが公開している価格リストから取得した `estimated` 見積もり（ベンダーが報告するコストで課金されるモデル）は、代わりにそのリストを読んだ日付を持ちます。課金数量をそのリストから予測し、それをレートカードで価格付けする見積もり（ベンダーが報告するクレジットで課金されるモデル）は、二つのうち古い方の日付を持ちます。レートカードが読まれなかった場合（`reason: pricing_unavailable`、`byok`、またはどのカードからも価格を算出できない `not_quotable` の呼び出し）は、見積もりが返された日時を示します。
 
   date-time
 </ResponseField>
@@ -1121,7 +1140,7 @@ Router が実行前にまだ価格を算出できないモデルは、[事前見
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Router の失敗を表す粗い機械可読なバケットで、`X-Comfy-Error-Type` レスポンスヘッダーにも反映されるため、呼び出し元はボディをパースせずに分岐できます。この集合は 19 個の値で閉じています。6 つのリクエストレベルのバケット `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits`、`model_not_found` に加えて、トランスポートレベルの `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found`、`queue_backlog_full` です。「閉じている」とは今日文書化されている集合を指すのであり、永久に保たれる上限ではありません。集合は増えることが想定されているため、これは意図的に `enum` ではなくプレーンな文字列になっています。したがってクライアントは、上記のリストを網羅的に switch して次の追加のたびに壊れるのではなく、認識できない値を `internal_error` として扱わなければなりません。
+  Router の失敗を表す粗い機械可読なバケットで、`X-Comfy-Error-Type` レスポンスヘッダーにも反映されるため、呼び出し元はボディをパースせずに分岐できます。この集合は 20 個の値で閉じています。6 つのリクエストレベルのバケット `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits`、`model_not_found` に加えて、トランスポートレベルの `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found`、`queue_backlog_full`、`result_expired` です。「閉じている」とは今日文書化されている集合を指すのであり、永久に保たれる上限ではありません。集合は増えることが想定されているため、これは意図的に `enum` ではなくプレーンな文字列になっています。したがってクライアントは、上記のリストを網羅的に switch して次の追加のたびに壊れるのではなく、認識できない値を `internal_error` として扱わなければなりません。
 
   型: [`RouterErrorType`](#routererrortype)
 </ResponseField>
@@ -1132,6 +1151,20 @@ Router が実行前にまだ価格を算出できないモデルは、[事前見
 
 <ResponseField name="refusal_subject" type="string">
   コンテンツポリシーによる拒否がどの入力または出力に関するものかを、Router レベルの閉じた語彙として示します。`input`、`output`、`input_text`、`input_image`、`input_video`、`input_audio`、`output_text`、`output_image`、`output_video`、`output_audio` です。プロバイダーがモダリティを特定しなかった場合、単なる `input` / `output` の値がどちら側かを示します。`error_type` が `content_policy_violation` で、プロバイダーが拒否された対象を機械可読なコードで示した場合にのみ存在し、それ以外では存在しません。プロバイダーのテキストが入ることはありません。現在は BytePlus、Runway、BFL、Gemini、Veo、Vertex、xAI、Wan の拒否に対して、また MiniMax Router の Nano Banana レッグにおける Gemini の拒否に対しても付与されます。拒否がどちら側に関するものかを示さないプロバイダーでは存在しません。`X-Comfy-Refusal-Subject` ヘッダーに反映されます。
+</ResponseField>
+
+<ResponseField name="denied_reason" type="string">
+  パートナーノードの支出拒否に対する課金側のポリシー分岐です。`no_funds` は課金対象ウォレットが空であること、`unspecified` は資金の読み取りを伴わずに拒否されたことを示します。`error_type` が `insufficient_credits` で、デプロイがウォレットの事実を報告する場合にのみ存在します。それ以外では存在しません。表示用テキストではなく機械可読なコードです。表示には `detail` を使い、分岐にはこの値を使います。
+</ResponseField>
+
+<ResponseField name="billed_workspace" type="RouterBilledWorkspace">
+  拒否された呼び出しで課金されるはずだったウォレットです（`RouterErrorResponse.billed_workspace`）。「どのウォレットが空なのか」に答えるものであり、呼び出し元の UI が現在選択しているワークスペースとは限りません。残高のあるチームを開いていても、チームメンバーの個人認証情報はここではその個人ウォレットを示します。`denied_reason` と同時にのみ存在します。
+
+  型: [`RouterBilledWorkspace`](#routerbilledworkspace)
+</ResponseField>
+
+<ResponseField name="credential_kind" type="string">
+  拒否されたリクエストがどの方法で認証されたかを示します。`personal_api_key`、`team_api_key`、`personal_session`、`team_session` のいずれかです。「もう一方のウォレットに課金するにはどの認証情報に切り替えればよいか」に答えるものです。権限ではなく、何も付与しません。`denied_reason` と同時にのみ存在します。
 </ResponseField>
 
 ### RouterErrorType
@@ -1147,7 +1180,7 @@ Router が実行前にまだ価格を算出できないモデルは、[事前見
 **フィールド**
 
 <ResponseField name="charges_on_policy_rejection" type="RouterChargesOnPolicyRejection" required>
-  コンテンツポリシーを理由にこのモデルが拒否した呼び出しでも、呼び出し元に課金されるかどうか。プロバイダーによって異なり、その違いは呼び出し時には見えず、同じ呼び出しでエラーと課金の両方を見たユーザーには知りようがありません。そのため、プロバイダーごとの伝聞に任せるのではなく、モデルごとに、呼び出しの前に明示されます。
+  コンテンツポリシーを理由にこのモデルが拒否した呼び出しでも、呼び出し元に課金されるかどうか。プロバイダーによって異なり、その違いは呼び出し時には見えず、同じ呼び出しでエラーと課金の両方を見たユーザーには知りようがありません。そのため、プロバイダーごとの伝聞に任せるのではなく、モデルごとに、呼び出しの前に明示されます。`yes` の場合、同期ルートの `content_policy_violation` エラーに `X-Comfy-Credits-Used` が付くことがあります。プロバイダーがモデルの生成出力を拒否し、Comfy がその拒否された生成の使用量を記録した場合に付き、その金額を持ちます。入力側の拒否と同じキーのリプレイ（`Idempotent-Replayed: true`）には付きません。ヘッダーのない拒否は報告されていないだけで、無料であった証明ではありません。
 
   型: [`RouterChargesOnPolicyRejection`](#routerchargesonpolicyrejection)
 </ResponseField>
