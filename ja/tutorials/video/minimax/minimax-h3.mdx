@@ -1,21 +1,20 @@
 ---
 title: "ComfyUI MiniMax H3 動画生成ガイド"
-description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプト作成のコツ、Sage Attention による高速化。"
+description: "ComfyUI でオープンウェイトの MiniMax H3 を使う方法: テキストから動画、画像から動画、参照から動画のワークフローとネイティブステレオオーディオ、プロンプトと生成高速化の説明。"
 sidebarTitle: "概要"
-translationSourceHash: e95e545e
+translationSourceHash: 30a63afc
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": 94f54ee8
+  "_intro": 8a33e195
   "Key features": 8ca92280
-  "Getting started": eed90954
-  "Choosing the checkpoint precision": 4a53fdf9
-  "Workflow index": bdc3b9f8
-  "Setting the output resolution": 1fda252d
-  "Clip length": 2d495d82
-  "Step count": d2a8a6f8
-  "Sampler and scheduler": 79c739c3
-  "Speeding up generation with Sage Attention": 24cc9a70
-  "Speeding up generation with sparse attention": 801c9acf
+  "Getting started": 53f9c962
+  "Choosing the checkpoint precision": 2957e139
+  "Choosing a template Workflow": 886725d7
+  "Setting the output resolution": 6cc512b2
+  "Setting the clip length": 83b2f201
+  "Setting the step count": 41c793d0
+  "Choosing the sampler and scheduler": 339817f9
+  "Speeding up generation with sparse attention": 0122309d
   "Commercial licensing": 201e2de5
 ---
 
@@ -70,7 +69,7 @@ VRAM に収まる最小ビルドを選びます。`UNETLoader` のファイル�
 | [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 非量子化 pruned |
 | [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | フル非量子化 |
 
-リンクは T2V/I2V の `fl2va` です。`ref2va` は同フォルダ・同サイズ。**Comfy Kitchen attention は `int8_convrot` checkpoint を実行できません**。そのバックエンドでは `bf16` を選んでください。
+リンクは T2V/I2V の `fl2va` です。`ref2va` は同フォルダ・同サイズ。
 
 VRAM が足りない場合は 1 段下げます。CPU offload は精度より遅いです。RTX 30 系では INT8 行列が FP16 の約 2×で FP8 経路がないため、同サイズでは INT8 が FP8 より速いことが多いです。
 
@@ -95,6 +94,9 @@ VRAM が足りない場合は 1 段下げます。CPU offload は精度より遅
   </Card>
   <Card title="Fun ControlNet Union" icon="person" href="/ja/tutorials/video/minimax/minimax-h3-fun-controlnet">
     Canny、Depth、HED、MLSD、またはPoseのコントロールビデオでH3を駆動するか、マスクを使用してビデオインペインティングを実行できます。
+  </Card>
+  <Card title="I2V 続き" icon="repeat" href="#chaining-clips">
+    前クリップの最終フレームを読み込み、次の区間を説明してクリップを延長します
   </Card>
 </CardGroup>
 
@@ -178,25 +180,13 @@ Turbo は schedule を短くするだけで 1 ステップは速くなりませ�
 
 既定 shift: **12**、`audio_shift`: **3**（モデル定義）。FastH3 テンプレート **ModelSamplingMiniMaxH3** は `shift_video` **10**、`shift_audio` **3**。蒸留ビルドで video shift 誤り（8 ステップで **10** ではなく **3**）はグリッドアーティファクト。[DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) は shift **12**、`audio_shift` **2**、**`lcm`** + **`simple`**。
 
-## Sage Attention で生成を高速化
+### INT8 アテンションによる品質劣化を避ける
 
-[Sage Attention](https://github.com/woct0rdho/SageAttention) で約 **2×** 加速、画質影響は小さいことが多い（任意インストール）:
+クリップ終盤のモーフや画面文字化けは、INT8 attention 量子化（後段 block のホットチャンネル）が原因のことが多いです。
 
-1. [releases](https://github.com/woct0rdho/SageAttention/releases) から PyTorch/CUDA 一致 wheel を `pip install`
-2. [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) の `Patch Sage Attention KJ`
-3. `UNETLoader` と `BasicGuider` の間、`sage_attention` を `auto`
-4. または `--use-sage-attention`
+**Comfy Kitchen attention** は任意の attention バックエンドで、読み込む UNET checkpoint とは独立です。attention の Q/K を量子化する前にチャンネル回転を行い、同等速度で INT8 精度を改善します。
 
-一部 H3 層は float16/bfloat16 外で PyTorch attention にフォールバック（コンソール警告は正常）。
-
-### INT8 アテンションによる品質劣化
-
-クリップ終盤のモーフや画面文字化けは INT8 attention 量子化が原因のことが多い。
-
-- テンプレートは **`int8_convrot`**。**Comfy Kitchen は非対応**（[issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)）。既定 attention か **`pruned_bf16`** に替えてからバックエンド変更。
-- **bf16** では **Comfy Kitchen attention**（量子化前チャンネル回転）が同程度速度でアーティファクト解消。
-
-`BasicGuider` へのモデル経路に **Model Attention Backend**（`comfy kitchen attention`）、または `--use-ck-attention`（0.32.0+）。ハードウェアで `comfy-kitchen` INT8 カーネルが必要。
+`BasicGuider` へのモデル経路（LoRA/turbo の後）に **Model Attention Backend**（`comfy kitchen attention`、実験的）、または `--use-ck-attention`（ComfyUI 0.32.0+）を追加します。ハードウェアで `comfy-kitchen` INT8 カーネルが必要です。ComfyUI **0.33.0+** は旧ビルドで Kitchen attention 使用時の初ステップ `quant_qk_per_thread_int8` 整列エラーを修正します。
 
 ## スパースアテンションによる生成の高速化
 

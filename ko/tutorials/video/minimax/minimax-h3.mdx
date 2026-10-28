@@ -1,21 +1,20 @@
 ---
 title: "ComfyUI MiniMax H3 비디오 생성 가이드"
-description: "ComfyUI에서 오픈 가중치 MiniMax H3를 사용하는 방법: 텍스트 기반, 이미지 기반, 레퍼런스 기반 비디오 워크플로와 네이티브 스테레오 오디오, 프롬프트 작성 팁, Sage Attention 가속화."
+description: "ComfyUI에서 오픈 가중치 MiniMax H3 사용법: 텍스트·이미지·레퍼런스 기반 비디오 워크플로, 네이티브 스테레오 오디오, 프롬프트 및 생성 가속 안내."
 sidebarTitle: "개요"
-translationSourceHash: e95e545e
+translationSourceHash: 30a63afc
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": 94f54ee8
+  "_intro": 8a33e195
   "Key features": 8ca92280
-  "Getting started": eed90954
-  "Choosing the checkpoint precision": 4a53fdf9
-  "Workflow index": bdc3b9f8
-  "Setting the output resolution": 1fda252d
-  "Clip length": 2d495d82
-  "Step count": d2a8a6f8
-  "Sampler and scheduler": 79c739c3
-  "Speeding up generation with Sage Attention": 24cc9a70
-  "Speeding up generation with sparse attention": 801c9acf
+  "Getting started": 53f9c962
+  "Choosing the checkpoint precision": 2957e139
+  "Choosing a template Workflow": 886725d7
+  "Setting the output resolution": 6cc512b2
+  "Setting the clip length": 83b2f201
+  "Setting the step count": 41c793d0
+  "Choosing the sampler and scheduler": 339817f9
+  "Speeding up generation with sparse attention": 0122309d
   "Commercial licensing": 201e2de5
 ---
 
@@ -70,7 +69,7 @@ VRAM에 맞는 최소 빌드 선택. `UNETLoader` 파일만 변경; 양자화는
 | [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 비양자화 pruned |
 | [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | 풀 비양자화 |
 
-링크는 T2V/I2V `fl2va`; `ref2va`는 같은 폴더·크기.**Comfy Kitchen attention은 `int8_convrot` checkpoint 실행 불가**; 해당 백엔드는 `bf16` 선택.
+링크는 T2V/I2V `fl2va`; `ref2va`는 같은 폴더·크기.
 
 VRAM 부족 시 한 단계 축소. CPU offload는 정밀도보다 느림. RTX 30 시리즈 INT8 행렬 약 2× FP16, FP8 경로 없어 동일 크기에서 INT8이 FP8보다 빠른 경우 많음.
 
@@ -95,6 +94,9 @@ VRAM 부족 시 한 단계 축소. CPU offload는 정밀도보다 느림. RTX 30
   </Card>
   <Card title="Fun ControlNet Union" icon="person" href="/ko/tutorials/video/minimax/minimax-h3-fun-controlnet">
     Canny, Depth, HED, MLSD 또는 Pose 제어 비디오로 H3를 구동하거나, 마스크로 비디오 인페인팅을 실행합니다.
+  </Card>
+  <Card title="I2V 이어가기" icon="repeat" href="#chaining-clips">
+    이전 클립의 마지막 프레임을 불러와 다음 구간을 설명해 클립을 이어갑니다
   </Card>
 </CardGroup>
 
@@ -178,25 +180,13 @@ Turbo는 schedule만 단축, 스텝당 시간 동일(로드 시 병합). 4스텝
 
 기본 shift **12**, `audio_shift` **3**(모델 정의). FastH3 **ModelSamplingMiniMaxH3** `shift_video` **10**, `shift_audio` **3**. 증류 빌드 video shift 오류(8스텝 **3** vs **10**) 격자 아티팩트.[DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) shift **12**, `audio_shift` **2**, **`lcm`** + **`simple`**.
 
-## Sage Attention으로 생성 가속
+### INT8 어텐션 화질 저하 방지
 
-[Sage Attention](https://github.com/woct0rdho/SageAttention) 약 **2×** 가속, 화질 영향 보통 작음(선택 설치):
+클립 말 morph·화면 글자 깨짐은 INT8 attention 양자화(후반 block의 hot channel) 때문인 경우가 많습니다.
 
-1. [releases](https://github.com/woct0rdho/SageAttention/releases)에서 PyTorch/CUDA wheel `pip install`
-2. [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) `Patch Sage Attention KJ`
-3. `UNETLoader`–`BasicGuider` 사이, `sage_attention` `auto`
-4. 또는 `--use-sage-attention`
+**Comfy Kitchen attention**은 선택적 attention 백엔드로, 로드하는 UNET checkpoint와 무관합니다. attention의 Q/K 양자화 전 채널 회전으로 비슷한 속도에서 INT8 정확도를 개선합니다.
 
-일부 H3 레이어는 float16/bfloat16 외 → PyTorch attention 폴백(콘솔 경고 정상).
-
-### INT8 어텐션 화질 저하
-
-클립 말 morph·화면 글자 깨짐은 INT8 attention 양자화 흔함.
-
-- 템플릿 **`int8_convrot`**. **Comfy Kitchen 미지원**([issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)). 기본 attention 또는 **`pruned_bf16`** 후 백엔드 변경.
-- **bf16**에서 **Comfy Kitchen attention**(양자화 전 채널 회전) 유사 속도로 아티팩트 제거.
-
-`BasicGuider` 모델 경로 **Model Attention Backend**(`comfy kitchen attention`) 또는 `--use-ck-attention`(0.32.0+). `comfy-kitchen` INT8 커널 필요.
+`BasicGuider` 모델 경로(LoRA/turbo 이후)에 **Model Attention Backend**(`comfy kitchen attention`, 실험) 또는 `--use-ck-attention`(ComfyUI 0.32.0+)을 추가합니다. `comfy-kitchen` INT8 커널이 필요합니다. ComfyUI **0.33.0+**는 구버전에서 Kitchen attention 첫 스텝 `quant_qk_per_thread_int8` 정렬 오류를 수정합니다.
 
 ## 스파스 어텐션으로 생성 가속
 

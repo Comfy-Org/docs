@@ -1,21 +1,20 @@
 ---
 title: "ComfyUI MiniMax H3 视频生成指南"
-description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流，支持原生立体声音频，附提示词编写技巧与 Sage Attention 加速方法。"
+description: "如何在 ComfyUI 中使用开放权重的 MiniMax H3：文生视频、图生视频、参考生视频工作流与原生立体声音频，附提示词与生成加速说明。"
 sidebarTitle: "概述"
-translationSourceHash: e95e545e
+translationSourceHash: 30a63afc
 translationFrom: tutorials/video/minimax/minimax-h3.mdx
 translationBlockHashes:
-  "_intro": 94f54ee8
+  "_intro": 8a33e195
   "Key features": 8ca92280
-  "Getting started": eed90954
-  "Choosing the checkpoint precision": 4a53fdf9
-  "Workflow index": bdc3b9f8
-  "Setting the output resolution": 1fda252d
-  "Clip length": 2d495d82
-  "Step count": d2a8a6f8
-  "Sampler and scheduler": 79c739c3
-  "Speeding up generation with Sage Attention": 24cc9a70
-  "Speeding up generation with sparse attention": 801c9acf
+  "Getting started": 53f9c962
+  "Choosing the checkpoint precision": 2957e139
+  "Choosing a template Workflow": 886725d7
+  "Setting the output resolution": 6cc512b2
+  "Setting the clip length": 83b2f201
+  "Setting the step count": 41c793d0
+  "Choosing the sampler and scheduler": 339817f9
+  "Speeding up generation with sparse attention": 0122309d
   "Commercial licensing": 201e2de5
 ---
 
@@ -70,7 +69,7 @@ H3 的开放权重可在本地运行。对本地生成的输出进行商业使�
 | [`pruned_bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors) | 40 GB | 未量化 pruned |
 | [`bf16`](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/diffusion_models/minimax_h3_fl2va_bf16.safetensors) | 66 GB | 完整未量化构建 |
 
-链接为 T2V/I2V 的 `fl2va`；`ref2va` 同目录同尺寸。**Comfy Kitchen attention 无法运行 `int8_convrot` checkpoint**，使用该后端时请选 `bf16`。
+链接为 T2V/I2V 的 `fl2va`；`ref2va` 同目录同尺寸。
 
 显存不足请降一档：CPU offload 比精度取舍更慢。RTX 30 系上 INT8 矩阵约 2× FP16，且无 FP8 路径，同尺寸下 INT8 常快于 FP8。
 
@@ -95,6 +94,9 @@ H3 的开放权重可在本地运行。对本地生成的输出进行商业使�
   </Card>
   <Card title="Fun ControlNet Union" icon="person" href="/zh/tutorials/video/minimax/minimax-h3-fun-controlnet">
     使用 Canny、Depth、HED、MLSD 或 Pose 控制视频驱动 H3，或使用遮罩执行视频 inpainting
+  </Card>
+  <Card title="I2V 续接" icon="repeat" href="#chaining-clips">
+    载入上一段末帧并描述下一段，延长视频
   </Card>
 </CardGroup>
 
@@ -178,25 +180,13 @@ Turbo 缩短的是 schedule，不是单步耗时（加载时合并）。4 步 Lo
 
 默认 shift：**12**，`audio_shift`：**3**（模型定义）。FastH3 模板 **ModelSamplingMiniMaxH3** 为 `shift_video` **10**、`shift_audio` **3**。蒸馏构建上错误的 video shift（如 8 步用 **3** 而非 **10**）可能出现网格伪影。自定义微调见模型卡。[DMAD 4-step LoRA](https://huggingface.co/ZhengmingYu/DMAD/blob/main/minimax_h3/dmad_minimax_h3_4step_full_critic_comfyui.safetensors) 用 shift **12**、`audio_shift` **2**，采样器 **`lcm`** + **`simple`**。
 
-## 使用 Sage Attention 加速生成
+### 避免 INT8 attention 导致的画质下降
 
-[Sage Attention](https://github.com/woct0rdho/SageAttention) 约可 **2×** 加速，画质影响通常较小（需自行安装）：
+片段末尾形变或屏幕文字损坏，常见原因为 INT8 attention 量化（后期 block 中的高激活通道）。
 
-1. 从 [releases](https://github.com/woct0rdho/SageAttention/releases) 安装匹配 PyTorch/CUDA 的 wheel
-2. 安装 [KJNodes](https://github.com/kijai/ComfyUI-KJNodes) 的 `Patch Sage Attention KJ`
-3. 插在 `UNETLoader` 与 `BasicGuider` 之间，`sage_attention` 设为 `auto`
-4. 或启动参数 `--use-sage-attention`
+**Comfy Kitchen attention** 是可选的 attention 后端，与加载的 UNET checkpoint 无关。它在 attention 中对 Q/K 量化前做通道旋转，以相近速度获得更好的 INT8 精度。
 
-部分 H3 层非 float16/bfloat16 会回退 PyTorch attention（控制台警告正常）。
-
-### 使用 INT8 attention 时的画质下降
-
-片段末尾形变或屏幕文字损坏，常见原因为 INT8 attention 量化。
-
-- 模板为 **`int8_convrot`**。**Comfy Kitchen 不支持**（[issue #15529](https://github.com/Comfy-Org/ComfyUI/issues/15529)）。用默认 attention，或换 **`pruned_bf16`** 后再改后端。
-- **bf16** 上 **Comfy Kitchen attention**（量化前通道旋转）可消除伪影，速度相近。
-
-在通向 `BasicGuider` 的模型链添加 **Model Attention Backend**（`comfy kitchen attention`），或 `--use-ck-attention`（0.32.0+）。需硬件支持 `comfy-kitchen` INT8 内核。
+在通向 `BasicGuider` 的模型链（LoRA/turbo 之后）添加 **Model Attention Backend**（`comfy kitchen attention`，实验性），或使用 `--use-ck-attention`（ComfyUI 0.32.0+）。需硬件支持 `comfy-kitchen` INT8 内核。ComfyUI **0.33.0+** 修复旧版本上 Kitchen attention 首步 `quant_qk_per_thread_int8` 对齐错误。
 
 ## 使用稀疏注意力加速生成
 
