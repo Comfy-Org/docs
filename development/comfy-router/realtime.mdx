@@ -63,6 +63,8 @@ async def main():
         await ws.send(json.dumps({"type": "response.create"}))
 
         async for message in ws:
+            if isinstance(message, bytes):
+                continue  # binary frames are msgpack; decode them if you need them
             event = json.loads(message)
             print(event["type"])
             if event["type"] == "response.done":
@@ -108,7 +110,8 @@ ws.on("open", () => {
   ws.send(JSON.stringify({ type: "response.create" }));
 });
 
-ws.on("message", (data) => {
+ws.on("message", (data, isBinary) => {
+  if (isBinary) return; // binary frames are msgpack; decode them if you need them
   const event = JSON.parse(data);
   console.log(event.type);
   if (event.type === "response.done") ws.close();
@@ -128,7 +131,9 @@ Router does not define its own event protocol. Server events reach you exactly a
 - [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) and xAI's [realtime event schema](https://docs.x.ai/voice-realtime.ws.json)
 - fal's [Grok Voice realtime model page](https://fal.ai/models/xai/grok-voice/realtime) and its [API page](https://fal.ai/models/xai/grok-voice/realtime/api)
 
-Send each event as one JSON text message, or as one msgpack binary message. Router checks each client event before forwarding it:
+Send each event as one JSON text message, as in the examples, or as one msgpack binary message. fal's client libraries handle this framing for you. Server messages can arrive as JSON text or as msgpack binary, and include fal's own `x-fal-message` messages alongside the model's events, so handle both kinds of frame.
+
+Router checks each client event before forwarding it:
 
 - **Event types:** `session.update`, `input_audio_buffer.append`, `input_audio_buffer.commit`, `input_audio_buffer.clear`, `conversation.item.create`, `conversation.item.delete`, `conversation.item.truncate`, `response.create`, `response.cancel`, and fal's `x-fal-session.configure`.
 - **Models:** a `model` in `session.update` must be `grok-voice-latest`, `grok-voice-3.0`, or `grok-voice-2.0`.
@@ -151,7 +156,7 @@ A session costs **$0.00083 per second** (about $0.05 per minute, or about 0.175 
 | Credits during a session | Router rechecks your balance every 15 seconds and ends the session when the balance can no longer cover the next second. |
 | Connection rate | Each upgrade attempt counts toward your [per-caller request rate](/development/comfy-router/limitations#requests-are-rate-limited-per-caller), shared with your other Router calls. |
 
-A session that reaches its time limit or runs out of credits is dropped without a close frame, so most clients report close code `1006`. Reconnect only after topping up, or start a new session if you need more time.
+When a session reaches its time limit or runs out of credits, the connection may close without a close frame (often surfaced as close code `1006`). Reconnect only after topping up, or start a new session if you need more time.
 
 ## Errors
 
@@ -189,7 +194,7 @@ Switch on `code`; `detail` is for people.
 | --- | --- | --- |
 | `1008` | A client event was refused (see [Events](#events)). | Fix the event. The session is over. |
 | `1012` | Router is restarting. | Reconnect. A new session starts and is billed from the new upgrade. |
-| `1006` (no close frame) | The session reached its time limit or ran out of credits. | Add credits or start a new session. |
+| `1006` (no close frame) | Often what clients report when the session reached its time limit or ran out of credits. Network drops look the same. | Add credits or start a new session. |
 
 Any other close comes from fal or xAI. See their documentation linked under [Events](#events).
 
