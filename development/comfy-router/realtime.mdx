@@ -29,14 +29,18 @@ Once the upgrade succeeds, send and receive the realtime events xAI documents fo
 <CodeGroup>
 
 ```python Python
-# pip install websockets
+# pip install websockets msgpack
 import asyncio
-import json
 import os
 
+import msgpack
 import websockets
 
 URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+
+
+async def send(ws, event):
+    await ws.send(msgpack.packb(event))
 
 
 async def main():
@@ -44,28 +48,28 @@ async def main():
         URL,
         additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
     ) as ws:
-        await ws.send(json.dumps({
+        await send(ws, {
             "type": "session.update",
             "session": {
                 "voice": "eve",
                 "instructions": "You are a helpful assistant.",
                 "turn_detection": {"type": "server_vad"},
             },
-        }))
-        await ws.send(json.dumps({
+        })
+        await send(ws, {
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
                 "role": "user",
                 "content": [{"type": "input_text", "text": "Hello!"}],
             },
-        }))
-        await ws.send(json.dumps({"type": "response.create"}))
+        })
+        await send(ws, {"type": "response.create"})
 
         async for message in ws:
-            if isinstance(message, bytes):
-                continue  # binary frames are msgpack; decode them if you need them
-            event = json.loads(message)
+            if isinstance(message, str):
+                continue  # fal's own x-fal-message frames
+            event = msgpack.unpackb(message)
             print(event["type"])
             if event["type"] == "response.done":
                 break
@@ -75,8 +79,9 @@ asyncio.run(main())
 ```
 
 ```javascript Node.js
-// npm install ws
+// npm install ws @msgpack/msgpack
 import WebSocket from "ws";
+import { encode, decode } from "@msgpack/msgpack";
 
 const ws = new WebSocket(
   "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
@@ -90,29 +95,31 @@ ws.on("unexpected-response", (req, res) => {
   res.on("end", () => console.error(res.statusCode, body));
 });
 
+const send = (event) => ws.send(encode(event));
+
 ws.on("open", () => {
-  ws.send(JSON.stringify({
+  send({
     type: "session.update",
     session: {
       voice: "eve",
       instructions: "You are a helpful assistant.",
       turn_detection: { type: "server_vad" },
     },
-  }));
-  ws.send(JSON.stringify({
+  });
+  send({
     type: "conversation.item.create",
     item: {
       type: "message",
       role: "user",
       content: [{ type: "input_text", text: "Hello!" }],
     },
-  }));
-  ws.send(JSON.stringify({ type: "response.create" }));
+  });
+  send({ type: "response.create" });
 });
 
 ws.on("message", (data, isBinary) => {
-  if (isBinary) return; // binary frames are msgpack; decode them if you need them
-  const event = JSON.parse(data);
+  if (!isBinary) return; // fal's own x-fal-message frames
+  const event = decode(data);
   console.log(event.type);
   if (event.type === "response.done") ws.close();
 });
@@ -131,7 +138,7 @@ Router does not define its own event protocol. Server events reach you exactly a
 - [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) and xAI's [realtime event schema](https://docs.x.ai/voice-realtime.ws.json)
 - fal's [Grok Voice realtime model page](https://fal.ai/models/xai/grok-voice/realtime) and its [API page](https://fal.ai/models/xai/grok-voice/realtime/api)
 
-Send each event as one JSON text message, as in the examples, or as one msgpack binary message. fal's client libraries handle this framing for you. Server messages can arrive as JSON text or as msgpack binary, and include fal's own `x-fal-message` messages alongside the model's events, so handle both kinds of frame.
+Send each client event as one msgpack binary message, as in the examples. This is the framing fal's realtime clients use, and the model's events come back the same way, as msgpack binary messages starting with `session.created`. fal also sends its own JSON text messages of type `x-fal-message` (timing information); you can skip them. Router's checks also accept a client event as one JSON text message, but use msgpack unless you have tested JSON with your client.
 
 Router checks each client event before forwarding it:
 
