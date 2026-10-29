@@ -2,16 +2,16 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: 9e8d385c
+translationSourceHash: f8176106
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
-  "MiniMax H3 Text to Video (T2V)": 8807c872
-  "MiniMax H3 Image to Video (I2V)": c59554b0
+  "_intro": dde651e5
+  "MiniMax H3 Text to Video (T2V)": 42ec8cfb
+  "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 85460bff
 ---
-本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力、调参与加速见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
+本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力与授权见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
 ## MiniMax H3 文生视频（T2V）
 
@@ -73,7 +73,7 @@ ComfyUI/
 3. **分辨率**：16:9 原生 **1344×768**（短边 768px）；对齐 **32** 倍数
 4. **时长**：24fps 下对齐 **17k+5** 帧网格
 5. **首尾帧**：在 `MiniMaxH3ImageToVideo` 的 `first_frame`/`last_frame` 接图即为 FL2VA
-6. **Turbo**：默认 **20** 步；`turbo_mode` 为 **8** 步 Lightning LoRA（更快，运动/音频略软）。可提高步数（如 **25**）改善运动
+6. **Turbo**：默认 **20** 步；`turbo_mode` 为 **8** 步 Lightning LoRA（更快，运动/音频略软）。可提高步数（如 **25**）改善运动。快速动作与镜头运动最先被短 turbo 调度抹平。要在有真实运动的片段上比较步数，别用静止镜头判断
 
 官方基础指南：[提示词指南](/zh/tutorials/video/minimax/minimax-h3-prompt-guide)。
 
@@ -144,7 +144,7 @@ ComfyUI/
 1. **关键帧**：`first_frame`/`last_frame` 可选，运动生成在两者之间
 2. **提示词**：镜头、运动、音频写在同一块
 3. **分辨率/时长**：规则同 T2V（原生目标 **1344×768**，**17k+5**）
-4. **Turbo**：`turbo_mode` 使用 `turbo_steps`（默认 **8**）与 `turbo_model_strength`（默认 **1.0**），替代 20 步
+4. **Turbo**：`turbo_mode` 使用 `turbo_steps`（默认 **8**）与 `turbo_model_strength`（默认 **1.0**），替代 20 步。短 turbo 调度下，快速动作与镜头运动最先变软，定下 turbo 前先看这两项
 
 `first_frame` 会被缩放到画布，不保持原比例，所以宽高比不一致的图会被拉伸；`last_frame` 则按中心裁剪。I2V 模板默认 **1:1**、**0.4** MP（**640×640**），请把宽高比设成与输入图一致，正式出片前再调高 Megapixels。
 
@@ -257,3 +257,13 @@ ComfyUI/
 [逐 token 遮罩](https://github.com/Comfy-Org/ComfyUI/pull/15375) 覆盖视频与音频 latent，可只重生成一部分。
 
 遮罩接采样器 `denoise_mask`：**0** 保留，**1** 重生成。视频对齐 2×2 latent 块，音频对齐整帧。用于修补、移除或扩展。
+
+### 先生成音轨
+
+音频与视频在同一次去噪中生成，短调度或 turbo LoRA 会连同画面一起把音轨变软。分两遍就能拆开：先在小画布上把音频定下来，再让视频以它为条件。
+
+1. **便宜的音频遍**：以 **32×32** 画布、关闭 `Boolean (Enable Lightning LoRA)`、**40–50** 步、按最终镜头需要的时长跑一遍文生视频。音频 latent 的帧数跟着片段长度走，与画布尺寸无关，所以这一遍能用远低于一次全分辨率渲染的代价产出完整长度的音轨。断开 Resolution Selector，把尺寸直接填进它对应的 `width` 和 `height`；选择器最小只到 **0.1** 百万像素。步数在子图里设为 **20** 的那个 `PrimitiveInt` 上（设为 **6** 的那个是 turbo 步数）。这一遍只保留音频。
+2. **存下音轨**：子图在内部解码音频，只把视频暴露出来，所以在子图内加一个 `SaveAudioAdvanced`，把 `VAEDecodeAudio` 接到它上面。
+3. **给第二遍做条件**：在 R2V 工作流中加入 `LoadAudio`，接到 `ref_audio`，并保持 `audio_vae` 连接。提示词里用 `<Audio 1>` 引用它，并写明关系：`reference` 只取音色、节奏与语气，不复制信号本身；`fully_copy` 把它当作完整的最终音轨；`partially_copy` 只复制一部分时间线或部分音轨层；`weak_reference` 只保留大类与氛围上的相似。第二遍于是从一个已经确定的音色与节奏起步，而不是从零编造语音。要用完全相同的文件，把 `LoadAudio` 接到 `CreateVideo`，不要依赖提示词。
+
+画布尺寸是拿音色换渲染时间。32×32 的一遍几乎免费，但这个尺寸下声音可能带上机械感。音色要在成片里撑得住，就把画布调大，代价是这个遍数变贵。语音与歌词通常能扛住小画布；跟着画面动作走的音效与配乐扛不住，这类内容留给第二遍生成，再用 `partially_copy` 与第一遍的音轨合并。

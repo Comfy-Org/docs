@@ -2,16 +2,16 @@
 title: "Flujos de trabajo de MiniMax H3 en ComfyUI: texto a video, imagen a video y referencia a video"
 description: "Ejemplos paso a paso de flujos nativos de MiniMax H3 en ComfyUI, con anclaje de guías y máscaras de ruido latente para un control más fino del video."
 sidebarTitle: "Flujos nativos"
-translationSourceHash: 9e8d385c
+translationSourceHash: f8176106
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
-  "MiniMax H3 Text to Video (T2V)": 8807c872
-  "MiniMax H3 Image to Video (I2V)": c59554b0
+  "_intro": dde651e5
+  "MiniMax H3 Text to Video (T2V)": 42ec8cfb
+  "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 85460bff
 ---
-Esta página cubre las tres plantillas base de MiniMax H3 y las técnicas avanzadas con nodos nativos. Para conocer las capacidades, el ajuste y las mejoras de velocidad, consulta la [descripción general de MiniMax H3](/es/tutorials/video/minimax/minimax-h3).
+Esta página cubre las tres plantillas base de MiniMax H3 y las técnicas avanzadas con nodos nativos. Para conocer las capacidades y el licenciamiento, consulta la [descripción general de MiniMax H3](/es/tutorials/video/minimax/minimax-h3).
 
 ## MiniMax H3 Texto a Video (T2V)
 
@@ -73,7 +73,7 @@ ComfyUI/
 3. **Resolución**: el 16:9 nativo es **1344×768** (768 px en el lado corto); redondea a múltiplos de **32**
 4. **Duración**: se ajusta a **17k+5** fotogramas a 24 fps
 5. **Primer y último fotograma**: conecta las imágenes a `first_frame` / `last_frame` en `MiniMaxH3ImageToVideo` para FL2VA
-6. **Turbo**: **20** pasos por defecto; activa `turbo_mode` para el Lightning LoRA de **8** pasos (más rápido, con movimiento y audio algo más suaves). Sube los pasos (por ejemplo, **25**) para mejorar la calidad del movimiento
+6. **Turbo**: **20** pasos por defecto; activa `turbo_mode` para el Lightning LoRA de **8** pasos (más rápido, con movimiento y audio algo más suaves). Sube los pasos (por ejemplo, **25**) para mejorar la calidad del movimiento. Las acciones rápidas y los movimientos de cámara son lo primero que suaviza una programación turbo corta. Compara recuentos de pasos en un clip con movimiento real, no en un plano estático
 
 Guía base oficial: [guía de prompts](/es/tutorials/video/minimax/minimax-h3-prompt-guide).
 
@@ -144,7 +144,7 @@ ComfyUI/
 1. **Fotogramas clave**: `first_frame` / `last_frame` opcionales; el movimiento se genera entre ellos
 2. **Prompt**: planos, movimiento y audio en un solo bloque
 3. **Resolución / duración**: las mismas reglas que en T2V (objetivo nativo **1344×768**, cuadrícula **17k+5**)
-4. **Turbo**: `turbo_mode` usa `turbo_steps` (valor predeterminado **8**) y `turbo_model_strength` (valor predeterminado **1.0**) en lugar de 20 pasos
+4. **Turbo**: `turbo_mode` usa `turbo_steps` (valor predeterminado **8**) y `turbo_model_strength` (valor predeterminado **1.0**) en lugar de 20 pasos. Con una programación turbo corta, las acciones rápidas y los movimientos de cámara se suavizan primero, así que revísalos antes de quedarte con turbo
 
 `first_frame` se redimensiona al lienzo sin conservar su relación de aspecto, así que una imagen con otra relación de aspecto sale estirada. `last_frame`, en cambio, se recorta desde el centro. La plantilla de I2V se abre en **1:1** y **0.4** MP (**640×640**), así que ajusta la relación de aspecto a tu imagen y sube los megapíxeles para el render final.
 
@@ -257,3 +257,13 @@ Consulta la plantilla [Multiframe Reference](/es/tutorials/video/minimax/minimax
 Las [máscaras de ruido por token](https://github.com/Comfy-Org/ComfyUI/pull/15375) en los latentes de video y audio te permiten regenerar parte de un clip.
 
 Conecta una máscara a `denoise_mask` del sampler: **0** = mantener, **1** = regenerar. Las máscaras de video se ajustan a la cuadrícula de parches latentes de 2×2; las de audio, a frames latentes completos. Úsalas para relleno inteligente, eliminación o extensión mientras mantienes el resto estable.
+
+### Generar primero la banda sonora
+
+El audio y el video se desruidizan juntos, así que una programación corta o un LoRA turbo suavizan la pista junto con la imagen. Dos pasadas los separan: fija el audio en un lienzo pequeño y luego condiciona el video con él.
+
+1. **Pasada de audio barata**: Ejecuta una pasada de texto a video a **32×32** con `Boolean (Enable Lightning LoRA)` desactivado, **40–50** pasos y la duración que necesita el plano final. Los frames latentes de audio siguen la longitud del clip, no el tamaño del lienzo, así que esta pasada genera una pista de longitud completa por mucho menos que un render a resolución completa. Desconecta el Resolution Selector y escribe el tamaño en sus destinos `width` y `height`; el selector llega como mínimo a **0.1** megapíxeles. Los pasos están en el `PrimitiveInt` ajustado a **20** dentro del subgrafo (el que está en **6** es el recuento de pasos turbo). De esta pasada solo se conserva el audio.
+2. **Guardar la pista**: El subgrafo decodifica el audio dentro y expone solo el video, así que añade un nodo `SaveAudioAdvanced` dentro del subgrafo y conecta `VAEDecodeAudio` a él.
+3. **Condicionar la segunda pasada**: En el flujo R2V añade `LoadAudio`, conéctalo a `ref_audio` y mantén `audio_vae` conectado. Cita la pista como `<Audio 1>` e indica la relación: `reference` conserva timbre, ritmo y dicción sin copiar la señal, `fully_copy` la convierte en la pista final completa, `partially_copy` conserva parte de la línea de tiempo o capas seleccionadas, y `weak_reference` solo mantiene una similitud amplia. La segunda pasada parte así de una voz y un ritmo ya resueltos en lugar de inventar el habla desde cero. Para usar el mismo archivo, conecta `LoadAudio` a `CreateVideo` en vez de confiar en el prompt.
+
+El tamaño del lienzo intercambia calidad de voz por tiempo de render. Una pasada a 32×32 es casi gratis, pero a ese tamaño la voz puede sonar metálica. Sube el lienzo cuando la voz tenga que sostenerse en el corte final, y cuenta con que la pasada cueste más. El habla y las letras suelen sobrevivir al lienzo pequeño. Los efectos de sonido y la música atados a la acción en pantalla no, así que genéralos en la segunda pasada y combínalos con `partially_copy`.
