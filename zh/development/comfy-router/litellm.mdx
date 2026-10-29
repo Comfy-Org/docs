@@ -2,12 +2,12 @@
 title: "将 Comfy Router 与 LiteLLM 配合使用"
 sidebarTitle: "LiteLLM"
 description: "将 Comfy Router 置于 LiteLLM Proxy 之后作为直通端点，并从 x-litellm-response-cost 响应头中记录每次运行的确切美元成本，无需维护价格表。"
-translationSourceHash: e35cd883
+translationSourceHash: 8183ff58
 translationFrom: development/comfy-router/litellm.mdx
 translationBlockHashes:
   "_intro": 1ddb0d0a
   "Configure the pass-through": 380c3ae3
-  "How spend is recorded": f852c18c
+  "How spend is recorded": 699ed64b
   "Queued delivery": 46044c93
   "Notes": 50e3cf6b
 ---
@@ -91,7 +91,7 @@ X-Litellm-Response-Cost: 0.0592417062
 X-Litellm-Total-Tokens: 0
 ```
 
-`X-Comfy-Credits-Used` 是该次运行以 Comfy 积分表示的价格，四舍五入到两位小数。`X-Litellm-Response-Cost` 是同一价格由未舍入的积分数量换算成的美元金额，因此用显示的积分数除以换算比率，结果可能与它在最后几位上有所不同。响应头名称不区分大小写，所以 LiteLLM 会将其读取为 `x-litellm-response-cost`。LiteLLM 会原样记录它，并用它替代你的 `cost_per_request`。`x-litellm-total-tokens` 始终为 `0`，因为媒体类运行不按 token 计量。
+`X-Comfy-Credits-Used` 是该次运行以 Comfy 积分表示的价格，四舍五入到两位小数。`X-Litellm-Response-Cost` 是同一价格由未舍入的积分数量换算成的美元金额，因此用显示的积分数除以换算比率得到的结果，在最后几位上可能与之不同。响应头名称不区分大小写，所以 LiteLLM 会将其读取为 `x-litellm-response-cost`。LiteLLM 会原样记录它，并用它替代你的 `cost_per_request`。`x-litellm-total-tokens` 始终为 `0`，因为媒体类运行不按 token 计量。
 
 与 `X-Comfy-Credits-Used` 一样，该响应头报告的是价格，而不是已结算的扣费。请以[工作区计费](https://platform.comfy.org)为准核对，而不是以 LiteLLM 的合计为准。
 
@@ -102,11 +102,11 @@ X-Litellm-Total-Tokens: 0
 - 使用你自己的提供商密钥计费、而不是计入你的 Comfy 积分的运行
 - 尚未列入 Router 会报告每次运行积分价格的模型列表中的模型。该列表较为保守，有些提供商完全不在其中
 - 未进入 Comfy 计费环节的扣费
-- 错误响应
+- 错误响应。对于 `billing.charges_on_policy_rejection` 为 `yes` 的模型，其同步 `content_policy_violation` 可能携带 `X-Comfy-Credits-Used`，其值为被拒绝那次生成的价格；它绝不会携带 `x-litellm-response-cost`，因为错误不是 LiteLLM 应记录的结果
 
-当 Router 针对使用相同 `Idempotency-Key` 的重试（通过代理发送时为 `x-pass-Idempotency-Key`）重放已存储的结果时，该响应头也会缺失。该重试不会再次计费，因此这次重放不会第二次报告该次运行的确切成本。出于同样的原因，排队运行的结果收集中只有一次会携带该响应头，即该次运行的价格被记录后的第一次收集；再次收集同一结果仍会返回 `X-Comfy-Credits-Used`，但不会返回 `x-litellm-response-cost`。
+当 Router 针对使用相同 `Idempotency-Key` 的重试（该键通过代理发送时名为 `x-pass-Idempotency-Key`）重放已存储的结果时，该响应头也会缺失。该重试不会再次计费，因此这次重放不会第二次报告该次运行的确切成本。出于同样的原因，排队运行的结果收集中只有一次会携带该响应头，即该次运行的价格被记录后的第一次收集；再次收集同一结果仍会返回 `X-Comfy-Credits-Used`，但不会返回 `x-litellm-response-cost`。
 
-当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、使用你自己的提供商密钥计费的运行以及幂等重放，都会按你设置的估值记录，即使 Comfy 并未为此扣除你的积分。请将 `cost_per_request` 设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费，同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已被定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
+当该响应头缺失时，LiteLLM 会回退到端点的 `cost_per_request`。这适用于上述所有情况。因此，错误响应、使用你自己的提供商密钥计费的运行以及幂等重放，都会按你的估值记录。其中大多数并未从你的积分中扣费，但并非全部：携带 `X-Comfy-Credits-Used` 的内容策略拒绝已被定价，因此应从该响应头读取其成本；另外，少数其他失败（例如 Router 无法将生成结果交还给你的情况）可能已计费，却没有报告成本。请以工作区的用量记录为准核对。请将 `cost_per_request` 设置为对典型运行的合理估值，而不是 `0`，这样不报告成本的运行就不会在你的支出报告中显示为免费；同时也要预期这些记录会使 LiteLLM 的合计高于你的 Comfy 账单。一次已被定价且确实没有任何花费的运行会报告 `x-litellm-response-cost: 0`，LiteLLM 会将其记录为零。
 
 ## 队列投递
 

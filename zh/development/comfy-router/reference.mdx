@@ -2,19 +2,18 @@
 title: "Comfy Router API 参考"
 description: "每个 Comfy Router 端点、参数、响应体和错误分类，均由 Comfy API 契约生成。"
 sidebarTitle: "API 参考"
-translationSourceHash: 1b971d1c
+translationSourceHash: 9a5e0219
 translationFrom: development/comfy-router/reference.mdx
 translationBlockHashes:
   "_intro": 3f6e5d23
-  "Endpoints": fbcaaf0e
-  "Error buckets": 36170340
+  "Endpoints": 222fd740
+  "Error buckets": 02a09cb4
   "Response headers": 403c8bf5
-  "Pre-flight cost estimates": 3ecabac6
-  "Result assets": 65fc939b
+  "Pre-flight cost estimates": 862a49f8
+  "Result assets": 18fe6dad
   "Per-model input and output schemas": 61c6bde8
-  "Schemas": 77cfa4db
+  "Schemas": 0c65163b
 ---
-
 
 
 
@@ -1021,6 +1020,8 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 
 其他模型返回提供商资产引用或内联字节。提供商 URL 遵循提供商的过期时间，这可能比上述有效期短得多，且 Router 契约未对此作出规定。
 
+**BytePlus 原始 URL（Seedance 2.x，需开启）。** 对于 Comfy 已在服务端开启该功能的工作区，Seedance 2.x 的结果在复制后的 URL 之外，还会在 `content.upstream_video_url` 和 `content.upstream_last_frame_url` 中携带 BytePlus 自身的 URL，并附带 `content.upstream_expires_at`。没有对应的请求参数，默认没有任何工作区被开启。这些 URL 在生成后 24 小时过期，BytePlus 清除后即不存在；在 Seedance 2.5 上，BytePlus 限制每个 URL 最多下载 100 次，而 Router 自己的副本会占用其中一次。每个 URL 都是对应对象的 bearer 凭证：任何持有它的人都能在过期前下载该资产。
+
 复制是按资产尽力而为的。如果某个复制失败，该条目会保留其提供商引用；响应可以同时包含 Comfy 和提供商 URL，且没有明确的按资产复制状态字段。生成仍会成功并计费。不要根据一个成功重新托管的资产来推断每个 URL 的有效期。
 
 结果是否由 Comfy 托管也决定了已完成的调用以后是否仍能从其 `Idempotency-Key` 记录中重放；上面的 `Idempotency-Key` 参数说明了无法重放时重试会得到怎样的回应。
@@ -1032,6 +1033,24 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 每个模型的字段可通过 `GET /v2/models/{provider}/{model}/openapi.json` 读取。该调用需要 API 密钥。对于每个具有已编写架构的模型，同一文档也在本站点上公开发布，无需密钥，地址为 `/router-schemas/{provider}/{model}.json`。该副本是上次文档更新时生成的快照，因此当两者不一致时，以端点为准。该操作的 `requestBody` 描述输入验证；在已编写的情况下，其 `200` 响应描述输出形状和媒体类型。当 `x-comfy-input-schema-authored` 为 false 时，Router 接受任意 JSON 对象，而不进行特定于模型的预验证。提供商依赖项仍然适用。输出架构描述的是结果；Router 不会依据它们验证提供商返回的载荷。未编写的输出可能使用 `*/*` 而非 `application/json`；在解码之前，请检查响应的内容类型。
 
 ## Schemas
+
+### RouterBilledWorkspace
+
+被拒绝的调用本会扣费的钱包，出现在 `RouterErrorResponse.billed_workspace` 中。它回答的是「哪个钱包余额不足」，并不一定等于调用方 UI 当前选中的工作区：团队成员使用个人凭证时，即使当前打开的是一个有余额的团队，这里也会指向其个人钱包。仅与 `denied_reason` 一同出现。
+
+**字段**
+
+<ResponseField name="id" type="string">
+  Cloud 工作区 ID。在旧计费通道上不存在。
+</ResponseField>
+
+<ResponseField name="type" type="string" required>
+  `personal` 或 `team`。开放式字符串：其他任何值都按 `personal` 处理。
+</ResponseField>
+
+<ResponseField name="rail" type="string">
+  当调用计费到调用方在工作区之前的 Metronome 客户而不是 Cloud 工作区时为 `legacy`；该客户没有工作区 ID。Cloud 工作区的情况下不存在。
+</ResponseField>
 
 ### RouterChargesOnPolicyRejection
 
@@ -1144,6 +1163,20 @@ Router 在运行之前尚无法定价的模型列在[没有预检预估的模型
 调用模型之前需要检查的计费行为。它不包含价格或用量信息。
 
 **字段**
+
+<ResponseField name="denied_reason" type="string">
+  合作伙伴节点支出被拒时，计费一侧的策略分支：`no_funds` 表示被计费的钱包余额不足，`unspecified` 表示调用被拒绝但资金读数没有说明原因。仅当 `error_type` 为 `insufficient_credits` 且部署上报钱包信息时存在；否则不存在。它是机器可读的代码，不是展示文本：展示 `detail`，按这个字段分支。
+</ResponseField>
+
+<ResponseField name="billed_workspace" type="RouterBilledWorkspace">
+  被拒绝的调用本会扣费的钱包，出现在 `RouterErrorResponse.billed_workspace` 上。它回答「哪个钱包余额不足」：这不一定等于调用方 UI 当前选中的工作区，团队成员使用个人凭证时，即使当前打开的是一个有余额的团队，这里也是其个人钱包。仅与 `denied_reason` 一同出现。
+
+  Type: [`RouterBilledWorkspace`](#routerbilledworkspace)
+</ResponseField>
+
+<ResponseField name="credential_kind" type="string">
+  被拒绝的请求是用哪种身份认证的：`personal_api_key`、`team_api_key`、`personal_session` 或 `team_session`。它回答「该换用哪种凭证来让另一个钱包计费」。它不是权限，也不授予任何东西。仅与 `denied_reason` 一同出现。
+</ResponseField>
 
 <ResponseField name="charges_on_policy_rejection" type="RouterChargesOnPolicyRejection" required>
   模型以内容政策为由拒绝的调用，是否仍向调用方计费。各提供商的做法不尽相同，而这种差异在调用时无法察觉，因此用户即使同时看到同一次调用的错误与扣费，也无从事先得知。所以这里在调用之前按模型明确说明，而不是留待各提供商各自口口相传。
