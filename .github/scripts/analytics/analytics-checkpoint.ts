@@ -201,7 +201,14 @@ export function unionRange(a: DateRange, b: DateRange): DateRange {
  */
 export function incrementalRangeFromManifest(manifest: ManifestSnapshot): DateRange | null {
   const ANALYTICS_DELAY_DAYS = 7;
-  const WINDOW_OVERLAP_DAYS = 2;
+  /**
+   * Assistant data has been observed arriving ~9 to 11 days late: a day queried
+   * at delay 7 returns 0 rows, and by the time it is released the window has
+   * already moved past it. With an overlap of 2 the window only ever covers
+   * ages 7 to 9 days, so those days were dropped permanently. 14 keeps a
+   * rolling 15-day window (ages 7 to 21) so late data is still picked up.
+   */
+  const WINDOW_OVERLAP_DAYS = 14;
 
   const dateTo = new Date();
   dateTo.setUTCDate(dateTo.getUTCDate() - ANALYTICS_DELAY_DAYS);

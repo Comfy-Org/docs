@@ -4,6 +4,12 @@ const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 /** Mintlify analytics: 100 requests/org/hour shared across all export endpoints. */
 export const MINTLIFY_ANALYTICS_HOURLY_LIMIT = 100;
 export const DEFAULT_PAGE_LIMIT = 200;
+/**
+ * `/searches` and `/feedback` reject `limit` above 100 with
+ * `400 Invalid query parameters` (`too_big`, maximum 100). Only `/assistant`
+ * accepts the 200 default, so those endpoints need their own cap.
+ */
+export const AGGREGATE_PAGE_LIMIT = 100;
 /** ~100 requests/hour org limit → 36s between pages when unset. */
 export const DEFAULT_PAGE_DELAY_MS = 36_000;
 const MAX_PAGINATION_PAGES = 10_000;
@@ -374,7 +380,7 @@ export async function fetchAllSearchQueries(
           const p = page as SearchPage;
           return { continue: !!p.nextCursor, cursor: p.nextCursor ?? undefined };
         },
-        { limit: DEFAULT_PAGE_LIMIT, ...options }
+        { ...options, limit: Math.min(options.limit ?? AGGREGATE_PAGE_LIMIT, AGGREGATE_PAGE_LIMIT) }
       );
       return { searches, totalSearches };
     } catch (error) {
@@ -411,7 +417,7 @@ export async function fetchAllFeedback(
       const p = page as FeedbackPage;
       return { continue: p.hasMore && !!p.nextCursor, cursor: p.nextCursor ?? undefined };
     },
-    { limit: DEFAULT_PAGE_LIMIT, ...options }
+    { ...options, limit: Math.min(options.limit ?? AGGREGATE_PAGE_LIMIT, AGGREGATE_PAGE_LIMIT) }
   );
 }
 
