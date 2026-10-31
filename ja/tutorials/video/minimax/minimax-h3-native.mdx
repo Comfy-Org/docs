@@ -2,17 +2,17 @@
 title: "ComfyUI MiniMax H3 テキストから動画・画像から動画・参照から動画のワークフロー"
 description: "ComfyUI における MiniMax H3 ネイティブワークフローの手順例。ガイドのアンカー固定や latent ノイズマスクで生成動画をより細かく制御できます。"
 sidebarTitle: "ネイティブワークフロー"
-translationSourceHash: 9e8d385c
+translationSourceHash: f8176106
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
-  "MiniMax H3 Text to Video (T2V)": 8807c872
-  "MiniMax H3 Image to Video (I2V)": c59554b0
+  "_intro": dde651e5
+  "MiniMax H3 Text to Video (T2V)": 42ec8cfb
+  "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 85460bff
 ---
 
-このページは 3 つの基本 MiniMax H3 テンプレートとネイティブノードの高度なテクニックを扱います。機能、チューニング、高速化は [MiniMax H3 概要](/ja/tutorials/video/minimax/minimax-h3) を参照してください。
+このページは 3 つの基本 MiniMax H3 テンプレートとネイティブノードの高度なテクニックを扱います。機能とライセンスは [MiniMax H3 概要](/ja/tutorials/video/minimax/minimax-h3) を参照してください。
 
 ## MiniMax H3 テキストからビデオ (T2V)
 
@@ -74,7 +74,7 @@ ComfyUI/
 3. **解像度**: 16:9 ネイティブ **1344×768**（短辺 768px）; **32** 倍数
 4. **長さ**: 24fps で **17k+5** グリッド
 5. **先頭/末尾フレーム**: `MiniMaxH3ImageToVideo` の `first_frame` / `last_frame` で FL2VA
-6. **Turbo**: 既定 **20** ステップ; `turbo_mode` で **8** ステップ Lightning LoRA（速い、モーション/音声ややソフト）。モーション品質は **25** などに増やす
+6. **Turbo**: 既定 **20** ステップ; `turbo_mode` で **8** ステップ Lightning LoRA（速い、モーション/音声ややソフト）。モーション品質は **25** などに増やす。速い動作とカメラワークは短い turbo スケジュールで最初に甘くなります。静止カットではなく実際に動くクリップでステップ数を比べてください
 
 公式ベースガイド: [プロンプトガイド](/ja/tutorials/video/minimax/minimax-h3-prompt-guide)。
 
@@ -145,7 +145,7 @@ ComfyUI/
 1. **キーフレーム**: `first_frame` / `last_frame` は任意; その間のモーションを生成
 2. **プロンプト**: ショット、モーション、音声を 1 ブロックに
 3. **解像度/長さ**: ルールは T2V と同じ（ネイティブ目標 **1344×768**、**17k+5**）
-4. **Turbo**: `turbo_mode` は `turbo_steps`（既定 **8**）と `turbo_model_strength`（既定 **1.0**）で 20 ステップの代わり
+4. **Turbo**: `turbo_mode` は `turbo_steps`（既定 **8**）と `turbo_model_strength`（既定 **1.0**）で 20 ステップの代わり。短い turbo スケジュールでは速い動作とカメラワークが最初に甘くなるため、turbo を決める前に確認してください
 
 `first_frame` は縦横比を保たずにキャンバスへ拡縮されるため、アスペクト比の違う画像は引き伸ばされます。`last_frame` は中央でクロップされます。I2V テンプレートは **1:1**、**0.4** MP（**640×640**）で開くので、入力画像に合わせてアスペクト比を設定し、最終出力の前に Megapixels を上げてください。
 
@@ -258,3 +258,13 @@ H3 ノードの `positive` と latent を `MiniMaxH3AddGuide` に接続:
 [トークン単位マスク](https://github.com/Comfy-Org/ComfyUI/pull/15375) で動画・音声 latent の一部を再生成。
 
 サンプラー `denoise_mask` にマスク: **0** 保持、**1** 再生成。動画は 2×2 latent パッチ、音声は latent フレーム単位。インペイント、削除、拡張に使用。
+
+### 音声を先に作る
+
+音声と動画は同じデノイズで生成されるため、短いスケジュールや turbo LoRA は映像と一緒に音声も甘くします。2 パスに分ければ切り離せます。まず小さいキャンバスで音声を固め、その音声を条件に映像を作ります。
+
+1. **安い音声パス**: **32×32** で `Boolean (Enable Lightning LoRA)` をオフ、**40–50** ステップ、最終カットに必要な長さでテキストから動画のパスを 1 回実行します。音声 latent のフレーム数はクリップ長に従い、キャンバスサイズには依存しないため、このパスはフル解像度のレンダーよりはるかに安いコストでフル尺の音声を作れます。Resolution Selector を切り離し、対応する `width` と `height` にサイズを直接入力します。セレクターの下限は **0.1** メガピクセルです。ステップ数はサブグラフ内で **20** に設定された `PrimitiveInt` にあります（**6** のほうは turbo のステップ数です）。このパスでは音声だけを使います。
+2. **トラックを保存**: サブグラフは内部で音声をデコードし、映像だけを出力します。サブグラフ内に `SaveAudioAdvanced` を追加し、`VAEDecodeAudio` を接続してください。
+3. **2 パス目を条件づける**: R2V ワークフローに `LoadAudio` を追加して `ref_audio` に接続し、`audio_vae` は接続したままにします。プロンプトでは `<Audio 1>` として参照し、関係を明記します。`reference` は信号をコピーせず音色・リズム・話し方だけを参照し、`fully_copy` は完全な最終トラックとして扱い、`partially_copy` はタイムラインの一部または一部の音声レイヤーだけをコピーし、`weak_reference` はカテゴリや雰囲気の広い類似だけを保ちます。2 パス目はゼロから音声を作るのではなく、確定した声とタイミングから始まります。まったく同じファイルを使う場合は、プロンプトに頼らず `LoadAudio` を `CreateVideo` に接続します。
+
+キャンバスサイズは音色とレンダー時間の交換になります。32×32 のパスはほぼ無料ですが、そのサイズでは声に機械的な響きが乗ることがあります。声を最終カットで保たせたいときはキャンバスを上げてください。そのぶんパスのコストも上がります。台詞や歌詞は小さいキャンバスでも概ね保ちます。画面の動きに合わせた効果音やスコアは保たないので、2 パス目で生成し、`partially_copy` で 1 パス目のトラックと結合します。

@@ -4,7 +4,7 @@ description: "Step-by-step MiniMax H3 native workflow examples in ComfyUI, inclu
 sidebarTitle: "Native workflows"
 ---
 
-This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities, tuning, and speedups, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
+This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities and licensing, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
 
 ## MiniMax H3 Text to Video (T2V)
 
@@ -66,7 +66,7 @@ ComfyUI/
 3. **Resolution**: Native 16:9 is **1344×768** (768px short edge); round to multiples of **32**
 4. **Duration**: Snaps to **17k+5** frames at 24fps
 5. **First/last frame**: Wire images to `first_frame` / `last_frame` on `MiniMaxH3ImageToVideo` for FL2VA
-6. **Turbo**: Default **20** steps; enable `turbo_mode` for **8**-step Lightning LoRA (faster, slightly softer motion/audio). Raise steps (e.g. **25**) for motion quality
+6. **Turbo**: Default **20** steps; enable `turbo_mode` for **8**-step Lightning LoRA (faster, slightly softer motion/audio). Raise steps (e.g. **25**) for motion quality. Fast action and camera moves are the first thing a short turbo schedule softens. Compare step counts on a clip with real movement, not on a static shot
 
 Official base guide: [prompt guide](/tutorials/video/minimax/minimax-h3-prompt-guide).
 
@@ -137,7 +137,7 @@ ComfyUI/
 1. **Keyframes**: Optional `first_frame` / `last_frame`; motion is generated between them
 2. **Prompt**: Shots, motion, and audio in one block
 3. **Resolution / duration**: the same rules as T2V (**1344×768** native target, **17k+5** grid)
-4. **Turbo**: `turbo_mode` uses `turbo_steps` (default **8**) and `turbo_model_strength` (default **1.0**) instead of 20 steps
+4. **Turbo**: `turbo_mode` uses `turbo_steps` (default **8**) and `turbo_model_strength` (default **1.0**) instead of 20 steps. Fast action and camera moves soften first under a short turbo schedule, so check them before committing to turbo
 
 `first_frame` is resized to the canvas without keeping its aspect ratio, so an off-aspect image comes out stretched. `last_frame` is center-cropped instead. The I2V template opens at **1:1** and **0.4** MP (**640×640**), so set the aspect ratio to your image and raise Megapixels for a final render.
 
@@ -250,3 +250,13 @@ See the [Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe) t
 [Per-token noise masks](https://github.com/Comfy-Org/ComfyUI/pull/15375) on video and audio latents let you regenerate part of a clip.
 
 Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. Video masks snap to the 2×2 latent patch grid; audio masks to whole latent frames. Use for inpainting, removal, or extension while holding the rest stable.
+
+### Generating the soundtrack first
+
+Audio and video are denoised together, so a short schedule or a turbo LoRA softens the track along with the picture. Two passes separate them: settle the audio on a small canvas, then condition the video on it.
+
+1. **Cheap audio pass**: Run a text-to-video pass at **32×32** with `Boolean (Enable Lightning LoRA)` off, **40–50** steps, and the duration the final shot needs. Audio latent frames follow clip length, not canvas size, so this pass produces a full-length track for far less than a full-resolution render. Unlink the Resolution Selector and type the size into its `width` and `height` targets; the selector bottoms out at **0.1** Megapixels. Steps live on the `PrimitiveInt` set to **20** inside the subgraph (the one set to **6** is the turbo step count). Only the audio is kept.
+2. **Save the track**: The subgraph decodes audio inside and exposes only the video, so add a `SaveAudioAdvanced` node inside the subgraph and connect `VAEDecodeAudio` to it.
+3. **Condition the second pass**: In the R2V workflow, add `LoadAudio`, wire it to `ref_audio`, and keep `audio_vae` connected. Cite the track as `<Audio 1>` and state the relationship: `reference` keeps the timbre, rhythm, and delivery without copying the signal, `fully_copy` makes it the complete final track, `partially_copy` keeps part of the timeline or selected layers, and `weak_reference` keeps only broad similarity. The second pass starts from a settled voice and timing instead of inventing speech from nothing. For the identical file, wire `LoadAudio` into `CreateVideo` instead of relying on the prompt.
+
+Canvas size trades voice quality for render time. A 32×32 pass is nearly free, but voices can pick up a robotic edge at that size. Raise the canvas when the voice has to hold up in the final cut, and expect the pass to cost more as you do. Speech and lyrics usually survive the small canvas. Sound effects and scoring tied to on-screen action do not, so render those in the second pass and let `partially_copy` combine them with the first track.
