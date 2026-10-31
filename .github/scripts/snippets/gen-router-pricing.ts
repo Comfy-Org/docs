@@ -1226,4 +1226,4 @@ if (import.meta.main) {
   }
 }
 
-export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
+export { checkPricingCoverage, compactOptions, servingProviders, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
