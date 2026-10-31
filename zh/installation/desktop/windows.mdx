@@ -3,7 +3,7 @@ title: "适用于 Windows 的 Comfy Desktop"
 description: "在 Windows 上安装 Comfy Desktop：系统要求、安装步骤、更新，以及如何在 Windows 10 及更高版本上彻底卸载并本地运行 ComfyUI。"
 icon: "windows"
 sidebarTitle: "Windows"
-translationSourceHash: 592ccfc9
+translationSourceHash: c0edf571
 translationFrom: installation/desktop/windows.mdx
 translationBlockHashes:
   "_intro": 27d36d8f
@@ -11,6 +11,7 @@ translationBlockHashes:
   "Installation": 955f804c
   "Updating Comfy Desktop": b0efe5cd
   "Uninstalling": 4b80edaa
+  "If ComfyUI Crashes with a Windows Error Code": cc96864d
 ---
 import MigrateTip from "/snippets/zh/desktop/migrate.mdx"
 import UpdateGuide from "/snippets/zh/desktop/update.mdx"
@@ -72,3 +73,45 @@ import UpdateGuide from "/snippets/zh/desktop/update.mdx"
 1. **删除应用数据文件夹**：`%APPDATA%\Comfy Desktop`
 2. **从应用内删除各个安装**，或手动删除 `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs`（如果安装创建于 `%USERPROFILE%\ComfyUI-Installs`，则删除该路径）。同时删除你配置过的自定义安装目录
 3. **删除共享模型库**：仅在不再需要这些文件时，删除 `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared`（或 `%USERPROFILE%\ComfyUI-Shared`）
+
+## ComfyUI 崩溃并报出 Windows 错误码时
+
+当 ComfyUI 进程因原生故障退出时，Windows 返回的退出码很大，却看不出原因。故障出现在哪里，Comfy Desktop 就在哪里解读这个十进制与十六进制的组合：
+
+- **启动过程中**：启动失败并显示 `Process exited with code 3221225477 / 0xC0000005 (memory access violation ...)`，后面跟着 ComfyUI 输出的最后几行。
+- **ComfyUI 已经启动之后**：实例窗口不会关闭，显示 **ComfyUI 意外退出** 以及 `exit code 3221225477 / 0xC0000005`、错误输出的末尾内容，以及 **重启 ComfyUI** 和 **返回** 两个操作。这次崩溃只影响这一个实例。
+
+两个数字是同一个值：十进制的 3221225477 就是 0xC0000005（STATUS_ACCESS_VIOLATION），也就是 Windows 上的段错误。Comfy Desktop 会把它报告为内存访问违规，通常是原生库损坏或缺失，而不是 ComfyUI 的缺陷。仅凭这个错误码无法断定是哪个库出的错：某个模块也可能因为别的组件先破坏了内存才崩溃，所以要结合日志和下面的出错模块来判断。
+
+Windows 报告的其它原生故障也用同样的十进制与十六进制组合表示，只是不会给出名称：`0xC000001D` 是非法指令，通常是 CPU 缺少该构建所需的指令集；`0xC0000409` 是 fail-fast 退出，最常见的原因是栈缓冲区溢出；`0xC0000374` 是堆损坏。
+
+### 查看完整日志
+
+失败提示只显示 ComfyUI 输出的最后几行。这次运行的完整输出写在安装目录的日志文件里：
+
+```
+<install folder>\logs\comfyui.log
+```
+
+实例的 **管理面板** 里有 [终端选项卡](/zh/installation/desktop/usage/manage#终端选项卡)，会为该安装打开一个 shell，你也可以在那里读取该文件。如果最后几行是一段 Python 导入链，说明进程是在加载某个包时退出的；日志更靠前的行会显示它是否已经运行到工作流。
+
+### 找出出错的模块
+
+崩溃的库不在 ComfyUI 的日志里，Windows 会把它记录到事件查看器：
+
+1. 按 `Win+R`，输入 `eventvwr.msc` 并回车。
+2. 打开 **Windows 日志 → 应用程序**。
+3. 选择崩溃时间点记录的那条 **应用程序错误** 事件。事件里的 **错误应用程序名称**（或 **错误应用程序路径**）就是该实例的 `python.exe`，在同一个事件里查看 **错误模块名称**。
+
+| 出错模块 | 原因 | 处理 |
+|---|---|---|
+| `nvcuda.dll`、`nvml.dll` | GPU 驱动比这次安装所用的 CUDA 构建更旧 | 更新 NVIDIA 驱动。CUDA 13 构建要求 580 或更新，较早的 CUDA 构建可以接受更低的版本 |
+| `torch*.dll`、`cudnn*.dll`、`cublas*.dll` | 实例环境里的 PyTorch 或 CUDA 包已损坏或被部分替换 | 重新安装实例，或从 [更新选项卡](/zh/installation/desktop/usage/manage#更新选项卡) 切换 PyTorch |
+| `msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll` | 缺少 Microsoft Visual C++ 运行库 | 安装 Microsoft Visual C++ 2015-2022 Redistributable (x64)，然后重新启动 |
+
+在 `0xC0000005` 崩溃时，Comfy Desktop 会检查 `C:\Windows\System32` 中的这三个运行库文件，若有缺失会在提示里加上一句说明。出现这句提示时，安装对应运行库就是解决办法，此时不需要看出错模块表：Windows 完全找不到的库会以 `0xC0000135`（STATUS_DLL_NOT_FOUND）失败，而不会出现在出错模块里。
+
+### 其他需要排除的原因
+
+- **模型放不进内存。** 如果崩溃在加载很大的文本编码器或扩散模型时反复出现，瓶颈很可能就是内存。先查看日志，确认系统内存和 GPU 显存各占用了多少，再改用更小的模型或更低的精度。
+- **依赖同步被中断。** 安装或更新实例会用 ComfyUI 的 `requirements.txt` 同步环境，PyTorch 相关的包由 PyTorch 组件单独处理。大文件下载可能耗时很久，如果这次同步被中断，例如连接中断或镜像停止响应，环境里可能留下版本不匹配的包，并在下一次启动时崩溃。此时重新安装实例，不要手动修补环境。**Uninstall** 会删除安装目录及其中的全部文件，所以先把自己放在那里的文件移走；共享目录中的模型不受影响。
