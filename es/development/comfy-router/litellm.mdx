@@ -1,16 +1,17 @@
 ---
 title: "Usar Comfy Router con LiteLLM"
 sidebarTitle: "LiteLLM"
-description: "Coloca Comfy Router detrás de LiteLLM Proxy como un endpoint pass-through y registra el costo exacto en USD de cada ejecución a partir del encabezado x-litellm-response-cost, sin ninguna tabla de precios que mantener."
-translationSourceHash: e35cd883
+description: "Coloca Comfy Router detrás de LiteLLM Proxy como endpoint pass-through y lee el costo en USD de cada ejecución del encabezado x-litellm-response-cost."
+translationSourceHash: 8183ff58
 translationFrom: development/comfy-router/litellm.mdx
 translationBlockHashes:
   "_intro": 1ddb0d0a
   "Configure the pass-through": 380c3ae3
-  "How spend is recorded": f852c18c
+  "How spend is recorded": 699ed64b
   "Queued delivery": 46044c93
   "Notes": 50e3cf6b
 ---
+
 
 Si ya haces seguimiento del gasto con [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through), puedes añadir Comfy Router como un endpoint pass-through más. Quien llama conserva sus claves de LiteLLM, y tu clave API de Comfy se queda en el proxy.
 
@@ -83,7 +84,7 @@ Router informa en dólares estadounidenses cuánto costó una ejecución, en el 
 
 ## Cómo se registra el gasto
 
-Una ejecución que informa un costo lleva estos encabezados de respuesta, en la respuesta de la ejecución cuando es síncrona y en la recogida del resultado cuando está en cola:
+Una ejecución que informa un costo lleva estos encabezados de respuesta, en la respuesta de la ejecución cuando es síncrona y en la obtención del resultado cuando está en cola:
 
 ```http
 X-Comfy-Credits-Used: 12.5
@@ -102,11 +103,11 @@ Algunas ejecuciones no llevan `x-litellm-response-cost`. Falta en los mismos cas
 - una ejecución facturada a tu propia clave de proveedor y no a tus créditos de Comfy
 - un modelo que todavía no está en la lista de Router de modelos que informan un precio en créditos por ejecución. Esa lista es conservadora, y algunos proveedores no aparecen en ella en absoluto
 - un cargo que no llegó a la facturación de Comfy
-- una respuesta de error
+- una respuesta de error. Una `content_policy_violation` síncrona de un modelo cuyo `billing.charges_on_policy_rejection` es `yes` puede llevar `X-Comfy-Credits-Used` con el precio de la generación rechazada; nunca lleva `x-litellm-response-cost`, porque un error no es un resultado que LiteLLM deba registrar
 
-También falta cuando Router reproduce un resultado almacenado para un reintento con la misma `Idempotency-Key` (enviada a través del proxy como `x-pass-Idempotency-Key`). Ese reintento no se cobra de nuevo, así que la reproducción no informa por segunda vez el costo exacto de la ejecución. Por la misma razón, solo una recogida del resultado de una ejecución en cola lo lleva, la primera después de que se registre el precio de la ejecución; recoger el mismo resultado otra vez sigue devolviendo `X-Comfy-Credits-Used`, pero no `x-litellm-response-cost`.
+También falta cuando Router reproduce un resultado almacenado para un reintento con la misma `Idempotency-Key` (enviada a través del proxy como `x-pass-Idempotency-Key`). Ese reintento no se cobra de nuevo, así que la reproducción no informa por segunda vez el costo exacto de la ejecución. Por la misma razón, de las obtenciones del resultado de una ejecución en cola solo una lo lleva: la primera después de que se registre el precio de la ejecución; volver a obtener el mismo resultado sigue devolviendo `X-Comfy-Credits-Used`, pero no `x-litellm-response-cost`.
 
-Cuando el encabezado falta, LiteLLM recurre al `cost_per_request` del endpoint. Eso se aplica a todos los casos anteriores. Las respuestas de error, las ejecuciones facturadas a tu propia clave de proveedor y las reproducciones idempotentes se registran por tanto con tu estimación, aunque Comfy no haya cobrado tus créditos por ellas. Defínelo con una estimación razonable de tu ejecución típica en lugar de `0`, para que una ejecución que no informa un costo no aparezca como gratuita en tus informes de gasto, y cuenta con que esas filas empujen los totales de LiteLLM por encima de tu factura de Comfy. Una ejecución con precio que realmente no costó nada informa `x-litellm-response-cost: 0`, que LiteLLM registra como cero.
+Cuando el encabezado falta, LiteLLM recurre al `cost_per_request` del endpoint. Eso se aplica a todos los casos anteriores. Las respuestas de error, las ejecuciones facturadas a tu propia clave de proveedor y las reproducciones idempotentes se registran por tanto con tu estimación. La mayoría de ellas no generó cargos en tus créditos, pero no todas: un rechazo por política de contenido que lleva `X-Comfy-Credits-Used` sí tuvo un precio, así que lee su costo de ese encabezado, y algunos otros fallos, como una generación que Router no pudo devolverte, pueden facturarse sin informar un costo. Concilia con los registros de uso de tu espacio de trabajo. Defínelo con una estimación razonable de tu ejecución típica en lugar de `0`, para que una ejecución que no informa un costo no aparezca como gratuita en tus informes de gasto, y espera que esas filas empujen los totales de LiteLLM por encima de tu factura de Comfy. Una ejecución que tuvo un precio y que realmente no costó nada informa `x-litellm-response-cost: 0`, que LiteLLM registra como cero.
 
 ## Entrega en cola
 
