@@ -1,0 +1,224 @@
+---
+title: "Comfy Router リアルタイム音声セッション"
+sidebarTitle: "リアルタイム音声"
+description: "Comfy Router 経由で Grok Voice のリアルタイム WebSocket セッションを開く方法: エンドポイント、認証、秒単位の料金、セッション制限、発生しうるエラーとクローズコードについて説明します。"
+translationSourceHash: e4024a38
+translationFrom: development/comfy-router/realtime.mdx
+translationBlockHashes:
+  "_intro": a85f88e5
+  "Endpoint": 2ae36abf
+  "Authentication": 582120fe
+  "Connect": b61ae8c6
+  "Events": a3ac8c47
+  "Pricing": 25d35f6c
+  "Limits": 85e21dff
+  "Errors": 3085ba65
+  "Next": 3e8c1bd8
+---
+
+Comfy Router は、fal が提供する xAI の Grok Voice とのリアルタイム音声対音声セッションを中継します。Comfy API キーを使って Router への WebSocket を1本開きます。Router はアカウントとクレジットを確認し、上流でセッションを開いてから、イベントを双方向に中継します。セッションの秒単位の料金は Comfy のクレジットから支払われます。
+
+## エンドポイント
+
+```text
+wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime
+```
+
+リクエストは WebSocket アップグレードです（`Connection: Upgrade` と `Upgrade: websocket` を伴う `GET`）。それ以外のリクエストは `426` で拒否されます。
+
+## 認証
+
+アップグレードリクエストのヘッダーで、Comfy API キーを `X-API-Key: comfyui-...` または `Authorization: Bearer comfyui-...` として送信します。Router はクエリ文字列や WebSocket サブプロトコルからキーを読み取りません。
+
+<Warning>
+ブラウザは WebSocket にヘッダーを設定できません。また、Comfy API キーを絶対にブラウザへ到達させてはいけません。サーバーからセッションを開き、オーディオをブラウザへ自分で中継してください。
+</Warning>
+
+## 接続
+
+アップグレードが成功したら、xAI が Grok Voice 向けに文書化しているリアルタイムイベントを送受信します。この例ではセッションを設定し、1 回のテキストターンを送信して、受信した各イベントタイプを出力します。
+
+<CodeGroup>
+
+```python Python
+# pip install websockets msgpack
+import asyncio
+import os
+
+import msgpack
+import websockets
+
+URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+
+
+async def send(ws, event):
+    await ws.send(msgpack.packb(event))
+
+
+async def main():
+    async with websockets.connect(
+        URL,
+        additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+    ) as ws:
+        await send(ws, {
+            "type": "session.update",
+            "session": {
+                "voice": "eve",
+                "instructions": "You are a helpful assistant.",
+                "turn_detection": {"type": "server_vad"},
+            },
+        })
+        await send(ws, {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello!"}],
+            },
+        })
+        await send(ws, {"type": "response.create"})
+
+        async for message in ws:
+            if isinstance(message, str):
+                continue  # fal 独自の x-fal-message フレーム
+            event = msgpack.unpackb(message)
+            print(event["type"])
+            if event["type"] == "response.done":
+                break
+
+
+asyncio.run(main())
+```
+
+```javascript Node.js
+// npm install ws @msgpack/msgpack
+import WebSocket from "ws";
+import { encode, decode } from "@msgpack/msgpack";
+
+const ws = new WebSocket(
+  "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
+  { headers: { "X-API-Key": process.env.COMFY_API_KEY } },
+);
+
+ws.on("unexpected-response", (req, res) => {
+  // アップグレードが拒否されました。JSON ボディに理由が示されています。
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error(res.statusCode, body));
+});
+
+const send = (event) => ws.send(encode(event));
+
+ws.on("open", () => {
+  send({
+    type: "session.update",
+    session: {
+      voice: "eve",
+      instructions: "You are a helpful assistant.",
+      turn_detection: { type: "server_vad" },
+    },
+  });
+  send({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Hello!" }],
+    },
+  });
+  send({ type: "response.create" });
+});
+
+ws.on("message", (data, isBinary) => {
+  if (!isBinary) return; // fal 独自の x-fal-message フレーム
+  const event = decode(data);
+  console.log(event.type);
+  if (event.type === "response.done") ws.close();
+});
+
+ws.on("close", (code) => console.log("closed", code));
+```
+
+</CodeGroup>
+
+終わったらすぐにソケットを閉じてください。課金されるのは最後のレスポンスまでではなく、セッションが閉じるまでです。
+
+## イベント
+
+Router は独自のイベントプロトコルを定義していません。サーバーイベントは fal が送信するそのままの形で届き、Router が受け付けるクライアントイベントは変更されずに転送されます。イベント一覧、セッションのフィールド、ボイス、オーディオ形式については、次を参照してください。
+
+- [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) および xAI の [realtime イベントスキーマ](https://docs.x.ai/voice-realtime.ws.json)
+- fal の [Grok Voice realtime モデルページ](https://fal.ai/models/xai/grok-voice/realtime) とその [API ページ](https://fal.ai/models/xai/grok-voice/realtime/api)
+
+各クライアントイベントは、例のように 1 つの msgpack バイナリメッセージとして送信してください。これは fal のリアルタイムクライアントが使用するフレーミングであり、モデルのイベントも同じ方法で、`session.created` で始まる msgpack バイナリメッセージとして返されます。fal は独自の `x-fal-message` タイプの JSON テキストメッセージ（タイミング情報）も送信しますが、これらはスキップしてかまいません。Router のチェックではクライアントイベントを 1 つの JSON テキストメッセージとして受け付けることもできますが、クライアントで JSON をテスト済みでない限り msgpack を使用してください。
+
+Router は転送前に各クライアントイベントをチェックします:
+
+- **イベントタイプ:** `session.update`、`input_audio_buffer.append`、`input_audio_buffer.commit`、`input_audio_buffer.clear`、`conversation.item.create`、`conversation.item.delete`、`conversation.item.truncate`、`response.create`、`response.cancel`、および fal の `x-fal-session.configure`。
+- **モデル:** `session.update` 内の `model` は `grok-voice-latest`、`grok-voice-3.0`、または `grok-voice-2.0` である必要があります。
+- **ツール:** クライアントが実行する関数ツールは許可されます。サーバー側のツール（ウェブ検索、X 検索、ファイル検索、MCP）は拒否されます。
+- **メディア:** 画像とビデオの入力は拒否されます。セッションは音声とテキストのみです。
+- **サイズ:** 1 つのクライアントメッセージは最大 1 MiB です。
+
+拒否されたイベントは転送されず、Router はクローズコード `1008` でセッションを閉じます。
+
+## 料金
+
+セッションには**1秒あたり$0.0011869**の費用がかかります（1分あたり約$0.0712、または1秒あたり0.2504クレジット、1分あたり約15.0クレジット。211クレジット = 1 USDのレートで）。セッションが開いている間は15秒単位で課金され、最後の端数は秒単位で切り上げて課金されます。課金はアップグレードからソケットが閉じるまで、オーディオが流れているかどうかに関係なく継続します。
+
+## 制限
+
+| 制限 | 値 |
+| --- | --- |
+| アカウントあたりのセッション | 同時に開けるセッションは1つです。2つ目を開くと `429` と `router.realtime.session_already_live` が返されます。 |
+| セッションの長さ | 最大30分で、接続時点のあなたのクレジット残高がカバーする範囲を超えることはありません。 |
+| セッション中のクレジット | Router は15秒ごとに残高を再確認し、残高が次の1秒をカバーできなくなった時点でセッションを終了します。 |
+| 接続レート | 各アップグレード試行は[呼び出し元ごとのリクエストレート](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)にカウントされ、他の Router 呼び出しと共有されます。 |
+
+セッションが時間制限に達した場合、またはクレジットが不足した場合、接続は close フレームなしで閉じることがあります（多くの場合、close コード `1006` として現れます）。チャージした後にのみ再接続するか、より長い時間が必要な場合は新しいセッションを開始してください。
+
+## エラー
+
+### アップグレード前
+
+Router が接続を拒否した場合、プロトコルを切り替えずに HTTP ステータスと JSON ボディで応答します。
+
+```json
+{
+  "detail": "Insufficient credits to open a realtime session.",
+  "error_type": "insufficient_credits",
+  "code": "router.realtime.insufficient_credits"
+}
+```
+
+判定には `code` を使用してください。`detail` は人向けの説明です。
+
+| ステータス | `code` | 原因 | 対処 |
+| --- | --- | --- | --- |
+| `426` | `router.realtime.upgrade_required` | リクエストが WebSocket アップグレードではありませんでした。 | WebSocket クライアントで接続してください。 |
+| `401` | `router.realtime.unauthorized` | API キーが不足しているか無効です。 | `X-API-Key` または `Authorization: Bearer` で有効なキーを送信してください。 |
+| `402` | `router.realtime.insufficient_credits` | 残高がセッションの少なくとも1秒分に満たない状態です。 | クレジットを追加してから再接続してください。 |
+| `402` | `router.realtime.spend_denied` | セッションの課金先となるウォレットに資金がありません。ボディ内の `denied_reason` と `billed_workspace` がどのウォレットかを示します。 | そのワークスペースにクレジットを追加してから再接続してください。 |
+| `403` | `router.realtime.provider_disabled` | ワークスペースのパートナープロバイダーポリシーがこのプロバイダーを許可していません。 | ワークスペースの管理者に許可を依頼してください。 |
+| `404` | `router.realtime.model_not_allowed` | URL 内のモデルはリアルタイムでは利用不可です。 | URL を確認してください。 |
+| `429` | `router.realtime.rate_limited` | リクエストレートを超過しました。 | `Retry-After` を待ってから再試行してください。 |
+| `429` | `router.realtime.session_already_live` | アカウントで既に別のセッションが開かれています。 | 先にそれを閉じてください。 |
+| `429` | `router.realtime.concurrency_limit` | パートナーモデルの同時呼び出しが多すぎます。 | 同時実行数を減らして再試行してください。 |
+| `502` | `router.realtime.upstream_refused`、`router.realtime.token_mint_failed` | アップストリームのプロバイダーがセッションを開きませんでした。 | バックオフを伴って再試行してください。 |
+| `503` | その他の `router.realtime.*` コード | リアルタイムセッションが一時的に利用できません。 | バックオフを伴って再試行してください。 |
+
+### アップグレード後
+
+| クローズコード | 意味 | 対処 |
+| --- | --- | --- |
+| `1008` | クライアントイベントが拒否されました（[イベント](#イベント)を参照）。 | イベントを修正してください。セッションは終了します。 |
+| `1012` | Router が再起動中です。 | 再接続してください。新しいセッションが開始され、新しいアップグレードから課金されます。 |
+| `1006`（クローズフレームなし） | セッションが時間制限に達した、またはクレジットが不足した際にクライアントが報告する値としてよく見られます。ネットワーク切断も同じように見えます。 | クレジットを追加するか、新しいセッションを開始してください。 |
+
+その他のクローズは fal または xAI によるものです。[イベント](#イベント)にリンクされている各社のドキュメントを参照してください。
+
+## 次のステップ
+
+- [課金](/ja/development/comfy-router/billing): Router の課金方法と使用量の照合方法について説明します。
+- [エラーとリトライ](/ja/development/comfy-router/errors): 他の Router 呼び出しが返すエラーの分類について説明します。
+- [制限事項](/ja/development/comfy-router/limitations): リクエストレートやその他の制限について説明します。
