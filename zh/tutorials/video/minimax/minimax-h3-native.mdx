@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: 2a225f15
+translationSourceHash: b16dd815
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 42ec8cfb
   "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": bbaed645
+  "Advanced workflows with the native nodes": d423a0db
 ---
 本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力与授权见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
@@ -260,29 +260,31 @@ ComfyUI/
 
 ### 用上下文窗口生成长片段 (#17425)
 
-[`MiniMaxH3ContextWindows`](https://github.com/Comfy-Org/ComfyUI/pull/17425) 把长片段切成互相重叠的窗口采样，每一步只把一个窗口放进显存，不必放下整个 latent。接在 `UNETLoader` 与 `BasicGuider` 之间（模型进、模型出），与其他模型 patch 的位置相同。
+[`MiniMaxH3ContextWindows`](https://github.com/Comfy-Org/ComfyUI/pull/17425) 把长片段分成互相重叠的窗口来采样，每一步只对一个窗口跑模型，而不是整段片段。接在 turbo LoRA 开关（`ComfySwitchNode`）与 `BasicGuider` 之间，模型进、模型出。`BasicScheduler` 继续用开关的输出，不需要打这个补丁。
 
 | 控件 | 含义 | 默认值 |
 | --- | --- | --- |
-| `context_length` | 窗口长度（帧），**17n+5** | **124**，即默认片段长度 |
+| `context_length` | 窗口长度（帧），**17n+5** | **124**，即模板 5 秒时长对齐到该网格后的帧数 |
 | `context_overlap` | 相邻窗口共享的帧数，**17n+5** | **39** |
-| `fuse_method` | 重叠窗口的融合方式 | `pyramid` |
+| `fuse_method` | 重叠窗口的融合方式：`pyramid`、`relative`、`flat`、`overlap-linear` | `pyramid` |
 | `freenoise` | 跨窗口打乱噪波以衔接 | 开启 |
 
-窗口从模型的 17 帧块边界开始，视频与音频跨边界仍对齐。节点会把 `context_overlap` 压在窗口长度以下。默认 **124** 时整段 5 秒片段就是一个窗口，片段超过窗口长度后节点才真正起作用：调小 `context_length` 让更长的片段塞进同一张卡，调大则每一步拿到更多上下文，显存占用随之上升。
+窗口从模型的 17 帧块边界开始，视频与音频跨边界仍对齐。`context_overlap` 上限是窗口长度减 **17** 帧，设得更大只会被静默压回上限。默认 **124** 下 5 秒片段占一个窗口，第一个能开出第二个窗口的长度是 **141** 帧。调小 `context_length` 降低每一步的显存占用。调大则每一步拿到更多上下文，代价更高。
+
+省下的是每一步的显存，不是总量。整段 latent、融合窗口用的缓冲区和解码仍随片段长度增长，所以解码就会爆显存的片段，改完还是爆。
 
 窗口化采样自带两个限制：
 
-- **每个窗口都会跑完整提示词。** 分镜时间按窗口读，不是按整段读，定时切镜会在每个窗口里再触发一次。写一个连续的场景，不要写定时切镜。
+- **每个窗口都收到完整提示词。** 写一个连续的场景，不要写定时切镜：带切镜时间的分镜假定整段片段只采样一次。
 - **窗口是融合，不是拼接。** 需要跨边界保持一致的内容（画面文字、场景细节、人脸）可能漂移。镜头和主体保持稳定。
 
-所以上下文窗口适合没有切镜的连续场景：缓慢推镜、平移，或对成片做二次放大。需要切镜的片段，分镜单独生成再拼接。
+所以上下文窗口适合没有切镜的连续场景：缓慢推镜、平移，或超过窗口长度的一镜到底。需要切镜的片段，分镜单独生成再拼接。
 
 ### 先生成音轨
 
 音频与视频在同一次去噪中生成，短调度或 turbo LoRA 会连同画面一起把音轨变软。分两遍就能拆开：先在小画布上把音频定下来，再让视频以它为条件。
 
-1. **便宜的音频遍**：以 **32×32** 画布、关闭 `Boolean (Enable Lightning LoRA)`、**40–50** 步、按最终镜头需要的时长跑一遍文生视频。音频 latent 的帧数跟着片段长度走，与画布尺寸无关，所以这一遍能用远低于一次全分辨率渲染的代价产出完整长度的音轨。断开 Resolution Selector，把尺寸直接填进它对应的 `width` 和 `height`；选择器最小只到 **0.1** 百万像素。步数在子图里设为 **20** 的那个 `PrimitiveInt` 上（设为 **6** 的那个是 turbo 步数）。这一遍只保留音频。
+1. **便宜的音频遍**：以 **32×32** 画布、关闭 `Boolean (Enable Lightning LoRA)`、**40–50** 步、按最终镜头需要的时长跑一遍文生视频。音频 latent 的帧数跟着片段长度走，与画布尺寸无关，所以这一遍能用远低于一次全分辨率渲染的代价产出完整长度的音轨。断开 Resolution Selector，把尺寸直接填进它对应的 `width` 和 `height`；选择器最小只到 **0.1** 百万像素。步数在子图里设为 **20** 的那个 `PrimitiveInt` 上。另一个 `PrimitiveInt` 是 turbo 步数，子图控件把它设为 **8**。这一遍只保留音频。
 2. **存下音轨**：子图在内部解码音频，只把视频暴露出来，所以在子图内加一个 `SaveAudioAdvanced`，把 `VAEDecodeAudio` 接到它上面。
 3. **给第二遍做条件**：在 R2V 工作流中加入 `LoadAudio`，接到 `ref_audio`，并保持 `audio_vae` 连接。提示词里用 `<Audio 1>` 引用它，并写明关系：`reference` 只取音色、节奏与语气，不复制信号本身；`fully_copy` 把它当作完整的最终音轨；`partially_copy` 只复制一部分时间线或部分音轨层；`weak_reference` 只保留大类与氛围上的相似。第二遍于是从一个已经确定的音色与节奏起步，而不是从零编造语音。要用完全相同的文件，把 `LoadAudio` 接到 `CreateVideo`，不要依赖提示词。
 

@@ -253,29 +253,31 @@ Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. 
 
 ### Long clips with context windows (#17425)
 
-[`MiniMaxH3ContextWindows`](https://github.com/Comfy-Org/ComfyUI/pull/17425) samples a long clip in overlapping windows, so each step holds one window in memory instead of the whole latent. Wire it between `UNETLoader` and `BasicGuider` (model in, model out), the same place as any other model patch.
+[`MiniMaxH3ContextWindows`](https://github.com/Comfy-Org/ComfyUI/pull/17425) samples a long clip in overlapping windows, so each step runs the model on one window instead of the whole clip. Connect it between the turbo LoRA switch (`ComfySwitchNode`) and `BasicGuider`, model in and model out. `BasicScheduler` keeps the switch output and does not need the patch.
 
 | Control | Meaning | Default |
 | --- | --- | --- |
-| `context_length` | Window size in frames, **17n+5** | **124**, the default clip length |
+| `context_length` | Window size in frames, **17n+5** | **124**, the template's 5 s duration snapped to the grid |
 | `context_overlap` | Frames shared by adjacent windows, **17n+5** | **39** |
-| `fuse_method` | How overlapping windows are combined | `pyramid` |
+| `fuse_method` | How overlapping windows are combined: `pyramid`, `relative`, `flat`, `overlap-linear` | `pyramid` |
 | `freenoise` | Shuffles noise across windows to blend them | On |
 
-Windows start on the model's 17-frame chunks, so video and audio stay in step across a boundary. The node keeps `context_overlap` below the window length. At the default **124** the whole 5-second clip is a single window, so the node only changes sampling once the clip runs past the window: lower `context_length` to fit a longer clip on the same card, raise it to give each step more surrounding context at a higher memory cost.
+Windows start on the model's 17-frame chunks, so video and audio stay in step across a boundary. `context_overlap` is capped at the window length minus **17** frames, and a larger value is clamped without a warning. A 5 s clip fits one window at the default **124**, and the first length that opens a second window is **141** frames. Lower `context_length` to cut the memory each step needs. Raise it for more context per step, at a higher cost.
+
+Memory falls per step, not in total. The full latent, the buffers that fuse the windows and the decode still scale with clip length, so a clip that decodes out of memory stays out of memory.
 
 Two limits come with windowed sampling:
 
-- **The prompt runs in full inside every window.** Shot timings are read per window, not across the clip, so a timed cut fires again in each one. Describe one continuous scene and leave timed cuts out.
+- **Every window receives the full prompt.** Write one continuous scene and leave out timed cuts: a shot list with cut times assumes the whole clip is sampled in one pass.
 - **Windows are fused, not joined.** Content that has to hold exactly across a boundary (on-screen text, set detail, a face) can drift. Keep the camera and the subject steady.
 
-That makes context windows a fit for a scene that runs without a cut: a slow push, a pan, or a second-pass upscale of a finished clip. For a clip that cuts between shots, render the shots separately and join them.
+That makes context windows a fit for a scene that runs without a cut: a slow push, a pan, or an unbroken take that runs past the window. For a clip that cuts between shots, render the shots separately and join them.
 
 ### Generating the soundtrack first
 
 Audio and video are denoised together, so a short schedule or a turbo LoRA softens the track along with the picture. Two passes separate them: settle the audio on a small canvas, then condition the video on it.
 
-1. **Cheap audio pass**: Run a text-to-video pass at **32×32** with `Boolean (Enable Lightning LoRA)` off, **40–50** steps, and the duration the final shot needs. Audio latent frames follow clip length, not canvas size, so this pass produces a full-length track for far less than a full-resolution render. Unlink the Resolution Selector and type the size into its `width` and `height` targets; the selector bottoms out at **0.1** Megapixels. Steps live on the `PrimitiveInt` set to **20** inside the subgraph (the one set to **6** is the turbo step count). Only the audio is kept.
+1. **Cheap audio pass**: Run a text-to-video pass at **32×32** with `Boolean (Enable Lightning LoRA)` off, **40–50** steps, and the duration the final shot needs. Audio latent frames follow clip length, not canvas size, so this pass produces a full-length track for far less than a full-resolution render. Unlink the Resolution Selector and type the size into its `width` and `height` targets; the selector bottoms out at **0.1** Megapixels. Steps live on the `PrimitiveInt` set to **20** inside the subgraph. The other `PrimitiveInt` is the turbo step count, which the subgraph widget sets to **8**. Only the audio is kept.
 2. **Save the track**: The subgraph decodes audio inside and exposes only the video, so add a `SaveAudioAdvanced` node inside the subgraph and connect `VAEDecodeAudio` to it.
 3. **Condition the second pass**: In the R2V workflow, add `LoadAudio`, wire it to `ref_audio`, and keep `audio_vae` connected. Cite the track as `<Audio 1>` and state the relationship: `reference` keeps the timbre, rhythm, and delivery without copying the signal, `fully_copy` makes it the complete final track, `partially_copy` keeps part of the timeline or selected layers, and `weak_reference` keeps only broad similarity. The second pass starts from a settled voice and timing instead of inventing speech from nothing. For the identical file, wire `LoadAudio` into `CreateVideo` instead of relying on the prompt.
 
