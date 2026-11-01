@@ -738,8 +738,14 @@ describe("per-model notices", () => {
     }
   });
 
-  test("a model without an entry renders nothing, and a shared notice renders once per page", () => {
+  test("each notice names the model and date it describes", () => {
+    expect(MODEL_NOTICES["xai/grok-imagine-image-quality"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on May 15, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+  });
+
+  test("a model without an entry renders nothing, and a repeated notice renders once per page", () => {
     expect(modelNotices(["xai/grok-imagine-image-2.0"])).toBe("");
-    expect(modelNotices(["xai/grok-imagine-image-quality", "xai/grok-imagine-image-pro"]).match(/<Warning>/g)).toHaveLength(1);
+    expect(modelNotices(["xai/grok-imagine-image-quality", "xai/grok-imagine-image-quality"]).match(/<Warning>/g)).toHaveLength(1);
   });
 });
