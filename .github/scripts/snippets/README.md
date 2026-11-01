@@ -120,6 +120,14 @@ is deleted. The banner is a rollout artifact, so retiring it is one `rm` plus a
 regen rather than an edit to the template and every generated page in the same
 commit.
 
+## Per-model notices
+
+`MODEL_NOTICES` in `gen-code-pages.ts` maps a Router model id to a short note
+rendered as a `<Warning>` under that model's intro, on hand-written and derived
+pages alike. Use it for upstream changes the mirrored `router-schemas/`
+documents do not carry, such as a provider retiring a model. Remove the entry
+and regen once the note no longer applies.
+
 ## The two delivery tabs
 
 Every runnable Quick start is a tab pair: **Wait for the result** is the
