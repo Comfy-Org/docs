@@ -1,14 +1,13 @@
 ---
 title: "Widget System Migration for Frontend Extensions"
 sidebarTitle: "Widget system migration"
-description: "Store-backed widget values in the ComfyUI frontend: unique widget names, undefined node.widgets, BaseWidget registration and setValue calls."
+description: "Store-backed widget values in the ComfyUI frontend: unique widget names, undefined node.widgets, widget renames, addCustomWidget and Agent setValue calls."
 ---
 
 Widget values now live in a Pinia-backed store instead of directly on the
-widget instance. Two hazards follow: widget names must be unique per node,
-and renaming a widget after it's added leaves its stored value behind.
-`node.widgets` can also be `undefined` until it's first assigned, and only
-registered widgets participate in the store.
+widget instance. Widget names must be unique per node, and renaming a widget
+succeeds only when the new name is free. `node.widgets` can also be
+`undefined` until it's first assigned.
 
 ## Gallery values after the PrimeVue replacement
 
@@ -24,18 +23,25 @@ Extensions that need these controls must supply their own gallery widget.
 
 ## Widget names must be unique and stable
 
-Two widgets on the same node cannot share a name. Adding a second widget with
-a name that's already in use overwrites the first widget's stored value:
+Two widgets on the same node cannot share a name. If you add a second widget
+with a name that's already in use, the frontend renames the new widget with a
+numbered suffix, such as `strength#1`, when the node is in a graph. A lookup by
+the original name finds only the first widget:
 
-```ts
+```js
 node.addWidget('number', 'strength', 0, () => {})
-node.addWidget('number', 'strength', 1, () => {}) // overwrites the first widget's value
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // 'strength#1' once the node is in a graph
 ```
 
-Renaming a widget after it's registered has the same effect in reverse: the
-store keeps the value filed under the old name, and nothing re-keys it for
-you. Don't rename a widget after registration. Remove it and add a new one
-with the name you want instead.
+Give each widget a unique name.
+
+Assigning a new `widget.name` to a registered widget moves its stored value to
+the new name. If another widget on the node already uses that name, the
+assignment is ignored and `widget.name` keeps its old value, so check
+`widget.name` afterwards. Input slots that refer to the widget by name are not
+updated. Don't remove a widget and add a new one to rename it: `removeWidget()`
+deletes the stored value and clears the input slots bound to the widget.
 
 ## `node.widgets` may be undefined
 
@@ -65,16 +71,16 @@ case of building widgets in a constructor or `onNodeCreated`.
 `node.widgets` shows up in `Object.keys(node)` and object spreads like
 `{...node}`.
 
-## Add widgets through the node, not by pushing to `node.widgets`
+## Prefer `node.addCustomWidget()` to pushing onto `node.widgets`
 
 Widgets added with `node.addWidget()`, `node.addCustomWidget()` or
-`node.addDOMWidget()` are registered in the store automatically.
-`addCustomWidget()` accepts a plain widget object and wraps it for you. An
-object pushed straight onto `node.widgets` is not registered and won't
-participate in the store:
+`node.addDOMWidget()` are registered in the store automatically. A plain object
+pushed straight onto `node.widgets` is also converted in place into a widget
+instance and registered once the node is in a graph. `addCustomWidget()` is
+still the recommended call: it returns the widget, and it restores the
+widget's saved value when a workflow loads.
 
 ```js
-// Registered
 node.addCustomWidget({
   name: 'my_widget',
   type: 'custom',
@@ -83,9 +89,6 @@ node.addCustomWidget({
   draw(ctx, node, width, y, height) {},
   mouse(event, pos, node) {}
 })
-
-// Not registered: the store never sees this widget
-node.widgets.push({ name: 'my_widget', type: 'custom', value: '' })
 ```
 
 If you read or write `widget.value` before the node is attached to a graph,
@@ -101,12 +104,13 @@ store until the node itself is removed from the graph.
 
 ## Agent edits call `setValue` without a pointer event
 
-When the in-app Agent changes a widget on a `BaseWidget` subclass, the
+When the in-app Agent changes a widget that is a `BaseWidget` instance, the
 frontend calls `widget.setValue(value, { node, canvas })`, the same method a
 user edit goes through. Before, it assigned `widget.value` directly and then
-called `callback` and `onWidgetChanged` itself. Plain-object widgets,
-DynamicGroup row-count controllers and promoted subgraph-host widgets still get
-that direct write.
+called `callback` and `onWidgetChanged` itself. This includes plain objects
+added with `addCustomWidget()` or pushed onto `node.widgets`, because the
+frontend converts them into `BaseWidget` instances. DynamicGroup row-count
+controllers and promoted subgraph-host widgets still get the direct write.
 
 If you override `setValue`, accept options shaped `{ node, e?, canvas? }`: `e`
 is never set for these calls, and `canvas` can be missing too. Don't read `options.e`
