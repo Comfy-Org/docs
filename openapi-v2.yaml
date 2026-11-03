@@ -44,7 +44,9 @@ paths:
 
         The blake3 hash is always computed server-side from the received
 
-        bytes — a client-declared `expected_hash` is verified, never trusted.
+        bytes — a client-declared `expected_hash` is verified, never trusted
+
+        (on Comfy Cloud and serverless, only when sent before `file` — see below).
 
         If location metadata (GPS, XMP, IPTC) is removed from an image before
 
@@ -95,6 +97,29 @@ paths:
         runs in the background and does not block the response.
 
 
+        Send `file` as the last part. Comfy Cloud and serverless deployments
+
+        stream it straight into storage and read the other fields only up to
+
+        it, so a part sent after `file` is never read: a `content_type` or
+
+        `file_path` sent only after it is refused as missing (422); an
+
+        optional field (`expected_hash` or `tags`) is silently ignored — the
+
+        upload succeeds without the hash check or the caller''s tags; on
+
+        serverless deployments, a trailing `expires_in` is likewise ignored,
+
+        losing the retention override; and a second `file` part is dropped,
+
+        so only the first part''s bytes are stored. Comfy Cloud ignores
+
+        `expires_in` wherever it is sent, before or after `file`. The
+
+        response does not say any of these were skipped.
+
+
         An upload is a single request. v1 expects files of up to ~100 MB;
 
         the hard cap is the body limit of the surface it is sent to (above).
@@ -136,10 +161,6 @@ paths:
               - content_type
               - file_path
               properties:
-                file:
-                  type: string
-                  format: binary
-                  description: The raw bytes.
                 content_type:
                   type: string
                   example: image/png
@@ -150,7 +171,7 @@ paths:
                   example: photo.png
                 expected_hash:
                   type: string
-                  description: 'Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Omit the part to skip verification: on Comfy Cloud and on a deployment a part sent empty is refused with 422 as malformed. Send it before `file`: nothing after the `file` field is read, so a trailing `expected_hash` is neither verified nor refused. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset''s retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation dedups onto it.'
+                  description: 'Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Omit the part to skip verification: on Comfy Cloud and on a deployment a part sent empty is refused with 422 as malformed. Send it before `file`: nothing after the `file` field is read, so a trailing `expected_hash` is neither verified nor refused, and the response does not say the check was skipped. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset''s retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation dedups onto it. On Comfy Cloud and on a deployment, when `expected_hash` is sent more than once before `file` only the last value is checked, but an empty one among them is still refused with 422.'
                   example: blake3:9f8a1c0d...
                 tags:
                   type: array
@@ -163,6 +184,10 @@ paths:
                   maximum: 604800
                   description: 'Optional retention override in seconds (60s–7d): the asset''s `expires_at` becomes now + `expires_in`, replacing the platform''s default retention. Implementations without configurable retention ignore it. The bounds apply to this override only — the platform default is operator-configured and may lie outside them.'
                   example: 86400
+                file:
+                  type: string
+                  format: binary
+                  description: 'The raw bytes. The order of properties in this schema does not set the order of parts on the wire: `file` must be the last part sent (see the field-order rule above).'
       responses:
         '201':
           description: New blob stored; asset minted.
@@ -192,7 +217,7 @@ paths:
         '413':
           description: The upload is over the body limit. On Comfy Cloud (200 MB, 200,000,000 bytes) and on deployment-scoped surfaces (110 MB, 110,000,000 bytes) the request declared a `Content-Length` over it; the server's body limit sends this before the upload is handled, so the body is not an `ErrorEnvelope` and its shape is not part of this contract. The self-hosted proxy instead refuses a file over its configured cap (100 MiB by default) with an `ErrorEnvelope` whose code is `payload_too_large`.
         '422':
-          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment or the self-hosted proxy; a deployment answers a body that is not `multipart/form-data` with a boundary with a plain 500 instead). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored. Comfy Cloud''s asset upload answers validation failure instead with `invalid_content_type` (the request is not `multipart/form-data` with a boundary), `invalid_body` (a malformed multipart body or upload field) or `validation_error` (the platform refused the upload, for example an image over the size cap or a disallowed tag). Cloud refuses a malformed multipart body with `invalid_body` when the fault is found before the `file` part. Cloud stops parsing at `file`, so parts after it are never read, and a body that ends inside the streamed file currently gets 500 `upstream_error` instead. The exception is an upload with `expected_hash`: if Cloud accepts the upload before the whole file is read, it reads the rest. A body that ends inside the `file` part, before its delimiter, then gets `invalid_body`, and a complete body gets 500 `upstream_error` instead of 201 or 409; in both cases the asset is already stored, holding only the part of the file read before the upload was accepted. `invalid_body` also covers `tags` parts over the 8 KiB combined cap described under `tags`, and a body sent without a declared length that is cut off at the body limit, as described for this operation. On Comfy Cloud and on a deployment, an `expected_hash` part that is present but empty is a malformed field (`invalid_body` on Comfy Cloud, `invalid_request` on a deployment), not an omitted hash.'
+          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment or the self-hosted proxy; a deployment answers a body that is not `multipart/form-data` with a boundary with a plain 500 instead). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored. Comfy Cloud''s asset upload answers validation failure instead with `invalid_content_type` (the request is not `multipart/form-data` with a boundary), `invalid_body` (a malformed multipart body or upload field) or `validation_error` (the platform refused the upload, for example an image over the size cap or a disallowed tag). Cloud refuses a malformed multipart body with `invalid_body` when the fault is found before the `file` part. Cloud stops parsing at `file`, so parts after it are never read, and a body that ends inside the streamed file currently gets 500 `upstream_error` instead. The exception is an upload with `expected_hash`: if Cloud accepts the upload before the whole file is read, it reads the rest. A body that ends inside the `file` part, before its delimiter, then gets `invalid_body`, and a complete body gets 500 `upstream_error` instead of 201 or 409; in both cases the asset is already stored, holding only the part of the file read before the upload was accepted. `invalid_body` also covers `tags` parts over the 8 KiB combined cap described under `tags`, and a body sent without a declared length that is cut off at the body limit, as described for this operation. Cloud uses the same code for a missing `file`; a missing `content_type`, or one that breaks the rules under `content_type`; a missing `file_path`, or one that is absolute, starts with `.`, contains `..`, is not already in clean form (no `//`, no `.` segment such as `/./`, and no trailing `/`) or breaks the rules under `file_path`; a `content_type`, `file_path` or `expected_hash` part over 8 KiB; and a non-empty `expected_hash` that is not `blake3:` followed by 64 lowercase hex characters. A `content_type` or `file_path` sent only after `file` counts as missing (see the field-order rule above). Any Content-Type other than `multipart/form-data` with a `boundary` (including a missing or unparseable one) gets `invalid_content_type` on Cloud. On Comfy Cloud and on a deployment, an `expected_hash` part that is present but empty is a malformed field (`invalid_body` on Comfy Cloud, `invalid_request` on a deployment), not an omitted hash.'
           content:
             application/json:
               schema:
