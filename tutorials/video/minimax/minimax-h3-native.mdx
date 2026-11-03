@@ -264,11 +264,13 @@ Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. 
 
 Windows start on the model's 17-frame chunks, so video and audio stay in step across a boundary. `context_overlap` is capped at the window length minus **17** frames, and a larger value is clamped without a warning. A 5 s clip fits one window at the default **124**, and the first length that opens a second window is **141** frames. Lower `context_length` to cut the memory each step needs. Raise it for more context per step, at a higher cost.
 
+A long clip is cheaper as two passes. Render a low-resolution pass with long windows to settle motion and sound, then a higher-resolution pass with short windows to add detail. Window length trades against prompt following: each window is sampled as one shot, and the longer it runs, the sooner the clip stops following the prompt.
+
 Memory falls per step, not in total. The full latent, the buffers that fuse the windows and the decode still scale with clip length, so a clip that decodes out of memory stays out of memory.
 
 Two limits come with windowed sampling:
 
-- **Every window receives the full prompt.** Write one continuous scene and leave out timed cuts: a shot list with cut times assumes the whole clip is sampled in one pass.
+- **Every window receives the full prompt.** With windows on, write one continuous scene in place of a timed cut list: every window sees the whole prompt, so cut times no longer line up.
 - **Windows are fused, not joined.** Content that has to hold exactly across a boundary (on-screen text, set detail, a face) can drift. Keep the camera and the subject steady.
 
 That makes context windows a fit for a scene that runs without a cut: a slow push, a pan, or an unbroken take that runs past the window. For a clip that cuts between shots, render the shots separately and join them.
@@ -282,3 +284,21 @@ Audio and video are denoised together, so a short schedule or a turbo LoRA softe
 3. **Condition the second pass**: In the R2V workflow, add `LoadAudio`, wire it to `ref_audio`, and keep `audio_vae` connected. Cite the track as `<Audio 1>` and state the relationship: `reference` keeps the timbre, rhythm, and delivery without copying the signal, `fully_copy` makes it the complete final track, `partially_copy` keeps part of the timeline or selected layers, and `weak_reference` keeps only broad similarity. The second pass starts from a settled voice and timing instead of inventing speech from nothing. For the identical file, wire `LoadAudio` into `CreateVideo` instead of relying on the prompt.
 
 Canvas size trades voice quality for render time. A 32×32 pass is nearly free, but voices can pick up a robotic edge at that size. Raise the canvas when the voice has to hold up in the final cut, and expect the pass to cost more as you do. Speech and lyrics usually survive the small canvas. Sound effects and scoring tied to on-screen action do not, so render those in the second pass and let `partially_copy` combine them with the first track.
+
+### Faster sampling with Model Sparse Attention (#16072)
+
+[`Model Sparse Attention`](https://github.com/Comfy-Org/ComfyUI/pull/16072) runs block-sparse attention in place of full attention. Connect it on the model line, between the turbo LoRA switch (`ComfySwitchNode`) and `BasicGuider`, model in and model out. It needs ComfyUI **0.35.0+**, CUDA, and a GPU with a compiled `sol-attn` kernel. Otherwise every call falls back to dense attention and `verbose` logs the reason. Short sequences are usually faster dense, so the gain grows with canvas and clip length.
+
+| `method` | Weights it needs |
+| --- | --- |
+| `sol-attn` | None. Runs on any H3 checkpoint |
+| `sla` | A model distilled against this selection, not a base H3 checkpoint |
+| `vsa` | FastH3-VSA checkpoints from the [FastVideo speedup](/tutorials/video/minimax/minimax-h3-fastvideo) workflow |
+
+`start_percent` and `end_percent` bound where sparsification applies. Outside the window attention runs dense, and the node ships with `start_percent` **0.2** and `end_percent` **1.0**, which leaves the last steps sparse. End at **0.9** so the closing steps denoise at full attention, and start earlier than 0.2 when you want more savings: the middle of the schedule takes sparsification better than either end.
+
+`tau` (default **1.3**) is the speed and quality slider for `sol-attn`. Higher is sparser: **1.0** keeps about 16% of key blocks exact, **1.5** about 7%, **2.0** about 2.7%. There is no best value, only a point on that trade. `sla` and `vsa` swap `tau` for `keep_percent` (default **10**), the share of key blocks each query block keeps exactly.
+
+`min_tokens` (**12288**) leaves shorter sequences dense without saying so. At the 16:9 template canvas of **864×480**, a 5 s clip packs about **15k** tokens and runs sparse, while a 3 s clip stays near **9k** and gains nothing until you lower `min_tokens`. The count is per forward pass, so with context windows connected it is per window, and a low-resolution pass can fall under the gate. Set `verbose` to log whether each shape ran sparse and the reason it stayed dense.
+
+`sink_conditioning` keeps H3's packed text, audio and reference rows exact. The default `exact_kv_and_rows` also runs the generated-audio query rows dense, so the soundtrack holds up while the video attention is sparsified.

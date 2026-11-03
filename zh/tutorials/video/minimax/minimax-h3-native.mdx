@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: b16dd815
+translationSourceHash: 48763c0c
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 42ec8cfb
   "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": d423a0db
+  "Advanced workflows with the native nodes": 2ab2df9d
 ---
 本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力与授权见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
@@ -271,11 +271,13 @@ ComfyUI/
 
 窗口从模型的 17 帧块边界开始，视频与音频跨边界仍对齐。`context_overlap` 上限是窗口长度减 **17** 帧，设得更大只会被静默压回上限。默认 **124** 下 5 秒片段占一个窗口，第一个能开出第二个窗口的长度是 **141** 帧。调小 `context_length` 降低每一步的显存占用。调大则每一步拿到更多上下文，代价更高。
 
+长片段用两遍更省。第一遍在低分辨率下用长窗口，先把运动与声音定下来；第二遍在高分辨率下用短窗口补细节。窗口长度与提示词跟随度是交换关系：每个窗口都当成一个镜头来采样，窗口越长，片段越早偏离提示词。
+
 省下的是每一步的显存，不是总量。整段 latent、融合窗口用的缓冲区和解码仍随片段长度增长，所以解码就会爆显存的片段，改完还是爆。
 
 窗口化采样自带两个限制：
 
-- **每个窗口都收到完整提示词。** 写一个连续的场景，不要写定时切镜：带切镜时间的分镜假定整段片段只采样一次。
+- **每个窗口都收到完整提示词。** 开了窗口后，用一段连续的场景替换带切镜时间的分镜：每个窗口看到的都是整段提示词，切镜时间对不上。
 - **窗口是融合，不是拼接。** 需要跨边界保持一致的内容（画面文字、场景细节、人脸）可能漂移。镜头和主体保持稳定。
 
 所以上下文窗口适合没有切镜的连续场景：缓慢推镜、平移，或超过窗口长度的一镜到底。需要切镜的片段，分镜单独生成再拼接。
@@ -289,3 +291,21 @@ ComfyUI/
 3. **给第二遍做条件**：在 R2V 工作流中加入 `LoadAudio`，接到 `ref_audio`，并保持 `audio_vae` 连接。提示词里用 `<Audio 1>` 引用它，并写明关系：`reference` 只取音色、节奏与语气，不复制信号本身；`fully_copy` 把它当作完整的最终音轨；`partially_copy` 只复制一部分时间线或部分音轨层；`weak_reference` 只保留大类与氛围上的相似。第二遍于是从一个已经确定的音色与节奏起步，而不是从零编造语音。要用完全相同的文件，把 `LoadAudio` 接到 `CreateVideo`，不要依赖提示词。
 
 画布尺寸是拿音色换渲染时间。32×32 的一遍几乎免费，但这个尺寸下声音可能带上机械感。音色要在成片里撑得住，就把画布调大，代价是这个遍数变贵。语音与歌词通常能扛住小画布；跟着画面动作走的音效与配乐扛不住，这类内容留给第二遍生成，再用 `partially_copy` 与第一遍的音轨合并。
+
+### 用 Model Sparse Attention 提速（#16072）
+
+[`Model Sparse Attention`](https://github.com/Comfy-Org/ComfyUI/pull/16072) 用块稀疏注意力替代全量注意力。它接在模型线上，位于 turbo LoRA 开关（`ComfySwitchNode`）与 `BasicGuider` 之间，模型进、模型出。需要 ComfyUI **0.35.0+**、CUDA，以及 `sol-attn` 内核编译覆盖到的显卡。不满足时每次调用都退回全量注意力，`verbose` 会把原因写进日志。短序列通常还是全量更快，所以画布与片段越长收益越大。
+
+| `method` | 需要的权重 |
+| --- | --- |
+| `sol-attn` | 不需要。任何 H3 检查点都能跑 |
+| `sla` | 针对该选择方式蒸馏过的模型，基础 H3 检查点不行 |
+| `vsa` | [FastVideo 提速](/zh/tutorials/video/minimax/minimax-h3-fastvideo)工作流里的 FastH3-VSA 检查点 |
+
+`start_percent` 与 `end_percent` 界定稀疏生效的区间，区间外回到全量注意力。节点默认 `start_percent` 为 **0.2**、`end_percent` 为 **1.0**，等于收尾几步也留在稀疏里。把结束点设成 **0.9**，让收尾阶段在全量注意力下收细；想更省就从 0.2 之前开始，调度中段的稀疏耐受度比两端好。
+
+`tau`（默认 **1.3**）是 `sol-attn` 的速度与质量滑杆。值越高越稀：**1.0** 大约保留 16% 的关键块精确计算，**1.5** 约 7%，**2.0** 约 2.7%。没有最优值，只有这条曲线上的某个点。`sla` 与 `vsa` 会把 `tau` 换成 `keep_percent`（默认 **10**），即每个查询块精确保留的关键块比例。
+
+`min_tokens`（默认 **12288**）会把更短的序列留在全量注意力，而且不提示。16:9 模板画布 **864×480** 下，5 秒片段约有 **15k** Token 走稀疏；3 秒片段只有 **9k** 左右，不调低 `min_tokens` 就一点没省。这个计数按单次前向算，接上上下文窗口后就是按窗口算，分辨率很低的那一遍可能直接落在阈值以下。打开 `verbose` 可以看到每次调用是否走了稀疏，以及没走的原因。
+
+`sink_conditioning` 让 H3 打包的文本、音频与参考行保持精确计算。默认的 `exact_kv_and_rows` 还会把生成音频的查询行按全量跑，所以视频侧稀疏化时音轨不受影响。

@@ -2,14 +2,14 @@
 title: "Flujos de trabajo de MiniMax H3 en ComfyUI: texto a video, imagen a video y referencia a video"
 description: "Ejemplos paso a paso de flujos nativos de MiniMax H3 en ComfyUI, con anclaje de guías y máscaras de ruido latente para un control más fino del video."
 sidebarTitle: "Flujos nativos"
-translationSourceHash: b16dd815
+translationSourceHash: 48763c0c
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 42ec8cfb
   "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": d423a0db
+  "Advanced workflows with the native nodes": 2ab2df9d
 ---
 Esta página cubre las tres plantillas base de MiniMax H3 y las técnicas avanzadas con nodos nativos. Para conocer las capacidades y el licenciamiento, consulta la [descripción general de MiniMax H3](/es/tutorials/video/minimax/minimax-h3).
 
@@ -271,11 +271,13 @@ Conecta una máscara a `denoise_mask` del sampler: **0** = mantener, **1** = reg
 
 Las ventanas empiezan en los bloques de 17 frames del modelo, de modo que video y audio siguen alineados al cruzar un límite. `context_overlap` tiene como tope la longitud de la ventana menos **17** frames, y un valor mayor se recorta sin aviso. Con el valor por defecto **124** un clip de 5 s ocupa una sola ventana, y la primera longitud que abre una segunda ventana es **141** frames. Baja `context_length` para reducir la memoria de cada paso. Súbelo para dar más contexto a cada paso, con un coste mayor.
 
+Un clip largo sale más barato en dos pasadas. Renderiza una pasada a baja resolución con ventanas largas para asentar movimiento y sonido, y después otra a mayor resolución con ventanas cortas para añadir detalle. La longitud de ventana se cambia por fidelidad al prompt: cada ventana se muestrea como un solo plano, y cuanto más larga es, antes deja el clip de seguir el prompt.
+
 La memoria baja por paso, no en total. El latente completo, los búferes que fusionan las ventanas y el decodificado siguen creciendo con la longitud del clip, así que un clip que se queda sin memoria al decodificar sigue igual.
 
 El muestreo por ventanas trae dos límites:
 
-- **Cada ventana recibe el prompt completo.** Describe una escena continua y deja fuera los cortes con tiempo: un desglose de planos con marcas de tiempo da por hecho que el clip se muestrea de una vez.
+- **Cada ventana recibe el prompt completo.** Con ventanas activas, describe una escena continua en lugar de un desglose de planos con marcas de tiempo: todas las ventanas ven el prompt entero, así que los tiempos de corte ya no encajan.
 - **Las ventanas se fusionan, no se empalman.** El contenido que debe mantenerse idéntico al cruzar un límite (texto en pantalla, detalle del decorado, una cara) puede derivar. Mantén estables la cámara y el sujeto.
 
 Por eso las ventanas de contexto encajan en una escena sin cortes: un push lento, un paneo o un plano sin corte que supera la ventana. Para un clip que cambia de plano, genera los planos por separado y únelos.
@@ -289,3 +291,21 @@ El audio y el video se desruidizan juntos, así que una programación corta o un
 3. **Condicionar la segunda pasada**: En el flujo R2V añade `LoadAudio`, conéctalo a `ref_audio` y mantén `audio_vae` conectado. Cita la pista como `<Audio 1>` e indica la relación: `reference` conserva timbre, ritmo y dicción sin copiar la señal, `fully_copy` la convierte en la pista final completa, `partially_copy` conserva parte de la línea de tiempo o capas seleccionadas, y `weak_reference` solo mantiene una similitud amplia. La segunda pasada parte así de una voz y un ritmo ya resueltos en lugar de inventar el habla desde cero. Para usar el mismo archivo, conecta `LoadAudio` a `CreateVideo` en vez de confiar en el prompt.
 
 El tamaño del lienzo intercambia calidad de voz por tiempo de render. Una pasada a 32×32 es casi gratis, pero a ese tamaño la voz puede sonar metálica. Sube el lienzo cuando la voz tenga que sostenerse en el corte final, y cuenta con que la pasada cueste más. El habla y las letras suelen sobrevivir al lienzo pequeño. Los efectos de sonido y la música atados a la acción en pantalla no, así que genéralos en la segunda pasada y combínalos con `partially_copy`.
+
+### Muestreo más rápido con Model Sparse Attention (#16072)
+
+[`Model Sparse Attention`](https://github.com/Comfy-Org/ComfyUI/pull/16072) sustituye la atención completa por atención de bloques dispersos. Conéctalo en la línea del modelo, entre el interruptor del LoRA turbo (`ComfySwitchNode`) y `BasicGuider`, con el modelo como entrada y como salida. Necesita ComfyUI **0.35.0+**, CUDA y una GPU para la que esté compilado el kernel `sol-attn`. En cualquier otro caso la llamada vuelve a atención densa y el motivo queda en el registro con `verbose`. Las secuencias cortas suelen ir más rápido en denso, así que la ganancia crece con el lienzo y la longitud del clip.
+
+| `method` | Pesos que necesita |
+| --- | --- |
+| `sol-attn` | Ninguno. Funciona en cualquier checkpoint H3 |
+| `sla` | Un modelo destilado con esta selección. Un checkpoint H3 base no sirve |
+| `vsa` | Checkpoints FastH3-VSA del flujo de [aceleración FastVideo](/es/tutorials/video/minimax/minimax-h3-fastvideo) |
+
+`start_percent` y `end_percent` delimitan dónde se aplica la dispersión. Fuera de esa ventana la atención vuelve a ser densa, y el nodo viene con `start_percent` en **0.2** y `end_percent` en **1.0**, lo que deja dispersos los últimos pasos. Pon el final en **0.9** para que el cierre se desruide a atención completa, y adelanta el inicio por debajo de 0.2 cuando quieras más ahorro: la parte media del muestreo aguanta mejor la dispersión que los extremos.
+
+`tau` (por defecto **1.3**) es el deslizador de velocidad y calidad de `sol-attn`. Más alto es más disperso: **1.0** mantiene exactos alrededor del 16% de los bloques clave, **1.5** un 7%, **2.0** un 2.7%. No hay un valor óptimo, solo un punto en ese intercambio. `sla` y `vsa` cambian `tau` por `keep_percent` (por defecto **10**), la proporción de bloques clave que cada bloque de consulta conserva exactos.
+
+`min_tokens` (**12288**) deja densas las secuencias más cortas sin avisar. Con el lienzo 16:9 de la plantilla, **864×480**, un clip de 5 s reúne unos **15k** tokens y sí se dispersa, mientras que uno de 3 s ronda los **9k** y no gana nada hasta que bajes `min_tokens`. La cuenta es por pasada hacia delante, así que con las ventanas de contexto conectadas pasa a ser por ventana, y una pasada de baja resolución puede quedarse por debajo del umbral. Activa `verbose` para registrar si cada forma se ejecutó en disperso y por qué se quedó en denso.
+
+`sink_conditioning` mantiene exactas las filas empaquetadas de texto, audio y referencias de H3. El valor por defecto `exact_kv_and_rows` también ejecuta en denso las filas de consulta del audio generado, así que la banda sonora se sostiene mientras la atención del video va dispersa.
