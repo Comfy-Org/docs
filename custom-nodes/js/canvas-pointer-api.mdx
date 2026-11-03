@@ -1,0 +1,105 @@
+---
+title: "Canvas Pointer API for Widgets and Cursors"
+sidebarTitle: "Canvas pointer API"
+description: "Handle clicks, double-clicks and drags on custom canvas widgets with onPointerDown, and control canvas cursors from a ComfyUI frontend extension."
+---
+
+The canvas routes pointer input through a `CanvasPointer`. It decides whether a
+press becomes a click, a double-click or a drag, and runs the callbacks you
+assign for that press. Widgets drawn on the canvas use it through
+`onPointerDown`.
+
+## Default behavior
+
+- Dragging several selected items no longer requires holding Shift. Clicking
+  one item while several are selected still deselects the others.
+- Clicking a connected link on an input no longer disconnects and reconnects
+  it.
+- A small amount of movement between pointer down and pointer up still counts
+  as a click. Once the pointer travels past the click drift limit, the press
+  becomes a drag. Time does not affect the decision.
+- A double-click needs two presses within the double-click time, at most three
+  times the click drift apart. Only a press that assigns `onDoubleClick` can
+  complete a double-click.
+
+Users set the click drift and double-click time in the settings
+(`Comfy.Pointer.ClickDrift` and `Comfy.Pointer.DoubleClickTime`).
+
+### Selecting multiple items
+
+- `Ctrl` + drag: begin a multi-select
+- `Ctrl` + `Shift` + drag: add to the selection
+- `Ctrl` + drag, then `Shift`: add to the selection
+- `Ctrl` + drag, then `Alt`: remove from the selection
+
+## Handle pointer input on a widget
+
+Assign `onPointerDown` on a widget. It runs on pointer down and receives the
+pointer, the node and the canvas. Assign the callbacks you need on the pointer;
+the canvas runs the right ones when the press resolves:
+
+```js
+widget.onPointerDown = function (pointer, node, canvas) {
+  const e = pointer.eDown
+  const offsetFromNode = [e.canvasX - node.pos[0], e.canvasY - node.pos[1]]
+
+  pointer.onClick = (upEvent) => {
+    console.log(pointer.eDown, pointer.eMove, pointer.eUp)
+  }
+  pointer.onDoubleClick = (upEvent) => this.customFunction(upEvent)
+
+  pointer.onDragStart = () => {}
+  pointer.onDrag = (moveEvent) => {}
+  pointer.onDragEnd = (upEvent) => {}
+  pointer.onDragCancel = () => {}
+
+  pointer.finally = () => {}
+
+  return true
+}
+```
+
+- `onClick` and `onDoubleClick` never run in the same press as `onDragStart`,
+  `onDragEnd` or `onDragCancel`. `onDrag` can run in a press that ends as a
+  click, because it also receives movement inside the click drift limit.
+- `onDragStart` runs once per drag, when the pointer first moves past the click
+  drift limit. If the pointer is released past the limit before any movement
+  event is reported, `onDragStart` runs on release, `onDragEnd` runs right
+  after it, and `onDrag` does not run.
+- When a press assigns both `onClick` and `onDoubleClick`, releasing the first
+  press of a double-click runs `onClick`. The second press runs
+  `onDoubleClick` instead of `onClick`, so make `onClick` safe to run first.
+  The first click can also land on a nearby item instead of your widget, so
+  `onDoubleClick` can run without your `onClick` having run.
+- `onDragEnd` receives the pointer up event of a drag. `onDragCancel` runs
+  instead when the drag is interrupted, for example when pointer capture is
+  lost.
+- `finally` runs once when the press ends. Assigning `pointer.finally` runs the
+  callback it replaces immediately. If `onPointerDown` does not return `true`,
+  the canvas assigns its own `finally`, so yours runs during pointer down.
+  Return `true` when you rely on `finally` for cleanup.
+- `pointer.eDown`, `pointer.eMove` and `pointer.eUp` give every callback access
+  to the whole sequence of events.
+- Return `true` to stop the canvas from handling the press itself.
+- Remove any legacy `widget.mouse` handler when you add `onPointerDown`. If
+  `onPointerDown` returns `true`, the canvas keeps tracking the widget after
+  release and keeps calling `widget.mouse` on every pointer move.
+
+The canvas resolves double-clicks and drags for you, so a widget no longer needs
+to time or measure separate pointer events. It also honors the user's click
+drift and double-click settings.
+
+## Control the canvas cursor
+
+`canvas.state.hoveringOver` holds bit flags for the item types under the
+pointer, such as a node, group, reroute or link. Set
+`canvas.state.shouldSetCursor` to `false` to stop the canvas from setting the
+cursor style, then set it yourself:
+
+```js
+canvas.state.shouldSetCursor = false
+canvas.canvas.style.cursor = 'pointer'
+```
+
+Starting a node resize still sets a resize cursor while `shouldSetCursor` is
+`false`. Set your cursor again after the resize ends.
