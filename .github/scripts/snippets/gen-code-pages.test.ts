@@ -740,7 +740,7 @@ describe("per-model notices", () => {
 
   test("each notice names the model and date it describes", () => {
     expect(MODEL_NOTICES["xai/grok-imagine-image-quality"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
-    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on May 15, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)");
     expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
   });
 

@@ -1053,7 +1053,7 @@ const queueNotice = (() => {
  */
 const XAI_IMAGE_QUALITY_RETIREMENT = "xAI retired `grok-imagine-image-quality` on Nov 2, 2026. Requests are now served by `grok-imagine-image-2.0` at low quality. See [xAI's migration notice](https://docs.x.ai/developers/migration/imagine-image-quality-nov-2).";
 export const MODEL_NOTICES: Record<string, string> = {
-  "xai/grok-imagine-image-pro": `xAI retired \`grok-imagine-image-pro\` on May 15, 2026, and routed its requests to \`grok-imagine-image-quality\`. ${XAI_IMAGE_QUALITY_RETIREMENT}`,
+  "xai/grok-imagine-image-pro": `xAI retired \`grok-imagine-image-pro\` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement), and routed its requests to \`grok-imagine-image-quality\`. ${XAI_IMAGE_QUALITY_RETIREMENT}`,
   "xai/grok-imagine-image-quality": XAI_IMAGE_QUALITY_RETIREMENT,
 };
 
