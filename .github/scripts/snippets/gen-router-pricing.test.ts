@@ -197,8 +197,8 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(684);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(655);
+    expect(snapshot.rates).toHaveLength(687);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(658);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
