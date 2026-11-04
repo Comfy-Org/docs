@@ -1,0 +1,73 @@
+---
+title: "フロントエンド拡張機能向けのノードジオメトリ移行"
+sidebarTitle: "ノードジオメトリの移行"
+description: "ノードのサイズとレンダリング境界、applyNodePositions の名前変更、レイアウトストア変更後の ComfyUI フロントエンド拡張機能における描画順の z-order について説明します。"
+translationSourceHash: 833ab6fb
+translationFrom: custom-nodes/js/node-geometry-migration.mdx
+translationBlockHashes:
+  "Migration checklist": a95abc11
+  "What changed": f4ee15bc
+  "Writes through removed references stay local": ba9b1003
+---
+## 移行チェックリスト
+
+1. `node.pos`、`node.size`、`boundingRect`、`getBounding()`、
+   `setPos()`、`setSize()` は引き続き使用できます。シグネチャの変更は不要です。
+2. `repositionNodesVueMode()` の呼び出しを `applyNodePositions()` に置き換えてください。
+3. `node.size` が測定/レンダリングされたコンテンツを反映することに依存していた場合は、
+   `getBounding()` / `boundingRect` に切り替えてください。Vue レンダラーでは、`size` は
+   要求された値を厳密に反映するようになりました。レガシーレンダラーでは、ウィジェットに合わせて
+   `size` が拡大されます。
+4. バッキングストアではなく、ノード/グループのジオメトリ API を使用してください。
+   `layoutStore` をインポートしたり、その内部フォーマットに依存したりしないでください。
+5. 削除された参照を介した書き込みは、共有レイアウト状態ではなく、
+   切り離されたオブジェクトを更新します。
+
+## 変更点
+
+`LGraphNode.pos`、`size`、`boundingRect`、`getBounding()`、`setPos()`、`setSize()` は同じシグネチャのままです。これらの呼び出しは引き続きソース互換です。動作が変わったのは以下の 3 つのケースです。
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+ノードとグループのジオメトリは、インスタンスごとのフィールドではなく、共有のレイアウトストアに保存されるようになりました。上記の API を使用し、ストアを直接使わないでください。ストアは内部実装の詳細です。
+
+### `size` とレンダリング後の境界
+
+`node.size` は要求したサイズであり、シリアライズされる値でもあります。Vue レンダラーでは、レンダリングがこれを変更することはありません。`getBounding()` と `boundingRect` はレンダリング後の境界を返します。ウィジェットのコンテンツがより多くのスペースを必要とする場合、これは `size` より大きくなることがあります。レガシーのキャンバスレンダラーでは、ウィジェットに合わせてノードを拡張するために `setSize()` が呼ばれるため、描画後に `node.size` と保存されたサイズが変わる可能性があります。ノードの実際の画面上のフットプリントが必要な場合は、レンダリング後の境界を使用してください。
+
+キャンバスは各フレームの開始時に `getBounding()` と `boundingRect` を再計算します。`pos` または `size` を変更した後、同じフレーム内でそれらを読み取る前に `node.updateArea()` を呼び出してください。Vue レンダラーでは、DOM コンテンツによる拡張はノードが計測された後にのみ反映されます。
+
+```ts
+// 変更前: レンダリングされたコンテンツによるリサイズが size を上書きすることがあり、
+// ノードを折りたたんで再展開すると元のサイズが失われていました。
+node.size // 気づかないうちにレンダリング後のフットプリントになる可能性があった
+
+// 変更後（Vue レンダラー）: size は設定した値のまま。レンダリング後の境界を明示的に取得します。
+node.size // 要求したサイズ。レンダリングによって変化しない
+node.getBounding() // 実際のレンダリング後の境界。より大きくなる場合がある
+```
+
+### `repositionNodesVueMode()` から `applyNodePositions()` への改名
+
+```ts
+// 変更前
+canvas.repositionNodesVueMode(newPositions)
+// 変更後
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()` は非推奨のエイリアスとして引き続き呼び出せます。
+
+### Z オーダーが明確になりました
+
+Z オーダーは以前、互いに矛盾する可能性のある 2 つの情報源、つまりノードリスト内のノードの位置と実行順序から決まっていました。現在は常に描画順序です。拡張が実行順序から重なり順やヒットテスト順を推測していた場合は、描画順序に切り替えてください。
+
+## 削除された参照を介した書き込みはローカルに留まる {#writes-through-removed-references-stay-local}
+
+削除後、geometry setter は切り離されたノード、グループ、またはリルートオブジェクトのみを更新します。共有レイアウト状態や、同じ ID を所有するようになった別のエンティティは更新されません。

@@ -1,0 +1,74 @@
+---
+title: "前端扩展的节点几何迁移"
+sidebarTitle: "节点几何迁移"
+description: "节点尺寸与渲染边界的对比、applyNodePositions 的重命名，以及布局存储变更后 ComfyUI 前端扩展的绘制顺序 z-order。"
+translationSourceHash: 833ab6fb
+translationFrom: custom-nodes/js/node-geometry-migration.mdx
+translationBlockHashes:
+  "Migration checklist": a95abc11
+  "What changed": f4ee15bc
+  "Writes through removed references stay local": ba9b1003
+---
+## 迁移检查清单
+
+1. 继续使用 `node.pos`、`node.size`、`boundingRect`、`getBounding()`、
+   `setPos()`、`setSize()`：无需更改签名。
+2. 将 `repositionNodesVueMode()` 调用替换为 `applyNodePositions()`。
+3. 如果你依赖 `node.size` 来反映实测或渲染的内容，请改用
+   `getBounding()` / `boundingRect`。在 Vue 渲染器下，`size` 现在
+   严格反映请求的值。传统渲染器仍会增大 `size` 以适应 widgets。
+4. 使用节点/组几何 API，而不是底层存储；不要导入
+   `layoutStore`，也不要依赖其内部格式。
+5. 通过已移除的引用进行写入时，更新的是分离的对象，而不是共享的
+   布局状态。
+
+## 变更内容
+
+`LGraphNode.pos`、`size`、`boundingRect`、`getBounding()`、`setPos()` 和
+`setSize()` 的方法签名保持不变，这些调用在源码层面仍然兼容。
+但行为在以下三种情况下发生了变化。
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+节点与分组的位置信息现在存放在共享的布局存储中，而不再是每个实例各自的字段。请使用上面列出的 API，不要直接访问该存储：它属于内部实现细节。
+
+### `size` 与渲染后的边界
+
+`node.size` 是你请求的尺寸，也是被序列化的尺寸。在使用 Vue 渲染器时，渲染过程永远不会改变它。`getBounding()` 和 `boundingRect` 返回的是渲染后的边界，当控件内容需要更多空间时，它可能大于 `size`。在使用传统画布渲染器时，节点仍会通过调用 `setSize()` 来撑开以容纳其控件，因此一次绘制之后 `node.size` 和已保存的尺寸可能会发生变化。当你需要节点在屏幕上的实际占位时，请使用渲染后的边界。
+
+画布会在每一帧开始时重新计算 `getBounding()` 和 `boundingRect`。在你修改 `pos` 或 `size` 之后，如果要在同一帧内读取它们，请先调用 `node.updateArea()`。在使用 Vue 渲染器时，由 DOM 内容引起的尺寸增长只有在节点完成测量后才会出现。
+
+```ts
+// 之前：由渲染内容触发的调整大小可能覆盖 size，因此折叠节点
+// 再重新展开时会丢失原始尺寸。
+node.size // 可能悄悄变成渲染后的占位尺寸
+
+// 之后（Vue 渲染器）：size 保持为你设置的值；需要渲染后的边界请显式获取。
+node.size // 请求的尺寸，不受渲染影响
+node.getBounding() // 实际渲染后的边界，可能更大
+```
+
+### `repositionNodesVueMode()` 已重命名为 `applyNodePositions()`
+
+```ts
+// 之前
+canvas.repositionNodesVueMode(newPositions)
+// 之后
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()` 仍可作为弃用的别名调用。
+
+### Z 顺序现在含义明确
+
+过去 Z 顺序来自两个可能互相冲突的来源：节点在节点列表中的位置，以及它的执行顺序。现在它始终是绘制顺序。如果你的扩展曾根据执行顺序推断层叠顺序或命中测试顺序，请切换到绘制顺序。
+
+## 通过已移除引用的写入只停留在本地
+
+移除之后，几何设置函数只会更新已分离的节点、组或重新路由对象。它们不会更新共享的布局状态，也不会更新现在拥有同一 ID 的其他实体。

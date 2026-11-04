@@ -1,0 +1,68 @@
+---
+title: "フロントエンド拡張機能のシリアライズコールバック移行"
+sidebarTitle: "シリアライズコールバックの移行"
+description: "ストアに保存されたグラフにおいて onSerialize と onConfigure がどのように動作するか、および ComfyUI フロントエンド拡張機能がカスタムデータをどこに永続化すべきかについて説明します。"
+translationSourceHash: de116a13
+translationFrom: custom-nodes/js/serialization-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": 87be7894
+  "Store custom data in properties or extra": 9bd7e443
+  "Serialize nodes instead of enumerating properties": f9850471
+---
+
+
+Configuring a root `LGraph` from serialized data now requires an active
+Pinia instance. `LGraph.configure()` clears and rebuilds the graph directly
+against the ECS stores, so a test harness, worker, or standalone LiteGraph
+consumer that calls `new LGraph(data)` or `graph.configure(data)` without an
+active Pinia now fails outright instead of silently producing an empty
+graph. This is the same requirement documented in
+[Link registration migration](/custom-nodes/js/link-registration-migration).
+
+Extensions running in ComfyUI use the application's active Pinia instance.
+Do not create or activate a separate Pinia instance from extension code.
+
+`node.onConfigure`, `node.onSerialize`, `graph.onConfigure`, and
+`graph.onSerialize` keep their existing signatures and firing order. For
+connection-timing hooks see
+[Connection callbacks migration](/custom-nodes/js/connection-callbacks-migration); for
+`node.widgets` and widget value storage see
+[Widget system migration](/custom-nodes/js/widgets-migration).
+
+`onConfigure` now receives a shallow copy of the serialized data rather than
+the caller's own object. Adding, removing, or reassigning top-level keys on the
+callback argument does not change the caller's workflow JSON and is not
+persisted. Nested objects (for example `inputs`, `pos`, `properties`) are still
+shared with the caller, so mutating them in place still leaks; extensions that
+relied on either kind of mutation must store custom state on `node.properties`
+or `graph.extra` instead.
+
+## カスタムデータは properties または extra に保存する
+
+ノード単位の拡張データには `node.properties`、グラフ単位の拡張データには `graph.extra` を使用します。これらは永続化データのための安定した公式の拡張サーフェスです。
+
+`onSerialize` と `onConfigure` は `this` が実際のノード/グラフオブジェクトに束縛された状態で呼び出されます。コールバックに渡される引数はシリアライズ済みのデータオブジェクト（`ISerialisedNode`/`ISerialisedGraph`）であり、実際のノード/グラフではありません。`this` は実際のオブジェクトのままなので、フックはストアに支えられたフィールドを含め、そのオブジェクトの任意のフィールドを変更できます。これらのフックでコアフィールドを上書きしないでください。`onSerialize`/`onConfigure` の内部から `this` 経由で書き込むと、独自のスキーマ、所有権、元に戻す境界を持たずにストアへ直接反映されます。
+
+`onSerialize` は、フロントエンドが `graph.extra` と `node.properties` をデータオブジェクトへコピーした後に実行されるため、フックが `this.extra` や `this.properties` に追加したキーは今回の保存には含まれません。`onSerialize` の内部では、コールバック引数へ書き込んでください。グラフなら `data.extra`、ノードなら `data.properties` です。それ以外の場合は、シリアライズが始まる前に `graph.extra` や `node.properties` を更新してください。
+
+`onSerialize` が保持できるコールバックは 1 つだけなので、他の拡張機能がすでに設定したフックは残してください。
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+`onSerialize` を実行するのはルートグラフだけです。サブグラフ定義はサブグラフ上でフックを呼ばずに保存されるため、ワークフローを保存する前にサブグラフのデータを `subgraph.extra` へ保存してください。
+
+フックが `data` に追加したカスタムのトップレベルキーは、`LGraph.asSerialisable()` でもトップレベルのまま残ります。レガシーの `LGraph.serialize()` エントリポイントはそれを `data.extensions` の下へ移し、JSON 互換でない値は省きます。ワークフローの読み込み時、`onConfigure` は再びそのキーをトップレベルで受け取ります。`extra` の下のキーはどちらのエントリポイントでも位置を保ちます。
+
+## プロパティを列挙する代わりにノードをシリアライズする
+
+拡張機能がノード自身のプロパティを列挙してノードのシリアライズ済み表現やデバッグ用表現を構築している場合は、`node.serialize()` を使うように切り替えてください。
+
+`id`、`type`、`title`、`flags`、`mode`、`color`、`bgcolor`、`shape`、`showAdvanced` は、ノードインスタンス上の独自データプロパティではなく、ノードデータストアを参照するアクセサプロパティになりました。`Object.keys(node)`、`for...in`、`{ ...node }` ではこれらのフィールドが取得されなくなりましたが、直接の読み取りと書き込み（`node.title`、`node.mode = ...`）はこれまでどおり動作します。`inputs`、`outputs`、`widgets` は引き続き自身の列挙可能プロパティであるため、スプレッドや列挙ではこれら3つが取得されます。
+
+ウィジェットレベルの `serializeValue`（ワークフロー JSON ではなく API プロンプトのペイロードを構築する、独立したシリアライズ層）については、[ウィジェットシステムの移行](/ja/custom-nodes/js/widgets-migration)を参照してください。
