@@ -1,0 +1,97 @@
+---
+title: "フロントエンド拡張機能のウィジェットシステム移行"
+sidebarTitle: "ウィジェットシステム移行"
+description: "ComfyUI フロントエンドにおけるストアベースのウィジェット値: 一意のウィジェット名、undefined の node.widgets、ウィジェット名の変更、addCustomWidget および Agent の setValue 呼び出し。"
+translationSourceHash: 3011c9c5
+translationFrom: custom-nodes/js/widgets-migration.mdx
+translationBlockHashes:
+  "_intro": 87b853c9
+  "Gallery values after the PrimeVue replacement": c6a755f6
+  "Widget names must be unique and stable": 5988a23b
+  "`node.widgets` may be undefined": 7cb43a39
+  "Prefer `node.addCustomWidget()` to pushing onto `node.widgets`": 5ee6030c
+  "Remove widgets with `node.removeWidget()`": 7d19ff02
+  "Agent edits call `setValue` without a pointer event": 140c58f6
+  "Don't call `useWidgetValueStore()` from extension code": 6c2a5cd3
+---
+
+ウィジェットの値は、ウィジェットインスタンス上に直接保持されるのではなく、Pinia をバックエンドとするストアに保存されるようになりました。ウィジェット名はノードごとに一意である必要があり、ウィジェットの名前変更は、新しい名前が未使用の場合にのみ成功します。また `node.widgets` は、最初に代入されるまでは `undefined` である可能性があります。
+
+## PrimeVue 置き換え後のギャラリー値 {#gallery-values-after-the-primevue-replacement}
+
+Vue の `galleria` ウィジェットは、`GALLERIA` 入力スキーマに一致する画像URL文字列の配列を受け取ります。複数の画像を指定すると、サムネイルと前へ/次へボタンが表示されます。ナビゲーションは最初と最後の画像で停止します。
+
+`itemImageSrc` や `thumbnailImageSrc` を持つ PrimeVue の画像オブジェクトはサポートされなくなりました。URL文字列に変換してください。ウィジェットは `showThumbnails`、`showItemNavigators`、`circular`、`autoPlay`、`transitionInterval`、`showIndicators`、`numVisible`、`responsiveOptions` などの PrimeVue オプションを読み取らなくなりました。これらの制御が必要な拡張機能は、独自のギャラリーウィジェットを提供する必要があります。
+
+## ウィジェット名は一意かつ安定している必要があります
+
+同じノード上の2つのウィジェットが同じ名前を共有することはできません。すでに使用されている名前で2つ目のウィジェットを追加すると、ノードがグラフ内にある場合、フロントエンドは新しいウィジェットに `strength#1` のような番号付きのサフィックスを付けて名前を変更します。元の名前で検索すると、最初のウィジェットのみが見つかります：
+
+```js
+node.addWidget('number', 'strength', 0, () => {})
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // ノードがグラフ内にあると 'strength#1'
+```
+
+各ウィジェットに一意の名前を付けてください。
+
+登録済みのウィジェットに新しい `widget.name` を割り当てると、保存されている値が新しい名前へ移動します。ノード上の別のウィジェットがすでにその名前を使用している場合、割り当ては無視され、`widget.name` は古い値を保持するため、後で `widget.name` を確認してください。ウィジェットを名前で参照する入力スロットは更新されません。名前を変更するためにウィジェットを削除して新しいウィジェットを追加しないでください。`removeWidget()` は保存された値を削除し、ウィジェットに直接バインドされた入力スロットをクリアします。それを名前だけで参照する入力スロットは、その名前を保持します。
+
+## `node.widgets` が undefined の可能性がある
+
+`node.widgets` は、少なくとも一度代入されるまで `undefined` を返します。
+ウィジェットを追加する前に配列を初期化してください：
+
+```ts
+export function nodeCreated(node: LGraphNode) {
+  node.widgets ??= []
+  node.widgets.push(myWidget)
+}
+```
+
+読み取り時のガードも同様です：
+
+```ts
+const widgetCount = node.widgets?.length ?? 0
+```
+
+**`node.widgets = undefined` を設定すると、クリアされます。** 後で読み取ると、`[]` ではなく再び `undefined` が返ります。
+
+**ノードがグラフにアタッチされる前に加えられた変更は自動的に反映されます。** コンストラクターや `onNodeCreated` でウィジェットを構築する一般的なケースでは、自分で何かを呼び出す必要はありません。
+
+`node.widgets` は `Object.keys(node)` や、`{...node}` のようなオブジェクトスプレッドに現れます。
+
+## `node.widgets` への push より `node.addCustomWidget()` を優先する
+
+`node.addWidget()`、`node.addCustomWidget()`、`node.addDOMWidget()` で追加したウィジェットはストアに自動的に登録されます。`node.widgets` に直接 push したプレーンオブジェクトも、ノードがグラフに入るとウィジェットインスタンスに変換され登録されます。変換は通常その場で行われますが、凍結されたオブジェクトや設定変更できないプロパティを持つオブジェクトは別のウィジェットに置き換えられるため、`addCustomWidget()` が返すウィジェットを保持するか、`node.widgets` から読み戻してください。それでも `addCustomWidget()` が推奨される呼び出しです。ウィジェットを返し、ワークフローの読み込み時にウィジェットの保存済みの値を復元します。
+
+```js
+node.addCustomWidget({
+  name: 'my_widget',
+  type: 'custom',
+  value: '',
+  options: {},
+  draw(ctx, node, width, y, height) {},
+  mouse(event, pos, node) {}
+})
+```
+
+ノードがグラフに接続される前に `widget.value` を読み書きすると、値はローカルに保持され、接続時にストアへ同期されます。値が失われることはありませんが、その時点までストア駆動の UI（右側のパネルなど）には値が見えません。
+
+## `node.removeWidget()` でウィジェットを削除する
+
+`node.removeWidget(widget)` を使用してウィジェットを削除します。`node.widgets` を直接 splice するとスロットのクリーンアップがスキップされ、削除されたウィジェットの値はノード自体がグラフから削除されるまでストアに残ります。
+
+## アプリ内 Agent の編集はポインターイベントなしで `setValue` を呼び出す
+
+アプリ内 Agent が `BaseWidget` インスタンスであるウィジェットを変更すると、フロントエンドは `widget.setValue(value, { node, canvas })` を呼び出します。これはユーザーの編集と同じメソッドです。以前は `widget.value` を直接代入し、その後に `callback` と `onWidgetChanged` を自分で呼び出していました。`addCustomWidget()` で追加した、または `node.widgets` に直接 push したプレーンオブジェクトも対象です。フロントエンドがそれらを `BaseWidget` インスタンスに変換するためです。DynamicGroup の行数コントローラーとプロモートされたサブグラフホストのウィジェットは、引き続き直接書き込みを受けます。
+
+`setValue` をオーバーライドする場合は、`{ node, e?, canvas? }` の形のオプションを受け取ってください。これらの呼び出しでは `e` は設定されず、`canvas` も存在しないことがあります。`options.e` や `options.canvas` は必ず確認してから読んでください。値だけを渡して元の `setValue` を呼ぶラッパーは引き続き動作します。オプションは `{ node: widget.node }` が既定になります。
+
+`callback` と `onWidgetChanged` は、Agent が送った値ではなく、ウィジェットが受け入れた値を受け取ります。数値ウィジェットは `min`/`max` でクランプし、数値文字列を数値に変換します。`callback` 内では `e` は `undefined` で、キャンバスがない場合は `pos` も `undefined` です。
+
+`setValue` は、数値ウィジェットのクランプと変換を経た値が現在の値とすでに同一（`===`）であれば、変更なしで戻ります。そのため、値が `5` の数値ウィジェットに `'5'` を渡しても何も変わりません。数値ウィジェットが `Number(value)` が `NaN` になる値を受け取った場合も戻ります。`callback` も `onWidgetChanged` も発火せず、グラフのバージョンも変わりません。`'7'` のような数値文字列は変換されて適用されます。
+
+## 拡張機能のコードから `useWidgetValueStore()` を呼び出さない
+
+拡張機能から `useWidgetValueStore()` を呼び出さないでください。代わりに `node.widgets`、`node.addWidget()` / `addCustomWidget()` / `removeWidget()`、および `widget.value` を使用してください。ストアの内部キー管理と、その Pinia への依存は、サポートされる拡張サーフェスではありません。

@@ -1,0 +1,77 @@
+---
+title: "API de puntero del lienzo para widgets y cursores"
+sidebarTitle: "API de puntero del lienzo"
+description: "Gestiona clics, doble clics y arrastres en widgets de lienzo personalizados con onPointerDown y controla los cursores del lienzo desde una extensión del frontend de ComfyUI."
+translationSourceHash: 16ea7f38
+translationFrom: custom-nodes/js/canvas-pointer-api.mdx
+translationBlockHashes:
+  "_intro": b1d4c464
+  "Default behavior": 27a8751b
+  "Handle pointer input on a widget": e4fc63fc
+  "Control the canvas cursor": 9bcc33c8
+---
+El lienzo canaliza la entrada del puntero a través de un `CanvasPointer`. Este decide si una pulsación se convierte en un clic, un doble clic o un arrastre, y ejecuta las funciones de devolución de llamada que asignas para esa pulsación. Los widgets dibujados en el lienzo lo usan mediante `onPointerDown`.
+
+## Comportamiento predeterminado
+
+- Arrastrar varios elementos seleccionados ya no requiere mantener presionada Shift. Hacer clic en un elemento mientras varios están seleccionados sigue deseleccionando los demás.
+- Hacer clic en un enlace conectado de una entrada ya no lo desconecta y lo vuelve a conectar.
+- Una pequeña cantidad de movimiento entre presionar y soltar el puntero sigue contando como un clic. Una vez que el puntero supera el límite de deriva del clic, la pulsación se convierte en un arrastre. El tiempo no afecta la decisión.
+- Un doble clic requiere dos pulsaciones dentro del tiempo de doble clic, separadas como máximo por tres veces la deriva del clic. Solo una pulsación que asigne `onDoubleClick` puede completar un doble clic.
+
+Los usuarios configuran la deriva del clic y el tiempo de doble clic en las configuraciones
+(`Comfy.Pointer.ClickDrift` y `Comfy.Pointer.DoubleClickTime`).
+
+### Seleccionar varios elementos
+
+- `Ctrl` + arrastrar: inicia una selección múltiple
+- `Ctrl` + `Shift` + arrastrar: agrega a la selección
+- `Ctrl` + arrastrar, luego `Shift`: agrega a la selección
+- `Ctrl` + arrastrar, luego `Alt`: elimina de la selección
+
+## Manejar la entrada de puntero en un widget
+
+Asigna `onPointerDown` en un widget. Se ejecuta al presionar con el puntero y recibe el puntero, el nodo y el lienzo. Asigna en el puntero las devoluciones de llamada que necesites; el lienzo ejecuta las adecuadas cuando se resuelve la pulsación:
+
+```js
+widget.onPointerDown = function (pointer, node, canvas) {
+  const e = pointer.eDown
+  const offsetFromNode = [e.canvasX - node.pos[0], e.canvasY - node.pos[1]]
+
+  pointer.onClick = (upEvent) => {
+    console.log(pointer.eDown, pointer.eMove, pointer.eUp)
+  }
+  pointer.onDoubleClick = (upEvent) => this.customFunction(upEvent)
+
+  pointer.onDragStart = () => {}
+  pointer.onDrag = (moveEvent) => {}
+  pointer.onDragEnd = (upEvent) => {}
+  pointer.onDragCancel = () => {}
+
+  pointer.finally = () => {}
+
+  return true
+}
+```
+
+- `onClick` y `onDoubleClick` nunca se ejecutan en la misma pulsación que `onDragStart`, `onDragEnd` u `onDragCancel`. `onDrag` sí puede ejecutarse en una pulsación que termina como clic, porque también recibe el movimiento dentro del límite de deriva del clic.
+- `onDragStart` se ejecuta una vez por arrastre, cuando el puntero supera por primera vez el límite de deriva del clic. Si el puntero se suelta más allá del límite antes de que se informe de algún evento de movimiento, `onDragStart` se ejecuta al soltar, `onDragEnd` se ejecuta justo después y `onDrag` no se ejecuta.
+- Cuando una pulsación asigna `onClick` y `onDoubleClick`, al soltar la primera pulsación de un doble clic se ejecuta `onClick`. La segunda pulsación ejecuta `onDoubleClick` en lugar de `onClick`, así que haz que `onClick` sea seguro si se ejecuta primero. Además, el primer clic puede caer en un elemento cercano en lugar de tu widget, por lo que `onDoubleClick` puede ejecutarse sin que se haya ejecutado tu `onClick`.
+- `onDragEnd` recibe el evento de subida del puntero de un arrastre. `onDragCancel` se ejecuta en su lugar cuando el arrastre se interrumpe, por ejemplo cuando se pierde la captura del puntero.
+- `finally` se ejecuta una vez al terminar la pulsación. Asignar `pointer.finally` ejecuta de inmediato la devolución de llamada a la que reemplaza. Si `onPointerDown` no devuelve `true`, el lienzo asigna su propio `finally`, así que el tuyo se ejecuta durante la pulsación. Devuelve `true` cuando dependas de `finally` para limpiar.
+- `pointer.eDown`, `pointer.eMove` y `pointer.eUp` dan a cada devolución de llamada acceso a toda la secuencia de eventos.
+- Devuelve `true` para impedir que el lienzo maneje la pulsación por su cuenta.
+- Elimina cualquier manejador `widget.mouse` heredado cuando añadas `onPointerDown`. Si `onPointerDown` devuelve `true`, el lienzo sigue rastreando el widget después de soltar y sigue llamando a `widget.mouse` en cada movimiento del puntero.
+
+El lienzo resuelve por ti los dobles clics y los arrastres, así que un widget ya no necesita medir ni cronometrar eventos de puntero por separado. También respeta la deriva de clic y la configuración de doble clic del usuario.
+
+## Controlar el cursor del lienzo
+
+`canvas.state.hoveringOver` contiene indicadores de bits para los tipos de elemento que están bajo el puntero, como un nodo, un grupo, un Reroute o una conexión. Establece `canvas.state.shouldSetCursor` en `false` para evitar que el lienzo establezca el estilo del cursor y luego establécelo tú mismo:
+
+```js
+canvas.state.shouldSetCursor = false
+canvas.canvas.style.cursor = 'pointer'
+```
+
+Iniciar el redimensionamiento de un nodo sigue estableciendo un cursor de redimensionamiento mientras `shouldSetCursor` es `false`. Vuelve a establecer el cursor después de que finalice el redimensionamiento.
