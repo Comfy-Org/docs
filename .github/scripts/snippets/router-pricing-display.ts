@@ -205,6 +205,8 @@ const phrases: Record<string, Translation> = {
 
 const units: Record<string, Translation> = {
   "1M tokens": ["1M tokens", "1M トークン", "1M 令牌", "1M 토큰", "1M de tokens"],
+  "1K characters": ["1K characters", "1K 文字", "1K 字符", "1K 문자", "1K caracteres"],
+  "Recraft credit": ["Recraft credit", "Recraft クレジット", "Recraft 积分", "Recraft 크레딧", "crédito de Recraft"],
   "1K video tokens": ["1K video tokens", "1K 動画トークン", "1K 视频令牌", "1K 동영상 토큰", "1K de tokens de video"],
   "second": ["second", "秒", "秒", "초", "segundo"], "minute": ["minute", "分", "分钟", "분", "minuto"],
   "5 seconds": ["5 s", "5 秒", "5 秒", "5초", "5 s"],
