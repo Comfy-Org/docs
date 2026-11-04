@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 テキストから動画・画像から動画・参照から動画のワークフロー"
 description: "ComfyUI における MiniMax H3 ネイティブワークフローの手順例。ガイドのアンカー固定や latent ノイズマスクで生成動画をより細かく制御できます。"
 sidebarTitle: "ネイティブワークフロー"
-translationSourceHash: 48763c0c
+translationSourceHash: 2d2c970c
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": dde651e5
-  "MiniMax H3 Text to Video (T2V)": 42ec8cfb
+  "MiniMax H3 Text to Video (T2V)": 0cbf3427
   "MiniMax H3 Image to Video (I2V)": 2a06e3fa
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 2ab2df9d
+  "Advanced workflows with the native nodes": 0a482892
 ---
 
 このページは 3 つの基本 MiniMax H3 テンプレートとネイティブノードの高度なテクニックを扱います。機能とライセンスは [MiniMax H3 概要](/ja/tutorials/video/minimax/minimax-h3) を参照してください。
@@ -44,7 +44,7 @@ translationBlockHashes:
   <Card title="VAE: minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
     <code>ComfyUI/models/vae/</code> に配置します
   </Card>
-  <Card title="LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
+  <Card title="LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
     ワークフローのモデルスキャンに必須。オプションの Lightning LoRA turbo 用。<code>ComfyUI/models/loras/</code> に配置します
   </Card>
 </CardGroup>
@@ -272,6 +272,8 @@ H3 ノードの `positive` と latent を `MiniMaxH3AddGuide` に接続:
 
 ウィンドウはモデルの 17 フレーム塊の境界から始まるため、動画と音声は境界をまたいでも揃います。`context_overlap` の上限はウィンドウ長から **17** フレームを引いた値で、それより大きく設定しても警告なしに切り詰められます。デフォルトの **124** では 5 秒のクリップが 1 ウィンドウに収まり、2 つ目のウィンドウが開く最小の長さは **141** フレームです。`context_length` を下げると 1 ステップあたりのメモリが減ります。上げると 1 ステップあたりの前後文脈が増え、コストも上がります。
 
+`context_length` が決めるのは各ステップで見る範囲で、クリップ自体の長さではありません。クリップ長は H3 ノードの `length` 入力（24fps でのフレーム数）で決まるため、ウィンドウより長いクリップも 1 ウィンドウずつ最後までサンプリングされ、指定した長さのまま出力されます。学習範囲は約 **124** から **362** フレーム（24fps で **5** から **15** 秒）で、それより長いクリップは未検証です。
+
 長いクリップは 2 パスに分けるほうが安く済みます。低解像度で長いウィンドウを使い、まず動きと音を固めます。そのあと高解像度で短いウィンドウを使い、ディテールを足します。ウィンドウ長とプロンプト追従は交換関係にあり、各ウィンドウは 1 ショットとしてサンプリングされるため、長くするほどクリップがプロンプトから外れるのが早まります。
 
 減るのは 1 ステップあたりのメモリで、総量ではありません。全体の latent、ウィンドウ融合用のバッファ、デコードはクリップ長に比例したままなので、デコードで OOM になるクリップはそのまま OOM になります。
@@ -279,9 +281,9 @@ H3 ノードの `positive` と latent を `MiniMaxH3AddGuide` に接続:
 ウィンドウ分割には 2 つの制約があります:
 
 - **どのウィンドウにもプロンプト全体が渡ります。** ウィンドウを使うときは、時刻付きのカット割りではなく 1 つの連続したシーンとして書いてください。どのウィンドウもプロンプト全体を見るため、カット時刻は噛み合いません。
-- **ウィンドウは融合されるのであって連結ではありません。** 境界をまたいで厳密に保つ必要がある内容（画面内の文字、セットの細部、顔）はドリフトし得ます。カメラと被写体は安定させます。
+- **ウィンドウは融合されるのであって連結ではありません。** 境界をまたいで厳密に保つ必要がある内容（画面内の文字、セットの細部、顔）はドリフトし得ます。
 
-そのためコンテキストウィンドウは、カットのない連続したシーン（ゆっくりしたプッシュイン、パン、ウィンドウ長を超えるワンカット）に向きます。ショットを切り替えるクリップは、ショットごとに生成してからつなぎます。
+そのためコンテキストウィンドウは、場面が動かない長回しに向きます。固定カメラ、安定した被写体、大きく変わらない背景です。カメラがセットの中を移動したり、被写体が背景の前を歩いたりすると、各ウィンドウで背景の見え方が変わり、継ぎ目が変形として出ます。そうしたクリップは短く分けて生成し、つないでください。
 
 ### 音声を先に作る
 
