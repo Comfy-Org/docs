@@ -1,0 +1,224 @@
+---
+title: "Comfy Router 实时语音会话"
+sidebarTitle: "实时语音"
+description: "通过 Comfy Router 打开 Grok Voice 实时 WebSocket 会话：端点、认证、按秒计费、会话限制，以及可能遇到的错误和关闭代码。"
+translationSourceHash: e4024a38
+translationFrom: development/comfy-router/realtime.mdx
+translationBlockHashes:
+  "_intro": a85f88e5
+  "Endpoint": 2ae36abf
+  "Authentication": 582120fe
+  "Connect": b61ae8c6
+  "Events": a3ac8c47
+  "Pricing": 25d35f6c
+  "Limits": 85e21dff
+  "Errors": 3085ba65
+  "Next": 3e8c1bd8
+---
+
+Comfy Router 中继与 xAI Grok Voice 的实时语音到语音会话，Grok Voice 由 fal 提供。你使用 Comfy API 密钥向 Router 打开一个 WebSocket。Router 会检查你的账户和积分，在上游打开会话，然后双向中继事件。会话按秒从你的 Comfy 积分中扣费。
+
+## 端点
+
+```text
+wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime
+```
+
+该请求是一次 WebSocket 升级（`GET`，并带有 `Connection: Upgrade` 和 `Upgrade: websocket`）。其他任何请求都会以 `426` 拒绝。
+
+## 认证
+
+在升级请求的请求头中发送你的 Comfy API 密钥，可以使用 `X-API-Key: comfyui-...` 或 `Authorization: Bearer comfyui-...`。Router 不会从查询字符串或 WebSocket 子协议中读取密钥。
+
+<Warning>
+浏览器无法为 WebSocket 设置请求头，并且 Comfy API 密钥绝不能传到浏览器。请从你的服务器打开会话，并自行将音频中继到浏览器。
+</Warning>
+
+## 连接
+
+升级成功后，即可发送和接收 xAI 为 Grok Voice 所记录的实时事件。下面这个示例会配置会话、发送一轮文本对话，并打印接收到的每个事件类型。
+
+<CodeGroup>
+
+```python Python
+# pip install websockets msgpack
+import asyncio
+import os
+
+import msgpack
+import websockets
+
+URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+
+
+async def send(ws, event):
+    await ws.send(msgpack.packb(event))
+
+
+async def main():
+    async with websockets.connect(
+        URL,
+        additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+    ) as ws:
+        await send(ws, {
+            "type": "session.update",
+            "session": {
+                "voice": "eve",
+                "instructions": "You are a helpful assistant.",
+                "turn_detection": {"type": "server_vad"},
+            },
+        })
+        await send(ws, {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello!"}],
+            },
+        })
+        await send(ws, {"type": "response.create"})
+
+        async for message in ws:
+            if isinstance(message, str):
+                continue  # fal 自己的 x-fal-message 帧
+            event = msgpack.unpackb(message)
+            print(event["type"])
+            if event["type"] == "response.done":
+                break
+
+
+asyncio.run(main())
+```
+
+```javascript Node.js
+// npm install ws @msgpack/msgpack
+import WebSocket from "ws";
+import { encode, decode } from "@msgpack/msgpack";
+
+const ws = new WebSocket(
+  "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
+  { headers: { "X-API-Key": process.env.COMFY_API_KEY } },
+);
+
+ws.on("unexpected-response", (req, res) => {
+  // 升级请求被拒绝。JSON 响应体会说明原因。
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error(res.statusCode, body));
+});
+
+const send = (event) => ws.send(encode(event));
+
+ws.on("open", () => {
+  send({
+    type: "session.update",
+    session: {
+      voice: "eve",
+      instructions: "You are a helpful assistant.",
+      turn_detection: { type: "server_vad" },
+    },
+  });
+  send({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Hello!" }],
+    },
+  });
+  send({ type: "response.create" });
+});
+
+ws.on("message", (data, isBinary) => {
+  if (!isBinary) return; // fal 自己的 x-fal-message 帧
+  const event = decode(data);
+  console.log(event.type);
+  if (event.type === "response.done") ws.close();
+});
+
+ws.on("close", (code) => console.log("closed", code));
+```
+
+</CodeGroup>
+
+完成后请立即关闭套接字。计费会持续到会话关闭为止，而不是到最后一个响应结束。
+
+## 事件
+
+Router 不定义自己的事件协议。服务器事件会完全按照 fal 发送它们的方式送达你手上，而 Router 接受的客户端事件也会原样转发。有关事件列表、会话字段、音色和音频格式，请参阅：
+
+- [xAI 语音到语音](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech)以及 xAI 的 [realtime 事件 schema](https://docs.x.ai/voice-realtime.ws.json)
+- fal 的 [Grok Voice realtime 模型页面](https://fal.ai/models/xai/grok-voice/realtime)及其 [API 页面](https://fal.ai/models/xai/grok-voice/realtime/api)
+
+像示例中那样，把每个客户端事件作为一条 msgpack 二进制消息发送。这是 fal 的 realtime 客户端所使用的分帧方式，模型的事件也会以同样的方式返回，即从 `session.created` 开始的 msgpack 二进制消息。fal 还会发送自己的、类型为 `x-fal-message` 的 JSON 文本消息（计时信息），你可以跳过它们。Router 的检查也接受把客户端事件作为一条 JSON 文本消息发送，但除非你已经用你的客户端测试过 JSON，否则请使用 msgpack。
+
+Router 在转发每个客户端事件之前都会对其进行检查：
+
+- **事件类型：** `session.update`、`input_audio_buffer.append`、`input_audio_buffer.commit`、`input_audio_buffer.clear`、`conversation.item.create`、`conversation.item.delete`、`conversation.item.truncate`、`response.create`、`response.cancel`，以及 fal 的 `x-fal-session.configure`。
+- **模型：** `session.update` 中的 `model` 必须是 `grok-voice-latest`、`grok-voice-3.0` 或 `grok-voice-2.0`。
+- **工具：** 允许使用由你的客户端执行的函数工具。服务器端工具（网络搜索、X 搜索、文件搜索和 MCP）会被拒绝。
+- **媒体：** 图像和视频输入会被拒绝。会话仅支持语音和文本。
+- **大小：** 单条客户端消息最大为 1 MiB。
+
+被拒绝的事件不会被转发，Router 会以关闭码 `1008` 关闭会话。
+
+## 定价
+
+一次会话的费用为**每秒 $0.0011869**（约每分钟 $0.0712，或每秒 0.2504 积分、约每分钟 15.0 积分，按 211 积分 = 1 美元计算）。会话开启期间以 15 秒为一个增量计费，最后不足一个增量的部分按秒计费并向上取整。计费从升级开始，一直到 socket 关闭为止，无论期间是否有音频传输。
+
+## 限制
+
+| 限制 | 值 |
+| --- | --- |
+| 每个账户的会话数 | 同一时间只能有一个打开的会话。打开第二个会话会返回 `429`，并带有 `router.realtime.session_already_live`。 |
+| 会话时长 | 最多 30 分钟，且绝不会超过连接时你的积分余额所能覆盖的时长。 |
+| 会话期间的积分 | Router 每 15 秒重新检查你的余额，当余额无法再覆盖下一秒时结束会话。 |
+| 连接速率 | 每次升级尝试都会计入你的[每个调用方的请求速率](/zh/development/comfy-router/limitations#请求按调用方进行速率限制)，并与其他 Router 调用共享。 |
+
+当会话达到时间限制或积分已用完时，连接可能会在没有关闭帧的情况下关闭（通常表现为关闭代码 `1006`）。请仅在充值之后重新连接；如果需要更多时间，请启动新会话。
+
+## 错误
+
+### 升级之前
+
+如果 Router 拒绝连接，它不会切换协议，而是返回 HTTP 状态码和 JSON 响应体：
+
+```json
+{
+  "detail": "Insufficient credits to open a realtime session.",
+  "error_type": "insufficient_credits",
+  "code": "router.realtime.insufficient_credits"
+}
+```
+
+根据 `code` 进行判断；`detail` 供人阅读。
+
+| 状态码 | `code` | 原因 | 处理方式 |
+| --- | --- | --- | --- |
+| `426` | `router.realtime.upgrade_required` | 请求不是 WebSocket 升级请求。 | 使用 WebSocket 客户端连接。 |
+| `401` | `router.realtime.unauthorized` | API 密钥缺失或无效。 | 在 `X-API-Key` 或 `Authorization: Bearer` 中发送有效密钥。 |
+| `402` | `router.realtime.insufficient_credits` | 你的余额不足以支付至少一秒的会话费用。 | 添加积分，然后重新连接。 |
+| `402` | `router.realtime.spend_denied` | 该会话将要从其扣费的钱包没有足够资金。响应体中的 `denied_reason` 和 `billed_workspace` 会指明是哪个钱包。 | 向该工作区添加积分，然后重新连接。 |
+| `403` | `router.realtime.provider_disabled` | 你的工作区的合作伙伴提供商策略不允许使用此提供商。 | 请工作区管理员允许使用。 |
+| `404` | `router.realtime.model_not_allowed` | URL 中的模型不可用于实时会话。 | 检查 URL。 |
+| `429` | `router.realtime.rate_limited` | 你超出了请求速率限制。 | 等待 `Retry-After`，然后重试。 |
+| `429` | `router.realtime.session_already_live` | 你的账户下已有另一个会话处于打开状态。 | 先关闭它。 |
+| `429` | `router.realtime.concurrency_limit` | 并发合作伙伴模型调用过多。 | 减少并发任务后重试。 |
+| `502` | `router.realtime.upstream_refused`、`router.realtime.token_mint_failed` | 上游提供商未能打开会话。 | 使用退避策略重试。 |
+| `503` | 其他任何 `router.realtime.*` 代码 | 实时会话暂时不可用。 | 使用退避策略重试。 |
+
+### 升级之后
+
+| 关闭代码 | 含义 | 处理方式 |
+| --- | --- | --- |
+| `1008` | 客户端事件被拒绝（参见[事件](#事件)）。 | 修正该事件。会话已结束。 |
+| `1012` | Router 正在重启。 | 重新连接。会启动新会话，并从新的升级开始计费。 |
+| `1006`（没有关闭帧） | 当会话达到时间限制或积分用完时，客户端通常会上报此代码。网络中断看起来也一样。 | 添加积分或启动新会话。 |
+
+任何其他关闭代码都来自 fal 或 xAI。请参阅 [事件](#事件) 下链接的文档。
+
+## 下一步
+
+- [计费](/zh/development/comfy-router/billing)：Router 如何收费以及如何核对用量。
+- [错误与重试](/zh/development/comfy-router/errors)：其他 Router 调用返回的错误分类。
+- [限制](/zh/development/comfy-router/limitations)：请求速率及其他限制。

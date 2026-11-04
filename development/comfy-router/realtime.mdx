@@ -1,0 +1,212 @@
+---
+title: "Comfy Router realtime voice sessions"
+sidebarTitle: "Realtime voice"
+description: "Open a Grok Voice realtime WebSocket session through Comfy Router: the endpoint, authentication, per-second pricing, session limits, and the errors and close codes you can get."
+---
+
+Comfy Router relays a realtime speech-to-speech session with xAI's Grok Voice, served by fal. You open one WebSocket to Router with your Comfy API key. Router checks your account and credits, opens the session upstream, and then relays events in both directions. You pay per second of session from your Comfy credits.
+
+## Endpoint
+
+```text
+wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime
+```
+
+The request is a WebSocket upgrade (`GET` with `Connection: Upgrade` and `Upgrade: websocket`). Anything else is refused with `426`.
+
+## Authentication
+
+Send your Comfy API key in a header on the upgrade request, either as `X-API-Key: comfyui-...` or as `Authorization: Bearer comfyui-...`. Router does not read a key from the query string or from the WebSocket subprotocol.
+
+<Warning>
+Browsers cannot set headers on a WebSocket, and a Comfy API key must never reach a browser. Open the session from your server and relay audio to the browser yourself.
+</Warning>
+
+## Connect
+
+Once the upgrade succeeds, send and receive the realtime events xAI documents for Grok Voice. This example configures the session, sends one text turn, and prints each event type it receives.
+
+<CodeGroup>
+
+```python Python
+# pip install websockets msgpack
+import asyncio
+import os
+
+import msgpack
+import websockets
+
+URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+
+
+async def send(ws, event):
+    await ws.send(msgpack.packb(event))
+
+
+async def main():
+    async with websockets.connect(
+        URL,
+        additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+    ) as ws:
+        await send(ws, {
+            "type": "session.update",
+            "session": {
+                "voice": "eve",
+                "instructions": "You are a helpful assistant.",
+                "turn_detection": {"type": "server_vad"},
+            },
+        })
+        await send(ws, {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello!"}],
+            },
+        })
+        await send(ws, {"type": "response.create"})
+
+        async for message in ws:
+            if isinstance(message, str):
+                continue  # fal's own x-fal-message frames
+            event = msgpack.unpackb(message)
+            print(event["type"])
+            if event["type"] == "response.done":
+                break
+
+
+asyncio.run(main())
+```
+
+```javascript Node.js
+// npm install ws @msgpack/msgpack
+import WebSocket from "ws";
+import { encode, decode } from "@msgpack/msgpack";
+
+const ws = new WebSocket(
+  "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
+  { headers: { "X-API-Key": process.env.COMFY_API_KEY } },
+);
+
+ws.on("unexpected-response", (req, res) => {
+  // The upgrade was refused. The JSON body names the reason.
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error(res.statusCode, body));
+});
+
+const send = (event) => ws.send(encode(event));
+
+ws.on("open", () => {
+  send({
+    type: "session.update",
+    session: {
+      voice: "eve",
+      instructions: "You are a helpful assistant.",
+      turn_detection: { type: "server_vad" },
+    },
+  });
+  send({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Hello!" }],
+    },
+  });
+  send({ type: "response.create" });
+});
+
+ws.on("message", (data, isBinary) => {
+  if (!isBinary) return; // fal's own x-fal-message frames
+  const event = decode(data);
+  console.log(event.type);
+  if (event.type === "response.done") ws.close();
+});
+
+ws.on("close", (code) => console.log("closed", code));
+```
+
+</CodeGroup>
+
+Close the socket as soon as you are done. You are billed until the session closes, not until the last response.
+
+## Events
+
+Router does not define its own event protocol. Server events reach you exactly as fal sends them, and the client events Router accepts are forwarded unchanged. For the event list, session fields, voices, and audio formats, see:
+
+- [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) and xAI's [realtime event schema](https://docs.x.ai/voice-realtime.ws.json)
+- fal's [Grok Voice realtime model page](https://fal.ai/models/xai/grok-voice/realtime) and its [API page](https://fal.ai/models/xai/grok-voice/realtime/api)
+
+Send each client event as one msgpack binary message, as in the examples. This is the framing fal's realtime clients use, and the model's events come back the same way, as msgpack binary messages starting with `session.created`. fal also sends its own JSON text messages of type `x-fal-message` (timing information); you can skip them. Router's checks also accept a client event as one JSON text message, but use msgpack unless you have tested JSON with your client.
+
+Router checks each client event before forwarding it:
+
+- **Event types:** `session.update`, `input_audio_buffer.append`, `input_audio_buffer.commit`, `input_audio_buffer.clear`, `conversation.item.create`, `conversation.item.delete`, `conversation.item.truncate`, `response.create`, `response.cancel`, and fal's `x-fal-session.configure`.
+- **Models:** a `model` in `session.update` must be `grok-voice-latest`, `grok-voice-3.0`, or `grok-voice-2.0`.
+- **Tools:** function tools that your client executes are allowed. Server-side tools (web search, X search, file search, and MCP) are refused.
+- **Media:** image and video input is refused. The session is voice and text only.
+- **Size:** one client message may be at most 1 MiB.
+
+A refused event is not forwarded, and Router closes the session with close code `1008`.
+
+## Pricing
+
+A session costs **$0.0011869 per second** (about $0.0712 per minute, or 0.2504 credits per second, about 15.0 credits per minute, at 211 credits = $1 USD). It is billed in 15-second increments while the session is open, and the final partial increment is billed by the second, rounded up. Billing runs from the upgrade until the socket closes, whether or not audio is flowing.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Sessions per account | One open session at a time. Opening a second returns `429` with `router.realtime.session_already_live`. |
+| Session length | At most 30 minutes, and never longer than your credit balance covers at the time of connection. |
+| Credits during a session | Router rechecks your balance every 15 seconds and ends the session when the balance can no longer cover the next second. |
+| Connection rate | Each upgrade attempt counts toward your [per-caller request rate](/development/comfy-router/limitations#requests-are-rate-limited-per-caller), shared with your other Router calls. |
+
+When a session reaches its time limit or runs out of credits, the connection may close without a close frame (often surfaced as close code `1006`). Reconnect only after topping up, or start a new session if you need more time.
+
+## Errors
+
+### Before the upgrade
+
+If Router refuses the connection, it answers with an HTTP status and a JSON body instead of switching protocols:
+
+```json
+{
+  "detail": "Insufficient credits to open a realtime session.",
+  "error_type": "insufficient_credits",
+  "code": "router.realtime.insufficient_credits"
+}
+```
+
+Switch on `code`; `detail` is for people.
+
+| Status | `code` | Cause | What to do |
+| --- | --- | --- | --- |
+| `426` | `router.realtime.upgrade_required` | The request was not a WebSocket upgrade. | Connect with a WebSocket client. |
+| `401` | `router.realtime.unauthorized` | The API key is missing or invalid. | Send a valid key in `X-API-Key` or `Authorization: Bearer`. |
+| `402` | `router.realtime.insufficient_credits` | Your balance cannot cover at least one second of session. | Add credits, then reconnect. |
+| `402` | `router.realtime.spend_denied` | The wallet the session would bill has no funds for it. `denied_reason` and `billed_workspace` in the body say which wallet. | Add credits to that workspace, then reconnect. |
+| `403` | `router.realtime.provider_disabled` | Your workspace's partner-provider policy does not allow this provider. | Ask a workspace admin to allow it. |
+| `404` | `router.realtime.model_not_allowed` | The model in the URL is not available for realtime. | Check the URL. |
+| `429` | `router.realtime.rate_limited` | You exceeded the request rate. | Wait for `Retry-After`, then retry. |
+| `429` | `router.realtime.session_already_live` | Another session is already open for your account. | Close it first. |
+| `429` | `router.realtime.concurrency_limit` | Too many concurrent partner-model calls. | Reduce concurrent work and retry. |
+| `502` | `router.realtime.upstream_refused`, `router.realtime.token_mint_failed` | The upstream provider did not open the session. | Retry with backoff. |
+| `503` | any other `router.realtime.*` code | Realtime sessions are temporarily unavailable. | Retry with backoff. |
+
+### After the upgrade
+
+| Close code | Meaning | What to do |
+| --- | --- | --- |
+| `1008` | A client event was refused (see [Events](#events)). | Fix the event. The session is over. |
+| `1012` | Router is restarting. | Reconnect. A new session starts and is billed from the new upgrade. |
+| `1006` (no close frame) | Often what clients report when the session reached its time limit or ran out of credits. Network drops look the same. | Add credits or start a new session. |
+
+Any other close comes from fal or xAI. See their documentation linked under [Events](#events).
+
+## Next
+
+- [Billing](/development/comfy-router/billing): how Router charges and how to reconcile usage.
+- [Errors and retries](/development/comfy-router/errors): the error buckets other Router calls return.
+- [Limitations](/development/comfy-router/limitations): request rates and other limits.
