@@ -165,8 +165,13 @@ function modelCategory(id: string, outputs: string[]): PricingCategory {
   throw new Error(`No pricing category for ${id}`);
 }
 
-function loadMetronomeData(): MetronomeData {
-  const data = JSON.parse(readFileSync(METRONOME_FILE, "utf8")) as MetronomeData;
+// Rates read from a supplemental source cited in Comfy-Org/cloud. Only these may
+// name a model the catalog does not list yet (see catalogRates).
+const CLOUD_SOURCED_RATES = new WeakSet<MetronomeRate>();
+const CLOUD_SOURCE_REF = "https://github.com/Comfy-Org/cloud/";
+
+function loadMetronomeData(file = METRONOME_FILE): MetronomeData {
+  const data = JSON.parse(readFileSync(file, "utf8")) as MetronomeData;
   if (!data.snapshot_at || data.credits_per_usd <= 0 || !Array.isArray(data.rates)) {
     throw new Error(`${METRONOME_FILE}: invalid Metronome pricing data`);
   }
@@ -176,6 +181,9 @@ function loadMetronomeData(): MetronomeData {
       && source.rates.some((rate) => rate.entitled !== true)) {
       throw new Error(`${METRONOME_FILE}: fal rates require an active, entitled rate-card entry`);
     }
+  }
+  for (const source of supplementalSources) {
+    if (source.source_ref?.startsWith(CLOUD_SOURCE_REF)) for (const rate of source.rates) CLOUD_SOURCED_RATES.add(rate);
   }
   data.rates.push(...supplementalSources.flatMap(({ rates }) => rates));
   for (const rate of data.rates) {
@@ -206,6 +214,27 @@ function resolveKeyedRates(rates: MetronomeRate[]): MetronomeRate[] {
   const routeKey = (rate: MetronomeRate) => JSON.stringify([rate.model_id, rate.serving_provider]);
   const keyed = new Set(rates.filter((rate) => rate.kind !== "usage").map(routeKey));
   return rates.filter((rate) => rate.kind !== "usage" || !keyed.has(routeKey(rate)));
+}
+
+/**
+ * Splits rates into those the page renders and staged rates whose model the
+ * catalog does not list yet. A rates PR can land before the spec sync that adds
+ * its models; staged rates render once the sync lands. Only rates from a
+ * Comfy-Org/cloud supplemental source can be staged, so a mistyped model ID in
+ * the snapshot or a third-party source still fails.
+ */
+function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: MetronomeRate[]; staged: MetronomeRate[] } {
+  const modelIds = new Set(models.map((model) => model.id));
+  const staged = rates.filter((rate) => !modelIds.has(rate.model_id));
+  const missingModels = [...new Set(staged.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => rate.model_id))];
+  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog`);
+  return { rates: rates.filter((rate) => modelIds.has(rate.model_id)), staged };
+}
+
+function stagedRatesWarning(staged: MetronomeRate[]): string | undefined {
+  const ids = [...new Set(staged.map((rate) => rate.model_id))].sort();
+  if (!ids.length) return undefined;
+  return `${METRONOME_FILE}: skipping ${staged.length} staged rate(s) for model IDs absent from the current catalog, which render once a spec sync adds them: ${ids.join(", ")}`;
 }
 
 function validateCreditConversion(rate: MetronomeRate, creditsPerUsd: number): void {
@@ -448,11 +477,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
     : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
-  const modelIds = new Set(models.map((model) => model.id));
-  const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
-  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+  const rates = catalogRates(data.rates, models).rates;
   const modelsById = new Map(models.map((model) => [model.id, model]));
-  for (const rate of data.rates) {
+  for (const rate of rates) {
     const model = modelsById.get(rate.model_id)!;
     displayProvider(model.id, model.providers, rate.serving_provider);
   }
@@ -462,7 +489,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     for (const model of models.filter((candidate) => candidate.category === category)) {
       for (const provider of model.providers) {
         const routes = providers.get(provider) ?? [];
-        routes.push({ model, rates: data.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider) });
+        routes.push({ model, rates: rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider) });
         providers.set(provider, routes);
       }
     }
@@ -1207,6 +1234,8 @@ function pricingCoverageErrors(): string[] {
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   const output = render();
+  const stagedWarning = stagedRatesWarning(catalogRates(loadMetronomeData().rates, loadCatalog()).staged);
+  if (stagedWarning) console.warn(stagedWarning);
   const coverageErrors = pricingCoverageErrors();
   if (coverageErrors.length) {
     for (const error of coverageErrors) console.error(error);
@@ -1226,4 +1255,4 @@ if (import.meta.main) {
   }
 }
 
-export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
+export { catalogRates, checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
