@@ -1268,6 +1268,25 @@ const queueNotice = (() => {
   };
 })();
 
+/**
+ * Docs-local notices for individual models, keyed by Router model id and rendered
+ * under the intro of that model's page (hand-written or derived). Use it for
+ * upstream changes the mirrored `router-schemas/` documents do not carry, such as
+ * a provider retiring a model; delete the entry and regen once it no longer applies.
+ */
+const XAI_IMAGE_QUALITY_RETIREMENT = "xAI retired `grok-imagine-image-quality` on Nov 2, 2026. Requests are now served by `grok-imagine-image-2.0` at low quality. See [xAI's migration notice](https://docs.x.ai/developers/migration/imagine-image-quality-nov-2).";
+export const MODEL_NOTICES: Record<string, string> = {
+  "xai/grok-imagine-image-pro": `xAI retired \`grok-imagine-image-pro\` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement), and routed its requests to \`grok-imagine-image-quality\`. ${XAI_IMAGE_QUALITY_RETIREMENT}`,
+  "xai/grok-imagine-image-quality": XAI_IMAGE_QUALITY_RETIREMENT,
+};
+
+/** The notices for every model a page documents, each once, as `<Warning>` blocks. */
+export function modelNotices(models: string[]): string {
+  return [...new Set(models.map((model) => MODEL_NOTICES[model]).filter(Boolean))]
+    .map((notice) => `\n<Warning>\n${notice}\n</Warning>\n`)
+    .join("");
+}
+
 function renderPage(spec: Spec, dir: string): string {
   const both = spec.variants.length > 1;
   // The one-time setup a snippet cannot run without. Everything else that is
@@ -1308,7 +1327,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
-${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}${modelNotices(spec.variants.map((v) => v.model))}
 ${body}
 
 <RouterCodeFooter />
@@ -1455,7 +1474,7 @@ sidebarTitle: ${JSON.stringify(title)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
-${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}${modelNotices([model])}
 ## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}

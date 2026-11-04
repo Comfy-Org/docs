@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
@@ -61,8 +61,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -85,7 +85,7 @@ describe("public Router pricing", () => {
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
     expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Pika", "Runware", "WaveSpeed"]);
-    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
+    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield", "Tencent"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
@@ -152,10 +152,11 @@ describe("public Router pricing", () => {
     }
     for (const id of [
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
-      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
+      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1",
     ]) {
-      expect(cell(id)).toBe("0.266 / GPU-second");
+      expect(cell(id)).toBe("Usage-based<br />request usage");
     }
+    expect(cell("freepik/ai-image-upscaler-precision-v2")).toBe("Usage-based<br />dimensions and scale");
   });
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
@@ -179,26 +180,37 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
-  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+  test("shows GPU-second pricing only for rates whose own unit is GPU-second", () => {
+    const usage = snapshot.rates.find((rate) => rate.kind === "usage")!;
+    expect(isComfyGpuMetered({ ...usage, unit: "per GPU-second" })).toBe(true);
+    expect(isComfyGpuMetered({ ...usage, unit: "variable based on reported usage" })).toBe(false);
+    expect(isComfyGpuMetered({ ...usage, kind: "flat", unit: "per GPU-second" })).toBe(false);
+    // No synced rate is GPU-second metered today, so the GPU rate and its note stay off the page.
+    expect(snapshot.rates.some(isComfyGpuMetered)).toBe(false);
+    expect(sourcePage).not.toContain("GPU-second");
     const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
     const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
-    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
-      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
     expect(comfyUsageRows.length).toBeGreaterThan(0);
-    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
     expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
-    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
-    expect(alternateUsageRows.length).toBeGreaterThan(0);
-    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
-    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
+    expect([...comfyUsageRows, ...usdComfyUsageRows].every((row) => row.at(-1)?.startsWith("Usage-based<br />"))).toBe(true);
+  });
+
+  test("renders owner-served xAI image rows as provider-reported usage, not GPU-seconds", () => {
+    for (const id of ["xai/grok-imagine-image", "xai/grok-imagine-image-2.0", "xai/grok-imagine-image-pro", "xai/grok-imagine-image-quality"]) {
+      for (const view of [tables, usdTables]) {
+        const row = view.filter((table) => table.provider === "Comfy").flatMap((table) => table.rows)
+          .find((candidate) => candidate[1] === `\`${id}\``)!;
+        expect(row.at(-1)).toBe("Usage-based<br />request usage");
+      }
+    }
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(692);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(661);
+    expect(snapshot.rates).toHaveLength(687);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(658);
     for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -281,10 +293,10 @@ describe("public Router pricing", () => {
     expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
     expect(geminiRow[3]).toContain("Text: 527.5");
-    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
+    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1.5`")!;
     expect(gptImage).toHaveLength(4);
-    expect(gptImage[2]).toBe("Text: 1055<br />Image: 2110");
-    expect(gptImage[3]).toBe("Image: 8440");
+    expect(gptImage[2]).toBe("Text: 1055<br />Image: 1688");
+    expect(gptImage[3]).toBe("Text: 2110<br />Image: 6752");
   });
 
   test("orders LLM model versions numerically newest first", () => {
@@ -300,7 +312,7 @@ describe("public Router pricing", () => {
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-image-1.5`"))!;
     const imageIndex = (modelId: string) => imageTokens.rows.findIndex((row) => row[1] === `\`${modelId}\``);
-    expect(imageIndex("openai/gpt-image-1.5")).toBeLessThan(imageIndex("openai/gpt-image-1"));
+    expect(imageIndex("openai/gpt-image-2.5-flare")).toBeLessThan(imageIndex("openai/gpt-image-1.5"));
   });
 
   test("collapses request-priced image operations into columns", () => {

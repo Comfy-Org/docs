@@ -1,0 +1,131 @@
+---
+title: "프론트엔드 확장 프로그램을 위한 연결 콜백 마이그레이션"
+sidebarTitle: "연결 콜백 마이그레이션"
+description: "onConnectionsChange 및 노드 제거 콜백의 순서, 서브그래프 경계에서의 SubgraphIO, 그리고 ComfyUI 확장 프로그램에서의 graph.events."
+translationSourceHash: 06a9ae24
+translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": cd84d91b
+  "Check for SubgraphIO at subgraph boundaries": c049a9fe
+  "Subscribe to node lifecycle events with graph.events": 1100692e
+  "Node removal fires callbacks in this order (partially tested)": 720324f8
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "API prompt import does not reconnect resolved inputs": 619d6b69
+  "Reject connections before they are made": b9b94a8e
+  "Removing a link inside the output callback skips the input callback": 3317def4
+  "Replace removed slot events": 5c3ec663
+  "Read connection state from callback arguments or node methods": 9da17ab0
+---
+
+콜백 시그니처는 변경되지 않았습니다. `onConnectionsChange`, `onConnectInput`,
+`onConnectOutput`, `onBeforeConnectInput`은 기존 인자와 타이밍을 그대로 유지합니다.
+링크 등록 및 `LinkNetwork` API 변경 사항은
+[링크 등록 마이그레이션](/ko/custom-nodes/js/link-registration-migration)을 참조하세요.
+
+## 서브그래프 경계에서 SubgraphIO 확인하기
+
+서브그래프 경계(`SubgraphInput` 또는 `SubgraphOutput`)에서도 `onConnectionsChange`는 실행되지만, 다섯 번째 인자는 일반적인 `INodeInputSlot`/`INodeOutputSlot`이 아니라 `SubgraphIO`입니다. 해당 인자를 일반 슬롯으로 다루기 전에 먼저 확인하세요. 프런트엔드의 `isSubgraphInput`과 `isSubgraphOutput` 가드는 확장에 노출되지 않으므로, 모든 `SubgraphIO`가 가지고 노드 슬롯은 가지지 않는 `linkIds` 배열과 `parent` 노드를 확인합니다.
+
+```js
+function isSubgraphIO(slot) {
+  return slot != null && Array.isArray(slot.linkIds) && 'parent' in slot
+}
+
+nodeType.prototype.onConnectionsChange = function (
+  type,
+  index,
+  isConnected,
+  link,
+  slotOrIO
+) {
+  if (isSubgraphIO(slotOrIO)) return
+  // slotOrIO is INodeInputSlot | INodeOutputSlot
+}
+```
+
+## graph.events로 노드 수명 주기 이벤트 구독하기
+
+`graph.events`는 `node:added`, `node:before-removed`, `node:removed`를 전달합니다. 확장의 여러 부분에서 노드가 추가되거나 제거되는 것을 관찰해야 할 때 사용하세요:
+
+```ts
+graph.events.addEventListener('node:added', (e) => {
+  console.log('added', e.detail.node.id)
+})
+```
+
+`node.onAdded`, `node.onRemoved`, 그리고 단일 슬롯인 `graph.onNodeAdded`/`graph.onNodeRemoved`도 여전히 동작하지만, `graph.onNodeAdded`에 할당하면 기존 핸들러가 교체됩니다. 즉, 두 번째 구독자가 첫 번째 구독자를 조용히 밀어냅니다. 추가/제거 과정에서 거부하거나 변경해야 하는 경우가 아니라면 `graph.events`를 사용하는 것이 좋습니다. connect/disconnect에 대해서는 다중 구독자에 해당하는 기능이 없으며, `onConnectionsChange`가 여전히 연결별 유일한 훅입니다.
+
+## 노드 제거 시 콜백은 다음 순서로 발생합니다 (부분적으로 테스트됨)
+
+노드를 제거하면 다음 순서로 콜백이 발생합니다:
+
+1. `node:before-removed`: 노드는 여전히 완전히 연결된 상태입니다.
+2. 제거되는 노드와 연결된 각 피어에서 `onConnectionsChange(..., false, ...)`가
+   호출되며, 이때 제거되는 노드는 아직 그래프에 남아 있습니다.
+3. `node.onRemoved()`: `node.graph`가 여전히 설정되어 있습니다.
+4. 노드가 그래프 인덱스와 저장소에서 분리되고, `node.graph`가
+   `null`이 됩니다.
+5. `onNodeRemoved(node)`, 그다음 `node:removed`가 호출되며, 둘 다 이미
+   분리된 노드를 봅니다.
+
+테스트는 `node:before-removed → node.onRemoved() → onNodeRemoved(node)`를
+다루고, 별도로 `node:removed`가 분리된 노드를 본다는 점을 검증합니다. 2단계를
+포함한 전체 순서는 소스에서 관찰된 것이며, 하나의 엔드투엔드 테스트로 보장되는
+것은 아닙니다.
+
+피어의 `onConnectionsChange` 핸들러에서 제거된 노드를 확인하려면 2단계에서
+`graph.getNodeById()`를 통해 확인하세요. `node:removed` 시점에는 노드가 이미
+사라진 뒤입니다.
+
+## 워크플로 로드 시 onConnectionsChange가 실행되기 전에 피어 노드가 해석됩니다
+
+`graph.configure()`는 워크플로의 모든 노드를 생성한 다음 각 노드의 `configure()`가
+실행되면서 복원된 링크에 대해 `onConnectionsChange`를 발생시킵니다. 따라서 로드 중에
+`onConnectionsChange` 콜백이 실행될 때는 모든 피어 노드가 이미 존재하고 해당 링크도
+이미 등록되어 있으므로, 그 콜백 내부에서의 `graph.getNodeById()`와 링크 조회가
+올바르게 해석됩니다.
+
+## API 프롬프트 가져오기는 확인된 입력을 다시 연결하지 않습니다
+
+`app.loadApiJson()`은 두 번째 연결 해제/재연결 패스를 실행하지 않고 확인 가능한 각 입력을 연결합니다. 확장 프로그램은 API 프롬프트 가져오기 중에 복제된 `onConnectionsChange` 알림에 의존해서는 안 됩니다. 각 연결 핸들러가 첫 번째 알림에서 작업을 수행하도록 하고, 가져온 그래프 전체가 필요로 하는 작업은 `afterConfigureGraph` 또는 `afterLoadGraph`로 옮기십시오.
+
+소스 출력이나 대상 슬롯이 아직 존재하지 않는 입력은 패스가 진행되는 동안 재시도됩니다. 이는 동적 입력 동작을 유지합니다: 성공한 연결이 나중에 대기 중인 연결에 필요한 슬롯을 생성할 수 있습니다. 이미 확인된 연결은 반복되지 않으며, 확장에서 거부된 연결은 엔드포인트를 사용할 수 있게 되어도 재시도되지 않습니다.
+
+이는 API 프롬프트 가져오기만 변경합니다. 일반 워크플로 로딩은 위에서 설명한 대로 여전히 `graph.configure()`를 사용하며, 연결 콜백 서명은 변경되지 않습니다.
+
+## 연결이 만들어지기 전에 거부하기
+
+연결을 거부하려면 소스 노드의 `onConnectOutput` 또는 대상 노드의 `onConnectInput`에서 `false`를 반환하세요. 두 콜백은 그래프가 무엇이든 변경하기 전에 실행되므로, 대상 입력에 이미 존재하는 링크는 그대로 유지됩니다:
+
+```js
+nodeType.prototype.onConnectOutput = function (
+  slot,
+  type,
+  input,
+  targetNode,
+  targetSlot
+) {
+  return !shouldReject(type, targetNode)
+}
+```
+
+`onConnectionsChange`에서 거부하지 마세요. 이 콜백이 실행될 시점에는 새 링크가 이미 대상 입력이 갖고 있던 링크를 교체한 뒤이므로, 새 링크를 제거하면 입력이 연결 해제된 상태로 남습니다.
+
+## 출력 콜백 내부에서 링크를 제거하면 입력 콜백이 건너뛰어짐
+
+링크를 연결하면 출력 쪽의 `onConnectionsChange`가 먼저 호출되고, 그다음 입력 쪽의 것이 호출됩니다. 출력 쪽 핸들러가 반환하기 전에 같은 링크를 제거하면, 입력 쪽은 제거로 인해 `isConnected === false` 콜백을 받고, 새 링크에 대한 `isConnected === true` 콜백은 건너뜁니다. 양쪽이 항상 연결을 본다고 가정하지 마세요. 핸들러가 그래프에 다시 진입한다면 전달받은 링크가 여전히 연결되어 있는지 확인하세요. 이것은 관찰된 동작이며 테스트된 계약이 아닙니다. 현재 건너뛰기 경로를 실행하는 테스트는 없습니다.
+
+## 제거된 슬롯 이벤트 교체
+
+`node:slot-links:changed`와 `node:slot-errors:changed`가 제거되었으며, 같은 이름의 대체 이벤트는 없습니다. 다음으로 이전(migrate)하세요:
+
+- 연결 상태를 반응형으로 읽으려면 `node.isInputConnected()`, `node.isOutputConnected()` 또는
+  `node.getOutputNodes()`를 사용하거나,
+- 슬롯이 연결되거나 연결 해제되는 정확한 시점에 코드를 실행해야 할 때는
+  `onConnectionsChange`를 사용하세요.
+
+## 콜백 인자 또는 노드 메서드에서 연결 상태 읽기
+
+`input.link`와 `output.links`는 지원 중단되었으며, 이를 읽으면 현재 그래프와 어긋날 수 있습니다. 쓰기는 링크를 제거만 합니다. `input.link`에 `null`을 할당하면 해당 입력이 연결 해제되고, `output.links`를 할당하거나 변경하면 새 배열에서 누락된 모든 링크가 연결 해제됩니다. 쓰기로 링크를 생성할 수는 없습니다. `node.connect()`, `node.disconnectInput()`, `node.disconnectOutput()`을 사용하세요. 콜백이 이미 받는 `link_info` 인자를 사용하거나, 링크 저장소를 직접 읽는 `LGraphNode` 인스턴스 메서드인 `node.isInputConnected()`, `node.getInputLink()`, `node.isOutputConnected()`, `node.getOutputNodes()`를 사용하세요. `input.link`나 `output.links`를 읽지 마세요.
+
+이 메서드들 뒤에 있는 저장소 함수들은 내부용이며 확장 API의 일부가 아닙니다. 노드 메서드를 사용하세요.
