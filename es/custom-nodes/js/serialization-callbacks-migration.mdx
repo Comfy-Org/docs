@@ -1,0 +1,68 @@
+---
+title: "Migración de callbacks de serialización para extensiones del frontend"
+sidebarTitle: "Migración de callbacks de serialización"
+description: "Cómo funcionan onSerialize y onConfigure con grafos basados en store y dónde deben guardar datos personalizados las extensiones del frontend de ComfyUI."
+translationSourceHash: de116a13
+translationFrom: custom-nodes/js/serialization-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": 87be7894
+  "Store custom data in properties or extra": 9bd7e443
+  "Serialize nodes instead of enumerating properties": f9850471
+---
+
+Configuring a root `LGraph` from serialized data now requires an active
+Pinia instance. `LGraph.configure()` clears and rebuilds the graph directly
+against the ECS stores, so a test harness, worker, or standalone LiteGraph
+consumer that calls `new LGraph(data)` or `graph.configure(data)` without an
+active Pinia now fails outright instead of silently producing an empty
+graph. This is the same requirement documented in
+[Link registration migration](/es/custom-nodes/js/link-registration-migration).
+
+Extensions running in ComfyUI use the application's active Pinia instance.
+Do not create or activate a separate Pinia instance from extension code.
+
+`node.onConfigure`, `node.onSerialize`, `graph.onConfigure`, and
+`graph.onSerialize` keep their existing signatures and firing order. For
+connection-timing hooks see
+[Connection callbacks migration](/es/custom-nodes/js/connection-callbacks-migration); for
+`node.widgets` and widget value storage see
+[Widget system migration](/es/custom-nodes/js/widgets-migration).
+
+`onConfigure` now receives a shallow copy of the serialized data rather than
+the caller's own object. Adding, removing, or reassigning top-level keys on the
+callback argument does not change the caller's workflow JSON and is not
+persisted. Nested objects (for example `inputs`, `pos`, `properties`) are still
+shared with the caller, so mutating them in place still leaks; extensions that
+relied on either kind of mutation must store custom state on `node.properties`
+or `graph.extra` instead.
+
+## Guardar datos propios en properties o extra
+
+Usa `node.properties` para los datos de extensión por nodo y `graph.extra` para los datos de extensión por grafo. Siguen siendo las superficies de extensión estables y previstas para los datos persistidos.
+
+`onSerialize` y `onConfigure` se llaman con `this` vinculado al objeto vivo del nodo o del grafo; el argumento que recibe la devolución de llamada es el objeto de datos serializado (`ISerialisedNode`/`ISerialisedGraph`), no el nodo ni el grafo vivos. Como `this` sigue siendo el objeto vivo, un hook puede modificar cualquier campo suyo, incluidos los campos que ahora se respaldan en el store. No uses estos hooks para sobrescribir campos centrales: una escritura mediante `this` desde dentro de `onSerialize`/`onConfigure` llega directamente al store, sin esquema, propiedad ni límite de deshacer propios.
+
+`onSerialize` se ejecuta después de que el frontend haya copiado `graph.extra` y `node.properties` en el objeto de datos, así que una clave que el hook añada a `this.extra` o `this.properties` falta en este guardado. Dentro de `onSerialize`, escribe en el argumento de la devolución de llamada: `data.extra` para un grafo y `data.properties` para un nodo. De lo contrario, actualiza `graph.extra` o `node.properties` antes de que empiece la serialización.
+
+`onSerialize` admite una sola devolución de llamada, así que conserva cualquier hook que ya haya instalado otra extensión:
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+Solo el grafo raíz ejecuta `onSerialize`. Las definiciones de subgrafo se guardan sin llamar a ningún hook en el subgrafo, así que guarda los datos del subgrafo en `subgraph.extra` antes de guardar el flujo de trabajo.
+
+Una clave personalizada de nivel superior que un hook añada a `data` permanece en el nivel superior en `LGraph.asSerialisable()`. El punto de entrada heredado `LGraph.serialize()` la mueve a `data.extensions` y deja fuera los valores que no son compatibles con JSON. Al cargar el flujo de trabajo, `onConfigure` vuelve a recibir la clave en el nivel superior. Las claves dentro de `extra` conservan su lugar en ambos puntos de entrada.
+
+## Serializar nodos en lugar de enumerar propiedades {#serialize-nodes-instead-of-enumerating-properties}
+
+Si tu extensión crea una representación serializada o de depuración de un nodo enumerando sus propias propiedades, cámbiala a `node.serialize()`.
+
+`id`, `type`, `title`, `flags`, `mode`, `color`, `bgcolor`, `shape` y `showAdvanced` ahora son propiedades de acceso sobre el almacén de datos del nodo en lugar de propiedades de datos propias en la instancia del nodo. `Object.keys(node)`, `for...in` y `{ ...node }` ya no exponen estos campos, aunque las lecturas y escrituras directas (`node.title`, `node.mode = ...`) siguen funcionando sin cambios. `inputs`, `outputs` y `widgets` siguen siendo enumerables como propiedades propias, así que la propagación y la enumeración todavía los detectan a esos tres.
+
+Para `serializeValue` a nivel de widget, una capa de serialización independiente que construye el payload del prompt de la API, no el JSON del flujo de trabajo, consulta
+[Migración del sistema de widgets](/es/custom-nodes/js/widgets-migration).
