@@ -667,6 +667,8 @@ const isModelId = (v: unknown): v is string => typeof v === "string" && /^[^\s/?
 const isLimitToken = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9 _:.+-]*$/.test(v);
 /** A request field name, dotted for a nested one. */
 const isFieldName = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z_][A-Za-z0-9_.]*$/.test(v);
+/** True when every key of `o` is one of `keys`: a misspelled key must not silently drop its rule. */
+const onlyKeys = (o: object, keys: readonly string[]) => Object.keys(o).every((k) => keys.includes(k));
 const tokenList = (v: unknown): string[] | null =>
   Array.isArray(v) && v.length > 0 && v.every(isLimitToken) ? [...v] : null;
 
@@ -680,6 +682,7 @@ const tokenList = (v: unknown): string[] | null =>
 function readLimits(raw: unknown): LegLimits | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
+  if (!onlyKeys(r, ["resolutions", "audio", "aspect_ratios", "duration_seconds", "rejected_inputs", "rejected_with", "fallback"])) return undefined;
   const out: LegLimits = {};
   for (const key of ["resolutions", "audio", "aspect_ratios"] as const) {
     if (r[key] === undefined) continue;
@@ -690,7 +693,7 @@ function readLimits(raw: unknown): LegLimits | undefined {
   if (r.duration_seconds !== undefined) {
     const d = r.duration_seconds as Record<string, unknown> | null;
     const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
-    if (!d || typeof d !== "object" || !num(d.min) || !num(d.max) || d.min > d.max) return undefined;
+    if (!d || typeof d !== "object" || !onlyKeys(d, ["min", "max", "default"]) || !num(d.min) || !num(d.max) || d.min > d.max) return undefined;
     if (d.default !== undefined && (!num(d.default) || d.default < d.min || d.default > d.max)) return undefined;
     out.duration_seconds = d.default === undefined ? { min: d.min, max: d.max } : { min: d.min, max: d.max, default: d.default };
   }
@@ -699,6 +702,7 @@ function readLimits(raw: unknown): LegLimits | undefined {
     const rejected: RejectedInput[] = [];
     for (const entry of r.rejected_inputs) {
       const e = (entry ?? {}) as Record<string, unknown>;
+      if (typeof e !== "object" || !onlyKeys(e, ["field", "rule", "values", "example", "reason"])) return undefined;
       if (!isFieldName(e.field) || (e.rule !== "set" && e.rule !== "equals" && e.rule !== "not_in")) return undefined;
       const item: RejectedInput = { field: e.field, rule: e.rule };
       if (e.values !== undefined || e.rule !== "set") {
@@ -719,14 +723,14 @@ function readLimits(raw: unknown): LegLimits | undefined {
     // A string (`"400 invalid_input"`) or its parts (`{status: 400, code: "invalid_input"}`).
     const w = r.rejected_with as Record<string, unknown> | string | null;
     const text = typeof w === "string" ? w
-      : w && typeof w === "object" && Number.isInteger(w.status) && isLimitToken(w.code) ? `${w.status} ${w.code}`
+      : w && typeof w === "object" && onlyKeys(w, ["status", "code"]) && Number.isInteger(w.status) && isLimitToken(w.code) ? `${w.status} ${w.code}`
       : undefined;
     if (!isLimitToken(text)) return undefined;
     out.rejected_with = text;
   }
   if (r.fallback !== undefined) {
     const f = r.fallback as Record<string, unknown> | null;
-    if (!f || typeof f !== "object" || !isSlug(f.provider) || typeof f.default !== "boolean") return undefined;
+    if (!f || typeof f !== "object" || !onlyKeys(f, ["provider", "default", "opt_out"]) || !isSlug(f.provider) || typeof f.default !== "boolean") return undefined;
     if (f.opt_out !== undefined && (typeof f.opt_out !== "string" || !/^[a-z_]+=[A-Za-z0-9_]+$/.test(f.opt_out))) return undefined;
     out.fallback = f.opt_out === undefined ? { provider: f.provider, default: f.default } : { provider: f.provider, default: f.default, opt_out: f.opt_out };
   }
@@ -1037,7 +1041,8 @@ export function roundCredits(value: string): string | undefined {
 /**
  * The price of one leg, from its CURRENT rate rows: priced (not usage-based),
  * not explicitly un-entitled, started and not ended by the snapshot date, and at
- * the latest `effective_from` among those. The provider label matches without
+ * the latest `effective_from` among those with the same conditions and unit (a
+ * newer row for one condition does not hide an unended row for another). The provider label matches without
  * regard to case, as `gen-router-pricing.ts` labels some providers differently. No matching row means no price line: the page
  * never guesses a price, and a tier the snapshot does not carry never appears.
  */
@@ -1055,8 +1060,10 @@ export function legPrice(model: string, provider: string, snapshot: RateSnapshot
       !(r.effective_until && asOf && r.effective_until.slice(0, 10) <= asOf)
   );
   if (!live.length) return undefined;
-  const latest = live.reduce((max, r) => (r.effective_from > max ? r.effective_from : max), "");
-  const current = live.filter((r) => r.effective_from === latest);
+  const group = (r: (typeof live)[number]) => `${r.conditions ?? ""}\u0000${r.unit}`;
+  const latest = new Map<string, string>();
+  for (const r of live) if (r.effective_from > (latest.get(group(r)) ?? "")) latest.set(group(r), r.effective_from);
+  const current = live.filter((r) => r.effective_from === latest.get(group(r)));
   const amounts = current.map((r) => {
     const credits = roundCredits(r.credits!);
     if (!credits || !/^\d+(\.\d+)?$/.test(r.price_usd!)) return undefined;

@@ -535,6 +535,10 @@ describe("alt-provider leg limits", () => {
       { aspect_ratios: ["<b>16:9</b>"] },
       // A `provider/model` id smuggled into a printed value.
       { resolutions: [`tencent/${HELD_ID}`] },
+      // A misspelled key must not leave the recognized ones published without its rule.
+      { resolutions: ["720P"], rejected_input: [{ field: "mode", rule: "set" }] },
+      { resolutions: ["720P"], rejected_inputs: [{ field: "mode", rule: "set", valeus: ["pro"] }] },
+      { resolutions: ["720P"], fallback: { provider: "kling", default: true, optout: "x=y" } },
       {},
     ];
     for (const limits of bad) {
@@ -566,6 +570,11 @@ describe("alt-provider leg limits", () => {
     const scheduled = { ...TENCENT_RATE, price_usd: "0.5", credits: "105.5", effective_from: "2026-11-01" };
     expect(legPrice(KLING, "Tencent", rates(TENCENT_RATE, scheduled))).toBe("20.26 credits ($0.096) per second");
     expect(legPrice(KLING, "Tencent", rates(scheduled))).toBeUndefined();
+    // A newer row for one condition does not hide an unended row for another.
+    const audio = { ...TENCENT_RATE, price_usd: "0.144", credits: "30.384", conditions: "720P, audio", effective_from: "2026-10-22" };
+    expect(legPrice(KLING, "Tencent", rates(TENCENT_RATE, audio))).toBe(
+      "20.26 credits ($0.096) per second (720P, silent); 30.38 credits ($0.144) per second (720P, audio)"
+    );
     // The provider label matches regardless of case.
     expect(legPrice(KLING, "tencent", rates(TENCENT_RATE))).toBe("20.26 credits ($0.096) per second");
     expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, serving_provider: "TENCENT" }))).toBe("20.26 credits ($0.096) per second");

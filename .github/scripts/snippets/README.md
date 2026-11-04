@@ -102,12 +102,12 @@ The generator reads both and organises the docs by model rather than by route:
   inputs it rejects and with which error, and its fallback. The price comes
   from `router-pricing/metronome-rates.json`, keyed on the native model id and
   the provider label (matched without regard to case), current rows only
-  (started and not ended by the snapshot date), with credits rounded to 2
-  decimals.
+  (started and not ended by the snapshot date, the latest row per condition
+  and unit), with credits rounded to 2 decimals.
   With no matching row the price line is omitted. The lines are indented
   because `gen-router-pricing.ts` counts a page's providers from its column-0
-  `- **<Label>**` lines. A malformed `limits` is dropped as a whole and the
-  leg row renders as if it had none. Only what the JSON and the rate snapshot
+  `- **<Label>**` lines. A malformed `limits`, including one with an unknown
+  key, is dropped as a whole and the leg row renders as if it had none. Only what the JSON and the rate snapshot
   say is printed, and no value containing `/` is accepted, so a held-back leg
   id cannot reach the page through `limits`.
 - A **`development/comfy-router/providers.mdx`** index is generated listing each
