@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
@@ -156,10 +156,11 @@ describe("public Router pricing", () => {
     }
     for (const id of [
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
-      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
+      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1",
     ]) {
-      expect(cell(id)).toBe("0.266 / GPU-second");
+      expect(cell(id)).toBe("Usage-based<br />request usage");
     }
+    expect(cell("freepik/ai-image-upscaler-precision-v2")).toBe("Usage-based<br />dimensions and scale");
   });
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
@@ -183,20 +184,31 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
-  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+  test("shows GPU-second pricing only for rates whose own unit is GPU-second", () => {
+    const usage = snapshot.rates.find((rate) => rate.kind === "usage")!;
+    expect(isComfyGpuMetered({ ...usage, unit: "per GPU-second" })).toBe(true);
+    expect(isComfyGpuMetered({ ...usage, unit: "variable based on reported usage" })).toBe(false);
+    expect(isComfyGpuMetered({ ...usage, kind: "flat", unit: "per GPU-second" })).toBe(false);
+    // No synced rate is GPU-second metered today, so the GPU rate and its note stay off the page.
+    expect(snapshot.rates.some(isComfyGpuMetered)).toBe(false);
+    expect(sourcePage).not.toContain("GPU-second");
     const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
     const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
-    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
-      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
     expect(comfyUsageRows.length).toBeGreaterThan(0);
-    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
     expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
-    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
-    expect(alternateUsageRows.length).toBeGreaterThan(0);
-    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
-    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
+    expect([...comfyUsageRows, ...usdComfyUsageRows].every((row) => row.at(-1)?.startsWith("Usage-based<br />"))).toBe(true);
+  });
+
+  test("renders owner-served xAI image rows as provider-reported usage, not GPU-seconds", () => {
+    for (const id of ["xai/grok-imagine-image", "xai/grok-imagine-image-2.0", "xai/grok-imagine-image-pro", "xai/grok-imagine-image-quality"]) {
+      for (const view of [tables, usdTables]) {
+        const row = view.filter((table) => table.provider === "Comfy").flatMap((table) => table.rows)
+          .find((candidate) => candidate[1] === `\`${id}\``)!;
+        expect(row.at(-1)).toBe("Usage-based<br />request usage");
+      }
+    }
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
@@ -831,10 +843,10 @@ describe("Router pricing coverage guard", () => {
     const dir = mkdtempSync(join(tmpdir(), "router-pricing-"));
     try {
       const rate = { model_id: "pika/pika-not-yet-listed", serving_provider: "Pika", kind: "metered", unit: "per second", price_usd: "0.0143", credits: "3.0173", effective_from: "2026-11-02" };
-      const write = (sourceRef: string) => {
-        const file = join(dir, `${sourceRef.length}.json`);
+      const write = (sourceRef: string, snapshotRates: object[] = []) => {
+        const file = join(dir, `${sourceRef.length}-${snapshotRates.length}.json`);
         writeFileSync(file, JSON.stringify({
-          snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+          snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: snapshotRates,
           supplemental_sources: [{ source: "s", source_ref: sourceRef, checked_at: "2026-11-04", rates: [{ ...rate }] }],
         }));
         return loadMetronomeData(file);
@@ -848,6 +860,11 @@ describe("Router pricing coverage guard", () => {
       const thirdParty = write("https://api.dev.pika.art/catalog/apis");
       expect(() => catalogRates(thirdParty.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
       expect(() => catalogRates([{ ...rate }], catalog)).toThrow("Router model IDs are absent from the current catalog");
+      // A keyed Cloud rate supersedes a snapshot usage rate for the same route, but the snapshot rate is still checked.
+      const usage = { model_id: rate.model_id, serving_provider: rate.serving_provider, kind: "usage", unit: "per request", effective_from: "2026-10-01" };
+      const mixed = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", [usage]);
+      expect(mixed.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
+      expect(() => catalogRates(mixed.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
