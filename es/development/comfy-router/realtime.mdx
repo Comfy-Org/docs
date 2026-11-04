@@ -1,0 +1,223 @@
+---
+title: "Sesiones de voz en tiempo real con Comfy Router"
+sidebarTitle: "Voz en tiempo real"
+description: "Abre una sesión WebSocket de voz en tiempo real de Grok Voice con Comfy Router: endpoint, autenticación, costo por segundo, límites, errores y códigos de cierre."
+translationSourceHash: e4024a38
+translationFrom: development/comfy-router/realtime.mdx
+translationBlockHashes:
+  "_intro": a85f88e5
+  "Endpoint": 2ae36abf
+  "Authentication": 582120fe
+  "Connect": b61ae8c6
+  "Events": a3ac8c47
+  "Pricing": 25d35f6c
+  "Limits": 85e21dff
+  "Errors": 3085ba65
+  "Next": 3e8c1bd8
+---
+Comfy Router retransmite una sesión de voz a voz en tiempo real con Grok Voice de xAI, servida por fal. Abres un WebSocket a Router con tu Clave API de Comfy. Router verifica tu cuenta y tus créditos, abre la sesión en el servicio upstream y luego retransmite eventos en ambas direcciones. Pagas por segundo de sesión con tus créditos de Comfy.
+
+## Punto de conexión
+
+```text
+wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime
+```
+
+La solicitud es una actualización a WebSocket (`GET` con `Connection: Upgrade` y `Upgrade: websocket`). El servidor rechaza cualquier otra solicitud con `426`.
+
+## Autenticación
+
+Envía tu Clave API de Comfy en un encabezado de la solicitud de actualización, ya sea como `X-API-Key: comfyui-...` o como `Authorization: Bearer comfyui-...`. Router no lee ninguna clave de la cadena de consulta ni del subprotocolo WebSocket.
+
+<Warning>
+Los navegadores no pueden establecer encabezados en un WebSocket, y una Clave API de Comfy nunca debe llegar a un navegador. Abre la sesión desde tu servidor y retransmite el audio al navegador tú mismo.
+</Warning>
+
+## Conectar
+
+Cuando la actualización se complete correctamente, envía y recibe los eventos en tiempo real que xAI documenta para Grok Voice. Este ejemplo configura la sesión, envía un turno de texto e imprime cada tipo de evento que recibe.
+
+<CodeGroup>
+
+```python Python
+# pip install websockets msgpack
+import asyncio
+import os
+
+import msgpack
+import websockets
+
+URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+
+
+async def send(ws, event):
+    await ws.send(msgpack.packb(event))
+
+
+async def main():
+    async with websockets.connect(
+        URL,
+        additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+    ) as ws:
+        await send(ws, {
+            "type": "session.update",
+            "session": {
+                "voice": "eve",
+                "instructions": "You are a helpful assistant.",
+                "turn_detection": {"type": "server_vad"},
+            },
+        })
+        await send(ws, {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello!"}],
+            },
+        })
+        await send(ws, {"type": "response.create"})
+
+        async for message in ws:
+            if isinstance(message, str):
+                continue  # tramas x-fal-message propias de fal
+            event = msgpack.unpackb(message)
+            print(event["type"])
+            if event["type"] == "response.done":
+                break
+
+
+asyncio.run(main())
+```
+
+```javascript Node.js
+// npm install ws @msgpack/msgpack
+import WebSocket from "ws";
+import { encode, decode } from "@msgpack/msgpack";
+
+const ws = new WebSocket(
+  "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
+  { headers: { "X-API-Key": process.env.COMFY_API_KEY } },
+);
+
+ws.on("unexpected-response", (req, res) => {
+  // Se rechazó la actualización. El cuerpo JSON indica el motivo.
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error(res.statusCode, body));
+});
+
+const send = (event) => ws.send(encode(event));
+
+ws.on("open", () => {
+  send({
+    type: "session.update",
+    session: {
+      voice: "eve",
+      instructions: "You are a helpful assistant.",
+      turn_detection: { type: "server_vad" },
+    },
+  });
+  send({
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Hello!" }],
+    },
+  });
+  send({ type: "response.create" });
+});
+
+ws.on("message", (data, isBinary) => {
+  if (!isBinary) return; // tramas x-fal-message propias de fal
+  const event = decode(data);
+  console.log(event.type);
+  if (event.type === "response.done") ws.close();
+});
+
+ws.on("close", (code) => console.log("closed", code));
+```
+
+</CodeGroup>
+
+Cierra el socket en cuanto termines. Se te factura hasta que se cierre la sesión, no hasta la última respuesta.
+
+## Eventos
+
+Router no define su propio protocolo de eventos. Los eventos del servidor te llegan exactamente como los envía fal, y Router reenvía sin cambios los eventos de cliente que acepta. Para consultar la lista de eventos, los campos de sesión, las voces y los formatos de audio, consulta:
+
+- [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) y el [esquema de eventos en tiempo real](https://docs.x.ai/voice-realtime.ws.json) de xAI
+- la [página del modelo en tiempo real Grok Voice](https://fal.ai/models/xai/grok-voice/realtime) de fal y su [página de API](https://fal.ai/models/xai/grok-voice/realtime/api)
+
+Envía cada evento de cliente como un único mensaje binario msgpack, como en los ejemplos. Este es el formato de trama que usan los clientes en tiempo real de fal, y los eventos del modelo regresan de la misma manera, como mensajes binarios msgpack que comienzan con `session.created`. fal también envía sus propios mensajes de texto JSON de tipo `x-fal-message` (información de temporización); puedes omitirlos. Las comprobaciones de Router también aceptan un evento de cliente como un único mensaje de texto JSON, pero usa msgpack a menos que hayas probado JSON con tu cliente.
+
+Router comprueba cada evento de cliente antes de reenviarlo:
+
+- **Tipos de evento:** `session.update`, `input_audio_buffer.append`, `input_audio_buffer.commit`, `input_audio_buffer.clear`, `conversation.item.create`, `conversation.item.delete`, `conversation.item.truncate`, `response.create`, `response.cancel` y `x-fal-session.configure` de fal.
+- **Modelos:** un `model` en `session.update` debe ser `grok-voice-latest`, `grok-voice-3.0` o `grok-voice-2.0`.
+- **Herramientas:** las herramientas de función que ejecuta tu cliente están permitidas. Router rechaza las herramientas del lado del servidor (búsqueda web, búsqueda en X, búsqueda de archivos y MCP).
+- **Multimedia:** Router rechaza la entrada de imagen y video. La sesión es solo de voz y texto.
+- **Tamaño:** un mensaje de cliente puede ocupar como máximo 1 MiB.
+
+Un evento rechazado no se reenvía, y Router cierra la sesión con el código de cierre `1008`.
+
+## Precios
+
+Una sesión cuesta **$0.0011869 por segundo** (aproximadamente $0.0712 por minuto, o 0.2504 créditos por segundo, alrededor de 15.0 créditos por minuto, con 211 créditos = $1 USD). Se factura en incrementos de 15 segundos mientras la sesión está abierta, y el último incremento parcial se factura por segundo, redondeado hacia arriba. La facturación corre desde la actualización de la conexión hasta que se cierra el socket, independientemente de que haya o no audio en transmisión.
+
+## Límites
+
+| Límite | Valor |
+| --- | --- |
+| Sesiones por cuenta | Una sesión abierta a la vez. Abrir una segunda devuelve `429` con `router.realtime.session_already_live`. |
+| Duración de la sesión | Como máximo 30 minutos, y nunca más de lo que cubre tu saldo de créditos en el momento de la conexión. |
+| Créditos durante una sesión | Router vuelve a comprobar tu saldo cada 15 segundos y finaliza la sesión cuando el saldo ya no puede cubrir el siguiente segundo. |
+| Tasa de conexión | Cada intento de mejora cuenta para tu [tasa de solicitudes por solicitante](/es/development/comfy-router/limitations#límite-de-tasa-de-solicitudes-por-solicitante), compartida con tus demás llamadas a Router. |
+
+Cuando una sesión alcanza su límite de tiempo o se queda sin créditos, la conexión puede cerrarse sin una trama de cierre (a menudo aparece como el código de cierre `1006`). Vuelve a conectarte solo después de recargar, o inicia una nueva sesión si necesitas más tiempo.
+
+## Errores
+
+### Antes de la actualización
+
+Si Router rechaza la conexión, responde con un estado HTTP y un cuerpo JSON en lugar de cambiar de protocolo:
+
+```json
+{
+  "detail": "Insufficient credits to open a realtime session.",
+  "error_type": "insufficient_credits",
+  "code": "router.realtime.insufficient_credits"
+}
+```
+
+Cambia según `code`; `detail` es para las personas.
+
+| Estado | `code` | Causa | Qué hacer |
+| --- | --- | --- | --- |
+| `426` | `router.realtime.upgrade_required` | La solicitud no era una actualización de WebSocket. | Conéctate con un cliente WebSocket. |
+| `401` | `router.realtime.unauthorized` | La clave API falta o no es válida. | Envía una clave válida en `X-API-Key` o `Authorization: Bearer`. |
+| `402` | `router.realtime.insufficient_credits` | Tu saldo no cubre al menos un segundo de sesión. | Agrega créditos y vuelve a conectarte. |
+| `402` | `router.realtime.spend_denied` | La billetera a la que se cobraría la sesión no tiene fondos para ella. `denied_reason` y `billed_workspace` en el cuerpo indican cuál billetera. | Agrega créditos a ese espacio de trabajo y vuelve a conectarte. |
+| `403` | `router.realtime.provider_disabled` | La política de proveedores socios de tu espacio de trabajo no permite este proveedor. | Pide a un administrador del espacio de trabajo que lo permita. |
+| `404` | `router.realtime.model_not_allowed` | El modelo de la URL no está disponible para realtime. | Revisa la URL. |
+| `429` | `router.realtime.rate_limited` | Superaste la tasa de solicitudes. | Espera `Retry-After` y vuelve a intentarlo. |
+| `429` | `router.realtime.session_already_live` | Ya hay otra sesión abierta para tu cuenta. | Ciérrala primero. |
+| `429` | `router.realtime.concurrency_limit` | Demasiadas llamadas simultáneas a modelos socios. | Reduce el trabajo simultáneo y vuelve a intentarlo. |
+| `502` | `router.realtime.upstream_refused`, `router.realtime.token_mint_failed` | El proveedor upstream no abrió la sesión. | Reintenta con retroceso exponencial. |
+| `503` | cualquier otro código `router.realtime.*` | Las sesiones realtime no están disponibles temporalmente. | Reintenta con retroceso exponencial. |
+
+### Después de la actualización
+
+| Código de cierre | Significado | Qué hacer |
+| --- | --- | --- |
+| `1008` | Se rechazó un evento de cliente (consulta [Events](#eventos)). | Corrige el evento. La sesión termina. |
+| `1012` | Router se está reiniciando. | Vuelve a conectarte. Se inicia una nueva sesión y se cobra desde la nueva actualización. |
+| `1006` (sin trama de cierre) | Suele ser lo que reportan los clientes cuando la sesión alcanzó su límite de tiempo o se quedó sin créditos. Las caídas de red se ven igual. | Agrega créditos o inicia una nueva sesión. |
+
+Cualquier otro cierre proviene de fal o xAI. Consulta su documentación enlazada en [Events](#eventos).
+
+## Siguiente
+
+- [Facturación](/es/development/comfy-router/billing): cómo cobra Router y cómo conciliar el uso.
+- [Errores y reintentos](/es/development/comfy-router/errors): los grupos de errores que devuelven otras llamadas de Router.
+- [Limitaciones](/es/development/comfy-router/limitations): tasas de solicitudes y otros límites.
