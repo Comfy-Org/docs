@@ -2,17 +2,17 @@
 title: "ComfyUI MiniMax H3 テキストから動画・画像から動画・参照から動画のワークフロー"
 description: "ComfyUI における MiniMax H3 ネイティブワークフローの手順例。ガイドのアンカー固定や latent ノイズマスクで生成動画をより細かく制御できます。"
 sidebarTitle: "ネイティブワークフロー"
-translationSourceHash: 9e8d385c
+translationSourceHash: b66253f0
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
+  "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 8d994444
 ---
 
-このページは 3 つの基本 MiniMax H3 テンプレートとネイティブノードの高度なテクニックを扱います。機能、チューニング、高速化は [MiniMax H3 概要](/ja/tutorials/video/minimax/minimax-h3) を参照してください。
+このページは 3 つの基本 MiniMax H3 テンプレートとネイティブノードの高度なテクニックを扱います。機能とライセンスは [MiniMax H3 概要](/ja/tutorials/video/minimax/minimax-h3) を参照してください。
 
 ## MiniMax H3 テキストからビデオ (T2V)
 
@@ -258,3 +258,22 @@ H3 ノードの `positive` と latent を `MiniMaxH3AddGuide` に接続:
 [トークン単位マスク](https://github.com/Comfy-Org/ComfyUI/pull/15375) で動画・音声 latent の一部を再生成。
 
 サンプラー `denoise_mask` にマスク: **0** 保持、**1** 再生成。動画は 2×2 latent パッチ、音声は latent フレーム単位。インペイント、削除、拡張に使用。
+
+### Sol-H3-VAE によるデコードの高速化 (#17411)
+
+標準の動画 VAE は 256px タイルと時間方向に重なるチャンクでデコードします。[Sol-H3-VAE](https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE) はそのデコーダーから蒸留した 24 層のデコーダーで、クリップ全体を 1 回でデコードします。Comfy-Org は H3 のエンコーダーと合わせて [minimax_h3_sol_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_int8_convrot.safetensors) として再パックしているため、動画のデコードを担う `Load VAE` ノードの動画 VAE と差し替えます。音声 VAE のローダーはそのままにしてください。ComfyUI **0.44.0** 以降が必要です。
+
+1344x768、124 フレームのクリップを RTX 5090 でデコードした時間:
+
+| デコーダー | デコード | ピーク VRAM |
+| --- | --- | --- |
+| H3 VAE int8 | 4.61 s | 3.2 GiB |
+| Sol-H3-VAE int8 | 1.70 s | 4.3 GiB |
+| H3 VAE fp16 | 10.7 s | 5.5 GiB |
+| Sol-H3-VAE fp16 | 3.28 s | 5.9 GiB |
+
+どちらのデコーダーにも fp16 版があります。[minimax_h3_sol_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_fp16.safetensors) と [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors) で、いずれも `ComfyUI/models/vae/` に置きます。
+
+画質の代償はテクスチャです。蒸留デコーダーは生成した 768p のクリップで標準デコーダーに対して約 39 dB PSNR となり、見た目は一致し、差は細部に出ます。切り替える前にテクスチャの多いクリップで比較してください。
+
+メモリは逆方向です。上のクリップで、蒸留デコーダーのピークは標準 int8 デコーダーより 1.1 GiB 大きくなります。さらにタイル化できないため、`VAEDecodeTiled` はクリップ全体をデコードします。アクティベーションは latent トークンあたり約 4.3 KB 増え、同じキャンバスで 362 フレームなら約 3.5 GiB、2048x1152 では約 5.4 GiB になります。デコードはレンダリング全体のごく一部なので、エンドツーエンドの短縮は表の数字よりかなり小さくなります。

@@ -2,16 +2,16 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: 9e8d385c
+translationSourceHash: b66253f0
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
+  "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 8d994444
 ---
-本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力、调参与加速见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
+本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力与许可见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
 ## MiniMax H3 文生视频（T2V）
 
@@ -257,3 +257,22 @@ ComfyUI/
 [逐 token 遮罩](https://github.com/Comfy-Org/ComfyUI/pull/15375) 覆盖视频与音频 latent，可只重生成一部分。
 
 遮罩接采样器 `denoise_mask`：**0** 保留，**1** 重生成。视频对齐 2×2 latent 块，音频对齐整帧。用于修补、移除或扩展。
+
+### 使用 Sol-H3-VAE 加速解码 (#17411)
+
+官方视频 VAE 以 256px 分块解码，并在时间方向上重叠。[Sol-H3-VAE](https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE) 是从该解码器蒸馏出的 24 层解码器，一次解码整段视频。Comfy-Org 把它与 H3 编码器打包成 [minimax_h3_sol_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_int8_convrot.safetensors)，用来替换负责视频解码的那个 `Load VAE` 节点上的视频 VAE，音频 VAE 的加载节点保持不动。需要 ComfyUI **0.44.0** 或更高版本。
+
+1344x768、124 帧的片段在 RTX 5090 上的解码耗时：
+
+| 解码器 | 解码耗时 | 峰值显存 |
+| --- | --- | --- |
+| H3 VAE int8 | 4.61 s | 3.2 GiB |
+| Sol-H3-VAE int8 | 1.70 s | 4.3 GiB |
+| H3 VAE fp16 | 10.7 s | 5.5 GiB |
+| Sol-H3-VAE fp16 | 3.28 s | 5.9 GiB |
+
+两种解码器都有 fp16 版本：[minimax_h3_sol_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_fp16.safetensors) 与 [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors)，都放进 `ComfyUI/models/vae/`。
+
+画质上的代价在纹理。蒸馏解码器相对官方解码器在生成的一段 768p 片段上约 39 dB PSNR：整体观感一致，差异集中在细节，切换前先用带纹理的片段对比。
+
+显存则相反。在上述片段上，蒸馏解码器的峰值比官方 int8 解码器高 1.1 GiB，而且它不能分块，`VAEDecodeTiled` 在它上面会解码整段。激活值按每个 latent token 约 4.3 KB 增长，同一画布下 362 帧约 3.5 GiB，2048x1152 时约 5.4 GiB。解码也只是一次完整渲染中的小部分，端到端提升远低于表中数字。
