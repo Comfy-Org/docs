@@ -2,14 +2,15 @@
 title: "프론트엔드 확장 프로그램을 위한 연결 콜백 마이그레이션"
 sidebarTitle: "연결 콜백 마이그레이션"
 description: "onConnectionsChange 및 노드 제거 콜백의 순서, 서브그래프 경계에서의 SubgraphIO, 그리고 ComfyUI 확장 프로그램에서의 graph.events."
-translationSourceHash: 06a9ae24
+translationSourceHash: 9a2f855a
 translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
 translationBlockHashes:
   "_intro": cd84d91b
   "Check for SubgraphIO at subgraph boundaries": c049a9fe
   "Subscribe to node lifecycle events with graph.events": 1100692e
   "Node removal fires callbacks in this order (partially tested)": 720324f8
-  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 87ff3f70
+  "Unresolvable subgraph links are pruned on load": 09efbd4a
   "API prompt import does not reconnect resolved inputs": 619d6b69
   "Reject connections before they are made": b9b94a8e
   "Removing a link inside the output callback skips the input callback": 3317def4
@@ -81,13 +82,14 @@ graph.events.addEventListener('node:added', (e) => {
 
 `graph.configure()`는 워크플로의 모든 노드를 생성한 다음 각 노드의 `configure()`가
 실행되면서 복원된 링크에 대해 `onConnectionsChange`를 발생시킵니다. 따라서 로드 중에
-`onConnectionsChange` 콜백이 실행될 때는 모든 피어 노드가 이미 존재하고 해당 링크도
+복원된 링크에 대해 `onConnectionsChange` 콜백이 실행될 때는 모든 피어 노드가 이미 존재하고 해당 링크도
 이미 등록되어 있으므로, 그 콜백 내부에서의 `graph.getNodeById()`와 링크 조회가
-올바르게 해석됩니다.
+올바르게 해석됩니다. 다음 섹션에서 설명하듯이 서브그래프 정의에서 제거된 링크는
+예외입니다.
 
 ## 해석할 수 없는 서브그래프 링크는 로드 시 제거됩니다
 
-서브그래프 정의가 로드될 때, 서브그래프 안에서 절대 해석될 수 없는 링크는 삭제됩니다. 링크를 해석할 수 없는 경우는 시작 또는 끝 노드가 없을 때, 서브그래프 경계 슬롯이 범위를 벗어났을 때, 또는 노드가 링크의 대상이던 직렬화된 입력을 삭제했을 때입니다. 삭제된 링크마다 아직 존재하는 모든 끝점 노드에서 `onConnectionsChange(type, slot, false, link, slot)`가 발생합니다. 로드 중에 새로 오는 `false` 알림은 사용자가 연결을 끊은 것이 아니라 링크가 제거되었다는 뜻입니다.
+서브그래프 정의가 로드될 때, 서브그래프 안에서 절대 해석될 수 없는 링크는 삭제됩니다. 링크를 해석할 수 없는 경우는 시작 또는 끝 노드가 없을 때, 서브그래프 경계 슬롯이 범위를 벗어났을 때, 또는 노드가 링크의 대상이던 직렬화된 입력을 삭제했을 때입니다. 삭제된 링크마다 아직 존재하는 모든 끝점 노드에서 `onConnectionsChange(type, index, false, link, slotOrIO)`가 발생합니다. 로드 중에 새로 오는 `false` 알림은 사용자가 연결을 끊은 것이 아니라 링크가 제거되었다는 뜻입니다.
 
 - **시점.** 제거는 서브그래프 정의가 구성될 때, 해당 노드와 각 노드의 `configure()` 호출 이후, 그리고 `onGraphConfigured` 또는 `onAfterGraphConfigured` 훅이 실행되기 전에 이루어집니다. 두 훅 중 하나를 정의한 노드는 그 훅에서 입력을 추가할 수 있으므로 입력을 삭제한 것으로 판단하지 않습니다. 단, 중첩된 서브그래프 노드는 예외입니다.
 - **콜백 내부의 상태.** 첫 번째 콜백이 발생하기 전에 제거 대상 링크는 모두 서브그래프에서 이미 제거되어 있고, 서브그래프의 경계 입력 및 출력 슬롯에서 오래된 ID도 지워져 있습니다. 아직 해석할 수 있는 링크는 그대로 유지됩니다.
