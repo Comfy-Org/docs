@@ -6,6 +6,8 @@ import {
   loadModelSchema,
   modalityCell,
   modalityLine,
+  MODEL_NOTICES,
+  modelNotices,
   modelPageRedirects,
   modelsNav,
   opaqueOutputExample,
@@ -722,5 +724,28 @@ describe("renderDerivedPage: the modality line under the intro", () => {
     const text = page(WITHOUT_MODALITIES);
     expect(text).not.toContain("**Input:**");
     expect(text).not.toContain("**Output:**");
+  });
+});
+
+describe("per-model notices", () => {
+  const ROOT = join(import.meta.dir, "../../..");
+  test("the retiring xAI image models carry the migration notice on their generated pages", () => {
+    for (const model of ["xai/grok-imagine-image-quality", "xai/grok-imagine-image-pro"]) {
+      expect(MODEL_NOTICES[model]).toContain("https://docs.x.ai/developers/migration/imagine-image-quality-nov-2");
+      const page = readFileSync(join(ROOT, `development/comfy-router/models/${model}/code.mdx`), "utf8");
+      expect(page).toContain(`<Warning>\n${MODEL_NOTICES[model]}\n</Warning>`);
+      expect(renderDerivedPage(model, loadModelSchema(model)!)).toContain(MODEL_NOTICES[model]);
+    }
+  });
+
+  test("each notice names the model and date it describes", () => {
+    expect(MODEL_NOTICES["xai/grok-imagine-image-quality"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+  });
+
+  test("a model without an entry renders nothing, and a repeated notice renders once per page", () => {
+    expect(modelNotices(["xai/grok-imagine-image-2.0"])).toBe("");
+    expect(modelNotices(["xai/grok-imagine-image-quality", "xai/grok-imagine-image-quality"]).match(/<Warning>/g)).toHaveLength(1);
   });
 });

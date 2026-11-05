@@ -1,0 +1,51 @@
+---
+title: "前端扩展的序列化回调迁移"
+sidebarTitle: "序列化回调迁移"
+description: "在使用 store 支持的图时，onSerialize 与 onConfigure 的行为方式，以及 ComfyUI 前端扩展应在何处持久化自定义数据。"
+translationSourceHash: de116a13
+translationFrom: custom-nodes/js/serialization-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": 87be7894
+  "Store custom data in properties or extra": 9bd7e443
+  "Serialize nodes instead of enumerating properties": f9850471
+---
+
+
+要从序列化数据配置根 `LGraph`，现在需要一个活跃的 Pinia 实例。`LGraph.configure()` 会直接针对 ECS 存储清空并重建图，因此在没有活跃 Pinia 的情况下调用 `new LGraph(data)` 或 `graph.configure(data)` 的测试框架、worker 或独立 LiteGraph 使用方，现在会直接失败，而不再静默生成一个空图。这与[连线注册迁移](/zh/custom-nodes/js/link-registration-migration)中记录的属于同一项要求。
+
+在 ComfyUI 中运行的扩展使用应用当前活跃的 Pinia 实例。不要在扩展代码中创建或激活独立的 Pinia 实例。
+
+`node.onConfigure`、`node.onSerialize`、`graph.onConfigure` 和 `graph.onSerialize` 保持原有的签名与触发顺序。关于连接时序的钩子，参见[连接回调迁移](/zh/custom-nodes/js/connection-callbacks-migration)；关于 `node.widgets` 与 widget 值存储，参见[Widget 系统迁移](/zh/custom-nodes/js/widgets-migration)。
+
+`onConfigure` 现在接收的是序列化数据的浅拷贝，而不是调用方自己的对象。在回调参数上添加、删除或重新赋值顶层键，不会改变调用方的工作流 JSON，也不会被持久化。嵌套对象（例如 `inputs`、`pos`、`properties`）仍与调用方共享，因此就地修改依然会外泄；依赖这两种修改方式的扩展，必须改为把自定义状态保存在 `node.properties` 或 `graph.extra` 上。
+
+## 将自定义数据存放在 properties 或 extra 中
+
+每个节点的扩展数据使用 `node.properties`，每个图的扩展数据使用 `graph.extra`。对于持久化数据，它们仍然是稳定且官方支持的扩展入口。
+
+调用 `onSerialize` 和 `onConfigure` 时，`this` 绑定到活动的节点/图对象；传给回调的参数是序列化后的数据对象（`ISerialisedNode`/`ISerialisedGraph`），而不是活动的节点/图。由于 `this` 仍是活动对象，钩子可以改写它上面的任何字段，包括现在由 store 支撑的字段。不要用这些钩子覆盖核心字段：在 `onSerialize`/`onConfigure` 内部通过 `this` 写入会直接落到 store，没有自己的 schema、归属或撤销边界。
+
+`onSerialize` 在前端把 `graph.extra` 和 `node.properties` 复制进数据对象之后运行，因此钩子添加到 `this.extra` 或 `this.properties` 的键不会出现在本次保存中。在 `onSerialize` 内部，请改为写入回调参数：图写 `data.extra`，节点写 `data.properties`。否则请在序列化开始之前更新 `graph.extra` 或 `node.properties`。
+
+`onSerialize` 只持有一个回调，因此请保留其它扩展已经装好的钩子：
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+只有根图会运行 `onSerialize`。子图定义保存时不会在子图上调用钩子，因此请在保存工作流之前把子图数据写入 `subgraph.extra`。
+
+钩子添加到 `data` 的自定义顶层键在 `LGraph.asSerialisable()` 中仍留在顶层。旧入口 `LGraph.serialize()` 会把它移到 `data.extensions` 下，并丢弃不是 JSON 兼容的值。工作流加载时，`onConfigure` 会再次在顶层收到该键。`extra` 下的键在两个入口中都保持原位。
+
+## 序列化节点，而不是枚举属性
+
+如果你的扩展通过枚举节点自身的属性来构建节点的序列化表示或调试表示，请将其切换为 `node.serialize()`。
+
+`id`、`type`、`title`、`flags`、`mode`、`color`、`bgcolor`、`shape` 和 `showAdvanced` 现在是指向节点数据存储的访问器属性，不再是节点实例自身的自有数据属性。`Object.keys(node)`、`for...in` 和 `{ ...node }` 不再暴露这些字段，但直接读取和写入（`node.title`、`node.mode = ...`）仍可照常工作。`inputs`、`outputs` 和 `widgets` 仍可被自有枚举，因此展开与枚举仍会取到这三项。
+
+关于 widget 级别的 `serializeValue`，它属于一个独立的序列化层，构建的是 API prompt 载荷，而非工作流 JSON，请参阅
+[Widget 系统迁移](/zh/custom-nodes/js/widgets-migration)。

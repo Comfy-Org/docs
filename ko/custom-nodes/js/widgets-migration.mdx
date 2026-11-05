@@ -1,0 +1,118 @@
+---
+title: "프론트엔드 확장 프로그램을 위한 위젯 시스템 마이그레이션"
+sidebarTitle: "위젯 시스템 마이그레이션"
+description: "ComfyUI 프론트엔드의 스토어 기반 위젯 값: 고유한 위젯 이름, undefined node.widgets, 위젯 이름 변경, addCustomWidget 및 Agent setValue 호출."
+translationSourceHash: 3011c9c5
+translationFrom: custom-nodes/js/widgets-migration.mdx
+translationBlockHashes:
+  "_intro": 87b853c9
+  "Gallery values after the PrimeVue replacement": c6a755f6
+  "Widget names must be unique and stable": 5988a23b
+  "`node.widgets` may be undefined": 7cb43a39
+  "Prefer `node.addCustomWidget()` to pushing onto `node.widgets`": 5ee6030c
+  "Remove widgets with `node.removeWidget()`": 7d19ff02
+  "Agent edits call `setValue` without a pointer event": 140c58f6
+  "Don't call `useWidgetValueStore()` from extension code": 6c2a5cd3
+---
+
+이제 위젯 값은 위젯 인스턴스에 직접 저장되지 않고 Pinia 기반 스토어에 저장됩니다.
+위젯 이름은 노드마다 고유해야 하며, 위젯 이름 변경은 새 이름이
+사용 가능할 때만 성공합니다. `node.widgets` 또한 처음 할당되기
+전까지는 `undefined`일 수 있습니다.
+
+## PrimeVue 교체 이후 갤러리 값
+
+Vue `galleria` 위젯은 `GALLERIA` 입력 스키마와 일치하는 이미지 URL 문자열 배열을 받습니다. 이미지가
+여러 개이면 썸네일과 이전/다음 버튼이 표시됩니다. 탐색은 첫 번째와 마지막 이미지에서
+멈춥니다.
+
+`itemImageSrc` 또는 `thumbnailImageSrc`를 사용하는 PrimeVue 이미지 객체는 더 이상
+지원되지 않습니다. 해당 객체를 URL 문자열로 변환하세요. 위젯은 `showThumbnails`,
+`showItemNavigators`, `circular`, `autoPlay`, `transitionInterval`, `showIndicators`,
+`numVisible`, `responsiveOptions`와 같은 PrimeVue 옵션을 더 이상 읽지 않습니다. 이러한
+컨트롤이 필요한 확장 프로그램은 자체 갤러리 위젯을 제공해야 합니다.
+
+## 위젯 이름은 고유하고 안정적이어야 합니다
+
+동일한 노드에 있는 두 위젯은 이름을 공유할 수 없습니다. 이미 사용 중인 이름으로 두 번째 위젯을 추가하면, 노드가 그래프에 있을 때 프런트엔드가 `strength#1`과 같은 번호 접미사를 붙여 새 위젯의 이름을 바꿉니다. 원래 이름으로 조회하면 첫 번째 위젯만 찾습니다:
+
+```js
+node.addWidget('number', 'strength', 0, () => {})
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // 노드가 그래프에 있으면 'strength#1'
+```
+
+각 위젯에 고유한 이름을 지정하세요.
+
+등록된 위젯에 새 `widget.name`을 할당하면 저장된 값이 새 이름으로 옮겨집니다. 노드의 다른 위젯이 이미 그 이름을 사용하고 있으면 할당은 무시되고 `widget.name`은 이전 값을 유지하므로, 할당 후에 `widget.name`을 확인하세요. 이름으로 위젯을 참조하는 입력 슬롯은 업데이트되지 않습니다. 이름을 바꾸려고 위젯을 제거한 뒤 새 위젯을 추가하지 마세요. `removeWidget()`은 저장된 값을 삭제하고 위젯에 직접 바인딩된 입력 슬롯을 지웁니다. 이름으로만 해당 위젯을 참조하는 입력 슬롯은 그 이름을 유지합니다.
+
+## `node.widgets`가 undefined일 수 있습니다
+
+`node.widgets`는 최소 한 번 할당되기 이전까지 `undefined`를 반환합니다.
+위젯을 추가하기 이전에 배열을 초기화하세요:
+
+```ts
+export function nodeCreated(node: LGraphNode) {
+  node.widgets ??= []
+  node.widgets.push(myWidget)
+}
+```
+
+읽을 때도 같은 방식으로 방어하세요:
+
+```ts
+const widgetCount = node.widgets?.length ?? 0
+```
+
+**`node.widgets = undefined`로 설정하면 해당 값이 지워집니다.** 나중에 읽으면
+`[]`가 아니라 다시 `undefined`를 반환합니다.
+
+**노드가 그래프에 연결되기 이전에 수행한 변경은 자동으로 반영됩니다.**
+생성자나 `onNodeCreated`에서 위젯을 만드는 일반적인 경우에는
+직접 아무것도 호출할 필요가 없습니다.
+
+`node.widgets`는 `Object.keys(node)`와 `{...node}` 같은 객체 스프레드에 나타납니다.
+
+## `node.widgets`에 푸시하는 것보다 `node.addCustomWidget()`을 권장합니다
+
+`node.addWidget()`, `node.addCustomWidget()` 또는
+`node.addDOMWidget()`로 추가된 위젯은 스토어에 자동으로 등록됩니다. `node.widgets`에
+곧바로 푸시된 일반 객체도 위젯 인스턴스로 변환되고, 노드가 그래프에 포함되면
+등록됩니다. 변환은 보통 제자리에서 이루어지지만, 동결된 객체나 구성 불가능한
+속성이 있는 객체는 별도의 위젯으로 교체됩니다. 따라서 `addCustomWidget()`이
+반환하는 위젯을 보관하거나 `node.widgets`에서 다시 읽어 오세요. `addCustomWidget()`은
+여전히 권장되는 호출입니다. 이 호출은 위젯을 반환하며, 워크플로가 로드될 때
+위젯의 저장된 값을 복원합니다.
+
+```js
+node.addCustomWidget({
+  name: 'my_widget',
+  type: 'custom',
+  value: '',
+  options: {},
+  draw(ctx, node, width, y, height) {},
+  mouse(event, pos, node) {}
+})
+```
+
+노드가 그래프에 연결되기 전에 `widget.value`를 읽거나 쓰면, 해당 값은 로컬에
+보관되고 연결 시 스토어에 동기화됩니다. 값이 손실되지는 않지만, 스토어 기반
+UI(예: 오른쪽 패널)는 그 전까지 값을 볼 수 없습니다.
+
+## `node.removeWidget()`로 위젯 제거
+
+`node.removeWidget(widget)`를 사용해 위젯을 제거하세요. `node.widgets`를 직접 splice하면 슬롯 정리가 건너뛰어지고, 제거된 위젯의 값은 노드 자체가 그래프에서 제거될 때까지 store에 남습니다.
+
+## 앱 내 Agent 편집은 포인터 이벤트 없이 `setValue`를 호출합니다
+
+앱 내 Agent가 `BaseWidget` 인스턴스인 위젯을 변경하면, 프런트엔드는 `widget.setValue(value, { node, canvas })`를 호출합니다. 사용자 편집이 거치는 것과 같은 메서드입니다. 이전에는 `widget.value`에 직접 값을 할당한 뒤 `callback`과 `onWidgetChanged`를 직접 호출했습니다. `addCustomWidget()`으로 추가했거나 `node.widgets`에 직접 push한 일반 객체도 포함됩니다. 프런트엔드가 이를 `BaseWidget` 인스턴스로 변환하기 때문입니다. DynamicGroup 행 수 컨트롤러와 승격된 서브그래프 호스트 위젯은 여전히 직접 쓰기를 받습니다.
+
+`setValue`를 재정의한다면 `{ node, e?, canvas? }` 형태의 옵션을 받으세요. 이 호출에서는 `e`가 설정되지 않으며 `canvas`도 없을 수 있습니다. `options.e`나 `options.canvas`는 반드시 확인한 뒤 읽으세요. 값만 넘겨 원래 `setValue`를 호출하는 래퍼는 계속 동작합니다. 옵션은 기본값 `{ node: widget.node }`가 됩니다.
+
+`callback`과 `onWidgetChanged`는 이제 Agent가 보낸 값이 아니라 위젯이 받아들인 값을 받습니다. 숫자 위젯은 `min`/`max`로 값을 제한하고 숫자 문자열을 숫자로 변환합니다. `callback`에서 `e`는 `undefined`이며, 캔버스가 없으면 `pos`도 `undefined`입니다.
+
+`setValue`는 숫자 위젯의 제한과 변환을 거친 값이 현재 값과 이미 동일(`===`)하면 변경 없이 반환합니다. 따라서 값이 `5`인 숫자 위젯에 `'5'`를 넣어도 아무 변화가 없습니다. 숫자 위젯이 `Number(value)`가 `NaN`이 되는 값을 받을 때도 반환합니다. `callback`도 `onWidgetChanged`도 실행되지 않고 그래프 버전도 바뀌지 않습니다. `'7'` 같은 숫자 문자열은 변환되어 적용됩니다.
+
+## 확장 프로그램 코드에서 `useWidgetValueStore()`를 호출하지 마세요
+
+확장 프로그램에서 `useWidgetValueStore()`를 호출하지 마세요. 대신 `node.widgets`, `node.addWidget()` / `addCustomWidget()` / `removeWidget()`, 그리고 `widget.value`를 사용하세요. 이 스토어의 내부 키 지정 방식과 Pinia에 대한 의존성은 지원되는 확장 인터페이스가 아닙니다.
