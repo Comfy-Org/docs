@@ -12,6 +12,9 @@ const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
 const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
+// Usage rows are GPU-second metered only when the rate's own unit says so. Owner-served
+// partner rows (for example xAI or BFL) display as "Comfy" but bill provider-reported usage.
+const isComfyGpuMetered = (rate: MetronomeRate) => rate.kind === "usage" && /\bGPU[- ]seconds?\b/i.test(rate.unit);
 
 type CatalogModel = {
   id: string;
@@ -488,19 +491,19 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         const rates = resolution.remaining;
         const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
         const modelId = `\`${model.id}\``;
-        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable, kind: "unavailable", unit: "" }];
+        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable, kind: "unavailable", unit: "", gpuMetered: false }];
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
           const credits = rate.kind === "usage"
-            ? provider === "Comfy" ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            ? provider === "Comfy" && isComfyGpuMetered(rate) ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
             : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
           const option = omitNonPricingOption ? "-" : compactOptions(group.options);
-          return { name, modelId, option, credits, kind: rate.kind, unit: rate.unit };
+          return { name, modelId, option, credits, kind: rate.kind, unit: rate.unit, gpuMetered: provider === "Comfy" && isComfyGpuMetered(rate) };
         });
       });
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, headerUnit?: string) => {
@@ -1084,7 +1087,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
       }
       const hasSubgroups = tableSections.length > 1;
       const tables = tableSections.map(({ title, body }) => {
-        const comfyUsageNote = provider === "Comfy" && title === copy.usageRates
+        const comfyUsageNote = title === copy.usageRates && ordinaryRows.some((row) => row.gpuMetered)
           ? `${copy.comfyGpuUsageNote}\n\n` : "";
         return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
       }).join("\n\n");
@@ -1226,4 +1229,4 @@ if (import.meta.main) {
   }
 }
 
-export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
+export { checkPricingCoverage, compactOptions, isComfyGpuMetered, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
