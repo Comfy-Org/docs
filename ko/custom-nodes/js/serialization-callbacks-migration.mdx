@@ -1,0 +1,66 @@
+---
+title: "프런트엔드 확장 프로그램을 위한 직렬화 콜백 마이그레이션"
+sidebarTitle: "직렬화 콜백 마이그레이션"
+description: "스토어 기반 그래프에서 onSerialize와 onConfigure가 어떻게 동작하는지, 그리고 ComfyUI 프런트엔드 확장 프로그램이 사용자 지정 데이터를 어디에 보존해야 하는지 설명합니다."
+translationSourceHash: de116a13
+translationFrom: custom-nodes/js/serialization-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": 87be7894
+  "Store custom data in properties or extra": 9bd7e443
+  "Serialize nodes instead of enumerating properties": f9850471
+---
+
+
+Configuring a root `LGraph` from serialized data now requires an active
+Pinia instance. `LGraph.configure()`는 ECS 스토어를 직접 대상으로 그래프를 비우고
+다시 빌드하므로, 활성 Pinia 없이 `new LGraph(data)` 또는 `graph.configure(data)`를
+호출하는 테스트 하네스, 워커 또는 독립 실행형 LiteGraph 소비자는 이제 조용히
+빈 그래프를 생성하는 대신 즉시 실패합니다. 이는
+[링크 등록 마이그레이션](/ko/custom-nodes/js/link-registration-migration)에 문서화된 것과
+동일한 요구 사항입니다.
+
+ComfyUI에서 실행되는 확장 프로그램은 애플리케이션의 활성 Pinia 인스턴스를 사용합니다.
+확장 코드에서 별도의 Pinia 인스턴스를 생성하거나 활성화하지 마십시오.
+
+`node.onConfigure`, `node.onSerialize`, `graph.onConfigure`, `graph.onSerialize`는
+기존 시그니처와 실행 순서를 유지합니다. 연결 타이밍 후크는
+[연결 콜백 마이그레이션](/ko/custom-nodes/js/connection-callbacks-migration)을, `node.widgets`와
+위젯 값 저장은 [위젯 시스템 마이그레이션](/ko/custom-nodes/js/widgets-migration)을
+참조하십시오.
+
+`onConfigure`는 이제 호출자의 객체 자체가 아닌 직렬화된 데이터의 얕은 복사본을
+받습니다. 콜백 인수에서 최상위 키를 추가, 제거 또는 재할당해도 호출자의 워크플로 JSON은
+변경되지 않으며 저장되지도 않습니다. 중첩 객체(예: `inputs`, `pos`, `properties`)는
+여전히 호출자와 공유되므로, 이를 제자리에서 변경하면 여전히 유출됩니다. 두 종류의
+변경에 의존했던 확장 프로그램은 대신 사용자 지정 상태를 `node.properties` 또는
+`graph.extra`에 저장해야 합니다.
+
+## 사용자 지정 데이터는 properties 또는 extra에 저장하기
+
+노드별 확장 데이터에는 `node.properties`를, 그래프별 확장 데이터에는 `graph.extra`를 사용합니다. 이 둘은 영속 데이터를 위한 안정적이고 공식적인 확장 지점입니다.
+
+`onSerialize`와 `onConfigure`는 `this`가 실제 노드/그래프 객체에 바인딩된 상태로 호출됩니다. 콜백에 전달되는 인자는 직렬화된 데이터 객체(`ISerialisedNode`/`ISerialisedGraph`)이며, 실제 노드/그래프가 아닙니다. `this`가 여전히 실제 객체이므로 훅은 이제 스토어 기반이 된 필드를 포함해 그 객체의 어떤 필드든 변경할 수 있습니다. 이 훅으로 핵심 필드를 덮어쓰지 마세요. `onSerialize`/`onConfigure` 내부에서 `this`를 통해 쓰면 자체적인 스키마, 소유권, 실행 취소 경계 없이 스토어에 바로 반영됩니다.
+
+`onSerialize`는 프런트엔드가 `graph.extra`와 `node.properties`를 데이터 객체로 복사한 뒤에 실행되므로, 훅이 `this.extra`나 `this.properties`에 추가한 키는 이번 저장에 포함되지 않습니다. `onSerialize` 내부에서는 콜백 인자에 쓰세요. 그래프는 `data.extra`, 노드는 `data.properties`입니다. 그렇지 않다면 직렬화가 시작되기 전에 `graph.extra`나 `node.properties`를 갱신하세요.
+
+`onSerialize`는 콜백을 하나만 보관하므로, 다른 확장이 이미 설치한 훅은 유지하세요.
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+`onSerialize`는 루트 그래프에서만 실행됩니다. 서브그래프 정의는 서브그래프에서 훅을 호출하지 않고 저장되므로, 워크플로우를 저장하기 전에 서브그래프 데이터를 `subgraph.extra`에 저장하세요.
+
+훅이 `data`에 추가한 사용자 지정 최상위 키는 `LGraph.asSerialisable()`에서도 최상위에 남습니다. 레거시 `LGraph.serialize()` 진입점은 이를 `data.extensions` 아래로 옮기고 JSON 호환되지 않는 값은 제외합니다. 워크플로우를 불러올 때 `onConfigure`는 다시 최상위에서 그 키를 받습니다. `extra` 아래의 키는 두 진입점 모두에서 위치를 유지합니다.
+
+## 속성을 열거하는 대신 노드를 직렬화
+
+확장에서 노드 자체의 속성을 열거하여 노드의 직렬화된 표현이나 디버그 표현을 만든다면, 이를 `node.serialize()`로 전환하세요.
+
+`id`, `type`, `title`, `flags`, `mode`, `color`, `bgcolor`, `shape`, `showAdvanced`는 이제 노드 인스턴스의 자체 데이터 속성이 아니라 노드 데이터 저장소를 통해 제공되는 접근자 속성입니다. `Object.keys(node)`, `for...in`, `{ ...node }`는 더 이상 이 필드를 드러내지 않지만, 직접 읽고 쓰는 것(`node.title`, `node.mode = ...`)은 변경 없이 그대로 동작합니다. `inputs`, `outputs`, `widgets`는 여전히 자체 열거 가능한 속성이므로, 스프레드/열거에서도 이 세 가지는 계속 포함됩니다.
+
+워크플로 JSON이 아니라 API 프롬프트 페이로드를 만드는 별도의 직렬화 계층인 위젯 수준의 `serializeValue`에 대해서는 [위젯 시스템 마이그레이션](/ko/custom-nodes/js/widgets-migration)을 참고하세요.
