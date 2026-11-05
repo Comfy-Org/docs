@@ -1,0 +1,142 @@
+---
+title: "Widget System Migration for Frontend Extensions"
+sidebarTitle: "Widget system migration"
+description: "Store-backed widget values in the ComfyUI frontend: unique widget names, undefined node.widgets, widget renames, addCustomWidget and Agent setValue calls."
+---
+
+Widget values now live in a Pinia-backed store instead of directly on the
+widget instance. Widget names must be unique per node, and renaming a widget
+succeeds only when the new name is free. `node.widgets` can also be
+`undefined` until it's first assigned.
+
+## Gallery values after the PrimeVue replacement
+
+The Vue `galleria` widget accepts an array of image URL strings, matching the
+`GALLERIA` input schema. Multiple images show thumbnails and previous/next
+buttons. Navigation stops at the first and last image.
+
+PrimeVue image objects with `itemImageSrc` or `thumbnailImageSrc` are no longer
+supported. Convert them to URL strings. The widget no longer reads PrimeVue
+options such as `showThumbnails`, `showItemNavigators`, `circular`, `autoPlay`,
+`transitionInterval`, `showIndicators`, `numVisible`, or `responsiveOptions`.
+Extensions that need these controls must supply their own gallery widget.
+
+## Widget names must be unique and stable
+
+Two widgets on the same node cannot share a name. If you add a second widget
+with a name that's already in use, the frontend renames the new widget with a
+numbered suffix, such as `strength#1`, when the node is in a graph. A lookup by
+the original name finds only the first widget:
+
+```js
+node.addWidget('number', 'strength', 0, () => {})
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // 'strength#1' once the node is in a graph
+```
+
+Give each widget a unique name.
+
+Assigning a new `widget.name` to a registered widget moves its stored value to
+the new name. If another widget on the node already uses that name, the
+assignment is ignored and `widget.name` keeps its old value, so check
+`widget.name` afterwards. Input slots that refer to the widget by name are not
+updated. Don't remove a widget and add a new one to rename it: `removeWidget()`
+deletes the stored value and clears input slots bound directly to the widget.
+Input slots that refer to it only by name keep that name.
+
+## `node.widgets` may be undefined
+
+`node.widgets` returns `undefined` until it's been assigned at least once.
+Initialize the array before adding widgets:
+
+```ts
+export function nodeCreated(node: LGraphNode) {
+  node.widgets ??= []
+  node.widgets.push(myWidget)
+}
+```
+
+Guard reads the same way:
+
+```ts
+const widgetCount = node.widgets?.length ?? 0
+```
+
+**Setting `node.widgets = undefined` clears it.** A later read returns
+`undefined` again, not `[]`.
+
+**Mutations made before the node is attached to a graph are picked up
+automatically.** You don't need to call anything yourself for the common
+case of building widgets in a constructor or `onNodeCreated`.
+
+`node.widgets` shows up in `Object.keys(node)` and object spreads like
+`{...node}`.
+
+## Prefer `node.addCustomWidget()` to pushing onto `node.widgets`
+
+Widgets added with `node.addWidget()`, `node.addCustomWidget()` or
+`node.addDOMWidget()` are registered in the store automatically. A plain object
+pushed straight onto `node.widgets` is also converted into a widget instance
+and registered once the node is in a graph. The conversion usually happens in
+place, but a frozen object or one with non-configurable properties is replaced
+by a separate widget, so keep the widget that `addCustomWidget()` returns or
+read it back from `node.widgets`. `addCustomWidget()` is still the recommended
+call: it returns the widget, and it restores the widget's saved value when a
+workflow loads.
+
+```js
+node.addCustomWidget({
+  name: 'my_widget',
+  type: 'custom',
+  value: '',
+  options: {},
+  draw(ctx, node, width, y, height) {},
+  mouse(event, pos, node) {}
+})
+```
+
+If you read or write `widget.value` before the node is attached to a graph,
+the value is held locally and synced to the store on attachment. No values
+are lost, but store-driven UI (such as the right-side panel) won't see the
+value until then.
+
+## Remove widgets with `node.removeWidget()`
+
+Use `node.removeWidget(widget)` to remove a widget. Splicing `node.widgets`
+directly skips slot cleanup, and the removed widget's value stays in the
+store until the node itself is removed from the graph.
+
+## Agent edits call `setValue` without a pointer event
+
+When the in-app Agent changes a widget that is a `BaseWidget` instance, the
+frontend calls `widget.setValue(value, { node, canvas })`, the same method a
+user edit goes through. Before, it assigned `widget.value` directly and then
+called `callback` and `onWidgetChanged` itself. This includes plain objects
+added with `addCustomWidget()` or pushed onto `node.widgets`, because the
+frontend converts them into `BaseWidget` instances. DynamicGroup row-count
+controllers and promoted subgraph-host widgets still get the direct write.
+
+If you override `setValue`, accept options shaped `{ node, e?, canvas? }`: `e`
+is never set for these calls, and `canvas` can be missing too. Don't read `options.e`
+or `options.canvas` without checking them first. A wrapper that calls the
+original `setValue` with only the value still works: the options default to
+`{ node: widget.node }`.
+
+`callback` and `onWidgetChanged` now receive the value the widget accepted, not
+the value the Agent sent. A number widget clamps to `min`/`max` and converts a
+numeric string to a number. In `callback`, `e` is `undefined`, and so is
+`pos` when there is no canvas.
+
+`setValue` returns without a change when the value, after a number widget
+clamps and converts it, is already identical (`===`) to the current value, so
+`'5'` on a number widget at `5` changes nothing. It also returns when a number
+widget receives a value for which `Number(value)` is `NaN`. Neither `callback`
+nor `onWidgetChanged` fires, and the graph version doesn't change. A numeric
+string such as `'7'` is converted and applied.
+
+## Don't call `useWidgetValueStore()` from extension code
+
+Do not call `useWidgetValueStore()` from extensions. Use `node.widgets`,
+`node.addWidget()` / `addCustomWidget()` / `removeWidget()`, and
+`widget.value` instead. The store's internal keying and its dependency on
+Pinia are not a supported extension surface.
