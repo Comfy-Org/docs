@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
@@ -214,8 +214,8 @@ describe("public Router pricing", () => {
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
-    expect(snapshot.rates).toHaveLength(731);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(702);
+    expect(snapshot.rates).toHaveLength(734);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(705);
     for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -865,6 +865,45 @@ describe("Router pricing coverage guard", () => {
       const mixed = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", [usage]);
       expect(mixed.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
       expect(() => catalogRates(mixed.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+      const retiredFile = join(dir, "retired.json");
+      writeFileSync(retiredFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{
+          source: "s",
+          source_ref: "https://github.com/Comfy-Org/cloud/pull/18382",
+          checked_at: "2026-11-06",
+          catalog_when_absent: "retired",
+          rates: [{ ...rate, model_id: "kling/not-in-catalog" }],
+        }],
+      }));
+      const retiredData = loadMetronomeData(retiredFile);
+      const retiredSplit = catalogRates(retiredData.rates, catalog);
+      expect(retiredSplit.staged).toEqual([]);
+      expect(retiredSplit.retired.map((candidate) => candidate.model_id)).toEqual(["kling/not-in-catalog"]);
+      expect(retiredRatesWarning(retiredSplit.retired)).toContain("retired rate");
+      expect(retiredRatesWarning(retiredSplit.retired)).not.toContain("once a spec sync adds them");
+      const present = catalog.find((candidate) => candidate.id === "pika/pika-2.5-text-to-video")!;
+      const presentFile = join(dir, "retired-present.json");
+      writeFileSync(presentFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{
+          source: "s",
+          source_ref: "https://github.com/Comfy-Org/cloud/pull/18382",
+          checked_at: "2026-11-06",
+          catalog_when_absent: "retired",
+          rates: [{ ...rate, model_id: present.id, serving_provider: "Pika" }],
+        }],
+      }));
+      const presentSplit = catalogRates(loadMetronomeData(presentFile).rates, catalog);
+      expect(presentSplit.retired).toEqual([]);
+      expect(presentSplit.rates.map((candidate) => candidate.model_id)).toEqual([present.id]);
+      const unmarked = join(dir, "retired-unmarked.json");
+      writeFileSync(unmarked, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x",
+        rates: [{ ...rate, model_id: "kling/not-in-catalog" }],
+        supplemental_sources: [],
+      }));
+      expect(() => catalogRates(loadMetronomeData(unmarked).rates, catalog)).toThrow("kling/not-in-catalog");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

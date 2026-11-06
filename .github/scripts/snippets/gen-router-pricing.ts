@@ -49,6 +49,10 @@ type MetronomeData = {
     source_sha256?: string;
     file_id?: string;
     checked_at: string;
+    // "retired": the model left the catalog (cite the cloud withdrawal). Absent
+    // ids are not rendered and do not fail the unknown-id check. A snapshot rate
+    // or a non-cloud source still fails.
+    catalog_when_absent?: "retired";
     rates: MetronomeRate[];
   }>;
 };
@@ -172,6 +176,7 @@ function modelCategory(id: string, outputs: string[]): PricingCategory {
 // Rates read from a supplemental source cited in Comfy-Org/cloud. Only these may
 // name a model the catalog does not list yet (see catalogRates).
 const CLOUD_SOURCED_RATES = new WeakSet<MetronomeRate>();
+const RETIRED_RATES = new WeakSet<MetronomeRate>();
 const CLOUD_SOURCE_REF = "https://github.com/Comfy-Org/cloud/";
 // Rates a keyed price superseded, by the resolved rates array they were dropped
 // from. catalogRates still checks them so supersession cannot hide a mistyped
@@ -191,7 +196,11 @@ function loadMetronomeData(file = METRONOME_FILE): MetronomeData {
     }
   }
   for (const source of supplementalSources) {
-    if (source.source_ref?.startsWith(CLOUD_SOURCE_REF)) for (const rate of source.rates) CLOUD_SOURCED_RATES.add(rate);
+    if (!source.source_ref?.startsWith(CLOUD_SOURCE_REF)) continue;
+    for (const rate of source.rates) {
+      CLOUD_SOURCED_RATES.add(rate);
+      if (source.catalog_when_absent === "retired") RETIRED_RATES.add(rate);
+    }
   }
   data.rates.push(...supplementalSources.flatMap(({ rates }) => rates));
   for (const rate of data.rates) {
@@ -234,19 +243,27 @@ function resolveKeyedRates(rates: MetronomeRate[]): MetronomeRate[] {
  * Comfy-Org/cloud supplemental source can be staged, so a mistyped model ID in
  * the snapshot or a third-party source still fails.
  */
-function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: MetronomeRate[]; staged: MetronomeRate[] } {
+function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: MetronomeRate[]; staged: MetronomeRate[]; retired: MetronomeRate[] } {
   const modelIds = new Set(models.map((model) => model.id));
-  const staged = rates.filter((rate) => !modelIds.has(rate.model_id));
-  const checked = [...staged, ...(SUPERSEDED_RATES.get(rates) ?? []).filter((rate) => !modelIds.has(rate.model_id))];
+  const absent = rates.filter((rate) => !modelIds.has(rate.model_id));
+  const retired = absent.filter((rate) => RETIRED_RATES.has(rate));
+  const staged = absent.filter((rate) => !RETIRED_RATES.has(rate));
+  const checked = [...absent, ...(SUPERSEDED_RATES.get(rates) ?? []).filter((rate) => !modelIds.has(rate.model_id))];
   const missingModels = [...new Set(checked.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => rate.model_id))];
-  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog`);
-  return { rates: rates.filter((rate) => modelIds.has(rate.model_id)), staged };
+  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog, or marked catalog_when_absent "retired" when Cloud withdrew the id`);
+  return { rates: rates.filter((rate) => modelIds.has(rate.model_id)), staged, retired };
 }
 
 function stagedRatesWarning(staged: MetronomeRate[]): string | undefined {
   const ids = [...new Set(staged.map((rate) => rate.model_id))].sort();
   if (!ids.length) return undefined;
   return `${METRONOME_FILE}: skipping ${staged.length} staged rate(s) for model IDs absent from the current catalog, which render once a spec sync adds them: ${ids.join(", ")}`;
+}
+
+function retiredRatesWarning(retired: MetronomeRate[]): string | undefined {
+  const ids = [...new Set(retired.map((rate) => rate.model_id))].sort();
+  if (!ids.length) return undefined;
+  return `${METRONOME_FILE}: not rendering ${retired.length} retired rate(s) whose model IDs have left the catalog: ${ids.join(", ")}`;
 }
 
 function validateCreditConversion(rate: MetronomeRate, creditsPerUsd: number): void {
@@ -1246,8 +1263,11 @@ function pricingCoverageErrors(): string[] {
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   const output = render();
-  const stagedWarning = stagedRatesWarning(catalogRates(loadMetronomeData().rates, loadCatalog()).staged);
+  const catalogSplit = catalogRates(loadMetronomeData().rates, loadCatalog());
+  const stagedWarning = stagedRatesWarning(catalogSplit.staged);
+  const retiredWarning = retiredRatesWarning(catalogSplit.retired);
   if (stagedWarning) console.warn(stagedWarning);
+  if (retiredWarning) console.warn(retiredWarning);
   const coverageErrors = pricingCoverageErrors();
   if (coverageErrors.length) {
     for (const error of coverageErrors) console.error(error);
@@ -1267,4 +1287,4 @@ if (import.meta.main) {
   }
 }
 
-export { catalogRates, checkPricingCoverage, compactOptions, isComfyGpuMetered, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
+export { catalogRates, checkPricingCoverage, compactOptions, isComfyGpuMetered, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
