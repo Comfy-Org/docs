@@ -1,0 +1,166 @@
+---
+title: "Ganchos de JavaScript de ComfyUI"
+sidebarTitle: "Ganchos"
+description: "Referencia de los ganchos JavaScript del frontend de ComfyUI: app.registerExtension, nodeCreated, beforeRegisterNodeDef y callbacks de personalización de la UI."
+translationSourceHash: 61f4c2af
+translationFrom: custom-nodes/js/javascript_hooks.mdx
+---
+
+## Ganchos de extensión
+
+En distintos momentos durante la ejecución de Comfy, la aplicación llama a
+`#invokeExtensionsAsync` o a `#invokeExtensions` con el nombre de un gancho.
+Estas invocan, en todas las extensiones registradas, el método con el nombre correspondiente (si existe), como `setup`
+en el ejemplo anterior.
+
+Comfy ofrece una variedad de ganchos que el código de extensiones personalizadas puede usar para modificar el comportamiento del cliente.
+
+<Tip>Estos ganchos se llaman durante la creación y modificación de los elementos del lado del cliente de Comfy.
+<br/>Los eventos durante la ejecución del flujo de trabajo los gestiona 
+`apiUpdateHandlers`</Tip> {/* TODO: enlazar cuando esté escrito */}
+
+A continuación se describen algunos de los ganchos más importantes. 
+Como Comfy está en desarrollo activo, de vez en cuando se añaden ganchos nuevos, así que 
+busca `#invokeExtensions` en `app.js` para encontrar todos los ganchos disponibles.
+
+Consulta también la [secuencia](#secuencias-de-llamadas) en la que se invocan los ganchos.
+
+### Ganchos de uso común 
+
+Empieza por `beforeRegisterNodeDef`, que usan la mayoría de las extensiones y a menudo es el único necesario.
+
+#### beforeRegisterNodeDef()
+
+Se llama una vez por cada tipo de nodo (la lista de nodos disponibles en el menú `AddNode`) y se usa para
+modificar el comportamiento del nodo. 
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) 
+```
+El objeto que se pasa en el parámetro `nodeType` sirve básicamente como plantilla 
+para todos los nodos que se creen de este tipo, así que las modificaciones que hagas en `nodeType.prototype` se aplicarán
+a todos los nodos de este tipo. `nodeData` es una encapsulación de aspectos del nodo definidos en el código Python,
+como su categoría, entradas y salidas. `app` es una referencia al objeto principal de la app de Comfy (¡que ya 
+has importado de todos modos!).
+
+<Tip>Este método se llama, en cada extensión registrada, para _todos_ los tipos de nodo, no solo para los que añade esa extensión.</Tip>
+
+La práctica habitual es comprobar `nodeType.ComfyClass`, que contiene el nombre de la clase Python correspondiente a este nodo, 
+para ver si necesitas modificar el nodo. A menudo esto significa modificar los nodos personalizados que has añadido, 
+aunque en ocasiones puede que necesites modificar el comportamiento de otros nodos (¡o que otros nodos personalizados 
+modifiquen los tuyos!), en cuyo caso conviene tener cuidado para garantizar la interoperabilidad.
+
+<Tip>Dado que otras extensiones también pueden modificar nodos, procura escribir código que haga cuantas menos suposiciones mejor.
+Y llévate bien con las demás: aísla tus cambios siempre que sea posible.</Tip>
+
+Una práctica muy común en `beforeRegisterNodeDef` es «secuestrar» un método existente:
+
+<Note>
+**Obsoleto:** El patrón de secuestro de prototipos que se muestra a continuación está obsoleto y puede cambiar en cualquier momento en un futuro próximo. Para los menús contextuales, usa la [Context Menu API](/es/custom-nodes/js/context-menu-migration) oficial. Para otros casos de uso, prefiere los [ganchos de extensión](/es/custom-nodes/js/javascript_hooks) oficiales cuando estén disponibles.
+</Note>
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) {
+	if (nodeType.comfyClass=="MyNodeClass") { 
+		const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+		nodeType.prototype.onConnectionsChange = function (side,slot,connect,link_info,output) {     
+			const r = onConnectionsChange?.apply(this, arguments);   
+			console.log("Someone changed my connection!");
+			return r;
+		}
+	}
+}
+```
+Con esta práctica se guarda el método de prototipo existente y luego se reemplaza. El método de reemplazo llama al
+método original (`?.apply` garantiza que, si no había ninguno, la operación siga siendo segura) y después 
+realiza operaciones adicionales. Según la lógica de tu código, puede que necesites colocar el `apply` en otro lugar de tu código de reemplazo,
+o incluso hacer que la llamada sea condicional. 
+
+Cuando secuestres un método de esta forma, conviene revisar el código central de Comfy (los puntos de interrupción son tus aliados) para comprobar
+la firma del método y adaptarte a ella.
+
+<Warning>Este enfoque es frágil y puede romperse con futuras actualizaciones de ComfyUI. Usa las APIs oficiales siempre que sea posible.</Warning>
+
+#### nodeCreated()
+
+```Javascript
+async nodeCreated(node)
+```
+Se llama cuando se crea una instancia concreta de un nodo 
+(justo al final de la función `ComfyNode()` en `nodeType`, que actúa como constructor). 
+En este gancho puedes hacer modificaciones en instancias individuales de tu nodo. 
+
+<Tip>Los cambios que afectan a todas las instancias es mejor añadirlos al prototipo en `beforeRegisterNodeDef`, como se describió antes.</Tip>
+
+#### init()
+
+```Javascript
+async init()
+```
+Se llama cuando la página web de Comfy se carga (o se recarga). La llamada se hace después de que se haya creado el objeto de gráfico, pero antes de que
+se registre o se cree ningún nodo. Se puede usar para modificar el comportamiento central de Comfy secuestrando métodos de la app o del 
+gráfico (un objeto `LiteGraph`). Esto se trata con más detalle en [Objetos de Comfy](./javascript_objects_and_hijacking).
+
+<Warning>Un gran poder conlleva una gran responsabilidad. Secuestrar el comportamiento central hace más probable que tus nodos
+sean incompatibles con otros nodos personalizados o con futuras actualizaciones de Comfy</Warning>
+
+#### setup()
+
+```Javascript
+async setup()
+```
+Se llama al final del proceso de inicio. Es un buen lugar para añadir escuchadores de eventos (ya sean eventos de Comfy o eventos del DOM)
+o para añadir entradas a los menús globales; ambos temas se tratan en otro lugar. {/* TODO: enlazar cuando esté escrito */}
+
+<Tip>Para hacer algo cuando se ha cargado un flujo de trabajo, usa `afterConfigureGraph`, no `setup`</Tip>
+
+
+### Secuencias de llamadas
+
+Estas secuencias se obtuvieron insertando código de registro en el archivo `app.js` de Comfy. Puede que un código similar te resulte útil
+para entender el flujo de ejecución.
+```Javascript
+/* aprox. línea 220 en el momento de escribir esto: */
+	#invokeExtensions(method, ...args) {
+		console.log(`invokeExtensions      ${method}`) // esta línea añadida
+		// ...
+	}
+/* aprox. línea 250 en el momento de escribir esto: */
+	async #invokeExtensionsAsync(method, ...args) {
+		console.log(`invokeExtensionsAsync ${method}`) // esta línea añadida
+		// ...
+	}
+```
+
+#### Carga de la página web
+
+```
+invokeExtensionsAsync init
+invokeExtensionsAsync addCustomNodeDefs
+invokeExtensionsAsync getCustomWidgets
+invokeExtensionsAsync beforeRegisterNodeDef    [repeated multiple times]
+invokeExtensionsAsync registerCustomNodes
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync nodeCreated
+invokeExtensions      loadedGraphNode
+invokeExtensionsAsync afterConfigureGraph
+invokeExtensionsAsync setup
+```
+
+#### Carga de un flujo de trabajo
+
+```
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync beforeRegisterNodeDef   [zero, one, or multiple times]
+invokeExtensionsAsync nodeCreated             [repeated multiple times]
+invokeExtensions      loadedGraphNode         [repeated multiple times]
+invokeExtensionsAsync afterConfigureGraph
+```
+
+{/* TODO: ¿por qué se vuelve a llamar a beforeRegisterNodeDef? */}
+
+#### Añadir un nodo nuevo
+
+```
+invokeExtensionsAsync nodeCreated
+```

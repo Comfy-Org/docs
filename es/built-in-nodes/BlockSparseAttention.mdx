@@ -1,0 +1,64 @@
+---
+title: "Atención dispersa por bloques del modelo - ComfyUI Built-in Node Documentation"
+description: "El nodo Block Sparse Attention modifica un modelo para que sus capas de atención se centren solo en las partes más relevantes de la entrada en lugar de en"
+sidebarTitle: "Atención dispersa por bloques del modelo"
+icon: "circle"
+mode: wide
+---
+
+El nodo **Block Sparse Attention** modifica un modelo para que sus capas de atención se centren solo en las partes más relevantes de la entrada en lugar de en todo a la vez, lo que reduce el trabajo computacional necesario para secuencias largas. El ahorro crece con la longitud de la secuencia, ya que las secuencias cortas suelen ser más rápidas con atención normal (densa).
+
+## Entradas
+
+### Entradas comunes
+
+| Parámetro | Descripción | Tipo de datos | Obligatorio | Rango |
+|-----------|-------------|---------------|-------------|-------|
+| `model` | El modelo al que se aplicará el parche. | MODEL | Sí | N/A |
+| `selection` | Método utilizado para elegir bloques clave para atención completa a nivel de token (se muestra como `method`). <br />`sol-attn`: Sparsifying Online Attention utiliza un umbral adaptativo sin entrenamiento para cada cabeza de atención y bloque de consulta.<br />`sla`: Sparse-Linear Attention conserva un porcentaje fijo de los bloques clave con mayor puntuación; úsalo solo con pesos de modelo entrenados para este patrón.<br />`vsa`: Video Sparse Attention (FastVideo) utiliza teselación 3D de cubos de video y una rama de atención gruesa aprendida; requiere pesos de modelo FastH3. | DYNAMIC_COMBO | Sí | `"sol-attn"`<br />`"sla"`<br />`"vsa"` |
+| `start_percent` | Punto porcentual en el que comienza la atención dispersa. Antes de este punto, la atención permanece densa. Predeterminado: 0.2. | FLOAT | No | min: 0.0, max: 1.0, step: 0.01 |
+| `end_percent` | Punto porcentual en el que termina la atención dispersa. Después de este punto, la atención vuelve a ser densa. Predeterminado: 1.0. | FLOAT | No | min: 0.0, max: 1.0, step: 0.01 |
+| `dense_blocks` | Bloques Transformer que siempre se ejecutan de forma densa, p. ej. '0, 1, 47-49'. Predeterminado: "" (vacío). Entrada avanzada. | STRING | No | Default: "" |
+| `min_tokens` | Las secuencias más cortas que este valor permanecen densas. Predeterminado: 12288. Entrada avanzada. | INT | No | min: 0, max: 1048576, step: 512 |
+| `extra_tokens` | Tokens adicionales con mayor puntuación a los que cada bloque de consulta atiende más allá de sus bloques seleccionados. Más cercano a denso para mayor tiempo de atención; se recomienda 256, 0 lo desactiva. Se ignora para VSA. Predeterminado: 256. Entrada avanzada. | INT | No | min: 0, max: 256, step: 64 |
+| `sink_conditioning` | Solo para MiniMax-H3. `exact_kv`: cada consulta atiende exactamente las filas empaquetadas de texto/audio/referencia (aprox. 3 % de costo). `exact_kv_and_rows`: además ejecuta densamente las filas de consulta de audio objetivo (mantiene intacto el audio generado). `off` desactiva este comportamiento. Predeterminado: "exact_kv_and_rows". Entrada avanzada. | COMBO | No | `"exact_kv"`<br />`"exact_kv_and_rows"`<br />`"off"` |
+| `verbose` | Registra si cada forma de atención usó atención dispersa o por qué permaneció densa. Predeterminado: False. Entrada avanzada. | BOOLEAN | No | Default: False |
+
+### Entradas de sol-attn
+
+| Parámetro | Descripción | Tipo de datos | Obligatorio | Rango |
+|-----------|-------------|---------------|-------------|-------|
+| `tau` | Umbral en sigmas de la distribución de puntuaciones. Un valor más alto es más disperso: 1.0 conserva exactos aproximadamente el 16 % de los bloques clave, 1.5 alrededor del 7 %, 2.0 alrededor del 2.7 %. Predeterminado: 1.3. | FLOAT | No | min: 0.0, max: 4.0, step: 0.05 |
+
+### Entradas de sla
+
+| Parámetro | Descripción | Tipo de datos | Obligatorio | Rango |
+|-----------|-------------|---------------|-------------|-------|
+| `keep_percent` | Porcentaje de bloques clave que cada bloque de consulta conserva exactamente (los sumideros y la diagonal se añaden por encima). Las LoRAs de selección de estilo SLA se destilan contra este valor; sin dicha LoRA, un valor más alto está más cerca de denso. Predeterminado: 10.0. | FLOAT | No | min: 0.5, max: 95.0, step: 0.5 |
+
+### Entradas de vsa
+
+| Parámetro | Descripción | Tipo de datos | Obligatorio | Rango |
+|-----------|-------------|---------------|-------------|-------|
+| `keep_percent` | Porcentaje de cubos de video que cada cubo de consulta conserva; los checkpoints FastH3-VSA están entrenados con 10. Usa las capas `to_gate_compress` del modelo para la rama gruesa cuando están presentes. Predeterminado: 10.0. | FLOAT | No | min: 0.5, max: 95.0, step: 0.5 |
+
+**Nota:** Solo se muestran en la interfaz los parámetros que pertenecen al método seleccionado actualmente.
+
+## Salidas
+
+| Nombre de salida | Descripción | Tipo de datos |
+|------------------|-------------|---------------|
+| `model` | El modelo con atención dispersa por bloques aplicada. | MODEL |
+
+## Restricciones y limitaciones
+
+- Las secuencias más cortas que `min_tokens`, los bloques listados en `dense_blocks` y los pasos de muestreo fuera de la ventana de `start_percent` a `end_percent` recurren al backend de atención densa del modelo seleccionado por el nodo Model Attention Backend.
+- `extra_tokens` se ignora cuando se selecciona el método `vsa`. Se registra un mensaje porque los pesos de VSA se entrenaron con su patrón disperso.
+- El método `vsa` requiere un modelo MiniMax-H3; cualquier otro modelo genera un error. Si al modelo le faltan las capas `to_gate_compress`, la etapa fina se ejecuta sin la rama gruesa y se registra una advertencia.
+- `dense_blocks` se ignora para los modelos que no reportan índices de bloques, lo cual se indica en el registro cuando `verbose` está habilitado.
+- `sink_conditioning` solo se aplica a modelos MiniMax-H3 que reportan una disposición que coincide con la longitud de secuencia actual.
+
+> Esta documentación fue generada por IA. Si encuentra algún error o tiene sugerencias de mejora, ¡no dude en contribuir! [Editar en GitHub](https://github.com/Comfy-Org/embedded-docs/blob/main/comfyui_embedded_docs/docs/BlockSparseAttention/es.md)
+
+---
+**Source fingerprint (SHA-256):** `0c34876b49a04db0ab265526e2bb5f784e150591aab631713ad2ab420a3327c4`
