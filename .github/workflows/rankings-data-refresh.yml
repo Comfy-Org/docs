@@ -1,0 +1,166 @@
+name: Rankings data refresh
+
+# Rebuilds the data behind the Rankings tab (rankings/index.mdx) every day at
+# 9am Pacific from Snowflake, PostHog and Hugging Face, then pushes the new
+# snippets/rankings/rankings-data.jsx to main. The raw exports hold internal
+# spend and counts, so they stay in the runner's temp dir; only ranks, shares
+# and times reach the repo. See scripts/rankings/README.md.
+#
+# Needs these repository secrets: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER,
+# SNOWFLAKE_PRIVATE_KEY (or SNOWFLAKE_PASSWORD), SNOWFLAKE_WAREHOUSE,
+# SNOWFLAKE_ROLE (optional), POSTHOG_API_KEY. HF_TOKEN is optional.
+# If main rejects the push, the update goes to a pull request instead.
+
+on:
+  schedule:
+    # 9am Pacific is 16:00 UTC in summer time and 17:00 UTC in winter; the
+    # first step skips whichever run isn't 9am in Los Angeles.
+    - cron: "0 16 * * *"
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: rankings-data-refresh
+  cancel-in-progress: false
+
+# Read-only by default. Only the push job below gets write access, and it never
+# sees the source credentials or runs third-party packages.
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.build.outputs.changed }}
+    env:
+      BRANCH: chore/rankings-data-refresh
+    steps:
+      - name: Only run at 9am Pacific
+        id: clock
+        run: |
+          hour=$(TZ=America/Los_Angeles date +%H)
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$hour" != "09" ]; then
+            echo "It's ${hour}:00 in Los Angeles, skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.clock.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python
+        if: steps.clock.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the Snowflake connector
+        if: steps.clock.outputs.run == 'true'
+        run: pip install "snowflake-connector-python==3.12.3" "cryptography>=42"
+
+      - name: Carry over snapshots from an open fallback PR
+        if: steps.clock.outputs.run == 'true'
+        run: |
+          # If an earlier refresh went to the fallback PR, its Hugging Face
+          # snapshots aren't on main yet. Merge them in so none are lost.
+          state=scripts/rankings/state/hf-downloads.json
+          if git show "origin/$BRANCH:$state" > "$RUNNER_TEMP/pr-state.json" 2>/dev/null; then
+            python3 - "$state" "$RUNNER_TEMP/pr-state.json" <<'PY'
+          import json, sys
+          main, pr = (json.load(open(f)) for f in sys.argv[1:])
+          main["totals"] = {**pr["totals"], **main["totals"]}
+          with open(sys.argv[1], "w") as f:
+              json.dump(main, f, indent=1, sort_keys=True)
+              f.write("\n")
+          PY
+          fi
+
+      - name: Fetch sources and rebuild the data file
+        id: build
+        if: steps.clock.outputs.run == 'true'
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SNOWFLAKE_ACCOUNT" ] || [ -z "$POSTHOG_API_KEY" ]; then
+            echo "::warning::The rankings refresh secrets aren't set yet, so the data was not refreshed."
+            exit 0
+          fi
+          # Data runs through yesterday (UTC), the last full day.
+          through=$(date -u -d yesterday +%F)
+          python3 scripts/rankings/fetch-rankings-sources.py "$RUNNER_TEMP/rankings" "$through"
+          python3 scripts/rankings/build-rankings-data.py "$RUNNER_TEMP/rankings" snippets/rankings/rankings-data.jsx "$through"
+          if git diff --quiet -- snippets/rankings/rankings-data.jsx scripts/rankings/state/hf-downloads.json; then
+            echo "No changes."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only the two generated files go to the push job; the raw CSVs stay here.
+      - name: Hand the generated files to the push job
+        if: steps.build.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rankings-data
+          path: |
+            snippets/rankings/rankings-data.jsx
+            scripts/rankings/state/hf-downloads.json
+          retention-days: 1
+
+  push:
+    needs: refresh
+    if: needs.refresh.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BRANCH: chore/rankings-data-refresh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Get the generated files
+        uses: actions/download-artifact@v4
+        with:
+          name: rankings-data
+
+      - name: Push the new data
+        run: |
+          set -euo pipefail
+          files="snippets/rankings/rankings-data.jsx scripts/rankings/state/hf-downloads.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add $files
+          git commit -m "chore(rankings): refresh rankings data through $(date -u -d yesterday +%F)"
+          if git push origin HEAD:main; then
+            exit 0
+          fi
+          # The refresh job already merged any snapshots from this branch, so
+          # replacing it loses nothing.
+          echo "main rejected the push; opening a pull request instead."
+          git push -f origin "HEAD:refs/heads/$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')" ]; then
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(rankings): refresh rankings data" \
+              --body "Daily refresh of the Rankings tab data by the rankings-data-refresh workflow. Only ranks, shares and times are in the diff."
+          fi
