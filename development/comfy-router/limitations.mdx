@@ -65,7 +65,7 @@ The cap applies to every request, whether or not it carries an `Idempotency-Key`
 
 The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply.
 
-Cache catalog and schema reads. Revalidate schemas with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
+Cache catalog and schema reads. Revalidate them with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
 
 ## No progress while a call runs
 
@@ -79,17 +79,48 @@ Show an indeterminate progress indicator. If you need progress or streaming, use
 
 The response can contain provider usage or cost fields. They do not represent a universal Comfy charge. `X-Comfy-Credits-Used` is optional: a missing header means the cost was not reported, not that the run was free. A replayed response (`Idempotent-Replayed: true`) is never charged again but may restate the original run's figure, so do not add the header up across retries of one `Idempotency-Key`. Use the Comfy platform for balances, usage, and invoices.
 
-The catalog provides billing facts, including `billing.charges_on_policy_rejection`, but no prices. Handle `yes`, `no`, and `unknown` explicitly. See [billing](/development/comfy-router/billing#model-billing-facts).
+The catalog provides billing facts, including `billing.charges_on_policy_rejection`, but no prices. Handle `yes`, `no`, and `unknown` explicitly. When it is `yes`, a synchronous `content_policy_violation` error can carry `X-Comfy-Credits-Used`: it does when the provider refused the model's generated output and Comfy recorded usage for that refused generation, and carries that amount. An input-side refusal, a same-key replay, and a charge too small to show in the header's two decimals do not carry it; a refusal without the header is not reported, not free. See [billing](/development/comfy-router/billing#model-billing-facts).
 
-To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced from the rate card Comfy bills the run against, but it is not a price lock, a run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains the post-hoc figure for a run. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`.
+To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced from the rate card Comfy bills the run against (a model billed the cost its vendor reports is estimated from the vendor's published price list instead), but the figure is an estimate, not the final charge, and the settled charge in your workspace's usage and billing records is final. Nor is it a price lock. A run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains a rounded post-hoc figure for a run, not a receipt. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`. The models that cannot be priced before a run are listed in [models without a pre-flight estimate](#models-without-a-pre-flight-estimate).
+
+## Models without a pre-flight estimate
+
+Router cannot yet reliably price a call to the models below before it runs, so expect `/estimate` and a queued submit's `estimate` to answer `source: unknown` for them, though some may return a figure for a particular body. `unknown` means no figure was given, not that the run is free. The [Comfy charges and usage](#comfy-charges-and-usage) rules still apply: a run on your own provider key is not billed by Comfy, and `X-Comfy-Credits-Used` is optional, so a missing header means the cost was not reported. A model not listed here can still answer `unknown` for a particular body, so read `source` on every estimate.
+
+This list shrinks as estimate coverage grows. It is generated from Router's own pricing code, and models that are not publicly available are never listed.
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **bfl**: `bfl/erase-v1`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **fal**: `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`
+- **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
+- **kling**: `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
+- **openai**: `openai/gpt-image-1.5`
+- **openrouter**: `openrouter/chat-completions`
+- **pika**: `pika/pika-gpt-image-2`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **synclabs**: `synclabs/sync-3`
+- **wavespeed**: `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
+
+{/* END GENERATED: models without a pre-flight estimate */}
+
+Edits on `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, and `openai/gpt-image-2.5-sunburst` also have no pre-flight estimate. An edit call to one of these models, or a generation call that carries an input image, answers `source: unknown`. A text-only generation call to them is estimated, which is why they are not in the list above.
 
 ## Router does not cover every partner operation
 
 Router runs models. File uploads, account reads, asset management, streaming, and provider job controls can require partner-proxy routes under `/proxy/…`, which sit outside Router and are not described by its contract. Router's own surface is the [Comfy Router specification](/router-openapi.yaml); support varies by provider.
 
-### Krea 3 reference images must be uploaded first
+### Krea 3 reference images: upload first, or use a public https URL
 
-`krea/krea-3` does not accept arbitrary image links. Every entry in `image_urls` must be an `image_url` returned by `POST /proxy/krea/assets`, which is an `https://app-uploads.krea.ai/...` URL. Router checks only that the link parses as an `https` URL whose host is exactly `app-uploads.krea.ai` (no other host and no explicit port): any other link, including a public `https` URL you host yourself, is rejected with `400` `invalid_input` before the model runs. A link that passes that check but is not a live upload (expired, deleted or mistyped) still gets past it, and Router then fails to read the image's size and answers with a `5xx` error, not a `400`, so always pass the `image_url` exactly as the upload returned it.
+In `krea/krea-3`'s `image_urls`, an `image_url` returned by `POST /proxy/krea/assets` (an `https://app-uploads.krea.ai/...` URL) is always accepted. Whether other links are accepted depends on the environment; on api.comfy.org they currently are.
+
+- **Where other links are accepted**, any public `https` image URL works. Router reads each image's size before the model runs: a link whose host is not publicly reachable or does not exist, that answers with a `4xx` other than `408` or `429`, or that is not an image is rejected with `400` `invalid_input` naming its host. A transient DNS, TLS or connection failure, a timeout, or an origin `408` or `429` fails with a `502` error. An `app-uploads.krea.ai` link that is not a live upload is rejected with `400` like any other unreachable reference. Right after a server starts, before it has learned which rule applies, a public `https` URL that is not an `app-uploads.krea.ai` link can fail with a `503` that is safe to retry.
+- **Where other links are not accepted**, every entry must be an upload's `image_url`. Router checks only that the link parses as an `https` URL whose host is exactly `app-uploads.krea.ai` (no other host and no explicit port): any other link, including a public `https` URL you host yourself, is rejected with `400` `invalid_input` before the model runs. A link that passes that check but is not a live upload (expired, deleted or mistyped) still gets past it, and Router then fails to read the image's size and answers with a `5xx` error, not a `400`.
+
+Uploading works in every environment, so it is the portable choice; always pass the `image_url` exactly as the upload returned it.
 
 1. Upload each reference image as `multipart/form-data`, with the image in the form field `file` (JPEG, PNG, or WebP, up to 75 MB). Authenticate the same way you do for Router, with `X-API-Key` or `Authorization: Bearer`.
 

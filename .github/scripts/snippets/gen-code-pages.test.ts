@@ -6,6 +6,8 @@ import {
   loadModelSchema,
   modalityCell,
   modalityLine,
+  MODEL_NOTICES,
+  modelNotices,
   modelPageRedirects,
   modelsNav,
   opaqueOutputExample,
@@ -231,8 +233,17 @@ describe("renderDocsJson: the redirect lands in the real docs.json", () => {
   test("nothing pruned means the redirects are byte-for-byte what was there", () => {
     const after = JSON.parse(renderDocsJson(nav, { live: [], pruned: [] }));
     expect(after.redirects).toEqual(before.redirects);
-    // `redirects` stays the last key, so the file's shape does not churn.
-    expect(Object.keys(after).at(-1)).toBe("redirects");
+    // Preserve the authored key order, including settings added after redirects.
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    const enBefore = before.navigation.languages.find((l: { language: string }) => l.language === "en");
+    const enAfter = after.navigation.languages.find((l: { language: string }) => l.language === "en");
+    expect(enAfter.tabs.filter((t: { tab: string }) => t.tab !== "Comfy Router"))
+      .toEqual(enBefore.tabs.filter((t: { tab: string }) => t.tab !== "Comfy Router"));
+    const routerBefore = enBefore.tabs.find((t: { tab: string }) => t.tab === "Comfy Router");
+    const routerAfter = enAfter.tabs.find((t: { tab: string }) => t.tab === "Comfy Router");
+    expect(routerAfter.pages.find((p: { group?: string }) => p.group === "Models")).toEqual(nav);
+    expect(routerAfter.pages.filter((p: { group?: string }) => p.group !== "Models"))
+      .toEqual(routerBefore.pages.filter((p: { group?: string }) => p.group !== "Models"));
   });
 });
 
@@ -247,6 +258,7 @@ const NATIVE = "vertexai/gemini-3-pro-image";
 const NATIVE_PAGE = "development/comfy-router/models/google/nano-banana-pro/code";
 const FAL_LEG = { provider: "fal", model_id: "fal/fal-nano-banana-pro" };
 const WAVESPEED_LEG = { provider: "wavespeed", model_id: "wavespeed/wavespeed-nano-banana-pro" };
+const TENCENT_HELD_LEG = { provider: "tencent" };
 
 describe("readRelations: the two extensions BE-15959 publishes", () => {
   test("a native document lists its legs, sorted by provider so the page does not churn", () => {
@@ -279,7 +291,6 @@ describe("readRelations: the two extensions BE-15959 publishes", () => {
       "x-comfy-router-alt-providers": [
         null,
         "fal",
-        { provider: "fal" },
         { model_id: "fal/x" },
         { provider: "", model_id: "fal/x" },
         { provider: "fal", model_id: "no-slash" },
@@ -288,6 +299,22 @@ describe("readRelations: the two extensions BE-15959 publishes", () => {
       ],
     });
     expect(r.altProviders).toEqual([FAL_LEG]);
+  });
+
+  // BE-22964 (`DirectHeld`): a leg published under its native model while its own
+  // catalog id stays embargoed is listed by provider alone.
+  test("a leg with no `model_id` is kept, named by provider alone", () => {
+    const r = readRelations(NATIVE, { paths: {}, "x-comfy-router-alt-providers": [TENCENT_HELD_LEG, FAL_LEG] });
+    expect(r.altProviders).toEqual([FAL_LEG, TENCENT_HELD_LEG]);
+    expect(r.altProviders[1]).not.toHaveProperty("model_id");
+  });
+
+  test("a `model_id` that is present but malformed still drops the entry", () => {
+    const r = readRelations(NATIVE, {
+      paths: {},
+      "x-comfy-router-alt-providers": [{ provider: "tencent", model_id: "" }, { provider: "tencent", model_id: 42 }],
+    });
+    expect(r.altProviders).toEqual([]);
   });
 
   test("a non-array `alt-providers` is ignored, not spread", () => {
@@ -330,6 +357,16 @@ describe("servingProvidersSection: the block on the native model's page", () => 
       "[`model_provider`, `strict_mode` and `fallback_provider`](/development/comfy-router/reference#post-v2modelsprovidermodel)"
     );
     expect(out).toContain("[Serving providers](/development/comfy-router/providers)");
+  });
+
+  test("a leg with no `model_id` gets a row with no `as <id>`, so a held-back id is never printed", () => {
+    const out = servingProvidersSection([{ model: NATIVE, legs: [FAL_LEG, TENCENT_HELD_LEG] }]);
+    expect(out).toContain(
+      "- **fal**, as `fal/fal-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=fal`"
+    );
+    expect(out).toContain("- **Tencent**: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=tencent`");
+    expect(out).not.toContain("undefined");
+    expect(out).not.toContain("tencent/");
   });
 
   test("a native model with no legs renders no section at all", () => {
@@ -470,6 +507,21 @@ describe("resolving the alt-provider relationship to Providers rows", () => {
       { provider: "fal", model: NATIVE, aliasId: FAL_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
       { provider: "wavespeed", model: NATIVE, aliasId: WAVESPEED_LEG.model_id, page: NATIVE_PAGE, title: "Nano Banana Pro" },
     ]);
+  });
+
+  test("a leg with no `model_id` still earns a Providers row", () => {
+    const { rows, problems } = providerRelationRows(new Map([[NATIVE, [FAL_LEG, TENCENT_HELD_LEG]]]), [], pages);
+    expect(problems).toEqual([]);
+    expect(rows.map((r) => r.provider)).toEqual(["fal", "tencent"]);
+    expect(rows[1].aliasId).toBe("");
+  });
+
+  test("an alias document for a leg the native lists without a `model_id` is a reported conflict", () => {
+    const aliasDocs = [{ model: "tencent/held", aliasOf: NATIVE, provider: "tencent" }];
+    const { rows, problems } = providerRelationRows(new Map([[NATIVE, [TENCENT_HELD_LEG]]]), aliasDocs, pages);
+    expect(rows).toHaveLength(1);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("listed without a model id");
   });
 
   test("a native leg and the matching alias document are one row, not two", () => {
@@ -672,5 +724,28 @@ describe("renderDerivedPage: the modality line under the intro", () => {
     const text = page(WITHOUT_MODALITIES);
     expect(text).not.toContain("**Input:**");
     expect(text).not.toContain("**Output:**");
+  });
+});
+
+describe("per-model notices", () => {
+  const ROOT = join(import.meta.dir, "../../..");
+  test("the retiring xAI image models carry the migration notice on their generated pages", () => {
+    for (const model of ["xai/grok-imagine-image-quality", "xai/grok-imagine-image-pro"]) {
+      expect(MODEL_NOTICES[model]).toContain("https://docs.x.ai/developers/migration/imagine-image-quality-nov-2");
+      const page = readFileSync(join(ROOT, `development/comfy-router/models/${model}/code.mdx`), "utf8");
+      expect(page).toContain(`<Warning>\n${MODEL_NOTICES[model]}\n</Warning>`);
+      expect(renderDerivedPage(model, loadModelSchema(model)!)).toContain(MODEL_NOTICES[model]);
+    }
+  });
+
+  test("each notice names the model and date it describes", () => {
+    expect(MODEL_NOTICES["xai/grok-imagine-image-quality"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+  });
+
+  test("a model without an entry renders nothing, and a repeated notice renders once per page", () => {
+    expect(modelNotices(["xai/grok-imagine-image-2.0"])).toBe("");
+    expect(modelNotices(["xai/grok-imagine-image-quality", "xai/grok-imagine-image-quality"]).match(/<Warning>/g)).toHaveLength(1);
   });
 });
