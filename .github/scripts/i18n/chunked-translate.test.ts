@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   blockHash,
   documentBlockHashes,
+  formatChangelogDateForLang,
   getSectionSyncStatus,
+  localizeEnglishChangelogDate,
   mapTargetSectionsByStoredLabels,
   parseDocument,
   softSplitByBudget,
@@ -96,6 +98,39 @@ describe("getSectionSyncStatus update_blocks", () => {
     );
     const status = getSectionSyncStatus(en, target, "update_blocks", false, "zh");
     expect(status.pendingBlocks).toEqual(["v0.26.0"]);
+  });
+});
+
+describe("changelog date localization", () => {
+  const block = enBlock("v0.26.0", "* **Krea2**: first draft", "June 23, 2026");
+
+  test("formats Spanish dates the way the es changelog writes them", () => {
+    expect(localizeEnglishChangelogDate("November 4, 2026", "es")).toBe(
+      "4 de noviembre de 2026"
+    );
+    expect(localizeEnglishChangelogDate("January 1, 2026", "es")).toBe("1 de enero de 2026");
+    expect(localizeEnglishChangelogDate("September 30, 2025", "es")).toBe(
+      "30 de septiembre de 2025"
+    );
+    expect(formatChangelogDateForLang(2026, 3, 7, "es")).toBe("7 de marzo de 2026");
+  });
+
+  test("keeps English dates for en and other locales unchanged", () => {
+    expect(localizeEnglishChangelogDate("November 4, 2026", "en")).toBe("November 4, 2026");
+    expect(formatChangelogDateForLang(2026, 11, 4, "zh")).toBe("2026年11月4日");
+    expect(formatChangelogDateForLang(2026, 11, 4, "ko")).toBe("2026년 11월 4일");
+  });
+
+  test("treats a Spanish target date as in sync", () => {
+    const en = `---\n---\n${block}\n`;
+    const enHashes = documentBlockHashes(parseDocument(en, "update_blocks").blocks);
+    const target = targetMdx(
+      [{ label: "v0.26.0", body: "* **Krea2**: first draft", date: "23 de junio de 2026" }],
+      enHashes
+    );
+    const status = getSectionSyncStatus(en, target, "update_blocks", false, "es");
+    expect(status.pendingBlocks).toEqual([]);
+    expect(status.upToDate).toBe(true);
   });
 });
 
