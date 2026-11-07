@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
+// Rates staged ahead of the catalog are not rendered until a spec sync lists their models.
+const listedRates = catalogRates(snapshot.rates, catalog).rates;
 const sourcePage = render();
 const currencyToggleStart = sourcePage.indexOf("<PricingCurrencyToggle");
 const creditsTabsStart = sourcePage.indexOf("<Tabs>", currencyToggleStart);
@@ -209,9 +213,10 @@ describe("public Router pricing", () => {
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(687);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(658);
-    for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
+    // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
+    expect(snapshot.rates).toHaveLength(702);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(673);
+    for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
       const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
@@ -690,7 +695,7 @@ describe("public Router pricing", () => {
         preserved += groupRates(rates, "en").flatMap((group) => group.rates).length;
       }
     }
-    expect(preserved).toBe(snapshot.rates.length);
+    expect(preserved).toBe(listedRates.length);
   });
 
   test("tier pivots preserve all source records, including quantities and effective windows", () => {
@@ -706,7 +711,7 @@ describe("public Router pricing", () => {
       }
     }
     const records = (rates: typeof snapshot.rates) => rates.map((rate) => JSON.stringify(rate)).sort();
-    expect(records(preserved)).toEqual(records(snapshot.rates));
+    expect(records(preserved)).toEqual(records(listedRates));
   });
 
   test("keeps price-changing variants inline and labels distinct pricing groups", () => {
@@ -832,6 +837,37 @@ describe("Router pricing coverage guard", () => {
     expect(checkPricingCoverage(unpriced, loadUnpricedWaivers()).filter((error) => error.startsWith("router-pricing/unpriced-waivers.json:"))).toEqual([]);
     const unavailableRows = (creditsPage.match(/\| Not published \|/g) ?? []).length;
     expect(unavailableRows).toBe(unpriced.length);
+  });
+
+  test("skips rates staged ahead of the catalog with a warning, and rejects them from non-cloud sources", () => {
+    const dir = mkdtempSync(join(tmpdir(), "router-pricing-"));
+    try {
+      const rate = { model_id: "pika/pika-not-yet-listed", serving_provider: "Pika", kind: "metered", unit: "per second", price_usd: "0.0143", credits: "3.0173", effective_from: "2026-11-02" };
+      const write = (sourceRef: string, snapshotRates: object[] = []) => {
+        const file = join(dir, `${sourceRef.length}-${snapshotRates.length}.json`);
+        writeFileSync(file, JSON.stringify({
+          snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: snapshotRates,
+          supplemental_sources: [{ source: "s", source_ref: sourceRef, checked_at: "2026-11-04", rates: [{ ...rate }] }],
+        }));
+        return loadMetronomeData(file);
+      };
+      const cloud = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71");
+      const { rates, staged } = catalogRates(cloud.rates, catalog);
+      expect(rates).toEqual([]);
+      expect(staged.map((candidate) => candidate.model_id)).toEqual(["pika/pika-not-yet-listed"]);
+      expect(stagedRatesWarning(staged)).toContain("absent from the current catalog, which render once a spec sync adds them: pika/pika-not-yet-listed");
+      expect(stagedRatesWarning([])).toBeUndefined();
+      const thirdParty = write("https://api.dev.pika.art/catalog/apis");
+      expect(() => catalogRates(thirdParty.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+      expect(() => catalogRates([{ ...rate }], catalog)).toThrow("Router model IDs are absent from the current catalog");
+      // A keyed Cloud rate supersedes a snapshot usage rate for the same route, but the snapshot rate is still checked.
+      const usage = { model_id: rate.model_id, serving_provider: rate.serving_provider, kind: "usage", unit: "per request", effective_from: "2026-10-01" };
+      const mixed = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", [usage]);
+      expect(mixed.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
+      expect(() => catalogRates(mixed.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("publishes every Pika route", () => {
