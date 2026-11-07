@@ -3,7 +3,7 @@ title: "Comfy Desktop para Windows"
 description: "Instala Comfy Desktop en Windows: requisitos, pasos de configuración, actualizaciones y desinstalación limpia en Windows 10 y posteriores."
 icon: "windows"
 sidebarTitle: "Windows"
-translationSourceHash: 592ccfc9
+translationSourceHash: c0edf571
 translationFrom: installation/desktop/windows.mdx
 translationBlockHashes:
   "_intro": 27d36d8f
@@ -11,6 +11,7 @@ translationBlockHashes:
   "Installation": 955f804c
   "Updating Comfy Desktop": b0efe5cd
   "Uninstalling": 4b80edaa
+  "If ComfyUI Crashes with a Windows Error Code": cc96864d
 ---
 import MigrateTip from '/snippets/es/desktop/migrate.mdx'
 import UpdateGuide from '/snippets/es/desktop/update.mdx'
@@ -72,3 +73,45 @@ Para eliminar todo por completo:
 1. **Elimina la carpeta de datos de la aplicación**: `%APPDATA%\Comfy Desktop`
 2. **Elimina las instalaciones individuales** desde la aplicación, o elimina manualmente `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs` (o `%USERPROFILE%\ComfyUI-Installs` si es allí donde se crearon). Elimina también los directorios de instalación personalizados que hayas configurado
 3. **Elimina la biblioteca de modelos compartida** en `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared` (o `%USERPROFILE%\ComfyUI-Shared`) solo si ya no necesitas estos archivos
+
+## Si ComfyUI se cierra con un código de error de Windows
+
+Cuando el proceso de ComfyUI muere por un fallo nativo, Windows devuelve un código de salida enorme que no explica la causa. Comfy Desktop interpreta el par de valores allí donde aparezca el fallo:
+
+- **Durante el arranque**: el inicio falla con `Process exited with code 3221225477 / 0xC0000005 (memory access violation ...)`, seguido de las últimas líneas de la salida de ComfyUI.
+- **Con ComfyUI ya iniciado**: la ventana de la instancia sigue abierta y muestra **ComfyUI exited unexpectedly** con `exit code 3221225477 / 0xC0000005`, el final de la salida de error y las acciones **Restart ComfyUI** y **Back**. El fallo afecta solo a esa instancia.
+
+Los dos números son el mismo valor: 3221225477 en decimal es 0xC0000005 (STATUS_ACCESS_VIOLATION), el equivalente en Windows a un fallo de segmentación. Comfy Desktop lo informa como una violación de acceso a memoria, normalmente una biblioteca nativa dañada o ausente y no un fallo de ComfyUI. El código por sí solo no demuestra qué biblioteca falló, porque un módulo puede caerse por memoria que otro componente corrompió antes, así que usa el registro y el módulo con errores de abajo para acotarlo.
+
+El mismo par decimal y hexadecimal cubre los otros fallos nativos que informa Windows, sin nombrarlos: `0xC000001D` es una instrucción no válida, que normalmente significa que a la CPU le falta un conjunto de instrucciones que el build requiere, `0xC0000409` es una salida fail-fast, casi siempre por un desbordamiento de búfer en la pila y `0xC0000374` es corrupción del montón.
+
+### Leer el registro completo
+
+El mensaje de fallo solo muestra las últimas líneas de la salida de ComfyUI. La salida completa de la ejecución se escribe en un archivo de registro dentro de la carpeta de la instalación:
+
+```
+<install folder>\logs\comfyui.log
+```
+
+El panel **Administrar** de la instancia tiene una [pestaña Terminal](/es/installation/desktop/usage/manage#pestaña-terminal) que abre un shell para esa misma instalación, por si prefieres leer el archivo desde allí. Si las últimas líneas son una cadena de importación de Python, el proceso murió mientras cargaba un paquete; las líneas anteriores del registro indican si la ejecución ya había llegado a un flujo de trabajo.
+
+### Localizar el módulo que falló
+
+La biblioteca que se cayó no aparece en el registro de ComfyUI. Windows la anota en el Visor de eventos:
+
+1. Pulsa `Win+R`, escribe `eventvwr.msc` y pulsa Enter.
+2. Abre **Registros de Windows → Aplicación**.
+3. Selecciona el evento **Error de aplicación** registrado a la hora del fallo. Su **Nombre de la aplicación con errores** (o **Ruta de la aplicación con errores**) identifica el `python.exe` de la instancia; lee el **Nombre del módulo con errores** en ese mismo evento.
+
+| Módulo | Causa | Solución |
+|---|---|---|
+| `nvcuda.dll`, `nvml.dll` | El controlador de GPU es más antiguo que la compilación de CUDA de esta instalación | Actualiza el controlador de NVIDIA. Las compilaciones de CUDA 13 esperan la versión 580 o posterior, las anteriores aceptan una versión más baja |
+| `torch*.dll`, `cudnn*.dll`, `cublas*.dll` | Un paquete de PyTorch o CUDA dañado o reemplazado en parte dentro del entorno de la instancia | Reinstala la instancia, o cambia PyTorch desde la [pestaña Actualizar](/es/installation/desktop/usage/manage#pestaña-actualizar) |
+| `msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll` | Falta el runtime de Microsoft Visual C++ | Instala Microsoft Visual C++ Redistributable 2015-2022 (x64) y vuelve a lanzar la instancia |
+
+En un fallo `0xC0000005`, Comfy Desktop comprueba esos tres archivos del runtime en `C:\Windows\System32` y añade una nota al mensaje cuando falta alguno. Cuando aparece esa nota, instalar el redistributable es la solución y la tabla de módulos no aplica: una biblioteca que Windows no encuentra falla con `0xC0000135` (STATUS_DLL_NOT_FOUND) en lugar de aparecer como módulo con errores.
+
+### Otras causas que conviene descartar
+
+- **Un modelo que no cabe en memoria.** Si el fallo se repite justo después de empezar a cargar un codificador de texto o un modelo de difusión grandes, es probable que la memoria sea el límite. Revisa el registro y cuánta RAM del sistema y cuánta memoria de la GPU se están usando, y prueba un modelo más pequeño o una precisión más ligera.
+- **Una sincronización de dependencias interrumpida.** Al instalar o actualizar una instancia se sincroniza el entorno con el `requirements.txt` de ComfyUI, y los paquetes de PyTorch los gestiona el componente de PyTorch por separado. Una descarga grande puede tardar mucho, y si se corta, por ejemplo por una conexión caída o un espejo que deja de responder, el entorno puede quedarse con paquetes desalineados y el siguiente arranque puede fallar. Reinstala la instancia en lugar de reparar el entorno a mano. **Uninstall** elimina la carpeta de la instalación y todo lo que contiene, así que mueve antes los archivos que guardes ahí; los modelos de los directorios compartidos no se ven afectados.
