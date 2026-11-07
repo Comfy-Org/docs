@@ -4,7 +4,7 @@ description: "Step-by-step MiniMax H3 native workflow examples in ComfyUI, inclu
 sidebarTitle: "Native workflows"
 ---
 
-This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities, tuning, and speedups, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
+This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities and licensing, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
 
 ## MiniMax H3 Text to Video (T2V)
 
@@ -245,8 +245,35 @@ This is conditioning, not video-to-video: sampling still starts from the workflo
 
 See the [Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe) template.
 
+### Continuing a shot across generations
+
+`Add Guide for MiniMax H3` also takes a multi-frame batch on `image`, so the last frames of one clip can start the next one: connect them at `frame_idx` 0 and describe the continuation in the prompt. Batches snap down to 5, 22, or 39 frames and the node keeps the leading frames of the batch, so send exactly the 5 frames you want to continue from. Guide frames never reach the text encoder, so the prompt has to carry the continuation.
+
+Drift limits the chain, not the join: each clip moves the color and the scene a little, and a long chain ends up off the look of the first clip even where no cut is visible. Run every new clip through [Transfer Color](/built-in-nodes/ColorTransfer) against the previous clip's last frame as `image_ref`, with `source_stats` on `target_frame` and `target_index` at 0, so one transform covers the whole clip. `per_frame` matches each frame on its own and can flicker.
+
+For a composition that has to hold for the whole shot, anchor stills instead of chaining clips.
+
 ### Inpainting and extension with latent noise masks (#15375)
 
 [Per-token noise masks](https://github.com/Comfy-Org/ComfyUI/pull/15375) on video and audio latents let you regenerate part of a clip.
 
 Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. Video masks snap to the 2×2 latent patch grid; audio masks to whole latent frames. Use for inpainting, removal, or extension while holding the rest stable.
+
+### Faster decoding with the Sol-H3-VAE (#17411)
+
+The stock video VAE decodes in 256px tiles with overlapping temporal chunks. [Sol-H3-VAE](https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE) is a 24-layer decoder distilled from that decoder that decodes the whole clip in one pass. Comfy-Org repacked it with the H3 encoder as [minimax_h3_sol_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_int8_convrot.safetensors), so it replaces the video VAE on the `Load VAE` node that feeds the video decode. Leave the audio VAE loader alone. It needs ComfyUI **0.44.0** or later.
+
+Decode of a 1344x768 clip at 124 frames on an RTX 5090:
+
+| Decoder | Decode | Peak VRAM |
+| --- | --- | --- |
+| H3 VAE int8 | 4.61 s | 3.2 GiB |
+| Sol-H3-VAE int8 | 1.70 s | 4.3 GiB |
+| H3 VAE fp16 | 10.7 s | 5.5 GiB |
+| Sol-H3-VAE fp16 | 3.28 s | 5.9 GiB |
+
+Both decoders also ship at fp16: [minimax_h3_sol_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_fp16.safetensors) and [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors), both placed in `ComfyUI/models/vae/`.
+
+The quality cost is texture. The distilled decoder measures about 39 dB PSNR against the stock decoder on a generated 768p clip: visually identical, with the differences in fine detail, so decode a textured clip and compare before switching.
+
+Memory goes the other way. The distilled decoder peaks 1.1 GiB above the stock int8 decoder on the clip above, and it cannot tile, so `VAEDecodeTiled` decodes the whole clip on it. Activations grow about 4.3 KB per latent token, which is 3.5 GiB at 362 frames on the same canvas and 5.4 GiB at 2048x1152. Decode is also a small share of a full render, so the end-to-end gain is well below the table.

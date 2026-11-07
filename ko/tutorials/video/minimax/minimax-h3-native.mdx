@@ -2,17 +2,17 @@
 title: "ComfyUI MiniMax H3 텍스트·이미지·레퍼런스 기반 비디오 워크플로"
 description: "ComfyUI의 MiniMax H3 네이티브 워크플로 단계별 예제입니다. 가이드 고정과 잠재 노이즈 마스크로 생성 비디오를 더 세밀하게 제어할 수 있습니다."
 sidebarTitle: "네이티브 워크플로"
-translationSourceHash: 9e8d385c
+translationSourceHash: 05645ecd
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
-  "_intro": 4f5274f5
+  "_intro": dde651e5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
   "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "Advanced workflows with the native nodes": 6e7219db
 ---
 
-이 페이지는 세 가지 기본 MiniMax H3 템플릿과 네이티브 노드 고급 기법을 다룹니다. 기능, 튜닝, 가속은 [MiniMax H3 개요](/ko/tutorials/video/minimax/minimax-h3)를 참조하세요.
+이 페이지는 세 가지 기본 MiniMax H3 템플릿과 네이티브 노드 고급 기법을 다룹니다. 기능과 라이선스는 [MiniMax H3 개요](/ko/tutorials/video/minimax/minimax-h3)를 참조하세요.
 
 ## MiniMax H3 텍스트 기반 비디오 생성 (T2V)
 
@@ -253,8 +253,35 @@ H3 노드 `positive`·latent를 `MiniMaxH3AddGuide`에 연결:
 
 [멀티프레임 레퍼런스](/ko/tutorials/video/minimax/minimax-h3-multiframe) 템플릿 참고.
 
+### 생성 사이에 샷 이어가기
+
+`Add Guide for MiniMax H3`는 `image`에 다중 프레임 배치도 받으므로 앞 클립의 마지막 프레임을 다음 클립의 시작으로 쓸 수 있습니다. `frame_idx` 0에 연결하고 이어질 내용은 프롬프트에 씁니다. 배치는 5, 22, 39 프레임으로 내려가고 노드는 배치의 앞쪽 프레임만 쓰므로, 이어갈 마지막 5 프레임만 정확히 넣습니다. 가이드 프레임은 텍스트 인코더에 전달되지 않으므로 이어질 내용은 프롬프트가 담당합니다.
+
+긴 체인을 제한하는 것은 이음새가 아니라 드리프트입니다. 클립마다 색과 장면이 조금씩 밀려, 컷이 보이지 않아도 마지막에는 첫 클립과 달라집니다. 새 클립은 이전 클립의 마지막 프레임을 `image_ref`로 [Transfer Color](/ko/built-in-nodes/ColorTransfer)에 통과시키고 `source_stats`를 `target_frame`, `target_index`를 0으로 두면 클립 전체에 변환 하나가 적용됩니다. `per_frame`은 프레임마다 따로 맞춰 깜빡일 수 있습니다.
+
+샷 전체에서 구도를 고정해야 한다면 클립을 잇지 말고 정지 이미지를 고정합니다.
+
 ### 잠재 노이즈 마스크 인페인팅 및 확장 (#15375)
 
 [토큰 단위 마스크](https://github.com/Comfy-Org/ComfyUI/pull/15375)로 비디오·오디오 latent 일부 재생성.
 
 샘플러 `denoise_mask`: **0** 유지, **1** 재생성. 비디오 2×2 latent 패치, 오디오 latent 프레임 단위. 인페인팅, 제거, 확장.
+
+### Sol-H3-VAE로 디코딩 속도 높이기 (#17411)
+
+기본 비디오 VAE는 256px 타일과 시간 방향으로 겹치는 청크로 디코딩합니다. [Sol-H3-VAE](https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE)는 그 디코더에서 증류한 24층 디코더로, 클립 전체를 한 번에 디코딩합니다. Comfy-Org가 H3 인코더와 함께 [minimax_h3_sol_vae_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_int8_convrot.safetensors)로 다시 패키징했으므로 비디오 디코딩을 담당하는 `Load VAE` 노드의 비디오 VAE를 대체합니다. 오디오 VAE 로더는 그대로 두세요. ComfyUI **0.44.0** 이상이 필요합니다.
+
+1344x768, 124프레임 클립을 RTX 5090에서 디코딩한 시간:
+
+| 디코더 | 디코딩 | 최대 VRAM |
+| --- | --- | --- |
+| H3 VAE int8 | 4.61 s | 3.2 GiB |
+| Sol-H3-VAE int8 | 1.70 s | 4.3 GiB |
+| H3 VAE fp16 | 10.7 s | 5.5 GiB |
+| Sol-H3-VAE fp16 | 3.28 s | 5.9 GiB |
+
+두 디코더 모두 fp16 버전이 있습니다. [minimax_h3_sol_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_sol_vae_fp16.safetensors)와 [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_video_vae_fp16.safetensors)이며, 모두 `ComfyUI/models/vae/`에 넣습니다.
+
+화질의 대가는 텍스처입니다. 증류 디코더는 생성한 768p 클립에서 기본 디코더 대비 약 39 dB PSNR로, 눈으로 보기에는 같고 차이는 세부에 나타납니다. 바꾸기 전에 텍스처가 많은 클립으로 비교하세요.
+
+메모리는 반대입니다. 위 클립에서 증류 디코더의 최대 사용량은 기본 int8 디코더보다 1.1 GiB 높고, 타일링도 할 수 없어 `VAEDecodeTiled`는 클립 전체를 디코딩합니다. 활성값은 latent 토큰당 약 4.3 KB씩 늘어 같은 캔버스에서 362프레임이면 약 3.5 GiB, 2048x1152에서는 약 5.4 GiB가 됩니다. 디코딩은 전체 렌더링에서 작은 비중이므로 실제 단축 시간은 표보다 훨씬 작습니다.
