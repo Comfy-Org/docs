@@ -447,6 +447,67 @@ image = load_image("photo.png")  # 输入图像
     expect(validateTranslatedBlock("heading_sections", enBlock, tr)).toBe(false);
   });
 
+  test("rejects an extra closing Tabs tag added while splitting", () => {
+    const en = {
+      label: "Quick start",
+      content: `## Quick start
+
+<Tabs>
+<Tab title="Python">
+\`\`\`python
+print("hi")
+\`\`\`
+</Tab>
+<Tab title="Node">
+\`\`\`javascript
+console.log("hi")
+\`\`\`
+</Tab>
+</Tabs>
+`,
+    };
+    const tr = `## クイックスタート
+
+<Tabs>
+<Tab title="Python">
+\`\`\`python
+print("hi")
+\`\`\`
+</Tab>
+<Tab title="Node">
+\`\`\`javascript
+console.log("hi")
+\`\`\`
+</Tab>
+</Tabs>
+</Tabs>
+`;
+    expect(validateTranslatedBlock("heading_sections", en, tr)).toBe(false);
+  });
+
+  test("accepts a Tabs block kept in balance", () => {
+    const en = {
+      label: "Quick start",
+      content: `## Quick start
+
+<Tabs>
+<Tab title="Python">
+\`\`\`python
+print("hi")
+\`\`\`
+</Tab>
+<Tab title="Node">
+\`\`\`javascript
+console.log("hi")
+\`\`\`
+</Tab>
+</Tabs>
+`,
+    };
+    const tr = en.content.replace("## Quick start", "## クイックスタート");
+    expect(validateTranslatedBlock("heading_sections", en, tr)).toBe(true);
+  });
+
   test("rejects a changed string literal that looks like a comment marker", () => {
     const en = "```javascript\nconsole.log('# not a comment');\n```";
     const tr = "```javascript\nconsole.log('# changed');\n```";

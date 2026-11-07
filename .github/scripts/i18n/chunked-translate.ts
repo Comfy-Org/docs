@@ -1307,8 +1307,17 @@ export function validateTranslatedBlock(
   const trTabs = countTagOpens(translated, "Tab");
   if (enTabs >= 2 && trTabs !== enTabs) return false;
 
-  const enTabsWrappers = countTagOpens(enBlock.content, "Tabs");
-  if (enTabsWrappers > 0 && countTagCloses(translated, "Tabs") < enTabsWrappers) {
+  // Splitting a page across API calls hands the model fragments whose outer
+  // wrapper can be left open (splitByMintlifyTabs keeps `<Tabs>` in the first
+  // piece and `</Tabs>` in the last), so a model may close it on its own. Both
+  // sides here are the assembled block, so opens and closes must match exactly:
+  // one surplus closer is invalid MDX that mint rejects.
+  const enTabsOpens = countTagOpens(enBlock.content, "Tabs");
+  const enTabsCloses = countTagCloses(enBlock.content, "Tabs");
+  if (
+    countTagOpens(translated, "Tabs") !== enTabsOpens ||
+    countTagCloses(translated, "Tabs") !== enTabsCloses
+  ) {
     return false;
   }
   if (enTabs > 0 && countTagCloses(translated, "Tab") !== trTabs) return false;
