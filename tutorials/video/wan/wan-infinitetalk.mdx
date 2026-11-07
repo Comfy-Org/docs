@@ -120,3 +120,29 @@ Each **Video Extend** group extends the video by approximately 3.24 seconds (81 
 2. Press `Ctrl-C` (copy), then `Ctrl-Shift-V` (paste with connections)
 3. Connect the previous `InfiniteTalk (Base Generation)` node's `IMAGE` output to the new `WanInfiniteTalkToVideo` node's `previous_frames` input
 4. Connect the `Batch Images` node's `IMAGE` output to the new `Batch Images` node's image input
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="Why does ComfyUI report &quot;Not enough GPU memory&quot;?">
+    That text is ComfyUI's generic out-of-memory message. This template has no batch size setting, so there is no batch size to lower. The model files it loads add up to about 30 GB: the `Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ` diffusion model (16.6 GB), the `umt5_xxl_fp8` text encoder (6.7 GB), and the InfiniteTalk patch (5.1 GB). At the default 832 x 480 and 81 frames there is little room left for the sampling buffers, so the run stops there.
+  </Accordion>
+  <Accordion title="What should I lower first?">
+    Lower the two values that drive memory the most, then run again. **Width** and **Height** are the `PrimitiveInt` nodes above the InfiniteTalk group, 832 x 480 by default, and both must stay divisible by 16, so 640 x 368 is a valid smaller pair. **length** on `WanInfiniteTalkToVideo` defaults to 81 frames and accepts steps of 4, so valid values are 4n+1, for example 49. If that is not enough, lower `motion_frame_count` (default 9, maximum 33) for less previous-frame context, and remove any extra **Video Extend** group while you test.
+  </Accordion>
+  <Accordion title="Does the single patch use less memory?">
+    Not by itself: the two patch files are almost the same size (5.13 GB for `single`, 5.12 GB for `multi`). What saves memory is running one speaker instead of two, which drops the second audio encoder output and the two mask inputs. Switch `ModelPatchLoader` to `single` only together with the node mode `single_speaker`, because the patch has to match the mode.
+  </Accordion>
+  <Accordion title="Can I run this workflow on a Mac?">
+    Yes, but on Apple Silicon the CPU and the GPU draw from one pool of unified memory, so there is no separate VRAM to fill or free. ComfyUI reads the machine's total RAM as the memory available to the device, and every other running application takes from the same pool. A 32 GB Mac has to hold about 30 GB of model files plus the sampling buffers, which is why the default settings run out of memory there. [System requirements](/installation/system_requirements) covers the MPS backend.
+  </Accordion>
+  <Accordion title="Do the VRAM flags help on macOS?">
+    No. On Apple Silicon ComfyUI forces its VRAM mode to shared memory (`comfy/model_management.py`), which overrides `--lowvram`, `--novram` and `--highvram`. Those flags cannot move weights out of the unified pool because there is nowhere else to put them. On Nvidia GPUs, and on ROCm 7.14 and later, dynamic VRAM is enabled by default and `--lowvram` has no effect while it is on, so it rarely helps there either. See [startup flags](/development/comfyui-server/startup-flags). What helps on a Mac: quit other memory-heavy applications, lower the resolution and frame count as above, and start ComfyUI with `--cache-none` so node outputs are not cached between runs.
+  </Accordion>
+  <Accordion title="What if it still runs out of memory?">
+    On macOS, PyTorch refuses MPS allocations beyond 1.7 times the device's recommended working set size, and that cap is often what the run hits. `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0` removes the cap, at the risk of pushing the Mac into swap or freezing other applications, so use it only as a last resort.
+  </Accordion>
+  <Accordion title="Does the fp8 checkpoint save memory on Apple Silicon?">
+    Not the way it does on an NVIDIA GPU. PyTorch has no fp8 compute kernels on MPS, so the weights are converted to bf16 to run. When the bf16 copy fits in memory, ComfyUI expands the model at load time and the fp8 file ends up costing about as much as a bf16 one; when it does not fit, the weights stay fp8 in memory and are converted on the fly, trading speed for memory. Resolution and frame count remain the levers that matter on a Mac.
+  </Accordion>
+</AccordionGroup>
