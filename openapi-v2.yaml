@@ -127,6 +127,27 @@ paths:
         Chunked/resumable large uploads are a deliberate open question.
 
 
+        Cloud''s hosted API caps every part sent before `file` at 8 KiB,
+
+        including a part it does not recognise (which it otherwise
+
+        ignores), so an extra field over 8 KiB, such as file bytes sent
+
+        under a misspelled name, is refused with 422 `invalid_body`. Parts
+
+        sent after `file` are never read: the 8 KiB cap does not apply to
+
+        them, and a metadata field sent there is treated as absent, so send
+
+        every metadata field before `file`. A declared `Content-Length`
+
+        still counts those bytes toward the size limit above; without one,
+
+        a body that only exceeds the limit there is uploaded normally,
+
+        since nothing after `file` is read.
+
+
         On Comfy Cloud an upload fails with 422 `upload_timed_out` when no
 
         request bytes arrive for 30 seconds, or when the whole request takes
@@ -171,7 +192,7 @@ paths:
                   example: photo.png
                 expected_hash:
                   type: string
-                  description: 'Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Omit the part to skip verification: on Comfy Cloud and on a deployment a part sent empty is refused with 422 as malformed. Send it before `file`: nothing after the `file` field is read, so a trailing `expected_hash` is neither verified nor refused, and the response does not say the check was skipped. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset''s retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation dedups onto it. On Comfy Cloud and on a deployment, when `expected_hash` is sent more than once before `file` only the last value is checked, but an empty one among them is still refused with 422.'
+                  description: 'Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Omit the part to skip verification: on Comfy Cloud and on a deployment a part sent empty is refused with 422 as malformed. Send it before `file`: nothing after the `file` field is read, so a trailing `expected_hash` is neither verified nor refused, and the response does not say the check was skipped. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset''s retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation (and the same file extension) dedups onto it. On Comfy Cloud nothing removes that asset, so when the bytes themselves were wrong they stay stored: as an asset named after the last segment of `file_path` (`x.safetensors` for `models/checkpoints/x.safetensors`), or, when the bytes deduped onto an asset you already had, as that asset under its earlier name. The rest of `file_path` is not recorded. On Comfy Cloud and on a deployment, when `expected_hash` is sent more than once before `file` only the last value is checked, but an empty one among them is still refused with 422.'
                   example: blake3:9f8a1c0d...
                 tags:
                   type: array
@@ -233,10 +254,49 @@ paths:
       operationId: assetFromHash
       tags:
       - assets
-      summary: Mint an asset over existing bytes (dedup fast-path)
-      description: 'Zero-byte fast-path: mints a new asset UUID over a blob the platform
+      summary: Create or reuse an asset over existing bytes
+      description: 'Zero-byte fast-path: creates or reuses an asset over a blob the
 
-        already has, identified by its blake3 hash.
+        platform already has, identified by its blake3 hash.
+
+
+        On Comfy Cloud, the caller must already own the content in the
+
+        current workspace. Content owned only by another member of that
+
+        workspace does not satisfy the ownership check and returns `404`
+
+        `blob_not_found`, just like an absent hash. A matching caller-owned
+
+        Cloud asset is reused with `200`, `created_new: false` and its UUID,
+
+        name and tags, even when the request supplies a different valid
+
+        `file_path` or `tags`.
+
+
+        On a deployment, reuse matches both the hash and the exact path in
+
+        the build''s scope. A match returns `200` with `created_new: false`;
+
+        a different path over content the caller may use creates a new
+
+        reference with `201` and `created_new: true`. The self-hosted proxy
+
+        returns its existing hash-indexed record with `200` and
+
+        `created_new: false`, without applying the requested path or tags.
+
+
+        Reuse keeps the existing name and tags. Cloud and deployment
+
+        validation still applies to submitted metadata before reuse;
+
+        metadata is not exempt from validation because it will not replace
+
+        stored values. Retention may refresh, and content URLs are generated
+
+        for the response, so reuse does not promise an unchanged response.
 
 
         Trust boundary: resolves only against blobs the platform itself
@@ -273,13 +333,13 @@ paths:
                   example: blake3:9f8a1c0d...
                 file_path:
                   type: string
-                  description: 'Placement path / filename; its last segment becomes the asset name. On Comfy Cloud a `file_path` that fails path validation, or whose last segment breaks the `file_path` rules of `POST /api/v2/assets`, is answered with 404 `blob_not_found`, the same as an unknown hash. The UTF-8 rule cannot fire here: invalid UTF-8 bytes and lone surrogate escapes (`\ud800`) are replaced with U+FFFD when the JSON body is decoded, so such a name is stored with U+FFFD in their place.'
+                  description: 'Placement path / filename for a new reference. Comfy Cloud uses its last segment as the name; a deployment uses the full path. Both default to the bare hash digest when omitted or empty. Cloud reuse keeps the existing name even if a different valid path is supplied; a deployment also matches the path when deciding reuse. The self-hosted proxy keeps its indexed record''s path. On Comfy Cloud a `file_path` that fails path validation, or whose last segment breaks the `file_path` rules of `POST /api/v2/assets`, is answered with 404 `blob_not_found`, the same as an unknown hash. The UTF-8 rule cannot fire here: invalid UTF-8 bytes and lone surrogate escapes (`\ud800`) are replaced with U+FFFD when the JSON body is decoded, so such a name is stored with U+FFFD in their place.'
                   example: photo.png
                 tags:
                   type: array
                   items:
                     type: string
-                  description: 'A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
+                  description: 'Tags for a new reference; reuse keeps the existing tags. Comfy Cloud defaults an omitted or empty set to `input`. Cloud and deployment validation still applies on reuse; the self-hosted proxy does not apply submitted tags. A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -288,13 +348,13 @@ paths:
                   example: 86400
       responses:
         '201':
-          description: Asset minted over the existing blob.
+          description: A new asset reference with a new UUID was created over existing bytes; `created_new` is true. Supplied metadata and defaults apply as described above.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Asset'
         '200':
-          description: An identical reference already existed; returned as-is.
+          description: An existing asset was reused under the serving surface's rules above; `created_new` is false. Its UUID, name and tags are kept; retention may refresh and content URLs are generated for this response.
           content:
             application/json:
               schema:
@@ -898,7 +958,15 @@ paths:
 
         its retention deadline). Nothing ages a log out ahead of the job''s
 
-        own `expires_at`, so a job never outlives its log.
+        own `expires_at`. Account deletion is an exception: it clears the
+
+        workflow, caller labels and log in a personal workspace the account
+
+        occupies alone. A scrubbed job answers `200` with empty `text`,
+
+        `truncated: false`, `complete: true` and `captured_at` set to the
+
+        scrub time, even if it never captured a worker log.
 
 
         Live tailing is not offered here yet. When it is, it arrives on this
@@ -1182,7 +1250,7 @@ components:
           example: photo.png
         created_new:
           type: boolean
-          description: 'On create responses: distinguishes a brand-new blob (true) from a dedup hit against bytes the platform already had (false).'
+          description: On `POST /api/v2/assets` responses, distinguishes a brand-new blob (true) from a dedup hit against bytes the platform already had (false). On `POST /api/v2/assets/from-hash` responses, true means a new asset reference was created over existing bytes (201); false means an existing asset was reused (200).
         created_at:
           type: string
           format: date-time
