@@ -1068,11 +1068,17 @@ export function legPrice(model: string, provider: string, snapshot: RateSnapshot
     const credits = roundCredits(r.credits!);
     if (!credits || !/^\d+(\.\d+)?$/.test(r.price_usd!)) return undefined;
     const unit = r.unit.startsWith("per ") ? r.unit : `per ${r.unit}`;
+    // A condition is free text from the rate snapshot: one outside the limit-token
+    // charset (plus `=`, `;`, `,`) could break the MDX or carry a `<provider>/<model>`
+    // id, so it costs the leg its price line rather than being printed.
+    if (current.length > 1 && r.conditions && !isRateCondition(r.conditions)) return undefined;
     const conditions = current.length > 1 && r.conditions ? ` (${r.conditions})` : "";
     return `${credits} credits ($${formatAmount(r.price_usd!)}) ${unit}${conditions}`;
   });
   return amounts.every(Boolean) ? amounts.join("; ") : undefined;
 }
+
+const isRateCondition = (v: string) => /^[A-Za-z0-9][A-Za-z0-9 _:.+=;,-]*$/.test(v);
 
 /** `a`, `a or b`, `a, b or c`. */
 const orList = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`);

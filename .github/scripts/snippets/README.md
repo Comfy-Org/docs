@@ -104,7 +104,8 @@ The generator reads both and organises the docs by model rather than by route:
   the provider label (matched without regard to case), current rows only
   (started and not ended by the snapshot date, the latest row per condition
   and unit), with credits rounded to 2 decimals.
-  With no matching row the price line is omitted. The lines are indented
+  With no matching row, or a printed condition outside the plain-token charset
+  (a `/` or MDX markup), the price line is omitted. The lines are indented
   because `gen-router-pricing.ts` counts a page's providers from its column-0
   `- **<Label>**` lines. A malformed `limits`, including one with an unknown
   key, is dropped as a whole and the leg row renders as if it had none. Only what the JSON and the rate snapshot

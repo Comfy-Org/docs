@@ -575,6 +575,9 @@ describe("alt-provider leg limits", () => {
     expect(legPrice(KLING, "Tencent", rates(TENCENT_RATE, audio))).toBe(
       "20.26 credits ($0.096) per second (720P, silent); 30.38 credits ($0.144) per second (720P, audio)"
     );
+    // A rendered condition outside the safe charset (a slash, MDX markup) drops the price line.
+    for (const conditions of ["endpoint=v1/text-to-speech", "720P <b>", "{720P}"])
+      expect(legPrice(KLING, "Tencent", rates(TENCENT_RATE, { ...audio, conditions }))).toBeUndefined();
     // The provider label matches regardless of case.
     expect(legPrice(KLING, "tencent", rates(TENCENT_RATE))).toBe("20.26 credits ($0.096) per second");
     expect(legPrice(KLING, "Tencent", rates({ ...TENCENT_RATE, serving_provider: "TENCENT" }))).toBe("20.26 credits ($0.096) per second");
