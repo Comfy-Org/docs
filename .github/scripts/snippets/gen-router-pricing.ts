@@ -1287,4 +1287,4 @@ if (import.meta.main) {
   }
 }
 
-export { catalogRates, checkPricingCoverage, compactOptions, isComfyGpuMetered, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
+export { catalogRates, checkPricingCoverage, compactOptions, isComfyGpuMetered, servingProviders, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
