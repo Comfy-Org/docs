@@ -23,6 +23,7 @@ import {
   renderProvidersPage,
   servingProvidersSection,
   legPrice,
+  readRateSnapshot,
   roundCredits,
 } from "./gen-code-pages.ts";
 import type { RateSnapshot } from "./gen-code-pages.ts";
@@ -532,6 +533,9 @@ describe("alt-provider leg limits", () => {
       { rejected_inputs: [{ field: "mode", rule: "unknown_rule" }] },
       { fallback: { provider: "kling" } },
       { fallback: { provider: "kling", default: true, opt_out: "`rm -rf`" } },
+      // A fallback provider is printed on the page: MDX syntax must not pass as a slug.
+      { fallback: { provider: "{x}", default: true } },
+      { fallback: { provider: "<b>kling</b>", default: true } },
       { aspect_ratios: ["<b>16:9</b>"] },
       // A `provider/model` id smuggled into a printed value.
       { resolutions: [`tencent/${HELD_ID}`] },
@@ -547,6 +551,23 @@ describe("alt-provider leg limits", () => {
       expect(servingProvidersSection([{ model: KLING, legs: [leg] }], RATES)).toContain(
         "- **Tencent**: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=tencent`\n\n`strict_mode`"
       );
+    }
+  });
+
+  test("the rate snapshot is validated before any price is read from it", () => {
+    const row = { model_id: KLING, serving_provider: "Tencent", kind: "fixed", unit: "second", effective_from: "2026-01-01" };
+    const ok = readRateSnapshot({ snapshot_at: "2026-10-01T00:00:00Z", rates: [row], supplemental_sources: [{ rates: [row] }] });
+    expect(ok).toEqual({ snapshot_at: "2026-10-01T00:00:00Z", rates: [row, row] });
+    expect(readRateSnapshot(JSON.parse(readFileSync(join(ROOT, "router-pricing/metronome-rates.json"), "utf8"))).rates.length).toBeGreaterThan(0);
+    for (const bad of [
+      { rates: [row] },
+      { snapshot_at: "", rates: [row] },
+      { snapshot_at: "2026-10-01", rates: {} },
+      { snapshot_at: "2026-10-01", rates: [{ ...row, serving_provider: undefined }] },
+      { snapshot_at: "2026-10-01", rates: [row], supplemental_sources: [{ rates: [{ ...row, effective_from: "" }] }] },
+      { snapshot_at: "2026-10-01", rates: [row], supplemental_sources: [{ rates: "x" }] },
+    ]) {
+      expect(() => readRateSnapshot(bad)).toThrow("router-pricing/metronome-rates.json");
     }
   });
 

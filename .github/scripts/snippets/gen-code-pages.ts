@@ -730,7 +730,8 @@ function readLimits(raw: unknown): LegLimits | undefined {
   }
   if (r.fallback !== undefined) {
     const f = r.fallback as Record<string, unknown> | null;
-    if (!f || typeof f !== "object" || !onlyKeys(f, ["provider", "default", "opt_out"]) || !isSlug(f.provider) || typeof f.default !== "boolean") return undefined;
+    // The provider is printed on the page, so it must be a plain slug (`kling`, `luma_2`), not merely a path segment.
+    if (!f || typeof f !== "object" || !onlyKeys(f, ["provider", "default", "opt_out"]) || typeof f.provider !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(f.provider) || typeof f.default !== "boolean") return undefined;
     if (f.opt_out !== undefined && (typeof f.opt_out !== "string" || !/^[a-z_]+=[A-Za-z0-9_]+$/.test(f.opt_out))) return undefined;
     out.fallback = f.opt_out === undefined ? { provider: f.provider, default: f.default } : { provider: f.provider, default: f.default, opt_out: f.opt_out };
   }
@@ -1015,13 +1016,36 @@ export type LegRate = {
 };
 export type RateSnapshot = { snapshot_at: string; rates: LegRate[] };
 
+const RATES_FILE = "router-pricing/metronome-rates.json";
+
+/**
+ * Validate a parsed rate snapshot, flattening its supplemental sources into the
+ * rates. A missing `snapshot_at` would switch off the started/ended filters in
+ * `legPrice` and a row without its keys would crash it, so either fails loudly here.
+ */
+export function readRateSnapshot(data: unknown): RateSnapshot {
+  const d = (data ?? {}) as { snapshot_at?: unknown; rates?: unknown; supplemental_sources?: unknown };
+  if (typeof d.snapshot_at !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(d.snapshot_at)) throw new Error(`${RATES_FILE}: missing or malformed snapshot_at`);
+  if (!Array.isArray(d.rates)) throw new Error(`${RATES_FILE}: rates must be an array`);
+  const sources = d.supplemental_sources ?? [];
+  if (!Array.isArray(sources) || !sources.every((s) => s && typeof s === "object" && (s.rates === undefined || Array.isArray(s.rates)))) {
+    throw new Error(`${RATES_FILE}: supplemental_sources must be a list of sources with rate arrays`);
+  }
+  const rates: LegRate[] = [...d.rates, ...sources.flatMap((s: { rates?: LegRate[] }) => s.rates ?? [])];
+  for (const r of rates) {
+    const keys = ["model_id", "serving_provider", "kind", "unit", "effective_from"] as const;
+    if (!r || typeof r !== "object" || !keys.every((k) => typeof r[k] === "string" && r[k])) {
+      throw new Error(`${RATES_FILE}: malformed rate row ${JSON.stringify(r)}`);
+    }
+  }
+  return { snapshot_at: d.snapshot_at, rates };
+}
+
 let rateSnapshot: RateSnapshot | undefined;
 /** The repo's rate snapshot, read once; its supplemental sources count as rates too. */
 function routerRates(): RateSnapshot {
   if (rateSnapshot) return rateSnapshot;
-  const data = JSON.parse(readFileSync(join(ROOT, "router-pricing/metronome-rates.json"), "utf8"));
-  const rates: LegRate[] = [...(data.rates ?? []), ...(data.supplemental_sources ?? []).flatMap((s: { rates?: LegRate[] }) => s.rates ?? [])];
-  return (rateSnapshot = { snapshot_at: String(data.snapshot_at ?? ""), rates });
+  return (rateSnapshot = readRateSnapshot(JSON.parse(readFileSync(join(ROOT, RATES_FILE), "utf8"))));
 }
 
 /**
