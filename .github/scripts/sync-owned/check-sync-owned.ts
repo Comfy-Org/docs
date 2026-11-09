@@ -11,19 +11,21 @@
  * the sync's diff. This check refuses such an edit at pull-request time, while its
  * author can still move it upstream.
  *
- * The guarded list mirrors the sync's own final status check, which runs
+ * The guarded list mirrors the docs leg of the upstream sync workflow: the pages it
+ * copies here verbatim, and its own final status check, which runs
  * `git status --porcelain --untracked-files=all` over: `openapi-v2.yaml`,
  * `router-openapi.yaml`, `development/comfy-router/reference.mdx`,
  * `development/comfy-router/quickstart.mdx`, `development/comfy-router/limitations.mdx`,
  * `development/comfy-router/higgsfield-byok.mdx`, `development/comfy-router/pricing.mdx`,
- * `router-schemas`, `development/comfy-router/models`,
- * `development/comfy-router/models.mdx`, `development/comfy-router/providers.mdx` and
- * `docs.json`. When the sync gains a path, add a rule here in the same change, or
- * an edit to the new page passes this check and is reverted by the next sync.
+ * `development/comfy-router/litellm.mdx`, `router-schemas`,
+ * `development/comfy-router/models`, `development/comfy-router/models.mdx`,
+ * `development/comfy-router/providers.mdx` and `docs.json`. When the sync gains a
+ * path, add a rule here and to the workflow's `paths:` filter in the same change,
+ * or an edit to the new page passes this check and is reverted by the next sync.
  *
  * `router-openapi.yaml` IS guarded: it is the Router-only projection of the same
  * contract as `openapi-v2.yaml`, its own header says not to hand-edit it, and
- * nothing in it is this repository's to change. Three of the sync's paths are
+ * nothing in it is this repository's to change. Two of the sync's paths are
  * deliberately NOT guarded here, because the sync does not own all of them:
  *
  *   - `docs.json` is co-owned. The sync rewrites the `Models` nav group and the
@@ -32,11 +34,15 @@
  *     inputs that live inside the generated tree. Only the sibling `code.mdx`
  *     pages are generated, so `code.yaml` stays editable and is in fact where an
  *     edit to a generated model page belongs.
- *   - `development/comfy-router/pricing.mdx` is GENERATED in this repository by
- *     `bun run router-pricing:gen` from `router-pricing/metronome-rates.json` and
- *     the model pages, so a change to the generator or the rate snapshot has to
- *     commit it. `bun run router-pricing:check` in `code-pages-check.yml` fails a
- *     hand-edit that does not match the generator's output.
+ *
+ * `development/comfy-router/pricing.mdx` is guarded CONDITIONALLY. The sync copies
+ * an upstream page over it, but it is also GENERATED in this repository by
+ * `bun run router-pricing:gen` from `router-pricing/metronome-rates.json` and the
+ * model pages, and that generator rewrites it on the sync's own pull request. So a
+ * change to the generator or the rate snapshot has to commit it, and a page that
+ * matches `gen-router-pricing.ts --check` is passed. A page that does not match is
+ * a hand-edit, which both the next sync and the next regeneration revert. The
+ * caller passes that verdict in as `routerPricingFresh`.
  *
  * The three GENERATED page kinds (`development/comfy-router/models.mdx`, the
  * per-model `code.mdx`, and `development/comfy-router/providers.mdx`) are guarded
@@ -75,10 +81,11 @@ export type SyncOwnedRule = {
   /** Where the edit belongs instead. One sentence, rendered under the file. */
   guidance: string;
   /**
-   * True for the pages `bun run code-pages:gen` writes. Excused when those pages
-   * are fresh, which makes them the generator's output rather than a hand-edit.
+   * Which generator writes the page: `code-pages` (`bun run code-pages:gen`) or
+   * `router-pricing` (`bun run router-pricing:gen`). Excused when that generator's
+   * output is fresh, which makes the page its output rather than a hand-edit.
    */
-  generated?: true;
+  generated?: "code-pages" | "router-pricing";
 };
 
 /**
@@ -123,6 +130,19 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
       "Hand-written upstream and published here verbatim. Edit the upstream higgsfield-byok.mdx.",
   },
   {
+    id: "litellm",
+    test: (p) => p === "development/comfy-router/litellm.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream litellm.mdx.",
+  },
+  {
+    id: "pricing",
+    test: (p) => p === "development/comfy-router/pricing.mdx",
+    guidance:
+      "GENERATED pricing page, and it does not match the generator's output, so this is a hand-edit. Change router-pricing/metronome-rates.json or the generator and re-run `bun run router-pricing:gen`.",
+    generated: "router-pricing",
+  },
+  {
     id: "router-schemas",
     test: (p) => p === "router-schemas" || p.startsWith("router-schemas/"),
     guidance:
@@ -133,21 +153,21 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === `${MODELS_DIR}.mdx`,
     guidance:
       "GENERATED provider index, and it does not match the generator's output, so this is a hand-edit. Change a model's code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
-    generated: true,
+    generated: "code-pages",
   },
   {
     id: "providers-index",
     test: (p) => p === "development/comfy-router/providers.mdx",
     guidance:
       "GENERATED serving-provider index, and it does not match the generator's output, so this is a hand-edit. Change the upstream alt-provider contract and re-run `bun run code-pages:gen`.",
-    generated: true,
+    generated: "code-pages",
   },
   {
     id: "model-code-page",
     test: (p) => p.startsWith(`${MODELS_DIR}/`) && p.endsWith("/code.mdx"),
     guidance:
       "GENERATED model page, and it does not match the generator's output, so this is a hand-edit. Edit the sibling code.yaml (or the upstream contract) and re-run `bun run code-pages:gen`.",
-    generated: true,
+    generated: "code-pages",
   },
 ];
 
@@ -158,7 +178,7 @@ const normalize = (path: string) => path.trim().replace(/^\.\//, "");
 
 export type Report = {
   offences: Offence[];
-  /** Generated pages let through because they match the generator's output. */
+  /** Generated pages let through because they match their generator's output. */
   excused: string[];
   /** How many paths were considered, after normalizing and de-duplicating. */
   checked: number;
@@ -170,6 +190,11 @@ export type CheckOptions = {
    * Defaults to `false`, so an unknown verdict guards rather than waves through.
    */
   generatedPagesFresh?: boolean;
+  /**
+   * Whether `development/comfy-router/pricing.mdx` matches
+   * `gen-router-pricing.ts --check`. Defaults to `false`, like `generatedPagesFresh`.
+   */
+  routerPricingFresh?: boolean;
 };
 
 export function check(rawPaths: readonly string[], options: CheckOptions = {}): Report {
@@ -187,7 +212,13 @@ export function check(rawPaths: readonly string[], options: CheckOptions = {}): 
   for (const path of paths) {
     const rule = SYNC_OWNED_RULES.find((r) => r.test(path));
     if (!rule) continue;
-    if (rule.generated && options.generatedPagesFresh) {
+    const fresh =
+      rule.generated === "code-pages"
+        ? options.generatedPagesFresh
+        : rule.generated === "router-pricing"
+          ? options.routerPricingFresh
+          : false;
+    if (fresh) {
       excused.push(path);
       continue;
     }
@@ -243,10 +274,11 @@ async function main() {
   }
 
   const generatedPagesFresh = process.env.GENERATED_PAGES_FRESH === "true";
-  const report = check(parsePaths(await Bun.stdin.text()), { generatedPagesFresh });
+  const routerPricingFresh = process.env.ROUTER_PRICING_FRESH === "true";
+  const report = check(parsePaths(await Bun.stdin.text()), { generatedPagesFresh, routerPricingFresh });
   if (report.excused.length > 0) {
     console.log(
-      `ℹ️ ${report.excused.length} generated page(s) allowed: they match what \`bun run code-pages:gen\` emits, so they are a regeneration and not a hand-edit.`,
+      `ℹ️ ${report.excused.length} generated page(s) allowed: they match what their generator (\`bun run code-pages:gen\` or \`bun run router-pricing:gen\`) emits, so they are a regeneration and not a hand-edit.`,
     );
   }
   if (report.offences.length === 0) {

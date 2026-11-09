@@ -65,8 +65,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -214,8 +214,8 @@ describe("public Router pricing", () => {
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
-    expect(snapshot.rates).toHaveLength(740);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(711);
+    expect(snapshot.rates).toHaveLength(762);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(733);
     for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
