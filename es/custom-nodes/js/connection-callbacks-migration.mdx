@@ -1,0 +1,116 @@
+---
+title: "Migración de callbacks de conexión para extensiones del frontend"
+sidebarTitle: "Callbacks de conexión"
+description: "Orden de los callbacks onConnectionsChange y de eliminación de nodos, SubgraphIO en los límites de subgrafos y graph.events en extensiones de ComfyUI."
+translationSourceHash: 06a9ae24
+translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": cd84d91b
+  "Check for SubgraphIO at subgraph boundaries": c049a9fe
+  "Subscribe to node lifecycle events with graph.events": 1100692e
+  "Node removal fires callbacks in this order (partially tested)": 720324f8
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "API prompt import does not reconnect resolved inputs": 619d6b69
+  "Reject connections before they are made": b9b94a8e
+  "Removing a link inside the output callback skips the input callback": 3317def4
+  "Replace removed slot events": 5c3ec663
+  "Read connection state from callback arguments or node methods": 9da17ab0
+---
+Las firmas de los callbacks no cambiaron. `onConnectionsChange`, `onConnectInput`, `onConnectOutput` y `onBeforeConnectInput` conservan sus argumentos y su comportamiento de ejecución actuales. Para los cambios en el registro de enlaces y en la API de `LinkNetwork`, consulta [Migración del registro de enlaces](/es/custom-nodes/js/link-registration-migration).
+
+## Comprobar SubgraphIO en los límites de subgrafo
+
+En un límite de subgrafo (un `SubgraphInput` o un `SubgraphOutput`), `onConnectionsChange` sigue disparándose, pero su quinto argumento es un `SubgraphIO`, no el `INodeInputSlot`/`INodeOutputSlot` habitual. Compruébalo antes de tratar el argumento como un slot normal. Los guardianes `isSubgraphInput` e `isSubgraphOutput` del propio frontend no se exponen a las extensiones, así que comprueba el arreglo `linkIds` y el nodo `parent` que tiene todo `SubgraphIO` y que los slots de nodo no tienen:
+
+```js
+function isSubgraphIO(slot) {
+  return slot != null && Array.isArray(slot.linkIds) && 'parent' in slot
+}
+
+nodeType.prototype.onConnectionsChange = function (
+  type,
+  index,
+  isConnected,
+  link,
+  slotOrIO
+) {
+  if (isSubgraphIO(slotOrIO)) return
+  // slotOrIO is INodeInputSlot | INodeOutputSlot
+}
+```
+
+## Suscribirse a eventos del ciclo de vida de los nodos con graph.events
+
+`graph.events` emite `node:added`, `node:before-removed` y `node:removed`. Úsalos cuando más de una parte de tu extensión necesite observar cuándo se agrega o se elimina un nodo:
+
+```ts
+graph.events.addEventListener('node:added', (e) => {
+  console.log('added', e.detail.node.id)
+})
+```
+
+`node.onAdded`, `node.onRemoved` y las versiones de un solo slot `graph.onNodeAdded`/`graph.onNodeRemoved` siguen funcionando, pero asignar `graph.onNodeAdded` reemplaza cualquier manejador existente: un segundo suscriptor descarta el primero sin aviso. Prefiere `graph.events` a menos que necesites vetar o modificar algo durante la adición o eliminación. No hay un equivalente con varios suscriptores para conectar y desconectar; `onConnectionsChange` sigue siendo el único hook por conexión.
+
+## Al eliminar un nodo, las devoluciones de llamada se disparan en este orden (probado parcialmente)
+
+Al eliminar un nodo, se disparan, en orden:
+
+1. `node:before-removed`: el nodo sigue completamente vinculado al gráfico.
+2. `onConnectionsChange(..., false, ...)` en el nodo eliminado y en cada nodo conectado a él, mientras el nodo eliminado todavía está en el gráfico.
+3. `node.onRemoved()`: `node.graph` todavía está asignado.
+4. El nodo se desvincula de los índices y almacenes del gráfico; `node.graph` pasa a ser `null`.
+5. `onNodeRemoved(node)` y después `node:removed`, ambas ven un nodo ya desvinculado.
+
+Las pruebas cubren `node:before-removed → node.onRemoved() → onNodeRemoved(node)` y verifican por separado que `node:removed` ve un nodo desvinculado. La secuencia completa, incluido el paso 2, se observa en el código fuente en lugar de estar garantizada por una prueba de extremo a extremo.
+
+Para obtener el nodo eliminado desde el controlador `onConnectionsChange` de un nodo conectado, hazlo en el paso 2 mediante `graph.getNodeById()`. En el momento de `node:removed`, el nodo ya no existe.
+
+## La carga del flujo de trabajo resuelve los nodos pares antes de que se ejecute onConnectionsChange
+
+`graph.configure()` crea todos los nodos del flujo de trabajo antes de que se ejecute el `configure()` propio de cualquier nodo y de que se dispare `onConnectionsChange` para sus enlaces restaurados. Por eso, cuando tu callback `onConnectionsChange` se dispara durante la carga, todos los nodos pares ya existen y su enlace ya está registrado, así que `graph.getNodeById()` y las búsquedas de enlaces desde dentro de ese callback se resuelven correctamente.
+
+## La importación de prompts de API no reconecta las entradas resueltas
+
+`app.loadApiJson()` conecta cada entrada que se puede resolver sin ejecutar una segunda pasada de desconexión y reconexión. Las extensiones no deben depender de notificaciones duplicadas de `onConnectionsChange` durante la importación de prompts de API. Haz que cada controlador de conexión realice su trabajo en la primera notificación; mueve el trabajo que requiere el gráfico importado completo a `afterConfigureGraph` o `afterLoadGraph`.
+
+Las entradas cuya salida de origen o slot de destino todavía no existe se reintentan mientras una pasada avanza. Esto conserva el comportamiento de las entradas dinámicas: una conexión exitosa puede crear el slot que necesita una conexión pendiente posterior. Las conexiones ya resueltas no se repiten, y una conexión rechazada por una extensión no se reintenta una vez que sus extremos están disponibles.
+
+Esto solo cambia la importación de prompts de API. La carga normal de flujos de trabajo sigue usando `graph.configure()` como se describe arriba, y las firmas de los callbacks de conexión no cambian.
+
+## Rechazar conexiones antes de que se creen
+
+Para rechazar una conexión, devuelve `false` desde `onConnectOutput` en el nodo fuente o `onConnectInput` en el nodo objetivo. Ambos se ejecutan antes de que el gráfico cambie algo, así que un enlace existente en la entrada objetivo se mantiene en su lugar:
+
+```js
+nodeType.prototype.onConnectOutput = function (
+  slot,
+  type,
+  input,
+  targetNode,
+  targetSlot
+) {
+  return !shouldReject(type, targetNode)
+}
+```
+
+No rechaces desde `onConnectionsChange`. Cuando se ejecuta, el nuevo enlace ya ha reemplazado cualquier enlace que tuviera la entrada objetivo, así que eliminar el nuevo enlace deja la entrada desconectada.
+
+## Quitar un enlace dentro del callback de salida omite el callback de entrada
+
+Conectar un enlace llama primero al `onConnectionsChange` del lado de salida y después al del lado de entrada. Si el controlador del lado de salida elimina ese mismo enlace antes de retornar, el lado de entrada recibe un callback `isConnected === false` por la eliminación, y su callback `isConnected === true` para el nuevo enlace se omite. No asumas que ambos lados siempre ven la conexión; si tu controlador vuelve a entrar en el gráfico, verifica que el enlace que recibiste siga conectado. Este es un comportamiento observado, no un contrato probado: actualmente ninguna prueba ejercita la ruta de omisión.
+
+## Reemplazar los eventos de slot eliminados
+
+`node:slot-links:changed` y `node:slot-errors:changed` se eliminaron, sin
+un evento de reemplazo con el mismo nombre. Migra a:
+
+- `node.isInputConnected()`, `node.isOutputConnected()` o
+  `node.getOutputNodes()` para una lectura reactiva del estado de conectividad, o
+- `onConnectionsChange` cuando necesites ejecutar código en el momento exacto en que un slot
+  se conecta o se desconecta.
+
+## Leer el estado de las conexiones desde los argumentos del callback o los métodos del nodo
+
+`input.link` y `output.links` están obsoletos, y las lecturas pueden desviarse del gráfico actual. Las escrituras solo eliminan enlaces: asignar `null` a `input.link` desconecta la entrada, y asignar o modificar `output.links` desconecta todos los enlaces que no estén en el nuevo arreglo. Las escrituras nunca crean enlaces; usa `node.connect()`, `node.disconnectInput()` o `node.disconnectOutput()`. Usa el argumento `link_info` que tu callback ya recibe, o los métodos de instancia de `LGraphNode` que leen directamente el almacén de enlaces: `node.isInputConnected()`, `node.getInputLink()`, `node.isOutputConnected()` y `node.getOutputNodes()`. No leas `input.link` ni `output.links`.
+
+Las funciones del almacén detrás de estos métodos son internas y no forman parte de la API de extensión. Usa los métodos del nodo.
