@@ -81,6 +81,7 @@ import {
   type ChunkStrategy,
   type ContentBlock,
   DEFAULT_MAX_BLOCK_CHARS,
+  WHOLE_FILE_PIECE_SPLIT_CHARS,
   aggregateDocumentHash,
   applyChangelogBlockLocalizations,
   changelogLabelHash,
@@ -1011,9 +1012,21 @@ async function translateFile(
     return { mismatches: [], status: "up-to-date" };
   }
 
+  // A page that does not qualify for section mode can still be far larger than
+  // one API call: generated Router code pages carry a single "Quick start"
+  // heading above tens of thousands of characters of tabs and code blocks. Send
+  // those through the block path so splitOversizedBlock() breaks them into
+  // pieces, otherwise every response is cut short and the page can never sync.
+  // The threshold is deliberately high: pages below it keep the single-call
+  // behaviour, so only the handful of generated pages that cannot fit in one
+  // response change strategy.
+  const needsPieceSplitting = enContent.length > WHOLE_FILE_PIECE_SPLIT_CHARS;
+
   const result = IS_QWEN_MT
     ? await translateWithQwenMT(enContent, existingContent, lang)
-    : await translateWithLLM(enContent, existingContent, lang, relPath);
+    : needsPieceSplitting
+      ? await translateBlockContent(enContent, existingContent, lang, relPath)
+      : await translateWithLLM(enContent, existingContent, lang, relPath);
 
   let output = sanitizeMdxFrontmatter(cleanModelOutput(result.content));
   output = localizeMdxPaths(output, lang, config.languages);

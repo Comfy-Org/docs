@@ -63,6 +63,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '403':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
   /v2/models/{provider}/{model}:
@@ -113,6 +115,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '404':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
     post:
@@ -198,7 +202,7 @@ paths:
   /v2/models/{provider}/{model}/estimate:
     post:
       summary: Price a model call before running it, without running it.
-      description: 'Returns a pre-flight estimate, in US dollars, of what running this body on this model will cost, priced from the same rate card the run is billed against (a model billed the cost its vendor reports is estimated from the vendor''s published price list instead). It is an estimate, not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. The body is validated against the model''s input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model''s schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. While the feature is rolling out the route answers `403` with `error_type: not_enabled`; a model Router cannot run yet answers the same `403` with the run route''s own `detail`, so read `detail` to tell the two apart.'
+      description: 'Returns a pre-flight estimate, in US dollars, of what running this body on this model will cost, priced at Comfy''s standard list price (a model billed the cost its vendor reports is estimated from the vendor''s published price list instead). It does not reflect contract or customer-specific rates: a workspace with negotiated pricing is quoted the list price and charged its contract rate, and `source: exact` then means exact at list price, not that workspace''s charge. It is an estimate, not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. The body is validated against the model''s input schema first, as a default run (no `strict_mode`, no `reject_unknown_fields`) validates it, so a body that fails the model''s schema is the same `422` here as on the run; nothing is dispatched to a provider and nothing is charged. The answer is not a price lock: it is priced at the rates in force at `pricing_as_of`, and a run is charged at the rates in force when it is rated. If estimates are switched off for a deployment the route answers `403` with `error_type: not_enabled`; a model Router cannot run yet answers the same `403` with the run route''s own `detail`, so read `detail` to tell the two apart. The body is priced as Router would dispatch it: translated for the `model_provider` leg it names and retargeted to the operation it runs on, in the same order as the `estimate` on the queued submit''s `201`. That `estimate` is not a pre-flight price, though: it arrives only after the run is admitted and queued, and that run is charged unless it is cancelled before dispatch.'
       operationId: estimateRouterModelCost
       tags:
       - Comfy Router
@@ -238,8 +242,12 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '422':
           $ref: '#/components/responses/RouterEstimateValidationError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestUnavailable'
+        '504':
+          $ref: '#/components/responses/RouterRequestError'
   /v2/models/{provider}/{model}/openapi.json:
     get:
       summary: Read one partner model's input and output schemas as an OpenAPI document.
@@ -290,6 +298,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '500':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
   /v2/models/{provider}/{model}/requests:
@@ -348,6 +358,8 @@ paths:
           $ref: '#/components/responses/RouterQueueSubmitTooManyRequests'
         '503':
           $ref: '#/components/responses/RouterRequestUnavailable'
+        '504':
+          $ref: '#/components/responses/RouterRequestError'
   /v2/models/{provider}/{model}/requests/{request_id}:
     get:
       summary: Collect the result of one submitted request.
@@ -399,6 +411,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '410':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
         '409':
@@ -448,6 +462,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '404':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
         default:
@@ -494,6 +510,8 @@ paths:
           $ref: '#/components/responses/RouterRequestError'
         '410':
           $ref: '#/components/responses/RouterRequestError'
+        '429':
+          $ref: '#/components/responses/RouterRateLimited'
         '503':
           $ref: '#/components/responses/RouterRequestError'
         default:
@@ -521,7 +539,7 @@ components:
       example: unknown
     RouterCostEstimate:
       type: object
-      description: 'A pre-flight estimate of what this call will cost, in US dollars, priced before dispatch from the same rate card the run is billed against (or, for a model billed the cost its vendor reports, estimated from the vendor''s published price list). It is not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. `X-Comfy-Credits-Used`, reported after the run, is a rounded post-hoc figure, not a receipt. `source` says how much to trust the number: `exact` carries `amount`; `free` carries `amount` "0" (the rate card prices this request at zero); `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.'
+      description: 'A pre-flight estimate of what this call will cost, in US dollars, priced before dispatch at Comfy''s standard list price, or — for a model billed the cost its vendor reports — from the vendor''s published price list. For that vendor-reported case, `source: exact` is returned only for a small opted-in set of models, and only when the published price list fully determines the figure (every price-driving field was stated, or left at a default that cannot change it); every other vendor-reported quote is `estimated`, including some the list would fully determine. Either way the run is still billed the amount the vendor reports after it completes, never the quoted figure verbatim. It does not reflect contract or customer-specific rates: a workspace with negotiated pricing is quoted the list price and charged its contract rate, and `source: exact` then means exact at list price, not that workspace''s charge. It is not the final charge: the settled charge in your workspace''s usage and billing records is what you pay. `X-Comfy-Credits-Used`, reported after the run, is a rounded post-hoc figure, not a receipt. `source` says how much to trust the number: `exact` carries `amount`; `free` carries `amount` "0" (the rate card prices this request at zero); `estimated` carries `min_amount` and `max_amount` and no `amount`; `unknown` carries neither and a `reason`. Never read an absent `amount` as free. Not a price lock: see `pricing_as_of`.'
       required:
       - source
       - currency
@@ -647,7 +665,7 @@ components:
         meaning: 'A service Comfy Router depends on is temporarily unavailable and the caller did nothing wrong. Retry it with backoff: it is the one bucket here whose condition clears on its own, without the caller changing the request and without a concurrency slot freeing, which is what distinguishes it from the other retryable answers (`concurrency_limit_exceeded`, `deadline_exceeded`). It is separate from `internal_error` - which is a `500` and means Router itself failed - so a client can tell "come back shortly" from "this call is not going to work".'
       - value: rate_limited
         tier: transport
-        meaning: 'The caller has spent an allowance measured over a window and must wait for that window to roll. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller''s own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window.'
+        meaning: 'The caller has spent an allowance measured over a window and must wait for that window to roll. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller''s own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window, and `Retry-After` the seconds to wait.'
       - value: cancelled
         tier: transport
         meaning: 'A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is terminal, and it is not by itself a statement about the charge. Cancelling stops Comfy waiting and it does not always stop the partner working, so a request cancelled while it was still `IN_QUEUE` was never dispatched and cannot be charged, whereas one cancelled after it was admitted may still be charged — a partner generation that completes is charged whether or not anyone collected it, which is why the cancel route calls the ask a request rather than a guarantee. It is not `client_disconnected`: that one says nobody is listening any more while a generation may still be running and billable, whereas this says the request itself was withdrawn. A caller polling the status read sees `200` with this in the body, because the request ended and so the read succeeded. Collecting the result of such a request answers `409` in Router''s error envelope: that read also worked, and what it found is a request whose terminal state - the caller''s own decision - leaves nothing to return. It is deliberately not `410`, which on that route means the result aged out of its retention window, and not a `5xx`, which would report the caller''s own cancellation as a Router fault and read to a polling client as worth retrying.'
@@ -922,7 +940,7 @@ components:
       - detail
   responses:
     RouterConcurrencyLimited:
-      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` in every case and `detail` says which bound was hit: the number of concurrent calls; the number of concurrent calls to models classed expensive, a quarter of the concurrent-call limit shared with partner-node calls, whose refusal also carries the `X-Model-Concurrency-Limit`, `X-Model-Concurrency-Current` and `X-Model-Concurrency-Remaining` headers; or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes - for the expensive-model bound, one of their calls to an expensive model, which may be a partner-node call. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      description: 'The caller is holding as much in-flight capacity as they are allowed and the request was refused before it reached the model. The bucket is `concurrency_limit_exceeded` for every in-flight bound and `detail` says which bound was hit: the number of concurrent calls; the number of concurrent calls to models classed expensive, a quarter of the concurrent-call limit shared with partner-node calls, whose refusal also carries the `X-Model-Concurrency-Limit`, `X-Model-Concurrency-Current` and `X-Model-Concurrency-Remaining` headers; or the committed spend of the calls still in flight, whose refusal also carries the `X-Committed-Spend-Limit`, `X-Committed-Spend-Current` and `X-Committed-Spend-Remaining` headers (USD cents). Retry once one of the caller''s own in-flight calls finishes - for the expensive-model bound, one of their calls to an expensive model, which may be a partner-node call. The same status also carries `rate_limited` when the caller has spent their per-caller request allowance: that refusal sends `Retry-After`, and the wait it names is the whole remedy, because finishing in-flight calls does not refill it. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
       headers:
         X-Comfy-Error-Type:
           $ref: '#/components/headers/RouterErrorTypeHeader'
@@ -940,6 +958,8 @@ components:
           $ref: '#/components/headers/ModelConcurrencyCurrentHeader'
         X-Model-Concurrency-Remaining:
           $ref: '#/components/headers/ModelConcurrencyRemainingHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRateLimitRetryAfterHeader'
       content:
         application/json:
           schema:
@@ -1021,12 +1041,27 @@ components:
           schema:
             $ref: '#/components/schemas/RouterErrorResponse'
     RouterQueueSubmitTooManyRequests:
-      description: 'Inspect `X-Comfy-Error-Type`: `queue_backlog_full` means you already hold as many unfinished queued requests as you are allowed, so submit again once one of them finishes; `rate_limited` means wait for the allowance window. Nothing was queued or charged, and the `Idempotency-Key` is not consumed. A submit at your in-flight limit is queued rather than refused, so `concurrency_limit_exceeded` is never answered here.'
+      description: 'Inspect `X-Comfy-Error-Type`: `queue_backlog_full` means you already hold as many unfinished queued requests as you are allowed, so submit again once one of them finishes; `rate_limited` means wait the number of seconds in `Retry-After`. Nothing was queued or charged, and the `Idempotency-Key` is not consumed. A submit at your in-flight limit is queued rather than refused, so `concurrency_limit_exceeded` is never answered here.'
       headers:
         X-Comfy-Error-Type:
           $ref: '#/components/headers/RouterErrorTypeHeader'
         X-Comfy-Request-Id:
           $ref: '#/components/headers/RouterRequestIdHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRateLimitRetryAfterHeader'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RouterErrorResponse'
+    RouterRateLimited:
+      description: 'The caller has spent their per-caller request allowance, which refills continuously over a one-minute window, and the request was refused before Router did anything with it. The bucket is always `rate_limited`: wait the number of seconds in `Retry-After` before sending the next request. Nothing was charged, and a request sent sooner is refused again. The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`.'
+      headers:
+        X-Comfy-Error-Type:
+          $ref: '#/components/headers/RouterErrorTypeHeader'
+        X-Comfy-Request-Id:
+          $ref: '#/components/headers/RouterRequestIdHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRateLimitRetryAfterHeader'
       content:
         application/json:
           schema:
@@ -1291,6 +1326,13 @@ components:
         type: integer
         minimum: 1
         example: 3
+    RouterRateLimitRetryAfterHeader:
+      description: 'Seconds to wait before sending another request after a `429` carrying `error_type: rate_limited`: the time until the caller''s per-minute request allowance has refilled enough to admit one more request. It is sent on every `rate_limited` refusal and on no other answer, so it is absent on a `429` whose `X-Comfy-Error-Type` is `concurrency_limit_exceeded` or `queue_backlog_full`. Nothing the caller does drains it early; a request sent sooner is refused again and spends nothing, but gains nothing either.'
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        example: 2
     RouterRefusalSubjectHeader:
       description: 'Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise - so branch on its presence. Never provider text. Mirrors `RouterErrorResponse.refusal_subject`.'
       required: false
