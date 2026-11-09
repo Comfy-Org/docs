@@ -2,23 +2,24 @@
 title: "Capacidades y límites de Comfy Router"
 sidebarTitle: "Capacidades y límites"
 description: "Elige Router o un proxy socio, planifica llamadas largas y entiende la recuperación, los límites de tasa y el almacenamiento de recursos."
-translationSourceHash: b4d8209c
+translationSourceHash: 691c2e79
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
   "What Router supports": 2cc63403
   "Queued submission": d0798008
-  "Calls are cut off at a server deadline": 6dd44c43
+  "Calls are cut off at a server deadline": c8724f59
   "Recovery depends on the provider": da9d8904
   "Request bodies are capped": 675b77c8
-  "Requests are rate limited per caller": 249d4d51
+  "Requests are rate limited per caller": 83156651
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": cf6e2050
-  "Models without a pre-flight estimate": f6dfd921
+  "Comfy charges and usage": 06a72e74
+  "Models without a pre-flight estimate": 2b25596f
   "Router does not cover every partner operation": 786c0fb2
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
 
 Router ejecuta un modelo socio a través de una llamada HTTP síncrona o mediante una solicitud en cola que envías y recoges más tarde. Úsalo cuando tu aplicación pueda esperar un resultado finalizado o recogerlo más tarde, y pueda manejar los campos de entrada y salida propios del modelo.
 
@@ -48,7 +49,7 @@ Las operaciones de texto a video e imagen a video de LTX v1 devuelven bytes de v
 
 ## Las llamadas se cortan por un plazo límite del servidor
 
-El plazo límite predeterminado de Router es de **10 minutos**, configurable según el despliegue. Configura el timeout de tu cliente por encima de ese valor para que Router pueda devolver primero su error y el ID de la solicitud.
+El plazo límite predeterminado de Router es de **10 minutos**, configurable según el despliegue. Cuenta desde que llega la solicitud, así que el límite incluye la subida de la solicitud: un cuerpo que no haya llegado por completo para entonces recibe `504` / `deadline_exceeded` antes de cualquier llamada al socio, y una llamada a la que le queda muy poco del plazo para finalizar se rechaza de la misma forma. Configura el timeout de tu cliente por encima de ese valor para que Router pueda devolver primero su error y el ID de la solicitud.
 
 `504` / `deadline_exceeded` significa que Router dejó de esperar; `504` / `provider_timeout` significa que el proveedor agotó el tiempo de espera. Un timeout o una conexión perdida no demuestra que una generación no se haya facturado, y no cancela el trabajo aceptado por el proveedor. Lee [tiempos de espera y recopilación](/es/development/comfy-router/errors#tiempos-de-espera-y-recopilación) antes de reintentar.
 
@@ -79,7 +80,7 @@ El límite se aplica a todas las solicitudes, lleven o no un `Idempotency-Key`. 
 | `429` / `concurrency_limit_exceeded` | Demasiadas llamadas concurrentes, o margen insuficiente bajo el techo de gasto comprometido. | Reduce el trabajo concurrente. Los encabezados de gasto distinguen el techo de gasto del límite de cantidad de llamadas. |
 | `429` / `rate_limited` | Se agotó la cuota de solicitudes. | Espera el tiempo indicado en `Retry-After` antes de reintentar. |
 
-El límite de tasa de solicitudes aplica a la invocación y a las lecturas de catálogo y esquema, incluidas las solicitudes rechazadas antes de la generación. Sigue al solicitante autenticado, no a la IP de origen. Las llamadas con la clave de proveedor del solicitante están exentas; los límites del proveedor siguen aplicando.
+El límite de tasa de solicitudes aplica a todas las operaciones del Router: la invocación, las lecturas de catálogo y esquema, las estimaciones de costo y las llamadas en cola de envío, estado, resultado y cancelación, incluidas las solicitudes rechazadas antes de la generación. Sigue al solicitante autenticado, no a la IP de origen. Las llamadas con la clave de proveedor del solicitante están exentas; los límites del proveedor siguen aplicando. Consultar una solicitud en cola consume la misma cuota que cualquier otra llamada, así que consulta al intervalo que sugiere la lectura de estado en lugar de hacerlo en un bucle cerrado. Un rechazo `rate_limited` no cambia nada en una solicitud en cola: sigue ejecutándose, y una cancelación rechazada no canceló nada, así que envíala de nuevo después de `Retry-After`.
 
 Almacena en caché las lecturas de catálogo y esquema. Revalídalas con `ETag` e `If-None-Match`. Consulta [Encabezados](/es/development/comfy-router/headers) para los campos de reintento y de gasto comprometido.
 
@@ -97,7 +98,7 @@ La respuesta puede contener campos de uso o de costo del proveedor. No represent
 
 El catálogo proporciona datos de facturación, incluido `billing.charges_on_policy_rejection`, pero no precios. Maneja `yes`, `no` y `unknown` de forma explícita. Cuando es `yes`, un error síncrono `content_policy_violation` puede incluir `X-Comfy-Credits-Used`: lo incluye cuando el proveedor rechazó la salida generada por el modelo y Comfy registró uso para esa generación rechazada, y en ese caso contiene esa cantidad. Un rechazo del lado de la entrada, una repetición con la misma clave y un cargo demasiado pequeño para mostrarse en los dos decimales del encabezado no lo incluyen; un rechazo sin el encabezado no se informa, no es gratis. Consulta [facturación](/es/development/comfy-router/billing#datos-de-facturación-de-los-modelos).
 
-Para consultar un precio antes de una ejecución, llama a `POST /v2/models/{provider}/{model}/estimate`, o lee el objeto `estimate` en el `201` de un envío en cola. Mientras la estimación se implementa gradualmente, la ruta responde `403` con `error_type: not_enabled` y el envío omite `estimate`. Cada estimación se calcula a partir de la tarjeta de tarifas contra la que Comfy factura la ejecución (a un modelo al que se le factura el costo que reporta su proveedor, en cambio, se le estima a partir de la lista de precios publicada por ese proveedor), pero la cifra es una estimación, no el cargo final, y el cargo liquidado en los registros de uso y facturación de tu espacio de trabajo es definitivo. Tampoco es un bloqueo de precio. Comfy no factura una ejecución realizada con tu propia clave de proveedor, incluso cuando `/estimate` devuelve una cifra para ella, y una estimación `unknown` no incluye ninguna cifra; eso no significa que sea gratis. `X-Comfy-Credits-Used` sigue siendo una cifra redondeada calculada a posteriori para una ejecución, no un recibo. Consulta [Estimaciones de costo antes de la ejecución](/es/development/comfy-router/reference#estimaciones-de-costos-previas-a-la-ejecución) para saber cómo interpretar `exact`, `estimated` y `unknown`. Los modelos cuyo precio no se puede calcular antes de una ejecución se enumeran en [modelos sin estimación previa](#modelos-sin-estimación-previa).
+Para consultar un precio antes de una ejecución, llama a `POST /v2/models/{provider}/{model}/estimate` o lee el objeto `estimate` en el `201` de un envío en cola. Si las estimaciones están desactivadas para una implementación, la ruta responde `403` con `error_type: not_enabled` y el envío omite `estimate`. Cada una se calcula con el precio de lista estándar de Comfy (a un modelo al que se le factura el costo que reporta su proveedor se le calcula el precio a partir de la lista de precios publicada por ese proveedor: `exact` en el caso de un conjunto pequeño de modelos que optaron por ello cuando esa lista determina por completo la cifra, y `estimated` en los demás casos, incluidas algunas cotizaciones que la lista determinaría por completo) y no refleja tarifas contractuales ni específicas del cliente: a un espacio de trabajo con precios negociados se le cotiza el precio de lista y se le cobra su tarifa contractual. La cifra es una estimación, no el cargo final, y el cargo liquidado en los registros de uso y facturación de tu espacio de trabajo es definitivo. Tampoco es un bloqueo de precio. Comfy no factura una ejecución realizada con tu propia clave de proveedor, incluso cuando `/estimate` devuelve una cifra para ella, y una estimación `unknown` no incluye ninguna cifra; eso no significa que sea gratis. `X-Comfy-Credits-Used` sigue siendo una cifra redondeada calculada a posteriori para una ejecución, no un recibo. Consulta [Estimaciones de costo antes de la ejecución](/es/development/comfy-router/reference#estimaciones-de-costos-previas-a-la-ejecución) para saber cómo interpretar `exact`, `estimated` y `unknown`. Los modelos cuyo precio no se puede calcular antes de una ejecución se enumeran en [modelos sin estimación previa](#modelos-sin-estimación-previa).
 
 ## Modelos sin estimación previa
 
@@ -112,7 +113,7 @@ Esta lista se reduce a medida que crece la cobertura de estimaciones. Se genera 
 - **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
 - **heygen**: `heygen/starfish`
 - **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
-- **kling**: `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **kling**: `kling/kling-4.0`, `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`
 - **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
 - **openai**: `openai/gpt-image-1.5`
 - **openrouter**: `openrouter/chat-completions`
@@ -123,7 +124,7 @@ Esta lista se reduce a medida que crece la cobertura de estimaciones. Se genera 
 
 {/* END GENERATED: models without a pre-flight estimate */}
 
-Las ediciones con `openai/gpt-image-2`, `openai/gpt-image-2.5-flare` y `openai/gpt-image-2.5-sunburst` tampoco tienen estimación previa. Una llamada de edición a uno de estos modelos, o una llamada de generación que incluya una imagen de entrada, responde `source: unknown`. Una llamada de generación solo de texto a estos modelos sí se estima, y por eso no aparecen en la lista anterior.
+Las ediciones con `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, `openai/gpt-image-2.5-sunburst`, `openai/gpt-image-2.6-flare` y `openai/gpt-image-2.6-sunburst` tampoco tienen estimación previa. Una llamada de edición a uno de estos modelos, o una llamada de generación que incluya una imagen de entrada, responde `source: unknown`. Una llamada de generación solo de texto a estos modelos sí se estima, y por eso no aparecen en la lista anterior.
 
 ## Router no cubre todas las operaciones de los socios
 
