@@ -12,6 +12,9 @@ const OUTPUT_FILE = join(ROOT, "development/comfy-router/pricing.mdx");
 const MODEL_GLOB = "development/comfy-router/models/**/code.mdx";
 const MAX_RESOLUTION_COLUMNS = 5;
 const COMFY_GPU_CREDITS_PER_SECOND = 0.266;
+// Usage rows are GPU-second metered only when the rate's own unit says so. Owner-served
+// partner rows (for example xAI or BFL) display as "Comfy" but bill provider-reported usage.
+const isComfyGpuMetered = (rate: MetronomeRate) => rate.kind === "usage" && /\bGPU[- ]seconds?\b/i.test(rate.unit);
 
 type CatalogModel = {
   id: string;
@@ -46,6 +49,10 @@ type MetronomeData = {
     source_sha256?: string;
     file_id?: string;
     checked_at: string;
+    // "retired": the model left the catalog (cite the cloud withdrawal). Absent
+    // ids are not rendered and do not fail the unknown-id check. A snapshot rate
+    // or a non-cloud source still fails.
+    catalog_when_absent?: "retired";
     rates: MetronomeRate[];
   }>;
 };
@@ -78,6 +85,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   qwen: "Qwen",
   recraft: "Recraft",
   runway: "Runway",
+  stability: "Stability",
   tencent: "Tencent",
   veo: "Veo",
   vertexai: "Google",
@@ -165,8 +173,18 @@ function modelCategory(id: string, outputs: string[]): PricingCategory {
   throw new Error(`No pricing category for ${id}`);
 }
 
-function loadMetronomeData(): MetronomeData {
-  const data = JSON.parse(readFileSync(METRONOME_FILE, "utf8")) as MetronomeData;
+// Rates read from a supplemental source cited in Comfy-Org/cloud. Only these may
+// name a model the catalog does not list yet (see catalogRates).
+const CLOUD_SOURCED_RATES = new WeakSet<MetronomeRate>();
+const RETIRED_RATES = new WeakSet<MetronomeRate>();
+const CLOUD_SOURCE_REF = "https://github.com/Comfy-Org/cloud/";
+// Rates a keyed price superseded, by the resolved rates array they were dropped
+// from. catalogRates still checks them so supersession cannot hide a mistyped
+// snapshot model ID behind a stageable Cloud rate.
+const SUPERSEDED_RATES = new WeakMap<MetronomeRate[], MetronomeRate[]>();
+
+function loadMetronomeData(file = METRONOME_FILE): MetronomeData {
+  const data = JSON.parse(readFileSync(file, "utf8")) as MetronomeData;
   if (!data.snapshot_at || data.credits_per_usd <= 0 || !Array.isArray(data.rates)) {
     throw new Error(`${METRONOME_FILE}: invalid Metronome pricing data`);
   }
@@ -175,6 +193,13 @@ function loadMetronomeData(): MetronomeData {
     if (source.source.endsWith("services/comfy-api/scripts/metronome/fal/rates/rates.json")
       && source.rates.some((rate) => rate.entitled !== true)) {
       throw new Error(`${METRONOME_FILE}: fal rates require an active, entitled rate-card entry`);
+    }
+  }
+  for (const source of supplementalSources) {
+    if (!source.source_ref?.startsWith(CLOUD_SOURCE_REF)) continue;
+    for (const rate of source.rates) {
+      CLOUD_SOURCED_RATES.add(rate);
+      if (source.catalog_when_absent === "retired") RETIRED_RATES.add(rate);
     }
   }
   data.rates.push(...supplementalSources.flatMap(({ rates }) => rates));
@@ -195,7 +220,10 @@ function loadMetronomeData(): MetronomeData {
       throw new Error(`${METRONOME_FILE}: rate end must follow its start for ${rate.model_id}`);
     }
   }
-  data.rates = resolveKeyedRates(data.rates);
+  const sourceRates = data.rates;
+  data.rates = resolveKeyedRates(sourceRates);
+  const resolved = new Set(data.rates);
+  SUPERSEDED_RATES.set(data.rates, sourceRates.filter((rate) => !resolved.has(rate)));
   return data;
 }
 
@@ -206,6 +234,36 @@ function resolveKeyedRates(rates: MetronomeRate[]): MetronomeRate[] {
   const routeKey = (rate: MetronomeRate) => JSON.stringify([rate.model_id, rate.serving_provider]);
   const keyed = new Set(rates.filter((rate) => rate.kind !== "usage").map(routeKey));
   return rates.filter((rate) => rate.kind !== "usage" || !keyed.has(routeKey(rate)));
+}
+
+/**
+ * Splits rates into those the page renders and staged rates whose model the
+ * catalog does not list yet. A rates PR can land before the spec sync that adds
+ * its models; staged rates render once the sync lands. Only rates from a
+ * Comfy-Org/cloud supplemental source can be staged, so a mistyped model ID in
+ * the snapshot or a third-party source still fails.
+ */
+function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: MetronomeRate[]; staged: MetronomeRate[]; retired: MetronomeRate[] } {
+  const modelIds = new Set(models.map((model) => model.id));
+  const absent = rates.filter((rate) => !modelIds.has(rate.model_id));
+  const retired = absent.filter((rate) => RETIRED_RATES.has(rate));
+  const staged = absent.filter((rate) => !RETIRED_RATES.has(rate));
+  const checked = [...absent, ...(SUPERSEDED_RATES.get(rates) ?? []).filter((rate) => !modelIds.has(rate.model_id))];
+  const missingModels = [...new Set(checked.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => rate.model_id))];
+  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog, or marked catalog_when_absent "retired" when Cloud withdrew the id`);
+  return { rates: rates.filter((rate) => modelIds.has(rate.model_id)), staged, retired };
+}
+
+function stagedRatesWarning(staged: MetronomeRate[]): string | undefined {
+  const ids = [...new Set(staged.map((rate) => rate.model_id))].sort();
+  if (!ids.length) return undefined;
+  return `${METRONOME_FILE}: skipping ${staged.length} staged rate(s) for model IDs absent from the current catalog, which render once a spec sync adds them: ${ids.join(", ")}`;
+}
+
+function retiredRatesWarning(retired: MetronomeRate[]): string | undefined {
+  const ids = [...new Set(retired.map((rate) => rate.model_id))].sort();
+  if (!ids.length) return undefined;
+  return `${METRONOME_FILE}: not rendering ${retired.length} retired rate(s) whose model IDs have left the catalog: ${ids.join(", ")}`;
 }
 
 function validateCreditConversion(rate: MetronomeRate, creditsPerUsd: number): void {
@@ -448,11 +506,9 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     ? formatAmount(String(COMFY_GPU_CREDITS_PER_SECOND))
     : formatUsd(COMFY_GPU_CREDITS_PER_SECOND / data.credits_per_usd);
   const rateHeader = (prefix: string, suffix = "") => `${prefix}${copy.credits}${suffix}`;
-  const modelIds = new Set(models.map((model) => model.id));
-  const missingModels = [...new Set(data.rates.map((rate) => rate.model_id).filter((id) => !modelIds.has(id)))];
-  if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}`);
+  const rates = catalogRates(data.rates, models).rates;
   const modelsById = new Map(models.map((model) => [model.id, model]));
-  for (const rate of data.rates) {
+  for (const rate of rates) {
     const model = modelsById.get(rate.model_id)!;
     displayProvider(model.id, model.providers, rate.serving_provider);
   }
@@ -462,7 +518,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
     for (const model of models.filter((candidate) => candidate.category === category)) {
       for (const provider of model.providers) {
         const routes = providers.get(provider) ?? [];
-        routes.push({ model, rates: data.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider) });
+        routes.push({ model, rates: rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider) });
         providers.set(provider, routes);
       }
     }
@@ -488,19 +544,19 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
         const rates = resolution.remaining;
         const name = `[${tableCell(displayTitle(model))}](/${model.page})`;
         const modelId = `\`${model.id}\``;
-        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable, kind: "unavailable", unit: "" }];
+        if (!originalRates.length) return [{ name, modelId, option: "-", credits: copy.unavailable, kind: "unavailable", unit: "", gpuMetered: false }];
         return groupRates(rates, locale).map((group) => {
           const rate = group.rates[0];
           const unit = tableCell(formatUnit(rate.unit, locale));
           const priceUnit = tableCell(formatPriceUnit(rate.unit, locale));
           const credits = rate.kind === "usage"
-            ? provider === "Comfy" ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
+            ? provider === "Comfy" && isComfyGpuMetered(rate) ? `${comfyGpuRate} / ${copy.gpuSecondUnit}` : `${copy.variable}<br />${unit}`
             : `${amount(rate)} / ${priceUnit}`;
           const omitNonPricingOption = model.id === "bria/video-edit-erase"
             && group.options.includes(formatOption("Input duration, capped at 5 seconds per request", locale))
             || model.id === "bria/fibo";
           const option = omitNonPricingOption ? "-" : compactOptions(group.options);
-          return { name, modelId, option, credits, kind: rate.kind, unit: rate.unit };
+          return { name, modelId, option, credits, kind: rate.kind, unit: rate.unit, gpuMetered: provider === "Comfy" && isComfyGpuMetered(rate) };
         });
       });
       const renderOrdinaryRows = (items: typeof ordinaryRows, hasOptions: boolean, headerUnit?: string) => {
@@ -1084,7 +1140,7 @@ function renderCurrencyView(locale: PricingLocale, currency: "credits" | "usd"):
       }
       const hasSubgroups = tableSections.length > 1;
       const tables = tableSections.map(({ title, body }) => {
-        const comfyUsageNote = provider === "Comfy" && title === copy.usageRates
+        const comfyUsageNote = title === copy.usageRates && ordinaryRows.some((row) => row.gpuMetered)
           ? `${copy.comfyGpuUsageNote}\n\n` : "";
         return `${hasSubgroups ? `#### ${title}\n\n` : ""}${comfyUsageNote}${body}`;
       }).join("\n\n");
@@ -1207,6 +1263,11 @@ function pricingCoverageErrors(): string[] {
 if (import.meta.main) {
   const check = process.argv.includes("--check");
   const output = render();
+  const catalogSplit = catalogRates(loadMetronomeData().rates, loadCatalog());
+  const stagedWarning = stagedRatesWarning(catalogSplit.staged);
+  const retiredWarning = retiredRatesWarning(catalogSplit.retired);
+  if (stagedWarning) console.warn(stagedWarning);
+  if (retiredWarning) console.warn(retiredWarning);
   const coverageErrors = pricingCoverageErrors();
   if (coverageErrors.length) {
     for (const error of coverageErrors) console.error(error);
@@ -1226,4 +1287,4 @@ if (import.meta.main) {
   }
 }
 
-export { checkPricingCoverage, compactOptions, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion };
+export { catalogRates, checkPricingCoverage, compactOptions, isComfyGpuMetered, servingProviders, findUnpricedRoutes, loadUnpricedWaivers, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion };
