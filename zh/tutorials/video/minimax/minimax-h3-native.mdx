@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: 9e8d385c
+translationSourceHash: 9bdb71a9
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": 4f5274f5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
-  "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "MiniMax H3 Reference to Video (R2V)": 3faa7b7c
+  "Advanced workflows with the native nodes": c53236cb
 ---
 本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力、调参与加速见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
@@ -217,7 +217,7 @@ ComfyUI/
 1. **标签**：用 `<Picture 1>`、`<Video 1>`、`<Audio 1>`（`ref_image_0` → `<Picture 1>`）。节点顺序：图像、视频、音频
 2. **分工**：写明各参考驱动身份、风格、运动、运镜或声音
 3. **上限**：**9** 图、**3** 视频、**3** 独立音频
-4. **视频帧率**：按 **24fps** 读取，无元数据。加载前请转为 24fps
+4. **视频帧率与长度**：按 **24fps** 读取，无元数据，请先转换帧率。参考视频还会按生成的 `length` 截断，5 秒的生成里放 15 秒参考只会用前 5 秒。配套音轨不会被截断，仍按完整长度进入
 5. **视频声音**：画面与音轨分开；`ref_video_audio_N` 须对应 `ref_video_N`，否则文件内声音不会成为 `<Audio N>` 参考
 6. **音频编号**：视频音轨先占 `<Audio N>`，再排独立音频；与画面编号独立
 7. **VAE**：视频音轨需 `vae`+`audio_vae`；独立音频仅需 `audio_vae`
@@ -248,12 +248,29 @@ ComfyUI/
 
 例：前 **22** 帧在帧 **0** 续写；在 124 帧片的帧 **60** 放静图强制经过该姿态。
 
-这是条件引导，非 V2V：仍从空 latent 采样，`denoise` 不会像 V2V 那样缩放引导强度。整段换风格用 R2V；局部编辑用 [Fun ControlNet Union](/zh/tutorials/video/minimax/minimax-h3-fun-controlnet) 遮罩。
+这是条件引导，非 V2V：仍从空 latent 采样，`denoise` 不会像 V2V 那样缩放引导强度。整段换风格用 R2V；局部编辑用 [Fun ControlNet Union](/zh/tutorials/video/minimax/minimax-h3-fun-controlnet) 遮罩，或用下文介绍的 latent 噪波遮罩。
 
 见 [多帧参考](/zh/tutorials/video/minimax/minimax-h3-multiframe) 模板。
+
+### 使用上下文窗口生成长片段 (#17425)
+
+`MiniMaxH3ContextWindows` 把一次生成拆成重叠窗口采样，让片段超过模型单次生成训练覆盖的约 362 帧。接在模型加载器与采样器之间的模型通路上，需要 ComfyUI **0.44.0** 或更高版本。
+
+两个长度都以真实帧计，且必须为 **17k+5**：`context_length`（默认 **124**，最小 **22**）是窗口长度，`context_overlap`（默认 **39**）是与下一个窗口的重叠。节点会把重叠限制在比窗口少一个 17 帧块，窗口因此总会前进。`length` 设为 1654 帧（24fps 约 69 秒）并在 **362 / 39** 下运行时分为 5 个窗口采样。
+
+采样时只跑一个窗口，显存占用主要来自窗口而非片段长度。整个 latent、噪声、采样器累加量与 VAE 解码仍随片段增长。音频按相同边界切分，声音跨接缝保持同步。
+
+窗口的构建方式带来两个限制：
+
+- 引导只对与其帧重叠的窗口生效。首尾帧的片段中间窗口没有引导，会漂移或出现幻觉；需要长时间保持角色或声音的镜头应改用 [R2V](#minimax-h3-参考转视频（r2v）)：参考不绑定时间轴，在关闭 `split_conds_to_windows`（默认）时作用于每个窗口。
+- 重叠帧会被融合，但每个窗口各自预测后续内容，镜头在空间中移动时背景可能在接缝处变化。固定机位和缓慢运镜可以干净地延长。
 
 ### 使用 Latent 噪波遮罩进行 Inpainting 与扩展 (#15375)
 
 [逐 token 遮罩](https://github.com/Comfy-Org/ComfyUI/pull/15375) 覆盖视频与音频 latent，可只重生成一部分。
 
-遮罩接采样器 `denoise_mask`：**0** 保留，**1** 重生成。视频对齐 2×2 latent 块，音频对齐整帧。用于修补、移除或扩展。
+遮罩接采样器 `denoise_mask`：**0** 保留，**1** 重生成。遮罩会先重采样到 latent 网格，每个 2×2 块取其 4 个值中的最大值，因此细于一个块（32 像素）的边缘不会保留；音频对齐整帧。用于修补、移除或扩展，其余部分保持不变。
+
+遮罩是权重而不是开关：每一步都按遮罩值把重生成的 latent 与原始 latent 混合，因此边缘柔和时改动会逐渐过渡，不会留下硬接缝。把遮罩向外扩几个像素并把边缘做模糊（`Grow Mask`，再经 `Convert Mask to Image`、`Blur Image`、`Convert Image to Mask`），让阴影和接触边缘也落在重生成范围内。
+
+遮罩之外的内容仍会参与模型的条件计算，重生成区域是按周围画面补出来的。把主体换成相近的主体可行；移除大块高对比、还在移动的物体并不可靠：它的阴影、反射和原本占的位置会不断把它拉回来。

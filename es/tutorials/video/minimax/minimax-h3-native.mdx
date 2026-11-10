@@ -2,14 +2,14 @@
 title: "Flujos de trabajo de MiniMax H3 en ComfyUI: texto a video, imagen a video y referencia a video"
 description: "Ejemplos paso a paso de flujos nativos de MiniMax H3 en ComfyUI, con anclaje de guías y máscaras de ruido latente para un control más fino del video."
 sidebarTitle: "Flujos nativos"
-translationSourceHash: 9e8d385c
+translationSourceHash: 9bdb71a9
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": 4f5274f5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
-  "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "MiniMax H3 Reference to Video (R2V)": 3faa7b7c
+  "Advanced workflows with the native nodes": c53236cb
 ---
 Esta página cubre las tres plantillas base de MiniMax H3 y las técnicas avanzadas con nodos nativos. Para conocer las capacidades, el ajuste y las mejoras de velocidad, consulta la [descripción general de MiniMax H3](/es/tutorials/video/minimax/minimax-h3).
 
@@ -217,7 +217,7 @@ ComfyUI/
 1. **Etiquetas**: Haz referencia a las entradas como `<Picture 1>`, `<Video 1>`, `<Audio 1>` (`ref_image_0` → `<Picture 1>`). Orden de los nodos: primero imágenes, luego videos y al final audio
 2. **Asigna roles**: Indica qué referencia controla la identidad, el estilo, el movimiento, la cámara o la voz
 3. **Límites**: Hasta **9** imágenes, **3** videos y **3** clips de audio independientes
-4. **FPS del video**: El video de referencia se lee a **24fps** sin metadatos. Convierte otras frecuencias de fotogramas a 24fps antes de cargarlo
+4. **FPS y duración del video**: El video de referencia se lee a **24fps** sin metadatos, así que convierte otras frecuencias de fotogramas primero. Además se recorta a la `length` de la generación: una referencia de 15 s en una toma de 5 s solo aporta sus primeros 5 s. La pista de audio emparejada no se recorta y entra completa
 5. **Sonido del video**: La imagen y la pista de sonido son referencias separadas. Conecta `ref_video_audio_N` para que coincida con `ref_video_N`, o el audio del archivo no se usará como `<Audio N>`
 6. **Numeración del audio**: Las pistas de sonido del video reciben `<Audio N>` primero (según el orden de los videos) y luego los clips independientes. Los índices de video e imagen son independientes
 7. **Conexión del VAE**: La pista de sonido del video necesita `vae` + `audio_vae`; el audio independiente solo necesita `audio_vae`
@@ -248,12 +248,29 @@ Conecta `vae` para guías de imagen y `audio_vae` para audio. Encadena nodos par
 
 Ejemplo: los primeros **22** frames de un clip en el frame **0** continúan ambos flujos; una imagen fija en el frame **60** fuerza la toma a pasar por esa pose.
 
-Esto es acondicionamiento, no video a video: el muestreo sigue partiendo del latente vacío del flujo de trabajo. `denoise` no escala la fuerza de la guía como en V2V. Para cambiar el estilo de un clip completo, usa R2V; para editar regiones, usa las máscaras de [Fun ControlNet Union](/es/tutorials/video/minimax/minimax-h3-fun-controlnet).
+Esto es acondicionamiento, no video a video: el muestreo sigue partiendo del latente vacío del flujo de trabajo. `denoise` no escala la fuerza de la guía como en V2V. Para cambiar el estilo de un clip completo, usa R2V; para editar regiones, usa las máscaras de [Fun ControlNet Union](/es/tutorials/video/minimax/minimax-h3-fun-controlnet) o las máscaras de ruido latente que se describen abajo.
 
 Consulta la plantilla [Multiframe Reference](/es/tutorials/video/minimax/minimax-h3-multiframe).
+
+### Clips más largos con ventanas de contexto (#17425)
+
+`MiniMaxH3ContextWindows` muestrea la toma en ventanas superpuestas, lo que lleva un clip más allá de los ~362 frames con los que el modelo fue entrenado para una sola pasada. Insértalo en la ruta del modelo, entre el cargador del modelo y el sampler. Requiere ComfyUI **0.44.0** o posterior.
+
+Ambas longitudes se cuentan en frames reales y deben ser **17k+5**: `context_length` (por defecto **124**, mínimo **22**) es la ventana y `context_overlap` (por defecto **39**) es lo que se repite en la siguiente. El nodo limita el solape a un bloque de 17 frames menos que la ventana, así que las ventanas siempre avanzan. Un `length` de 1654 frames (unos 69 segundos a 24 fps) ejecutado con **362 / 39** se muestrea en cinco ventanas.
+
+El muestreo ejecuta una ventana a la vez, así que el uso de VRAM lo domina la ventana y no la longitud del clip. El latente completo, el ruido, los acumuladores del sampler y el decodificado del VAE sí crecen con el clip. El audio se divide en los mismos límites, lo que mantiene el sonido sincronizado entre las uniones.
+
+La construcción de las ventanas impone dos límites:
+
+- Una guía solo acondiciona las ventanas cuyos frames solapa. En los flujos de primer y último frame las ventanas intermedias quedan sin guía y derivan o alucinan, así que una toma larga que deba mantener un personaje o una voz corresponde a [R2V](#minimax-h3-referencia-a-video-r2v): las referencias no están atadas a una posición del timeline y, con `split_conds_to_windows` desactivado (el valor por defecto), llegan a todas las ventanas.
+- Los frames de solape se fusionan, pero cada ventana predice su propia continuación, así que el fondo puede cambiar en una unión cuando la cámara recorre un espacio. Los planos fijos y los movimientos lentos se extienden limpios.
 
 ### Relleno inteligente y extensión con máscaras de ruido latente (#15375)
 
 Las [máscaras de ruido por token](https://github.com/Comfy-Org/ComfyUI/pull/15375) en los latentes de video y audio te permiten regenerar parte de un clip.
 
-Conecta una máscara a `denoise_mask` del sampler: **0** = mantener, **1** = regenerar. Las máscaras de video se ajustan a la cuadrícula de parches latentes de 2×2; las de audio, a frames latentes completos. Úsalas para relleno inteligente, eliminación o extensión mientras mantienes el resto estable.
+Conecta una máscara a `denoise_mask` del sampler: **0** = mantener, **1** = regenerar. La máscara se remuestrea a la cuadrícula latente y cada parche de 2×2 toma el mayor de sus cuatro valores, así que un borde más fino que un parche (32 px) no sobrevive; las de audio se ajustan a frames latentes completos. Úsalas para inpainting, eliminación o extensión mientras mantienes el resto estable.
+
+La máscara es un peso, no un interruptor: en cada paso el latent regenerado se mezcla con el original según el valor de la máscara, así que un borde suave introduce el cambio de forma gradual y no deja una costura dura. Agranda la máscara unos píxeles más allá del objeto y difumina el borde (`Grow Mask` y después `Convert Mask to Image`, `Blur Image` y `Convert Image to Mask`) para que la sombra y el borde de contacto caigan dentro de la zona regenerada.
+
+Lo que queda fuera de la máscara sigue condicionando al modelo, así que la zona regenerada se rellena con lo que la rodea. Cambiar un sujeto por otro parecido funciona. Quitar un objeto grande, de alto contraste y en movimiento no es fiable: su sombra, sus reflejos y el espacio que ocupaba lo traen de vuelta.

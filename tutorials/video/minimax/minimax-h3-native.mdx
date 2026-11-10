@@ -210,7 +210,7 @@ ComfyUI/
 1. **Tags**: Reference inputs as `<Picture 1>`, `<Video 1>`, `<Audio 1>` (`ref_image_0` → `<Picture 1>`). Node order: images, then videos, then audio
 2. **Assign roles**: Say which reference drives identity, style, motion, camera, or voice
 3. **Limits**: Up to **9** images, **3** videos, **3** standalone audio clips
-4. **Video FPS**: Reference video is read as **24fps** with no metadata. Convert other frame rates to 24fps before load
+4. **Video FPS and length**: Reference video is read as **24fps** with no metadata, so convert other frame rates first. It is also trimmed to the generation `length`, so a 15s reference in a 5s take only contributes its first 5s. The paired soundtrack is not trimmed and enters in full
 5. **Video sound**: Picture and soundtrack are separate references. Wire `ref_video_audio_N` to match `ref_video_N` or the file's audio is not used as `<Audio N>`
 6. **Audio numbering**: Video soundtracks get `<Audio N>` first (video order), then standalone clips. Video and picture indices are independent
 7. **VAE wiring**: Video soundtrack needs `vae` + `audio_vae`; standalone audio needs `audio_vae` only
@@ -241,12 +241,29 @@ Connect `vae` for image guides and `audio_vae` for audio. Chain nodes for multip
 
 Example: first **22** frames of a clip at frame **0** continues both streams; a still at frame **60** forces the shot through that pose.
 
-This is conditioning, not video-to-video: sampling still starts from the workflow empty latent. `denoise` does not scale guide strength like V2V. To restyle a whole clip, use R2V; to edit regions, use [Fun ControlNet Union](/tutorials/video/minimax/minimax-h3-fun-controlnet) masks.
+This is conditioning, not video-to-video: sampling still starts from the workflow empty latent. `denoise` does not scale guide strength like V2V. To restyle a whole clip, use R2V; to edit regions, use [Fun ControlNet Union](/tutorials/video/minimax/minimax-h3-fun-controlnet) masks or the latent noise masks described below.
 
 See the [Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe) template.
+
+### Longer clips with context windows (#17425)
+
+`MiniMaxH3ContextWindows` samples a take in overlapping windows, which carries a clip past the ~362 frames the model was trained on for a single pass. Insert it on the model path between the model loader and the sampler. It needs ComfyUI **0.44.0** or later.
+
+Both lengths are counted in real frames and have to be **17k+5**: `context_length` (default **124**, minimum **22**) is the window, `context_overlap` (default **39**) is how much of it repeats in the next window. The node caps the overlap one 17-frame chunk below the window, so windows always advance. A 1654-frame `length` (about 69 seconds at 24fps) run at **362 / 39** samples in five windows.
+
+Sampling runs one window at a time, so VRAM use is dominated by the window rather than the clip length. The full latent and noise, the sampler accumulators, and the VAE decode still grow with the clip. Audio splits on the same boundaries, which keeps sound in sync across the seams.
+
+Two limits follow from how the windows are built:
+
+- A guide only conditions the windows whose frames it overlaps. First/last-frame takes leave the middle windows unguided and they drift or hallucinate, so a long take that has to hold a character or a voice belongs in [R2V](#minimax-h3-reference-to-video-r2v): references are not tied to a timeline position, and with `split_conds_to_windows` off (the default) they reach every window.
+- Overlapping frames are blended, but each window predicts its own continuation, so the background can shift at a seam when the camera travels through a space. Locked-off shots and slow moves extend cleanly.
 
 ### Inpainting and extension with latent noise masks (#15375)
 
 [Per-token noise masks](https://github.com/Comfy-Org/ComfyUI/pull/15375) on video and audio latents let you regenerate part of a clip.
 
-Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. Video masks snap to the 2×2 latent patch grid; audio masks to whole latent frames. Use for inpainting, removal, or extension while holding the rest stable.
+Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. The mask is resampled to the latent grid and each 2×2 patch takes the highest of its four values, so an edge finer than one patch (32 px) does not survive; audio masks snap to whole latent frames. Use for inpainting, removal, or extension while holding the rest stable.
+
+The mask is a weight, not a switch: every step blends the regenerated latent with the source by the mask value, so a soft edge ramps the change in instead of leaving a hard seam. Grow the mask a few pixels past the object and blur its edge (`Grow Mask`, then `Convert Mask to Image`, `Blur Image`, `Convert Image to Mask`) so the shadow and the contact edge fall inside the regenerated area.
+
+Everything outside the mask still conditions the model, so the regenerated area is filled from what surrounds it. Swapping a subject for a similar one works. Removing a large, high-contrast object that moves is unreliable: its shadow, reflections, and the space it occupied keep pulling it back.
