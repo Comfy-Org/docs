@@ -1,0 +1,114 @@
+---
+title: "前端扩展的连接回调迁移"
+sidebarTitle: "连接回调"
+description: "onConnectionsChange 与节点移除回调的顺序、子图边界处的 SubgraphIO，以及 ComfyUI 扩展中的 graph.events。"
+translationSourceHash: 06a9ae24
+translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": cd84d91b
+  "Check for SubgraphIO at subgraph boundaries": c049a9fe
+  "Subscribe to node lifecycle events with graph.events": 1100692e
+  "Node removal fires callbacks in this order (partially tested)": 720324f8
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "API prompt import does not reconnect resolved inputs": 619d6b69
+  "Reject connections before they are made": b9b94a8e
+  "Removing a link inside the output callback skips the input callback": 3317def4
+  "Replace removed slot events": 5c3ec663
+  "Read connection state from callback arguments or node methods": 9da17ab0
+---
+
+回调签名没有变化。`onConnectionsChange`、`onConnectInput`、`onConnectOutput` 和 `onBeforeConnectInput` 均保留原有参数与调用时机。关于连线注册及 `LinkNetwork` API 的变更，请参阅[连线注册迁移](/zh/custom-nodes/js/link-registration-migration)。
+
+## 在子图边界检查 SubgraphIO
+
+在子图边界（`SubgraphInput` 或 `SubgraphOutput`）处，`onConnectionsChange` 仍会触发，但它的第五个参数是 `SubgraphIO`，而不是通常的 `INodeInputSlot`/`INodeOutputSlot`。在把该参数当作普通槽位处理之前，请先做检查。前端自带的 `isSubgraphInput` 和 `isSubgraphOutput` 守卫没有向扩展暴露，因此请检查每个 `SubgraphIO` 都有、而节点槽位没有的 `linkIds` 数组和 `parent` 节点：
+
+```js
+function isSubgraphIO(slot) {
+  return slot != null && Array.isArray(slot.linkIds) && 'parent' in slot
+}
+
+nodeType.prototype.onConnectionsChange = function (
+  type,
+  index,
+  isConnected,
+  link,
+  slotOrIO
+) {
+  if (isSubgraphIO(slotOrIO)) return
+  // slotOrIO is INodeInputSlot | INodeOutputSlot
+}
+```
+
+## 使用 graph.events 订阅节点生命周期事件
+
+`graph.events` 会派发 `node:added`、`node:before-removed` 和 `node:removed`。当扩展中有多个部分需要观察节点的添加或移除时，请使用这些事件：
+
+```ts
+graph.events.addEventListener('node:added', (e) => {
+  console.log('added', e.detail.node.id)
+})
+```
+
+`node.onAdded`、`node.onRemoved` 以及单槽位的 `graph.onNodeAdded`/`graph.onNodeRemoved` 仍然可用，但给 `graph.onNodeAdded` 赋值会替换掉已有的处理函数：第二个订阅者会静默丢弃第一个。除非你需要在添加/移除过程中进行否决或修改，否则优先使用 `graph.events`。连接/断开没有支持多订阅者的等效机制；`onConnectionsChange` 仍然是唯一的按连接触发的钩子。
+
+## 节点移除按以下顺序触发回调（部分测试覆盖）
+
+移除节点会按以下顺序触发：
+
+1. `node:before-removed`：此时节点仍完全挂载。
+2. 在被移除的节点以及每个连接式对等节点上触发 `onConnectionsChange(..., false, ...)`，此时被移除的节点仍在图中。
+3. `node.onRemoved()`：`node.graph` 仍有值。
+4. 节点从图索引和存储中分离；`node.graph` 变为 `null`。
+5. `onNodeRemoved(node)`，然后是 `node:removed`，两者看到的都是已分离的节点。
+
+测试覆盖 `node:before-removed → node.onRemoved() → onNodeRemoved(node)`，并单独验证 `node:removed` 看到的是已分离的节点。完整顺序（包括第 2 步）是通过来源代码观察到的，而不是由单个端到端测试保证的。
+
+要在对等节点的 `onConnectionsChange` 处理程序中获取被移除的节点，请在步骤 2 通过 `graph.getNodeById()` 完成。到 `node:removed` 时，节点已经不存在。
+
+## 工作流加载时会在 onConnectionsChange 运行之前解析对等节点
+
+`graph.configure()` 会在任何节点自身的 `configure()` 运行之前创建工作流中的每个节点，并为其恢复的连线触发 `onConnectionsChange`。因此，当你的 `onConnectionsChange` 回调在加载期间触发时，每个对等节点都已存在，其连线也已完成注册，所以在该回调内部通过 `graph.getNodeById()` 以及连线查找都能正确解析到目标。
+
+## 导入 API prompt 时不会重新连接已解析的输入
+
+`app.loadApiJson()` 会逐一连接每个可解析的输入，而不会执行第二次断开/重连流程。扩展不应在导入 API prompt 期间依赖重复的 `onConnectionsChange` 通知。请让每个连接处理程序在第一次通知时就完成其工作；把需要完整已导入画面的工作移到 `afterConfigureGraph` 或 `afterLoadGraph`。
+
+对于来源输出或目标槽位尚不存在的输入，会在一轮遍历取得进展时重试。这保留了动态输入行为：一次成功的连接可以创建后续待定连接所需的槽位。已解析的连接不会重复处理，而被扩展拒绝的连接在其端点可用后也不会重试。
+
+此变更仅影响 API prompt 导入。常规工作流加载仍如上文所述使用 `graph.configure()`，连接回调的签名保持不变。
+
+## 在建立之前拒绝连接
+
+若要拒绝某条连接，可在来源节点的 `onConnectOutput` 或目标节点的 `onConnectInput` 中返回 `false`。这两个回调都在画面发生任何改动之前运行，因此目标输入上已有的连线会保持原样：
+
+```js
+nodeType.prototype.onConnectOutput = function (
+  slot,
+  type,
+  input,
+  targetNode,
+  targetSlot
+) {
+  return !shouldReject(type, targetNode)
+}
+```
+
+不要在 `onConnectionsChange` 中执行拒绝。等到它运行时，新的连线已经替换了目标输入原有的连线，因此移除这条新连线只会让该输入处于已断开连接的状态。
+
+## 在输出回调中移除连线会跳过输入回调
+
+连接一条连线时，会先调用输出侧的 `onConnectionsChange`，然后调用输入侧的 `onConnectionsChange`。如果输出侧的处理函数在返回之前移除了同一条连线，那么输入侧会因这次移除而收到 `isConnected === false` 回调，而它针对新连线应收到的 `isConnected === true` 回调则会被跳过。不要假设两侧总能观察到这次连接；如果你的处理函数会重新进入画面，请检查传入的连线是否仍处于连接状态。这是观察到的行为，并非经过测试的约定：目前没有任何测试覆盖这条跳过路径。
+
+## 替换已移除的槽位事件
+
+`node:slot-links:changed` 和 `node:slot-errors:changed` 已被移除，且没有同名的替代事件。请迁移到：
+
+- 使用 `node.isInputConnected()`、`node.isOutputConnected()` 或 `node.getOutputNodes()` 来响应式地读取连接状态，或者
+- 当你需要在槽位连接或断开的确切时刻执行代码时，使用 `onConnectionsChange`。
+
+## 从回调参数或节点方法读取连接状态
+
+`input.link` 和 `output.links` 已弃用，读取它们可能与当前画面不一致。写入只会移除连线：把 `null` 赋给 `input.link` 会断开该输入，而对 `output.links` 赋值或修改则会断开新数组中缺失的每一条连线。写入永远不会创建连线；请改用 `node.connect()`、`node.disconnectInput()` 或 `node.disconnectOutput()`。请使用回调已经接收到的 `link_info` 参数，或使用以下直接读取连线存储的 `LGraphNode` 实例方法：`node.isInputConnected()`、`node.getInputLink()`、`node.isOutputConnected()` 和 `node.getOutputNodes()`。不要读取 `input.link` 或 `output.links`。
+
+这些方法背后的存储函数属于内部实现，不属于扩展 API。请使用节点方法。

@@ -1,0 +1,77 @@
+---
+title: "用于控件与光标的画布指针 API"
+sidebarTitle: "画布指针 API"
+description: "使用 onPointerDown 处理自定义画布控件上的单击、双击和拖拽，并从 ComfyUI 前端扩展控制画布光标。"
+translationSourceHash: 16ea7f38
+translationFrom: custom-nodes/js/canvas-pointer-api.mdx
+translationBlockHashes:
+  "_intro": b1d4c464
+  "Default behavior": 27a8751b
+  "Handle pointer input on a widget": e4fc63fc
+  "Control the canvas cursor": 9bcc33c8
+---
+
+画布通过 `CanvasPointer` 路由指针输入。由它决定一次按下会成为点击、双击还是拖拽，并运行你为该次按下指定的回调。绘制在画布上的控件通过 `onPointerDown` 使用它。
+
+## 默认行为
+
+- 拖动多个已选择的项目时不再需要按住 Shift。在已选择多个项目的情况下点击其中一个项目，仍会取消选择其他项目。
+- 点击输入上的已连接连线时，不再断开并重新连接该连线。
+- 指针按下与抬起之间的少量移动仍算作一次点击。一旦指针移动超过点击漂移上限，这次按下就变为拖动。时间不影响该判定。
+- 双击需要在双击时间内完成两次按下，且两次按下的间距最多为点击漂移的三倍。只有分配了 `onDoubleClick` 的按下才能完成双击。
+
+用户可在设置中调整点击漂移与双击时间（`Comfy.Pointer.ClickDrift` 和 `Comfy.Pointer.DoubleClickTime`）。
+
+### 选择多个项目
+
+- `Ctrl` + 拖动：开始多选
+- `Ctrl` + `Shift` + 拖动：添加到选择
+- `Ctrl` + 拖动，然后按 `Shift`：添加到选择
+- `Ctrl` + 拖动，然后按 `Alt`：从选择中移除
+
+## 在控件上处理指针输入
+
+在控件上设置 `onPointerDown`。它在指针按下时运行，并接收指针、节点和画布。在指针对象上设置你需要的回调，按下操作判定完成后画布会运行对应的回调：
+
+```js
+widget.onPointerDown = function (pointer, node, canvas) {
+  const e = pointer.eDown
+  const offsetFromNode = [e.canvasX - node.pos[0], e.canvasY - node.pos[1]]
+
+  pointer.onClick = (upEvent) => {
+    console.log(pointer.eDown, pointer.eMove, pointer.eUp)
+  }
+  pointer.onDoubleClick = (upEvent) => this.customFunction(upEvent)
+
+  pointer.onDragStart = () => {}
+  pointer.onDrag = (moveEvent) => {}
+  pointer.onDragEnd = (upEvent) => {}
+  pointer.onDragCancel = () => {}
+
+  pointer.finally = () => {}
+
+  return true
+}
+```
+
+- `onClick` 与 `onDoubleClick` 不会与 `onDragStart`、`onDragEnd` 或 `onDragCancel` 在同一次按下中运行。`onDrag` 可以在最终判定为点击的按下中运行，因为它也会接收到点击漂移范围内的移动。
+- `onDragStart` 每次拖拽只运行一次，即指针首次越过点击漂移范围时。如果指针在没有任何移动事件上报之前就越界释放，`onDragStart` 会在释放时运行，`onDragEnd` 紧随其后运行，而 `onDrag` 不运行。
+- 当一次按下同时设置了 `onClick` 和 `onDoubleClick` 时，双击的第一下释放会运行 `onClick`。第二次按下改为运行 `onDoubleClick` 而不是 `onClick`，因此请保证 `onClick` 可以先安全运行。第一次点击也可能落在附近的其它项目而不是你的控件上，所以 `onDoubleClick` 可能在你的 `onClick` 尚未运行的情况下运行。
+- `onDragEnd` 接收拖拽的指针抬起事件。拖拽被中断时（例如丢失指针捕获）改为运行 `onDragCancel`。
+- `finally` 在按下结束时运行一次。设置 `pointer.finally` 会立即运行它替换掉的那个回调。如果 `onPointerDown` 没有返回 `true`，画布会设置它自己的 `finally`，于是你的回调会在指针按下期间运行。当你依赖 `finally` 做清理时请返回 `true`。
+- `pointer.eDown`、`pointer.eMove` 和 `pointer.eUp` 让每个回调都能访问完整的事件序列。
+- 返回 `true` 可以阻止画布自行处理这次按下。
+- 添加 `onPointerDown` 时，请移除遗留的 `widget.mouse` 处理器。如果 `onPointerDown` 返回 `true`，画布会在释放后继续跟踪该控件，并在每次指针移动时继续调用 `widget.mouse`。
+
+画布会替你判定双击和拖拽，因此控件不再需要为独立的指针事件计时或测量。它也会遵循用户设置的点击漂移和双击偏好。
+
+## 控制画布光标
+
+`canvas.state.hoveringOver` 保存指针下方项目类型的位标志，例如节点、组、重新路由或连线。将 `canvas.state.shouldSetCursor` 设置为 `false` 以阻止画布设置光标样式，然后自行设置光标：
+
+```js
+canvas.state.shouldSetCursor = false
+canvas.canvas.style.cursor = 'pointer'
+```
+
+当 `shouldSetCursor` 为 `false` 时，开始调整节点大小仍会设置调整大小光标。请在调整大小结束后重新设置你的光标。

@@ -44,16 +44,108 @@ paths:
 
         The blake3 hash is always computed server-side from the received
 
-        bytes — a client-declared `expected_hash` is verified, never trusted.
+        bytes — a client-declared `expected_hash` is verified, never trusted
+
+        (on Comfy Cloud and serverless, only when sent before `file` — see below).
+
+        If location metadata (GPS, XMP, IPTC) is removed from an image before
+
+        it is stored, the asset''s `hash` is the hash of the stored bytes and
+
+        can differ from `expected_hash`. On Comfy Cloud, an upload whose
+
+        bytes open as a JPEG, PNG, WebP or classic TIFF (including TIFF-based
+
+        camera RAW such as DNG, NEF, ARW and CR2, but not BigTIFF) and that
+
+        is over 50 MiB is refused with 422 `validation_error`, whatever its
+
+        `content_type` and whether or not it carries location metadata. A
+
+        request that declares a `Content-Length` over Comfy Cloud''s 200 MB
+
+        (200,000,000-byte) body limit is refused before that check with a
+
+        plain 413 that does not use the `ErrorEnvelope` shape. A body sent
+
+        without a declared length is cut off when it passes that limit, and
+
+        no 413 is sent: a cut-off while the fields before `file` are read
+
+        fails with 422 `invalid_body`, and a cut-off inside the file usually
+
+        fails with 500 `upstream_error`. Nothing after the `file` field is
+
+        read, so a body that only passes the limit there is uploaded
+
+        normally.
+
+        Deployment-scoped surfaces neither strip location metadata nor apply
+
+        the 50 MiB image cap; they limit the request body to 110 MB
+
+        (110,000,000 bytes). A request that declares a `Content-Length` over
+
+        that limit is refused with the same plain 413; a body sent without a
+
+        declared length is cut off when it passes the limit, and the upload
+
+        then fails with an error response that is not guaranteed to be a 413.
 
         The uploaded asset is referenceable immediately; any content scanning
 
         runs in the background and does not block the response.
 
 
-        ~100 MB single-request expectation for v1; chunked/resumable large
+        Send `file` as the last part. Comfy Cloud and serverless deployments
 
-        uploads are a deliberate open question.
+        stream it straight into storage and read the other fields only up to
+
+        it, so a part sent after `file` is never read: a `content_type` or
+
+        `file_path` sent only after it is refused as missing (422); an
+
+        optional field (`expected_hash` or `tags`) is silently ignored — the
+
+        upload succeeds without the hash check or the caller''s tags; on
+
+        serverless deployments, a trailing `expires_in` is likewise ignored,
+
+        losing the retention override; and a second `file` part is dropped,
+
+        so only the first part''s bytes are stored. Comfy Cloud ignores
+
+        `expires_in` wherever it is sent, before or after `file`. The
+
+        response does not say any of these were skipped.
+
+
+        An upload is a single request. v1 expects files of up to ~100 MB;
+
+        the hard cap is the body limit of the surface it is sent to (above).
+
+        Chunked/resumable large uploads are a deliberate open question.
+
+
+        Cloud''s hosted API caps every part sent before `file` at 8 KiB,
+
+        including a part it does not recognise (which it otherwise
+
+        ignores), so an extra field over 8 KiB, such as file bytes sent
+
+        under a misspelled name, is refused with 422 `invalid_body`. Parts
+
+        sent after `file` are never read: the 8 KiB cap does not apply to
+
+        them, and a metadata field sent there is treated as absent, so send
+
+        every metadata field before `file`. A declared `Content-Length`
+
+        still counts those bytes toward the size limit above; without one,
+
+        a body that only exceeds the limit there is uploaded normally,
+
+        since nothing after `file` is read.
 
 
         On Comfy Cloud an upload fails with 422 `upload_timed_out` when no
@@ -61,6 +153,18 @@ paths:
         request bytes arrive for 30 seconds, or when the whole request takes
 
         longer than 10 minutes, however steadily bytes keep arriving.
+
+        On Comfy Cloud an upload can also be refused with 503 `upload_busy`
+
+        and `Retry-After` when the server is busy with other uploads: nothing
+
+        was stored, so the same upload can be sent again after `Retry-After`.
+
+        On a Developer Platform deployment the same 422 `upload_timed_out`
+
+        applies when no request bytes arrive for 30 seconds, or when the whole
+
+        request takes longer than 20 minutes.
 
         '
       x-streaming-upload: true
@@ -78,32 +182,33 @@ paths:
               - content_type
               - file_path
               properties:
-                file:
-                  type: string
-                  format: binary
-                  description: The raw bytes.
                 content_type:
                   type: string
                   example: image/png
+                  description: The asset's media type. On Comfy Cloud it must be valid UTF-8, not blank, at most 255 bytes, must not start or end with whitespace, and must not contain control characters (C0, DEL, C1, U+2028, U+2029) or any invisible format or default-ignorable character (every Unicode general category Cf character, including the zero-width joiners and direction marks, and the other default-ignorable code points); otherwise the request is refused with 422 `invalid_body` before anything is stored. An accepted value is stored as sent.
                 file_path:
                   type: string
-                  description: Placement path / filename (global-namespace-root form, e.g. `photo.png` or `models/checkpoints/x.safetensors`).
+                  description: 'Placement path / filename (global-namespace-root form, e.g. `photo.png` or `models/checkpoints/x.safetensors`). On Comfy Cloud the last segment becomes the asset name, so it must be valid UTF-8, at most 255 bytes, must not start with `.`, and must not contain control characters (C0, DEL, C1, U+2028, U+2029) or invisible format and default-ignorable characters (Unicode general category Cf, which includes the bidi embedding, override and isolate controls, soft hyphen, zero-width space, word joiner, BOM and tag characters, plus the other default-ignorable code points such as U+034F, U+2065 and the Hangul fillers); otherwise the request is refused with 422 `invalid_body` before anything is stored. ZWNJ/ZWJ (U+200C, U+200D) are allowed only between two visible non-ASCII characters (so not first, last, next to ASCII or next to another of these invisible characters, though one may follow an allowed variation selector, one right after an Indic virama on a letter of the same script may end a word, and a ZWJ after an Arabic-script letter that joins on both sides, or after that letter''s marks, may precede ASCII such as a ''.'' or end the name), for Persian, Indic and emoji names. The direction marks U+200E, U+200F and U+061C are allowed, for right-to-left names, and so are the visible Arabic number signs (prepended concatenation marks such as U+0600, but not U+070F); the direction marks can still change how a name is displayed. The emoji presentation selectors U+FE0E and U+FE0F are allowed only after an ASCII digit, `#` or `*` that U+20E3 (the keycap) follows, after U+2139, the punctuation emoji U+203C, U+2049, U+3030 and U+303D or the math symbols U+2194, U+25FB-U+25FE, U+2934 and U+2935, and after any other symbol of category So except a regional indicator, a skin-tone modifier, a hair component or U+2800. Other variation selectors are allowed only after a base that can have variants: the Mongolian ones after a Mongolian letter, the rest after a unified Han ideograph, plus U+FE00 after the Myanmar and Phags-pa characters it is registered for. The Mongolian and Han rules follow scripts, not the registered sequence list. The tag characters are allowed only as the tag run of the England, Scotland and Wales flag emoji. These allowed invisible characters, white space, U+2800 and combining marks must not make up the whole segment or come before a leading `.`.'
                   example: photo.png
                 expected_hash:
                   type: string
-                  description: Optional client-computed blake3 (`blake3:<hex>`). Verified against the server-computed hash; mismatch is rejected with 409 `hash_mismatch` and no asset is minted.
+                  description: 'Optional client-computed blake3 (`blake3:<hex>`) of the bytes sent. Omit the part to skip verification: on Comfy Cloud and on a deployment a part sent empty is refused with 422 as malformed. Send it before `file`: nothing after the `file` field is read, so a trailing `expected_hash` is neither verified nor refused, and the response does not say the check was skipped. Verified against the server-computed blake3 of the received bytes, not of the stored bytes; mismatch is rejected with 409 `hash_mismatch`. On serverless deployments no asset is minted and no existing asset''s retention is changed; elsewhere the upload is stored before the check, so the 409 returns no asset and a retry with the corrected expectation (and the same file extension) dedups onto it. On Comfy Cloud nothing removes that asset, so when the bytes themselves were wrong they stay stored: as an asset named after the last segment of `file_path` (`x.safetensors` for `models/checkpoints/x.safetensors`), or, when the bytes deduped onto an asset you already had, as that asset under its earlier name. The rest of `file_path` is not recorded. On Comfy Cloud and on a deployment, when `expected_hash` is sent more than once before `file` only the last value is checked, but an empty one among them is still refused with 422.'
                   example: blake3:9f8a1c0d...
                 tags:
                   type: array
                   items:
                     type: string
-                  description: Category tags (e.g. `input`).
+                  description: 'Category tags (e.g. `input`). A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. The rest of this paragraph describes Cloud''s hosted API and a deployment, not the self-hosted proxy. Both cap the bytes of all `tags` parts sent before `file` combined: 8 KiB on Cloud''s hosted API (422 `invalid_body`) and 64 KiB on a deployment (422 `invalid_request`). The cap counts duplicates before they are removed and JSON escapes before they are decoded, and is checked before the count and 256-byte limits above, so a tag set within them can still be refused. A `quoted-printable` part is counted and read after it is decoded; a part in any other `Content-Transfer-Encoding` is read as sent, so a `base64` part is stored as one tag holding its encoded text, while a `7bit`, `8bit` or `binary` part is read like a part with no encoding. A part is read as a JSON array when it starts with `[` (after leading whitespace) and is valid JSON or continues, after optional whitespace, with `"`: `["a","b"]` is two tags, `[]` adds no tags (nor does an empty part), and a malformed array such as `[1]` or `["a` is refused with 422. Any other non-empty part is one bare tag, kept as literal text, so `foo\ud800` sent as a bare part is stored as written. Invalid UTF-8 in a `tags` part, or a lone surrogate escape (e.g. `\ud800`) in a JSON-array `tags` part, is refused with 422 (`invalid_body` on Cloud, `invalid_request` on a deployment).'
                 expires_in:
                   type: integer
                   minimum: 60
                   maximum: 604800
                   description: 'Optional retention override in seconds (60s–7d): the asset''s `expires_at` becomes now + `expires_in`, replacing the platform''s default retention. Implementations without configurable retention ignore it. The bounds apply to this override only — the platform default is operator-configured and may lie outside them.'
                   example: 86400
+                file:
+                  type: string
+                  format: binary
+                  description: 'The raw bytes. The order of properties in this schema does not set the order of parts on the wire: `file` must be the last part sent (see the field-order rule above).'
       responses:
         '201':
           description: New blob stored; asset minted.
@@ -130,8 +235,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
+        '413':
+          description: The upload is over the body limit. On Comfy Cloud (200 MB, 200,000,000 bytes) and on deployment-scoped surfaces (110 MB, 110,000,000 bytes) the request declared a `Content-Length` over it; the server's body limit sends this before the upload is handled, so the body is not an `ErrorEnvelope` and its shape is not part of this contract. The self-hosted proxy instead refuses a file over its configured cap (100 MiB by default) with an `ErrorEnvelope` whose code is `payload_too_large`.
         '422':
-          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure.'
+          description: '`idempotency_key_reuse`, `input_blocked` (the bytes are already stored and flagged by content moderation, so `file_path` is not registered for them), `upload_timed_out` (the client stopped sending or sent too slowly; the server cannot recover the upload, so retry it from a faster connection), or validation failure — including a `tags` set over the limits above or a disallowed tag (`invalid_request` on a deployment or the self-hosted proxy; a deployment answers a body that is not `multipart/form-data` with a boundary with a plain 500 instead). On a deployment that includes a truncated `file` part: the body ends inside the part, before the delimiter that ends it. A body that stops right at that delimiter, without the final `--`, is not rejected: the part reads as complete and is stored. Comfy Cloud''s asset upload answers validation failure instead with `invalid_content_type` (the request is not `multipart/form-data` with a boundary), `invalid_body` (a malformed multipart body or upload field) or `validation_error` (the platform refused the upload, for example an image over the size cap or a disallowed tag). Cloud refuses a malformed multipart body with `invalid_body` when the fault is found before the `file` part. Cloud stops parsing at `file`, so parts after it are never read, and a body that ends inside the streamed file currently gets 500 `upstream_error` instead. The exception is an upload with `expected_hash`: if Cloud accepts the upload before the whole file is read, it reads the rest. A body that ends inside the `file` part, before its delimiter, then gets `invalid_body`, and a complete body gets 500 `upstream_error` instead of 201 or 409; in both cases the asset is already stored, holding only the part of the file read before the upload was accepted. `invalid_body` also covers `tags` parts over the 8 KiB combined cap described under `tags`, and a body sent without a declared length that is cut off at the body limit, as described for this operation. Cloud uses the same code for a missing `file`; a missing `content_type`, or one that breaks the rules under `content_type`; a missing `file_path`, or one that is absolute, starts with `.`, contains `..`, is not already in clean form (no `//`, no `.` segment such as `/./`, and no trailing `/`) or breaks the rules under `file_path`; a `content_type`, `file_path` or `expected_hash` part over 8 KiB; and a non-empty `expected_hash` that is not `blake3:` followed by 64 lowercase hex characters. A `content_type` or `file_path` sent only after `file` counts as missing (see the field-order rule above). Any Content-Type other than `multipart/form-data` with a `boundary` (including a missing or unparseable one) gets `invalid_content_type` on Cloud. On Comfy Cloud and on a deployment, an `expected_hash` part that is present but empty is a malformed field (`invalid_body` on Comfy Cloud, `invalid_request` on a deployment), not an omitted hash.'
           content:
             application/json:
               schema:
@@ -147,10 +254,49 @@ paths:
       operationId: assetFromHash
       tags:
       - assets
-      summary: Mint an asset over existing bytes (dedup fast-path)
-      description: 'Zero-byte fast-path: mints a new asset UUID over a blob the platform
+      summary: Create or reuse an asset over existing bytes
+      description: 'Zero-byte fast-path: creates or reuses an asset over a blob the
 
-        already has, identified by its blake3 hash.
+        platform already has, identified by its blake3 hash.
+
+
+        On Comfy Cloud, the caller must already own the content in the
+
+        current workspace. Content owned only by another member of that
+
+        workspace does not satisfy the ownership check and returns `404`
+
+        `blob_not_found`, just like an absent hash. A matching caller-owned
+
+        Cloud asset is reused with `200`, `created_new: false` and its UUID,
+
+        name and tags, even when the request supplies a different valid
+
+        `file_path` or `tags`.
+
+
+        On a deployment, reuse matches both the hash and the exact path in
+
+        the build''s scope. A match returns `200` with `created_new: false`;
+
+        a different path over content the caller may use creates a new
+
+        reference with `201` and `created_new: true`. The self-hosted proxy
+
+        returns its existing hash-indexed record with `200` and
+
+        `created_new: false`, without applying the requested path or tags.
+
+
+        Reuse keeps the existing name and tags. Cloud and deployment
+
+        validation still applies to submitted metadata before reuse;
+
+        metadata is not exempt from validation because it will not replace
+
+        stored values. Retention may refresh, and content URLs are generated
+
+        for the response, so reuse does not promise an unchanged response.
 
 
         Trust boundary: resolves only against blobs the platform itself
@@ -162,6 +308,15 @@ paths:
         register new content. A miss and "exists but not yours" are
 
         deliberately indistinguishable (`404` `blob_not_found`).
+
+
+        The lookup key is the `hash` an upload returned, which is the hash of
+
+        the stored bytes. When location metadata was removed from an image
+
+        before it was stored, that differs from the client''s digest of the
+
+        file it sent, and the client''s digest finds nothing.
 
         '
       requestBody:
@@ -178,11 +333,13 @@ paths:
                   example: blake3:9f8a1c0d...
                 file_path:
                   type: string
+                  description: 'Placement path / filename for a new reference. Comfy Cloud uses its last segment as the name; a deployment uses the full path. Both default to the bare hash digest when omitted or empty. Cloud reuse keeps the existing name even if a different valid path is supplied; a deployment also matches the path when deciding reuse. The self-hosted proxy keeps its indexed record''s path. On Comfy Cloud a `file_path` that fails path validation, or whose last segment breaks the `file_path` rules of `POST /api/v2/assets`, is answered with 404 `blob_not_found`, the same as an unknown hash. The UTF-8 rule cannot fire here: invalid UTF-8 bytes and lone surrogate escapes (`\ud800`) are replaced with U+FFFD when the JSON body is decoded, so such a name is stored with U+FFFD in their place.'
                   example: photo.png
                 tags:
                   type: array
                   items:
                     type: string
+                  description: 'Tags for a new reference; reuse keeps the existing tags. Comfy Cloud defaults an omitted or empty set to `input`. Cloud and deployment validation still applies on reuse; the self-hosted proxy does not apply submitted tags. A create carries at most 64 tags, each a non-empty UTF-8 string of at most 256 bytes (surrounding whitespace included) with no NUL byte. A deployment adds `input` to every asset and counts it, so it takes at most 63 of the caller''s own; the `model_type:` tags derived for a model asset are not counted. A tag set breaking a limit is refused with 422. Invalid UTF-8 or a lone surrogate escape (e.g. `\ud800`) inside a JSON-encoded tag is not refused: JSON decoding replaces it with U+FFFD (3 bytes each), and the 256-byte limit applies to the replaced value.'
                 expires_in:
                   type: integer
                   minimum: 60
@@ -191,13 +348,13 @@ paths:
                   example: 86400
       responses:
         '201':
-          description: Asset minted over the existing blob.
+          description: A new asset reference with a new UUID was created over existing bytes; `created_new` is true. Supplied metadata and defaults apply as described above.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Asset'
         '200':
-          description: An identical reference already existed; returned as-is.
+          description: An existing asset was reused under the serving surface's rules above; `created_new` is false. Its UUID, name and tags are kept; retention may refresh and content URLs are generated for this response.
           content:
             application/json:
               schema:
@@ -213,7 +370,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '422':
-          description: '`invalid_request` on a deployment: the `file_path`, `tags` or `expires_in` is malformed.'
+          description: 'The `tags` or `expires_in` is malformed, `tags` breaks the limits above or holds a disallowed tag, or (on a deployment) the `file_path` is malformed: `invalid_request` on a deployment. On Cloud a tag with a malformed shape is `invalid_body`, and a refusal by the platform (for example a disallowed tag) is `validation_error`. Cloud answers a malformed `file_path` with 404 `blob_not_found` instead (see `file_path`). A deployment checks the tags even when an identical reference exists.'
           content:
             application/json:
               schema:
@@ -230,7 +387,7 @@ paths:
       tags:
       - assets
       summary: Existence check for a blob by blake3 hash
-      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes. A refusal answers its status with no body, so a `403`''s code is not readable here.'
+      description: '`200` if the calling account can mint from this blob, `404` otherwise. Same account-scoping as `from-hash`; lets a client decide between the dedup fast-path and a full upload before sending bytes. Use the `hash` an upload returned: for an image whose location metadata was removed before storage, the client''s digest of the file it sent names no stored blob. A refusal answers its status with no body, so a `403`''s code is not readable here.'
       parameters:
       - $ref: '#/components/parameters/BlakeHash'
       responses:
@@ -471,6 +628,13 @@ paths:
                     auth_token_comfy_org:
                       type: string
                       description: Session bearer token for partner (API) nodes — the equivalent of `api_key_comfy_org` for a caller authenticated by session rather than by key.
+                    preview_method:
+                      type: string
+                      description: ComfyUI's preview method for this prompt, passed to ComfyUI as sent, which validates it. Used only for jobs sent by Comfy Cloud's editor; ignored for other callers.
+                    extra_pnginfo:
+                      type: object
+                      description: ComfyUI's `extra_pnginfo` for this prompt, which carries the editor's workflow into saved outputs. Used only for jobs sent by Comfy Cloud's editor; ignored for other callers.
+                      additionalProperties: true
                 metadata:
                   type: object
                   description: 'Your own labels for the job, such as which of your customers it ran for. At most 16 pairs. A key is 1 to 40 characters from `A-Z a-z 0-9 _ - .`; a value is a string of at most 256 bytes in UTF-8 (bytes, not characters: 200 `é` is 400 bytes) with no control character (U+0000 to U+001F, tab and newline included, and U+007F to U+009F) and no bidirectional embedding, override or isolate (U+202A to U+202E, U+2066 to U+2069). Anything else is refused `422` `metadata_invalid` and no job is created: a bad key or value is named in the message and in `details.key`, while more than 16 pairs is refused with the count and no `details`. A `metadata` that is not an object is refused `400` `invalid_request`; `null` is the same as none. Stored with the job, returned on it, and filterable on `GET /api/v2/jobs`. Set once, here: nothing changes it later. Only jobs sent to a deployment keep it today: Comfy Cloud refuses a non-empty `metadata` with `422` `metadata_not_supported`, and runs a job with empty or absent `metadata` as before.'
@@ -717,99 +881,7 @@ paths:
       tags:
       - jobs
       summary: What the run printed
-      description: 'Returns the job''s captured execution log. Fetched on demand: a log
-
-        is a debugging artifact a caller wants occasionally, while
-
-        `GET /api/v2/jobs/{id}` is polled to terminal on every run, so the
-
-        log is a resource of its own rather than a field that would ride
-
-        every one of those polls to be read at most once.
-
-
-        Captured whenever the worker reports its own outcome, success and
-
-        failure alike, since a job that succeeds while producing the wrong
-
-        thing is exactly what a failure-only log cannot explain. A run the
-
-        platform or the provider killed — out of memory, a crashed worker, a
-
-        timeout, a job past its maximum runtime — never gets that far, so it
-
-        reaches a terminal status carrying no log at all. That is a real gap
-
-        and worth stating: the failures a caller most wants a log for are
-
-        the ones least likely to have produced one.
-
-
-        **`204` is the normal answer for a job with no log**, and the cases
-
-        behind it are deliberately not distinguished: this surface does not
-
-        capture logs at all, the job has not finished, the job predates log
-
-        capture, the run was killed before the worker could report one, or
-
-        capture was attempted and failed.
-
-
-        Because a `204` never says which of those it is, do not branch on the
-
-        reason — but do note that one of them resolves itself. A job that has
-
-        not finished may have a log once it does, so a caller that wants one
-
-        reads again after a terminal status. A `204` on a job already in a
-
-        terminal state is final, and so is a missing `urls.logs`; both mean
-
-        stop asking.
-
-
-        **Only jobs run on the serverless platform** (a
-
-        `{deployment}.run.comfy.app` host) have one today. An implementation
-
-        that captures no logs must still serve this operation, answering
-
-        `204` for every job it can read, so that the two answers stay
-
-        distinct — Comfy Cloud does. A self-hosted deployment on a build
-
-        predating this operation has not implemented it yet and will answer
-
-        a routing `404` instead, which is the case `job.urls.logs` exists to
-
-        keep a client out of: its absence says the surface has no logs at
-
-        all, without a request.
-
-
-        Tied to the job''s own retention: this `404`s under the same
-
-        conditions `GET /api/v2/jobs/{id}` does (unknown, not-yours, or past
-
-        its retention deadline). Nothing ages a log out ahead of the job''s
-
-        own `expires_at`, so a job never outlives its log.
-
-
-        Live tailing is not offered here yet. When it is, it arrives on this
-
-        same path under `Accept: text/event-stream`, leaving this
-
-        JSON snapshot the default; its resume semantics will be defined
-
-        then, against a capture that is incremental. Until then the SSE
-
-        `log` event on `GET /api/v2/jobs/{id}/events` is the reserved live
-
-        rail, and this is the authoritative snapshot it reconciles against.
-
-        '
+      description: "Returns the job's captured execution log. Fetched on demand: a log\nis a debugging artifact a caller wants occasionally, while\n`GET /api/v2/jobs/{id}` is polled to terminal on every run, so the\nlog is a resource of its own rather than a field that would ride\nevery one of those polls to be read at most once.\n\nCaptured whenever the worker reports its own outcome, success and\nfailure alike, since a job that succeeds while producing the wrong\nthing is exactly what a failure-only log cannot explain. A run the\nplatform or the provider killed — out of memory, a crashed worker, a\ntimeout, a job past its maximum runtime — never gets that far, so it\nreaches a terminal status carrying no log at all. That is a real gap\nand worth stating: the failures a caller most wants a log for are\nthe ones least likely to have produced one.\n\n**`204` is the normal answer for a job with no log.** The cases behind\nit: this surface does not capture logs at all, the job has not\nfinished, the job predates log capture, the run was killed before the\nworker could report one, the worker reported none, or capture was\nattempted and failed.\n\nA surface that captures logs may say which side of the job's end the\nanswer falls on, in the optional `No-Log-Reason` response header:\n\n- `not_finished`: the job has not reached a terminal status. It may\n  have a log once it does, so a caller that wants one reads again\n  after a terminal status.\n- `finished`: the job reached a terminal status with no log captured.\n  This does not say why. In particular it does not mean the run\n  printed nothing: a killed run, an empty report and a failed capture\n  all answer the same.\n\nThe header is absent on a surface that captures no logs, and on a\nbuild that does not send it yet, so its absence says nothing about the\njob; read the job's status instead. A `204` on a job already in a\nterminal state means stop asking, with or without the header, and so\ndoes a missing `urls.logs`.\n\n**Only jobs run on the serverless platform** (a\n`{deployment}.run.comfy.app` host) have one today. An implementation\nthat captures no logs must still serve this operation, answering\n`204` for every job it can read, so that the two answers stay\ndistinct — Comfy Cloud does. A self-hosted deployment on a build\npredating this operation has not implemented it yet and will answer\na routing `404` instead, which is the case `job.urls.logs` exists to\nkeep a client out of: its absence says the surface has no logs at\nall, without a request.\n\nTied to the job's own retention: this `404`s under the same\nconditions `GET /api/v2/jobs/{id}` does (unknown, not-yours, or past\nits retention deadline). Nothing ages a log out ahead of the job's\nown `expires_at`. Account deletion is an exception: it clears the\nworkflow, caller labels and log in a personal workspace the account\noccupies alone. A scrubbed job answers `200` with empty `text`,\n`truncated: false`, `complete: true` and `captured_at` set to the\nscrub time, even if it never captured a worker log.\n\nLive tailing is not offered here yet. When it is, it arrives on this\nsame path under `Accept: text/event-stream`, leaving this\nJSON snapshot the default; its resume semantics will be defined\nthen, against a capture that is incremental. Until then the SSE\n`log` event on `GET /api/v2/jobs/{id}/events` is the reserved live\nrail, and this is the authoritative snapshot it reconciles against.\n"
       parameters:
       - $ref: '#/components/parameters/JobId'
       responses:
@@ -821,6 +893,9 @@ paths:
                 $ref: '#/components/schemas/JobLogs'
         '204':
           description: This job has no log. A normal answer, not an error — see the description for the cases it covers.
+          headers:
+            No-Log-Reason:
+              $ref: '#/components/headers/NoLogReason'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -888,7 +963,7 @@ paths:
       - $ref: '#/components/parameters/JobId'
       responses:
         '200':
-          description: SSE stream; see `x-sse-events` for the event catalog.
+          description: 'SSE stream; see `x-sse-events` for the event catalog. Sent with `Cache-Control: no-cache, no-store, no-transform` and `X-Accel-Buffering: no` so intermediaries neither cache, compress nor buffer the stream.'
           content:
             text/event-stream:
               schema:
@@ -1001,9 +1076,16 @@ components:
       schema:
         type: integer
       description: Seconds to wait before retrying.
+    NoLogReason:
+      schema:
+        type: string
+        enum:
+        - not_finished
+        - finished
+      description: 'On a `204` from `GET /api/v2/jobs/{id}/logs`, whether the job has ended: `not_finished`, or `finished` with no log captured, which does not say why. Optional; see that operation. Clients tolerate unknown values: a later release may add a reason.'
   responses:
     Unauthorized:
-      description: '`unauthorized` — missing or invalid credentials.'
+      description: '`unauthorized`: missing or invalid credentials. A credential that could not be checked answers `auth_unavailable` (503) instead.'
       content:
         application/json:
           schema:
@@ -1036,7 +1118,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     DeploymentLookupUnavailable:
-      description: 'On deployment-scoped surfaces, `deployment_lookup_unavailable`: the deployment this address names could not be looked up just now. The request was refused before it did anything (nothing was created, read, changed or canceled), so the same request can be sent again after `Retry-After`. Every operation at a deployment''s address can answer this way.'
+      description: 'On deployment-scoped surfaces, `deployment_lookup_unavailable`: the deployment this address names could not be looked up just now. The request was refused before it did anything (nothing was created, read, changed or canceled), so the same request can be sent again after `Retry-After`. Every operation at a deployment''s address can answer this way. A job submit can also answer this 503 with `database_unavailable`: the job could not be saved just now and nothing was started, so the same request can be sent again after `Retry-After`. No other operation answers `database_unavailable`. On Comfy Cloud an asset upload can also answer this 503 with `upload_busy`: the server is busy with other uploads and nothing was stored, so the same upload can be sent again after `Retry-After`. Any operation can also answer this 503 with `auth_unavailable`: the credential could not be checked just now, so the same request can be sent again after `Retry-After`. A job status read can also answer it with `output_unavailable`: an output of the job could not be prepared just now, and the job is unchanged. A transient storage failure clears on a later read after `Retry-After`; an output whose stored address is broken answers it on every read until the platform repairs the output.'
       headers:
         Retry-After:
           $ref: '#/components/headers/RetryAfter'
@@ -1078,7 +1160,7 @@ components:
           example: photo.png
         created_new:
           type: boolean
-          description: 'On create responses: distinguishes a brand-new blob (true) from a dedup hit against bytes the platform already had (false).'
+          description: On `POST /api/v2/assets` responses, distinguishes a brand-new blob (true) from a dedup hit against bytes the platform already had (false). On `POST /api/v2/assets/from-hash` responses, true means a new asset reference was created over existing bytes (201); false means an existing asset was reused (200).
         created_at:
           type: string
           format: date-time
@@ -1308,7 +1390,7 @@ components:
           format: uri-reference
           description: 'Where to read what this run printed. Present on any surface that captures execution logs, which is why it is the one link here that is optional: absent means this surface captures none, for any job, so a client can stop looking without spending a request on an answer it already has.
 
-            Follow this link rather than building the path from the job id. The two are not interchangeable: a surface may be mounted under a prefix this link already carries and a hand-built path would not, and a surface that does not implement the operation at all answers a routing `404` — indistinguishable, to the client, from the `404` that means the job itself is gone. Present does NOT mean this job has a log, and it is deliberately not a signal about one: a surface that captures logs offers the link on every job, including those it will answer `204` for and those whose log it withholds. Read the log, not the link.'
+            Follow this link rather than building the path from the job id. The two are not interchangeable: a surface may be mounted under a prefix this link already carries and a hand-built path would not, and a surface that does not implement the operation at all answers a routing `404` — indistinguishable, to the client, from the `404` that means the job itself is gone. Present does NOT mean this job has a log, and it is deliberately not a signal about one: a surface that captures logs offers the link on every job, including those it will answer `204` for. Read the log, not the link.'
     Progress:
       type: object
       description: Server-computed progress snapshot (node-count and sampler-step weighted). Complete per snapshot — one fully re-syncs a client.
@@ -1501,7 +1583,23 @@ components:
 
         operation: the deployment the address names could not be looked up
 
-        just now; nothing was done, so retry),
+        just now; nothing was done, so retry), `database_unavailable` (503 +
+
+        Retry-After, only on a job submit: the job could not be saved just
+
+        now and nothing was started, so retry), `auth_unavailable` (503 +
+
+        Retry-After, on any operation: the credential could not be checked
+
+        just now, which says nothing about the credential, so retry),
+
+        `output_unavailable` (503 + Retry-After, only on a job status read: an
+
+        output of the job could not be prepared just now; the job is
+
+        unchanged, so retry after `Retry-After`, and report the job if it
+
+        keeps answering),
 
         `deployment_stopped` (422 — terminal deployment state; a retry
 
@@ -1509,15 +1607,33 @@ components:
 
         a malformed asset upload or asset-from-hash field, or a jobs-list
 
-        `limit` that is not a positive integer), `content_blocked` (451:
+        `limit` that is not a positive integer), `validation_error` (422,
+
+        Cloud: an asset upload or asset-from-hash field was refused, e.g. a
+
+        tag over the tag limits), `content_blocked` (451:
 
         content moderation flagged the asset''s bytes) and `sso_required` (403:
 
         the key is valid, but the account must sign in through its
 
-        organization''s single sign-on, which does not accept this key). Job
+        organization''s single sign-on, which does not accept this key).
 
-        labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
+        Comfy Cloud''s asset upload adds `invalid_content_type` (422: the
+
+        request is not `multipart/form-data` with a boundary),
+
+        `invalid_body` (422: a malformed multipart body or upload field),
+
+        `validation_error` (422: the platform refused the upload, for example
+
+        an image over the size cap or a disallowed tag) and `upload_busy`
+
+        (503 + Retry-After: the server is busy with other uploads and nothing
+
+        was stored, so retry).
+
+        Job labels add: `metadata_invalid` (422: a submitted `metadata` breaks a
 
         limit; `details.key` names the key, except for too many pairs, which
 

@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { checkPricingCoverage, compactOptions, displayProvider, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
 import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
+// Rates staged ahead of the catalog are not rendered until a spec sync lists their models.
+const listedRates = catalogRates(snapshot.rates, catalog).rates;
 const sourcePage = render();
 const currencyToggleStart = sourcePage.indexOf("<PricingCurrencyToggle");
 const creditsTabsStart = sourcePage.indexOf("<Tabs>", currencyToggleStart);
@@ -61,8 +65,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Pika", "Runware", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -84,8 +88,8 @@ describe("public Router pricing", () => {
     const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
-    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "Pika", "Runware", "WaveSpeed"]);
-    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield"]);
+    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "MiniMax", "Pika", "Runware", "WaveSpeed"]);
+    expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield", "Tencent"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
     expect(page).not.toContain('<Accordion title="OpenAI"');
@@ -152,10 +156,11 @@ describe("public Router pricing", () => {
     }
     for (const id of [
       "bfl/flux-3-image", "bfl/flux-3-video", "bfl/flux-2-max", "bfl/flux-2-pro", "bfl/erase-v1",
-      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1", "freepik/ai-image-upscaler-precision-v2",
+      "bfl/video-edit-v1", "bfl/video-upscale-v1", "bfl/vto-v1",
     ]) {
-      expect(cell(id)).toBe("0.266 / GPU-second");
+      expect(cell(id)).toBe("Usage-based<br />request usage");
     }
+    expect(cell("freepik/ai-image-upscaler-precision-v2")).toBe("Usage-based<br />dimensions and scale");
   });
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
@@ -179,27 +184,39 @@ describe("public Router pricing", () => {
     expect(page).toContain("Unpublished prices do not mean free usage.");
   });
 
-  test("shows GPU-second pricing only for Comfy-default usage rows", () => {
+  test("shows GPU-second pricing only for rates whose own unit is GPU-second", () => {
+    const usage = snapshot.rates.find((rate) => rate.kind === "usage")!;
+    expect(isComfyGpuMetered({ ...usage, unit: "per GPU-second" })).toBe(true);
+    expect(isComfyGpuMetered({ ...usage, unit: "variable based on reported usage" })).toBe(false);
+    expect(isComfyGpuMetered({ ...usage, kind: "flat", unit: "per GPU-second" })).toBe(false);
+    // No synced rate is GPU-second metered today, so the GPU rate and its note stay off the page.
+    expect(snapshot.rates.some(isComfyGpuMetered)).toBe(false);
+    expect(sourcePage).not.toContain("GPU-second");
     const comfyUsageRows = tables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
     const usdComfyUsageRows = usdTables.filter((table) => table.provider === "Comfy" && table.section === "Usage-based rates")
       .flatMap((table) => table.rows);
-    const alternateUsageRows = tables.filter((table) => table.provider !== "Comfy")
-      .flatMap((table) => table.rows).filter((row) => row.at(-1)?.startsWith("Usage-based"));
     expect(comfyUsageRows.length).toBeGreaterThan(0);
-    expect(comfyUsageRows.every((row) => row.at(-1) === "0.266 / GPU-second")).toBe(true);
     expect(usdComfyUsageRows.length).toBe(comfyUsageRows.length);
-    expect(usdComfyUsageRows.every((row) => row.at(-1) === "&#36;0.00126066 / GPU-second")).toBe(true);
-    expect(alternateUsageRows.length).toBeGreaterThan(0);
-    expect(alternateUsageRows.every((row) => !row.at(-1)?.includes("GPU-second"))).toBe(true);
-    expect(creditsPage).toContain("Comfy usage-based rates are billed per active GPU-second");
+    expect([...comfyUsageRows, ...usdComfyUsageRows].every((row) => row.at(-1)?.startsWith("Usage-based<br />"))).toBe(true);
+  });
+
+  test("renders owner-served xAI image rows as provider-reported usage, not GPU-seconds", () => {
+    for (const id of ["xai/grok-imagine-image", "xai/grok-imagine-image-2.0", "xai/grok-imagine-image-pro", "xai/grok-imagine-image-quality"]) {
+      for (const view of [tables, usdTables]) {
+        const row = view.filter((table) => table.provider === "Comfy").flatMap((table) => table.rows)
+          .find((candidate) => candidate[1] === `\`${id}\``)!;
+        expect(row.at(-1)).toBe("Usage-based<br />request usage");
+      }
+    }
   });
 
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
-    expect(snapshot.rates).toHaveLength(660);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(629);
-    for (const rate of snapshot.rates.filter((candidate) => candidate.kind !== "usage")) {
+    // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
+    expect(snapshot.rates).toHaveLength(765);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(736);
+    for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
       const matchingPrices = tables.filter((table) => table.provider.toLowerCase() === provider.toLowerCase())
@@ -281,10 +298,10 @@ describe("public Router pricing", () => {
     expect(geminiRow[2]).toContain("Image / Text / Video: 63.3");
     expect(geminiRow[3]).toContain("Image: 6330");
     expect(geminiRow[3]).toContain("Text: 527.5");
-    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1`")!;
+    const gptImage = geminiImage.rows.find((row) => row[1] === "`openai/gpt-image-1.5`")!;
     expect(gptImage).toHaveLength(4);
-    expect(gptImage[2]).toBe("Text: 1055<br />Image: 2110");
-    expect(gptImage[3]).toBe("Image: 8440");
+    expect(gptImage[2]).toBe("Text: 1055<br />Image: 1688");
+    expect(gptImage[3]).toBe("Text: 2110<br />Image: 6752");
   });
 
   test("orders LLM model versions numerically newest first", () => {
@@ -300,7 +317,7 @@ describe("public Router pricing", () => {
       && table.headers.includes("Input credits / 1M tokens")
       && table.rows.some((row) => row[1] === "`openai/gpt-image-1.5`"))!;
     const imageIndex = (modelId: string) => imageTokens.rows.findIndex((row) => row[1] === `\`${modelId}\``);
-    expect(imageIndex("openai/gpt-image-1.5")).toBeLessThan(imageIndex("openai/gpt-image-1"));
+    expect(imageIndex("openai/gpt-image-2.5-flare")).toBeLessThan(imageIndex("openai/gpt-image-1.5"));
   });
 
   test("collapses request-priced image operations into columns", () => {
@@ -503,6 +520,37 @@ describe("public Router pricing", () => {
     ]);
   });
 
+  test("publishes Luma Ray 3.2 HDR tiers without EXR and notes that EXR export is not available yet", () => {
+    const hdrRates = snapshot.rates.filter((rate) => rate.model_id === "luma_2/ray-3.2" && /dynamic_range=hdr(;|$)/.test(rate.conditions ?? ""));
+    const byConditions = Object.fromEntries(hdrRates.map((rate) => [rate.conditions, { price_usd: rate.price_usd, credits: rate.credits }]));
+    expect(byConditions).toEqual({
+      "type=video; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "0.6", credits: "126.6" },
+      "type=video; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "2.4", credits: "506.4" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=5s": { price_usd: "2.16", credits: "455.76" },
+      "type=video_edit; resolution=720p; dynamic_range=hdr; duration=10s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=5s": { price_usd: "4.32", credits: "911.52" },
+      "type=video_edit; resolution=1080p; dynamic_range=hdr; duration=10s": { price_usd: "8.64", credits: "1823.04" },
+    });
+    expect(snapshot.rates.filter((rate) => rate.conditions?.includes("dynamic_range=hdr_exr"))).toEqual([]);
+
+    const rayCredits = tables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    const rayUsd = usdTables.find((table) => table.section === "Per generation by resolution"
+      && table.rows.some((row) => row[1] === "`luma_2/ray-3.2`"))!;
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "126.6", "506.4"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "455.76", "911.52"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "911.52", "1823.04"],
+    ]) expect(rayCredits.displayRows).toContainEqual(row);
+    for (const row of [
+      ["", "", "Video generation · HDR · 5s", "-", "-", "&#36;0.60", "&#36;2.40"],
+      ["", "", "Video edit · HDR · 5s", "-", "-", "&#36;2.16", "&#36;4.32"],
+      ["", "", "Video edit · HDR · 10s", "-", "-", "&#36;4.32", "&#36;8.64"],
+    ]) expect(rayUsd.displayRows).toContainEqual(row);
+    for (const row of [...rayCredits.displayRows, ...rayUsd.displayRows]) expect(row.join(" ")).not.toContain("EXR");
+    expect(sourcePage.match(/Ray 3\.2 EXR export is not available yet\./g)).toHaveLength(2);
+  });
+
   test("groups Ideogram versions and pivots quality prices into columns", () => {
     const ideogram = tables.find((table) => table.section === "Ideogram image rates")!;
     expect(ideogram.headers).toEqual([
@@ -647,7 +695,7 @@ describe("public Router pricing", () => {
         preserved += groupRates(rates, "en").flatMap((group) => group.rates).length;
       }
     }
-    expect(preserved).toBe(snapshot.rates.length);
+    expect(preserved).toBe(listedRates.length);
   });
 
   test("tier pivots preserve all source records, including quantities and effective windows", () => {
@@ -663,7 +711,7 @@ describe("public Router pricing", () => {
       }
     }
     const records = (rates: typeof snapshot.rates) => rates.map((rate) => JSON.stringify(rate)).sort();
-    expect(records(preserved)).toEqual(records(snapshot.rates));
+    expect(records(preserved)).toEqual(records(listedRates));
   });
 
   test("keeps price-changing variants inline and labels distinct pricing groups", () => {
@@ -789,6 +837,76 @@ describe("Router pricing coverage guard", () => {
     expect(checkPricingCoverage(unpriced, loadUnpricedWaivers()).filter((error) => error.startsWith("router-pricing/unpriced-waivers.json:"))).toEqual([]);
     const unavailableRows = (creditsPage.match(/\| Not published \|/g) ?? []).length;
     expect(unavailableRows).toBe(unpriced.length);
+  });
+
+  test("skips rates staged ahead of the catalog with a warning, and rejects them from non-cloud sources", () => {
+    const dir = mkdtempSync(join(tmpdir(), "router-pricing-"));
+    try {
+      const rate = { model_id: "pika/pika-not-yet-listed", serving_provider: "Pika", kind: "metered", unit: "per second", price_usd: "0.0143", credits: "3.0173", effective_from: "2026-11-02" };
+      const write = (sourceRef: string, snapshotRates: object[] = []) => {
+        const file = join(dir, `${sourceRef.length}-${snapshotRates.length}.json`);
+        writeFileSync(file, JSON.stringify({
+          snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: snapshotRates,
+          supplemental_sources: [{ source: "s", source_ref: sourceRef, checked_at: "2026-11-04", rates: [{ ...rate }] }],
+        }));
+        return loadMetronomeData(file);
+      };
+      const cloud = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71");
+      const { rates, staged } = catalogRates(cloud.rates, catalog);
+      expect(rates).toEqual([]);
+      expect(staged.map((candidate) => candidate.model_id)).toEqual(["pika/pika-not-yet-listed"]);
+      expect(stagedRatesWarning(staged)).toContain("absent from the current catalog, which render once a spec sync adds them: pika/pika-not-yet-listed");
+      expect(stagedRatesWarning([])).toBeUndefined();
+      const thirdParty = write("https://api.dev.pika.art/catalog/apis");
+      expect(() => catalogRates(thirdParty.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+      expect(() => catalogRates([{ ...rate }], catalog)).toThrow("Router model IDs are absent from the current catalog");
+      // A keyed Cloud rate supersedes a snapshot usage rate for the same route, but the snapshot rate is still checked.
+      const usage = { model_id: rate.model_id, serving_provider: rate.serving_provider, kind: "usage", unit: "per request", effective_from: "2026-10-01" };
+      const mixed = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", [usage]);
+      expect(mixed.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
+      expect(() => catalogRates(mixed.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+      const retiredFile = join(dir, "retired.json");
+      writeFileSync(retiredFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{
+          source: "s",
+          source_ref: "https://github.com/Comfy-Org/cloud/pull/18382",
+          checked_at: "2026-11-06",
+          catalog_when_absent: "retired",
+          rates: [{ ...rate, model_id: "kling/not-in-catalog" }],
+        }],
+      }));
+      const retiredData = loadMetronomeData(retiredFile);
+      const retiredSplit = catalogRates(retiredData.rates, catalog);
+      expect(retiredSplit.staged).toEqual([]);
+      expect(retiredSplit.retired.map((candidate) => candidate.model_id)).toEqual(["kling/not-in-catalog"]);
+      expect(retiredRatesWarning(retiredSplit.retired)).toContain("retired rate");
+      expect(retiredRatesWarning(retiredSplit.retired)).not.toContain("once a spec sync adds them");
+      const present = catalog.find((candidate) => candidate.id === "pika/pika-2.5-text-to-video")!;
+      const presentFile = join(dir, "retired-present.json");
+      writeFileSync(presentFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{
+          source: "s",
+          source_ref: "https://github.com/Comfy-Org/cloud/pull/18382",
+          checked_at: "2026-11-06",
+          catalog_when_absent: "retired",
+          rates: [{ ...rate, model_id: present.id, serving_provider: "Pika" }],
+        }],
+      }));
+      const presentSplit = catalogRates(loadMetronomeData(presentFile).rates, catalog);
+      expect(presentSplit.retired).toEqual([]);
+      expect(presentSplit.rates.map((candidate) => candidate.model_id)).toEqual([present.id]);
+      const unmarked = join(dir, "retired-unmarked.json");
+      writeFileSync(unmarked, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x",
+        rates: [{ ...rate, model_id: "kling/not-in-catalog" }],
+        supplemental_sources: [],
+      }));
+      expect(() => catalogRates(loadMetronomeData(unmarked).rates, catalog)).toThrow("kling/not-in-catalog");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("publishes every Pika route", () => {
