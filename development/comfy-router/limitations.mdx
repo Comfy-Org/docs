@@ -32,7 +32,7 @@ The LTX v1 text-to-video and image-to-video operations answer raw video bytes fo
 
 ## Calls are cut off at a server deadline
 
-Router's default deadline is **10 minutes**, configurable by the deployment. Set your client timeout above it so Router can return its error and request ID first.
+Router's default deadline is **10 minutes**, configurable by the deployment. It counts from when the request arrives, so the bound includes the request upload: a body that has not fully arrived by then is answered `504` / `deadline_exceeded` before any partner call, and a call with too little of the deadline left to finish is refused the same way. Set your client timeout above it so Router can return its error and request ID first.
 
 `504` / `deadline_exceeded` means Router stopped waiting; `504` / `provider_timeout` means the provider timed out. A timeout or lost connection does not prove that a generation was unbilled, and it does not cancel accepted provider work. Read [timeouts and collection](/development/comfy-router/errors#timeouts-and-collection) before retrying.
 
@@ -63,7 +63,7 @@ The cap applies to every request, whether or not it carries an `Idempotency-Key`
 | `429` / `concurrency_limit_exceeded` | Too many concurrent calls, or insufficient headroom under the committed-spend ceiling. | Reduce concurrent work. The spend headers distinguish the spend ceiling from the call-count limit. |
 | `429` / `rate_limited` | The request allowance is exhausted. | Wait for `Retry-After` before retrying. |
 
-The request-rate limit applies to invocation and catalog/schema reads, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply.
+The request-rate limit applies to every Router operation: invocation, catalog and schema reads, cost estimates, and the queued submit, status, result, and cancel calls, including requests refused before generation. It follows the authenticated caller, not the source IP. Calls with the caller's provider key are exempt; provider limits still apply. Polling a queued request spends the same allowance as any other call, so poll at the interval the status read suggests rather than in a tight loop. A `rate_limited` refusal changes nothing about a queued request: it keeps running, and a refused cancel cancelled nothing, so send it again after `Retry-After`.
 
 Cache catalog and schema reads. Revalidate them with `ETag` and `If-None-Match`. See [Headers](/development/comfy-router/headers) for retry and committed-spend fields.
 
@@ -81,7 +81,7 @@ The response can contain provider usage or cost fields. They do not represent a 
 
 The catalog provides billing facts, including `billing.charges_on_policy_rejection`, but no prices. Handle `yes`, `no`, and `unknown` explicitly. When it is `yes`, a synchronous `content_policy_violation` error can carry `X-Comfy-Credits-Used`: it does when the provider refused the model's generated output and Comfy recorded usage for that refused generation, and carries that amount. An input-side refusal, a same-key replay, and a charge too small to show in the header's two decimals do not carry it; a refusal without the header is not reported, not free. See [billing](/development/comfy-router/billing#model-billing-facts).
 
-To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. While the estimate is rolling out, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced from the rate card Comfy bills the run against (a model billed the cost its vendor reports is estimated from the vendor's published price list instead), but the figure is an estimate, not the final charge, and the settled charge in your workspace's usage and billing records is final. Nor is it a price lock. A run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains a rounded post-hoc figure for a run, not a receipt. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`. The models that cannot be priced before a run are listed in [models without a pre-flight estimate](#models-without-a-pre-flight-estimate).
+To see a price before a run, call `POST /v2/models/{provider}/{model}/estimate`, or read the `estimate` object on a queued submit's `201`. If estimates are switched off for a deployment, the route answers `403` with `error_type: not_enabled` and the submit omits `estimate`. Each is priced at Comfy's standard list price (a model billed the cost its vendor reports is instead priced from the vendor's published price list — `exact` for a small opted-in set of models when that list fully determines the figure, `estimated` otherwise, including some quotes the list would fully determine) and does not reflect contract or customer-specific rates: a workspace with negotiated pricing is quoted the list price and charged its contract rate. The figure is an estimate, not the final charge, and the settled charge in your workspace's usage and billing records is final. Nor is it a price lock. A run on your own provider key is not billed by Comfy even when `/estimate` returns a figure for it, and an `unknown` estimate carries no figure; that does not mean free. `X-Comfy-Credits-Used` remains a rounded post-hoc figure for a run, not a receipt. See [Pre-flight cost estimates](/development/comfy-router/reference#pre-flight-cost-estimates) for how to read `exact`, `estimated`, and `unknown`. The models that cannot be priced before a run are listed in [models without a pre-flight estimate](#models-without-a-pre-flight-estimate).
 
 ## Models without a pre-flight estimate
 
@@ -96,7 +96,8 @@ This list shrinks as estimate coverage grows. It is generated from Router's own 
 - **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
 - **heygen**: `heygen/starfish`
 - **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
-- **kling**: `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **kling**: `kling/kling-4.0`, `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`
+- **minimax**: `minimax/minimax-gpt-image-2`
 - **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
 - **openai**: `openai/gpt-image-1.5`
 - **openrouter**: `openrouter/chat-completions`
@@ -107,7 +108,7 @@ This list shrinks as estimate coverage grows. It is generated from Router's own 
 
 {/* END GENERATED: models without a pre-flight estimate */}
 
-Edits on `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, and `openai/gpt-image-2.5-sunburst` also have no pre-flight estimate. An edit call to one of these models, or a generation call that carries an input image, answers `source: unknown`. A text-only generation call to them is estimated, which is why they are not in the list above.
+Edits on `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, `openai/gpt-image-2.5-sunburst`, `openai/gpt-image-2.6-flare`, and `openai/gpt-image-2.6-sunburst` also have no pre-flight estimate. An edit call to one of these models, or a generation call that carries an input image, answers `source: unknown`. A text-only generation call to them is estimated, which is why they are not in the list above.
 
 ## Router does not cover every partner operation
 
