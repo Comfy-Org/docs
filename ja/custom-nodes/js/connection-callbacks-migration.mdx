@@ -1,0 +1,125 @@
+---
+title: "フロントエンド拡張機能向けの接続コールバック移行"
+sidebarTitle: "接続コールバック"
+description: "ComfyUI拡張機能における onConnectionsChange とノード削除コールバックの順序、サブグラフ境界での SubgraphIO、graph.events についての説明。"
+translationSourceHash: 06a9ae24
+translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": cd84d91b
+  "Check for SubgraphIO at subgraph boundaries": c049a9fe
+  "Subscribe to node lifecycle events with graph.events": 1100692e
+  "Node removal fires callbacks in this order (partially tested)": 720324f8
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "API prompt import does not reconnect resolved inputs": 619d6b69
+  "Reject connections before they are made": b9b94a8e
+  "Removing a link inside the output callback skips the input callback": 3317def4
+  "Replace removed slot events": 5c3ec663
+  "Read connection state from callback arguments or node methods": 9da17ab0
+---
+
+コールバックのシグネチャは変更されていません。`onConnectionsChange`、`onConnectInput`、
+`onConnectOutput`、`onBeforeConnectInput` は既存の引数とタイミングを維持します。
+リンク登録と `LinkNetwork` API の変更については、
+[リンク登録の移行](/ja/custom-nodes/js/link-registration-migration)を参照してください。
+
+## サブグラフ境界で SubgraphIO を確認する
+
+サブグラフ境界（`SubgraphInput` または `SubgraphOutput`）でも `onConnectionsChange` は発火しますが、5 番目の引数は通常の `INodeInputSlot`/`INodeOutputSlot` ではなく `SubgraphIO` です。その引数を通常のスロットとして扱う前に確認してください。フロントエンド自身の `isSubgraphInput` と `isSubgraphOutput` ガードは拡張機能に公開されていないため、すべての `SubgraphIO` が持ち、ノードのスロットは持たない `linkIds` 配列と `parent` ノードを確認します。
+
+```js
+function isSubgraphIO(slot) {
+  return slot != null && Array.isArray(slot.linkIds) && 'parent' in slot
+}
+
+nodeType.prototype.onConnectionsChange = function (
+  type,
+  index,
+  isConnected,
+  link,
+  slotOrIO
+) {
+  if (isSubgraphIO(slotOrIO)) return
+  // slotOrIO is INodeInputSlot | INodeOutputSlot
+}
+```
+
+## graph.events でノードのライフサイクルイベントを購読する
+
+`graph.events` は `node:added`、`node:before-removed`、`node:removed` をディスパッチします。拡張の複数の箇所でノードの追加や削除を監視する必要がある場合は、これらを使用してください。
+
+```ts
+graph.events.addEventListener('node:added', (e) => {
+  console.log('added', e.detail.node.id)
+})
+```
+
+`node.onAdded`、`node.onRemoved`、および単一スロットの `graph.onNodeAdded`/`graph.onNodeRemoved` は引き続き動作しますが、`graph.onNodeAdded` に代入すると既存のハンドラが置き換えられます。2 番目の購読者は 1 番目の購読者を通知なく破棄してしまいます。追加/削除の際に拒否したり変更したりする必要がない限り、`graph.events` を優先してください。connect/disconnect には複数購読者向けの同等の仕組みはありません。`onConnectionsChange` が依然として唯一の接続単位のフックです。
+
+## ノードの削除はこの順序でコールバックを発火する（一部検証済み）
+
+ノードを削除すると、次の順序で発火します。
+
+1. `node:before-removed`: ノードはまだ完全にアタッチされた状態です。
+2. 削除されるノードと、接続されている各ピアで
+   `onConnectionsChange(..., false, ...)` が呼ばれます。このとき削除されるノードはまだグラフ内にあります。
+3. `node.onRemoved()`: `node.graph` はまだ設定されています。
+4. ノードがグラフのインデックスとストアから切り離され、`node.graph` が
+   `null` になります。
+5. `onNodeRemoved(node)`、続いて `node:removed`。どちらもすでに切り離された
+   ノードを受け取ります。
+
+テストは `node:before-removed → node.onRemoved() → onNodeRemoved(node)` をカバーし、
+`node:removed` が切り離されたノードを受け取ることを別途検証しています。手順 2 を含む
+完全な順序は、単一のエンドツーエンドテストで保証されているのではなく、ソースコードから
+確認されたものです。
+
+ピアの `onConnectionsChange` ハンドラで削除されるノードを特定するには、手順 2 の時点で
+`graph.getNodeById()` を使ってください。`node:removed` の時点では、ノードはすでに
+存在しません。
+
+## ワークフローの読み込みでは、onConnectionsChange が実行される前にピアノードが解決される
+
+`graph.configure()` は、どのノードの `configure()` も実行される前にワークフロー内のすべてのノードを作成し、復元されたリンクに対して `onConnectionsChange` を発火します。そのため、読み込み中に `onConnectionsChange` コールバックが発火した時点では、すべてのピアノードがすでに存在し、そのリンクもすでに登録されているので、そのコールバック内からの `graph.getNodeById()` やリンクの検索は正しく解決されます。
+
+## API prompt インポートでは解決済みの入力が再接続されない
+
+`app.loadApiJson()` は、2 回目の切断/再接続パスを実行せずに、解決可能な各入力を接続します。拡張機能は、API prompt インポート中の複製された `onConnectionsChange` 通知に依存すべきではありません。各接続ハンドラは最初の通知で処理を完了させ、インポート済みの完全なグラフを必要とする処理は `afterConfigureGraph` または `afterLoadGraph` に移動してください。
+
+ソース出力または接続先スロットがまだ存在しない入力は、パスが進行している間は再試行されます。これにより動的入力の動作が維持されます。つまり、接続に成功すると、後で保留中の接続が必要とするスロットを作成できます。すでに解決済みの接続は繰り返されず、拡張機能によって拒否された接続は、その端点が利用可能になっても再試行されません。
+
+これは API prompt インポートのみを変更します。通常のワークフロー読み込みでは、上記のとおり引き続き `graph.configure()` が使用され、接続コールバックのシグネチャは変更されません。
+
+## 接続が作成される前に接続を拒否する
+
+接続を拒否するには、ソースノードの `onConnectOutput`、または接続先ノードの `onConnectInput` から `false` を返します。どちらもグラフが何かを変更する前に実行されるため、接続先の入力に既存のリンクがある場合はそのまま残ります。
+
+```js
+nodeType.prototype.onConnectOutput = function (
+  slot,
+  type,
+  input,
+  targetNode,
+  targetSlot
+) {
+  return !shouldReject(type, targetNode)
+}
+```
+
+`onConnectionsChange` から拒否しないでください。これが実行される時点では、新しいリンクが接続先の入力にあったリンクをすでに置き換え済みであるため、新しいリンクを削除すると入力が切断されたままになります。
+
+## 出力コールバック内でリンクを削除すると入力コールバックがスキップされる
+
+リンクを接続すると、まず出力側の `onConnectionsChange` が呼ばれ、その後に入力側のものが呼ばれます。出力側のハンドラが戻る前に同じリンクを削除すると、入力側はその削除による `isConnected === false` コールバックを受け取り、新しいリンクに対する `isConnected === true` コールバックはスキップされます。両側が常に接続を認識すると仮定しないでください。ハンドラがグラフに再入する場合は、渡されたリンクがまだ接続されているか確認してください。これは観察された動作であり、テストされた契約ではありません。現時点でこのスキップ経路を検証するテストはありません。
+
+## 削除されたスロットイベントを置き換える
+
+`node:slot-links:changed` と `node:slot-errors:changed` は削除され、同名の代替イベントはありません。以下のいずれかへ移行してください。
+
+- 接続状態をリアクティブに読み取るには `node.isInputConnected()`、`node.isOutputConnected()`、または `node.getOutputNodes()`
+- スロットが接続または切断されたまさにその瞬間にコードを実行する必要がある場合は `onConnectionsChange`
+
+## コールバック引数またはノードメソッドから接続状態を読み取る
+
+`input.link` と `output.links` は非推奨であり、読み取り結果が現在のグラフとずれる可能性があります。書き込みはリンクを削除するだけです。`input.link` に `null` を代入するとその入力が切断され、`output.links` への代入や変更を行うと、新しい配列に含まれないすべてのリンクが切断されます。書き込みによってリンクが作成されることはありません。`node.connect()`、`node.disconnectInput()`、`node.disconnectOutput()` を使用してください。コールバックがすでに受け取っている `link_info` 引数、またはリンクストアを直接読み取る `LGraphNode` インスタンスメソッドである `node.isInputConnected()`、`node.getInputLink()`、`node.isOutputConnected()`、`node.getOutputNodes()` を使用してください。`input.link` や `output.links` は読み取らないでください。
+
+これらのメソッドの背後にあるストア関数は内部的なものであり、拡張 API の一部ではありません。ノードメソッドを使用してください。
