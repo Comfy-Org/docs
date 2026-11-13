@@ -227,6 +227,134 @@ export function localizeMdxPaths(content, lang, languages) {
   return output;
 }
 
+/** Import statement: `import Alias from "path";` (alias and path captured). */
+const IMPORT_LINE_RE =
+  /^([ \t]*import[ \t]+)([^\s{]+)([ \t]+from[ \t]+["'])([^"']+)(["'])/gm;
+
+/**
+ * De-localize a snippet import path so it can be matched against the English
+ * source: `/snippets/ja/foo.mdx` → `/snippets/foo.mdx`.
+ * @param {string} importPath
+ * @param {LangConfig[]} languages
+ */
+export function delocalizeImportPath(importPath, languages) {
+  for (const lang of languages) {
+    const prefix = `/${lang.snippets_dir}/`;
+    if (importPath.startsWith(prefix)) {
+      return `/snippets/${importPath.slice(prefix.length)}`;
+    }
+  }
+  return importPath;
+}
+
+/** JSX-like opening tag: `<Alias` or `<Alias/>`. Closing tags never match. */
+const TAG_RE = /<([^\s/<>]+)(?=[\s/>])/g;
+
+/** @param {string} value */
+function hasNonAscii(value) {
+  return /[^\x00-\x7F]/.test(value);
+}
+
+/**
+ * Rename `localized alias -> English alias` in the import line and in every JSX
+ * usage. Non-ASCII identifiers have no word boundary, so the opening tag anchors
+ * on the space, slash or `>` that follows the name.
+ * @param {string} content
+ * @param {Map<string, string>} renames
+ */
+function applyAliasRenames(content, renames) {
+  let output = content;
+  for (const [localizedAlias, enAlias] of renames) {
+    const escaped = escapeRegex(localizedAlias);
+    output = output.replace(
+      new RegExp(`^([ \\t]*import[ \\t]+)${escaped}([ \\t]+from[ \\t]+["'][^"']+["'])`, "gm"),
+      (_match, head, tail) => `${head}${enAlias}${tail}`
+    );
+    output = output.replace(new RegExp(`<${escaped}(?=[\\s/>])`, "g"), `<${enAlias}`);
+    output = output.replace(new RegExp(`</${escaped}>`, "g"), `</${enAlias}>`);
+  }
+  return output;
+}
+
+/**
+ * Restore import identifiers the translation model localized, together with
+ * every JSX usage of them.
+ *
+ * A model that translates `import Requirements from "/snippets/..."` into
+ * `import 요구사항 from "/snippets/ko/..."` renames the matching `<Requirements/>`
+ * tag too. The page still renders (import and usage agree), so the rename is
+ * invisible to every gate: `localizeMdxPaths` only rewrites the path, the
+ * structure-parity gate counts components that exist, and the review pass is
+ * told that localized snippet import paths are expected. The result is a page
+ * whose identifiers silently diverge from English, so later English edits no
+ * longer line up with the translation and hand-fixes have to guess the name.
+ *
+ * Two passes, because the import line and a usage can be restored apart:
+ *   1. an import whose alias differs from the English alias is renamed, and so
+ *      are its usages;
+ *   2. when the import line is already English (a checkpoint or an earlier run
+ *      restored it) but a section still carries a translated tag, that tag is
+ *      paired with the import the page no longer uses. Only non-ASCII tags
+ *      qualify, since every globally available Mintlify component (`<Note>`,
+ *      `<Card>`, `<Tabs>`) is ASCII, and a pairing is only made when it is
+ *      unambiguous: one orphan tag with one import, or as many orphan tags as
+ *      unused imports. Anything else is left for a human, because a wrong guess
+ *      would silently render the wrong snippet.
+ *
+ * Only the alias is restored; the localized import path is kept as it is.
+ * Callers pass the English source the translation came from, and the assembled
+ * document rather than a single block.
+ *
+ * @param {string} content translated block or document
+ * @param {string} enContent matching English source
+ * @param {LangConfig[]} languages
+ */
+export function restoreImportIdentifiers(content, enContent, languages) {
+  if (!content || !enContent) return content;
+
+  /** @type {Map<string, string>} English snippet path -> English alias */
+  const enAliasByPath = new Map();
+  for (const match of enContent.matchAll(IMPORT_LINE_RE)) {
+    enAliasByPath.set(delocalizeImportPath(match[4], languages), match[2]);
+  }
+  if (enAliasByPath.size === 0) return content;
+
+  /** Imported aliases of this content that also exist in the English source. */
+  const matched = [];
+  for (const match of content.matchAll(IMPORT_LINE_RE)) {
+    const enAlias = enAliasByPath.get(delocalizeImportPath(match[4], languages));
+    if (enAlias) matched.push({ alias: match[2], enAlias });
+  }
+
+  // Pass 1: the import line itself was translated.
+  const renames = new Map();
+  for (const entry of matched) {
+    if (entry.enAlias !== entry.alias) renames.set(entry.alias, entry.enAlias);
+  }
+  let output = renames.size > 0 ? applyAliasRenames(content, renames) : content;
+
+  // Pass 2: translated tags whose import line is already English. `alias` still
+  // holds the pre-pass-1 name, so every reference below uses `enAlias`, the name
+  // the document actually carries once pass 1 has run.
+  const englishAliases = [...new Set(matched.map((entry) => entry.enAlias))];
+  const defined = new Set(englishAliases);
+  const tags = [...new Set([...output.matchAll(TAG_RE)].map((match) => match[1]))];
+  const orphanTags = tags.filter((tag) => !defined.has(tag) && hasNonAscii(tag));
+  if (orphanTags.length === 0) return output;
+
+  const used = new Set(tags);
+  const unusedAliases = englishAliases.filter((alias) => !used.has(alias));
+  const pairs =
+    orphanTags.length === 1 && englishAliases.length === 1
+      ? [[orphanTags[0], englishAliases[0]]]
+      : orphanTags.length === unusedAliases.length
+        ? orphanTags.map((tag, index) => [tag, unusedAliases[index]])
+        : [];
+  if (pairs.length === 0) return output;
+
+  return applyAliasRenames(output, new Map(pairs));
+}
+
 /**
  * @param {string[]} args argv slice(2)
  * @param {LangConfig[]} languages
