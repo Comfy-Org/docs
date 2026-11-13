@@ -8,7 +8,7 @@ import { formatAmount, formatOption, formatUnit } from "./router-pricing-display
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
-// Rates staged ahead of the catalog are not rendered until a spec sync lists their models.
+// Rates staged ahead of the catalog are not rendered until a spec sync lists their models or serving providers.
 const listedRates = catalogRates(snapshot.rates, catalog).rates;
 const sourcePage = render();
 const currencyToggleStart = sourcePage.indexOf("<PricingCurrencyToggle");
@@ -74,7 +74,7 @@ describe("public Router pricing", () => {
       expect(tables.some((table) => table.provider === provider && table.rows.some((row) => row[1] === `\`${model.id}\``))).toBe(true);
     }
     const unavailable = tables.flatMap((table) => table.rows.filter((row) => row.includes("Not published")));
-    const unpricedRoutes = routes.filter(({ model, provider }) => !snapshot.rates.some((rate) =>
+    const unpricedRoutes = routes.filter(({ model, provider }) => !listedRates.some((rate) =>
       rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider));
     expect(unavailable).toHaveLength(unpricedRoutes.length);
     for (const name of ["Images", "Video", "Text & multimodal", "Audio", "3D"]) expect(page).toContain(`<Tab title="${name}">`);
@@ -689,7 +689,7 @@ describe("public Router pricing", () => {
     let preserved = 0;
     for (const model of catalog) {
       for (const provider of model.providers) {
-        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
+        const rates = listedRates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
         preserved += groupRates(rates, "en").flatMap((group) => group.rates).length;
       }
     }
@@ -700,7 +700,7 @@ describe("public Router pricing", () => {
     const preserved = [];
     for (const model of catalog) {
       for (const provider of model.providers) {
-        const rates = snapshot.rates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
+        const rates = listedRates.filter((rate) => rate.model_id === model.id && displayProvider(model.id, model.providers, rate.serving_provider) === provider);
         const image = model.category === "images" ? groupImageTiers(rates) : { groups: [], remaining: rates };
         const resolution = groupResolutionTiers(image.remaining);
         preserved.push(...image.groups.flatMap((group) => [...group.tiers.values()]),
@@ -853,7 +853,7 @@ describe("Router pricing coverage guard", () => {
       const { rates, staged } = catalogRates(cloud.rates, catalog);
       expect(rates).toEqual([]);
       expect(staged.map((candidate) => candidate.model_id)).toEqual(["pika/pika-not-yet-listed"]);
-      expect(stagedRatesWarning(staged)).toContain("absent from the current catalog, which render once a spec sync adds them: pika/pika-not-yet-listed");
+      expect(stagedRatesWarning(staged)).toContain("that render once a spec sync adds their model or serving provider to the catalog: pika/pika-not-yet-listed (Pika)");
       expect(stagedRatesWarning([])).toBeUndefined();
       const thirdParty = write("https://api.dev.pika.art/catalog/apis");
       expect(() => catalogRates(thirdParty.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
@@ -863,6 +863,25 @@ describe("Router pricing coverage guard", () => {
       const mixed = write("https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", [usage]);
       expect(mixed.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
       expect(() => catalogRates(mixed.rates, catalog)).toThrow("Router model IDs are absent from the current catalog: pika/pika-not-yet-listed");
+      const host = catalog[0]!;
+      const undeclaredRate = { model_id: host.id, serving_provider: "NotARealProvider", kind: "metered", unit: "per 1M tokens", price_usd: "1", credits: "211", effective_from: "2026-11-12" };
+      // A listed model with an undeclared serving provider is also stageable from a Cloud source.
+      const undeclaredFile = join(dir, "undeclared-provider.json");
+      writeFileSync(undeclaredFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{ source: "s", source_ref: "https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", checked_at: "2026-11-12", rates: [undeclaredRate] }],
+      }));
+      const undeclaredData = loadMetronomeData(undeclaredFile);
+      const undeclaredSplit = catalogRates(undeclaredData.rates, catalog);
+      expect(undeclaredSplit.rates).toEqual([]);
+      expect(undeclaredSplit.staged).toEqual([expect.objectContaining({ model_id: host.id, serving_provider: "NotARealProvider" })]);
+      expect(stagedRatesWarning(undeclaredSplit.staged)).toContain(`(NotARealProvider)`);
+      const undeclaredThirdParty = join(dir, "undeclared-third-party.json");
+      writeFileSync(undeclaredThirdParty, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
+        supplemental_sources: [{ source: "s", source_ref: "https://example.com/rates", checked_at: "2026-11-12", rates: [undeclaredRate] }],
+      }));
+      expect(() => catalogRates(loadMetronomeData(undeclaredThirdParty).rates, catalog)).toThrow(`${host.id} (NotARealProvider)`);
       const retiredFile = join(dir, "retired.json");
       writeFileSync(retiredFile, JSON.stringify({
         snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],
