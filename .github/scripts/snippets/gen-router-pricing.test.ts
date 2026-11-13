@@ -882,6 +882,16 @@ describe("Router pricing coverage guard", () => {
         supplemental_sources: [{ source: "s", source_ref: "https://example.com/rates", checked_at: "2026-11-12", rates: [undeclaredRate] }],
       }));
       expect(() => catalogRates(loadMetronomeData(undeclaredThirdParty).rates, catalog)).toThrow(`${host.id} (NotARealProvider)`);
+      // A snapshot usage rate superseded by a stageable Cloud rate is still checked for an undeclared provider.
+      const supersededProviderFile = join(dir, "superseded-undeclared-provider.json");
+      writeFileSync(supersededProviderFile, JSON.stringify({
+        snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x",
+        rates: [{ model_id: host.id, serving_provider: "NotARealProvider", kind: "usage", unit: "per request", effective_from: "2026-10-01" }],
+        supplemental_sources: [{ source: "s", source_ref: "https://github.com/Comfy-Org/cloud/blob/abc/services/comfy-api/scripts/metronome/pika/README.md#L71", checked_at: "2026-11-12", rates: [undeclaredRate] }],
+      }));
+      const supersededProvider = loadMetronomeData(supersededProviderFile);
+      expect(supersededProvider.rates.map((candidate) => candidate.kind)).toEqual(["metered"]);
+      expect(() => catalogRates(supersededProvider.rates, catalog)).toThrow(`Pricing provider is neither the owner nor a declared Router alternate: ${host.id} (NotARealProvider)`);
       const retiredFile = join(dir, "retired.json");
       writeFileSync(retiredFile, JSON.stringify({
         snapshot_at: "2026-10-01T00:00:00Z", credits_per_usd: 211, source_sha256: "x", rates: [],

@@ -180,7 +180,7 @@ const RETIRED_RATES = new WeakSet<MetronomeRate>();
 const CLOUD_SOURCE_REF = "https://github.com/Comfy-Org/cloud/";
 // Rates a keyed price superseded, by the resolved rates array they were dropped
 // from. catalogRates still checks them so supersession cannot hide a mistyped
-// snapshot model ID behind a stageable Cloud rate.
+// snapshot model ID or serving provider behind a stageable Cloud rate.
 const SUPERSEDED_RATES = new WeakMap<MetronomeRate[], MetronomeRate[]>();
 
 function loadMetronomeData(file = METRONOME_FILE): MetronomeData {
@@ -256,12 +256,14 @@ function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: 
   const absent = rates.filter((rate) => !modelIds.has(rate.model_id));
   const retired = absent.filter((rate) => RETIRED_RATES.has(rate));
   const stagedAbsent = absent.filter((rate) => !RETIRED_RATES.has(rate));
-  const checked = [...absent, ...(SUPERSEDED_RATES.get(rates) ?? []).filter((rate) => !modelIds.has(rate.model_id))];
+  const superseded = SUPERSEDED_RATES.get(rates) ?? [];
+  const checked = [...absent, ...superseded.filter((rate) => !modelIds.has(rate.model_id))];
   const missingModels = [...new Set(checked.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => rate.model_id))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog, or marked catalog_when_absent "retired" when Cloud withdrew the id`);
   const present = rates.filter((rate) => modelIds.has(rate.model_id));
   const undeclared = present.filter((rate) => !providerIsDeclared(modelsById.get(rate.model_id)!, rate.serving_provider));
-  const illegalProviders = [...new Set(undeclared.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => `${rate.model_id} (${rate.serving_provider})`))];
+  const supersededUndeclared = superseded.filter((rate) => modelIds.has(rate.model_id) && !providerIsDeclared(modelsById.get(rate.model_id)!, rate.serving_provider));
+  const illegalProviders = [...new Set([...undeclared, ...supersededUndeclared].filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => `${rate.model_id} (${rate.serving_provider})`))];
   if (illegalProviders.length) {
     throw new Error(`${METRONOME_FILE}: Pricing provider is neither the owner nor a declared Router alternate: ${illegalProviders.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog`);
   }
