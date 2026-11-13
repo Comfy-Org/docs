@@ -4,7 +4,7 @@ description: "Step-by-step MiniMax H3 native workflow examples in ComfyUI, inclu
 sidebarTitle: "Native workflows"
 ---
 
-This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities, tuning, and speedups, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
+This page covers the three base MiniMax H3 templates plus advanced native-node techniques. For capabilities and licensing, see the [MiniMax H3 overview](/tutorials/video/minimax/minimax-h3).
 
 ## MiniMax H3 Text to Video (T2V)
 
@@ -36,7 +36,7 @@ Generate videos from text prompts with native stereo audio.
   <Card title="VAE: minimax_h3_audio_vae_fp32" icon="download" href="https://huggingface.co/Comfy-Org/MiniMax-H3/blob/main/vae/minimax_h3_audio_vae_fp32.safetensors">
     Place in <code>ComfyUI/models/vae/</code>
   </Card>
-  <Card title="LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
+  <Card title="LoRA: minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16" icon="download" href="https://huggingface.co/lightx2v/Minimax-h3-Turbo/blob/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors">
     Required by the workflow's model scan; powers the optional Lightning LoRA turbo mode. Place in <code>ComfyUI/models/loras/</code>
   </Card>
 </CardGroup>
@@ -66,7 +66,7 @@ ComfyUI/
 3. **Resolution**: Native 16:9 is **1344×768** (768px short edge); round to multiples of **32**
 4. **Duration**: Snaps to **17k+5** frames at 24fps
 5. **First/last frame**: Wire images to `first_frame` / `last_frame` on `MiniMaxH3ImageToVideo` for FL2VA
-6. **Turbo**: Default **20** steps; enable `turbo_mode` for **8**-step Lightning LoRA (faster, slightly softer motion/audio). Raise steps (e.g. **25**) for motion quality
+6. **Turbo**: Default **20** steps; enable `turbo_mode` for **8**-step Lightning LoRA (faster, slightly softer motion/audio). Raise steps (e.g. **25**) for motion quality. Fast action and camera moves are the first thing a short turbo schedule softens. Compare step counts on a clip with real movement, not on a static shot
 
 Official base guide: [prompt guide](/tutorials/video/minimax/minimax-h3-prompt-guide).
 
@@ -137,7 +137,7 @@ ComfyUI/
 1. **Keyframes**: Optional `first_frame` / `last_frame`; motion is generated between them
 2. **Prompt**: Shots, motion, and audio in one block
 3. **Resolution / duration**: the same rules as T2V (**1344×768** native target, **17k+5** grid)
-4. **Turbo**: `turbo_mode` uses `turbo_steps` (default **8**) and `turbo_model_strength` (default **1.0**) instead of 20 steps
+4. **Turbo**: `turbo_mode` uses `turbo_steps` (default **8**) and `turbo_model_strength` (default **1.0**) instead of 20 steps. Fast action and camera moves soften first under a short turbo schedule, so check them before committing to turbo
 
 `first_frame` is resized to the canvas without keeping its aspect ratio, so an off-aspect image comes out stretched. `last_frame` is center-cropped instead. The I2V template opens at **1:1** and **0.4** MP (**640×640**), so set the aspect ratio to your image and raise Megapixels for a final render.
 
@@ -250,3 +250,57 @@ See the [Multiframe Reference](/tutorials/video/minimax/minimax-h3-multiframe) t
 [Per-token noise masks](https://github.com/Comfy-Org/ComfyUI/pull/15375) on video and audio latents let you regenerate part of a clip.
 
 Connect a mask to the sampler `denoise_mask`: **0** = keep, **1** = regenerate. Video masks snap to the 2×2 latent patch grid; audio masks to whole latent frames. Use for inpainting, removal, or extension while holding the rest stable.
+
+### Long clips with context windows (#17425)
+
+[`MiniMaxH3ContextWindows`](https://github.com/Comfy-Org/ComfyUI/pull/17425) samples a long clip in overlapping windows, so each step runs the model on one window instead of the whole clip. Connect it between the turbo LoRA switch (`ComfySwitchNode`) and `BasicGuider`, model in and model out. `BasicScheduler` keeps the switch output and does not need the patch.
+
+| Control | Meaning | Default |
+| --- | --- | --- |
+| `context_length` | Window size in frames, **17n+5** | **124**, the template's 5 s duration snapped to the grid |
+| `context_overlap` | Frames shared by adjacent windows, **17n+5** | **39** |
+| `fuse_method` | How overlapping windows are combined: `pyramid`, `relative`, `flat`, `overlap-linear` | `pyramid` |
+| `freenoise` | Shuffles noise across windows to blend them | On |
+
+Windows start on the model's 17-frame chunks, so video and audio stay in step across a boundary. `context_overlap` is capped at the window length minus **17** frames, and a larger value is clamped without a warning. A 5 s clip fits one window at the default **124**, and the first length that opens a second window is **141** frames. Lower `context_length` to cut the memory each step needs. Raise it for more context per step, at a higher cost.
+
+`context_length` bounds how much of the clip each sampling step sees, not how long the clip is. Clip length is the `length` input (a frame count at 24 fps) on the H3 node, so a clip longer than one window is still sampled end to end, one window at a time, and keeps the duration you set. The trained range is about **124** to **362** frames at 24 fps (**5** to **15** s); longer clips are untested.
+
+A long clip is cheaper as two passes. Render a low-resolution pass with long windows to settle motion and sound, then a higher-resolution pass with short windows to add detail. Window length trades against prompt following: each window is sampled as one shot, and the longer it runs, the sooner the clip stops following the prompt.
+
+Memory falls per step, not in total. The full latent, the buffers that fuse the windows and the decode still scale with clip length, so a clip that decodes out of memory stays out of memory.
+
+Two limits come with windowed sampling:
+
+- **Every window receives the full prompt.** With windows on, write one continuous scene in place of a timed cut list: every window sees the whole prompt, so cut times no longer line up.
+- **Windows are fused, not joined.** Content that has to hold exactly across a boundary (on-screen text, set detail, a face) can drift.
+
+That makes context windows a fit for a long take of a scene that holds still: a locked-off camera, a steady subject, a background that does not change much. A camera move through a set, or a subject walking past a background, gives each window a different view of that background, and the joins show as morphing. For a clip like that, render shorter clips and join them.
+
+### Generating the soundtrack first
+
+Audio and video are denoised together, so a short schedule or a turbo LoRA softens the track along with the picture. Two passes separate them: settle the audio on a small canvas, then condition the video on it.
+
+1. **Cheap audio pass**: Run a text-to-video pass at **32×32** with `Boolean (Enable Lightning LoRA)` off, **40–50** steps, and the duration the final shot needs. Audio latent frames follow clip length, not canvas size, so this pass produces a full-length track for far less than a full-resolution render. Unlink the Resolution Selector and type the size into its `width` and `height` targets; the selector bottoms out at **0.1** Megapixels. Steps live on the `PrimitiveInt` set to **20** inside the subgraph. The other `PrimitiveInt` is the turbo step count, which the subgraph widget sets to **8**. Only the audio is kept.
+2. **Save the track**: The subgraph decodes audio inside and exposes only the video, so add a `SaveAudioAdvanced` node inside the subgraph and connect `VAEDecodeAudio` to it.
+3. **Condition the second pass**: In the R2V workflow, add `LoadAudio`, wire it to `ref_audio`, and keep `audio_vae` connected. Cite the track as `<Audio 1>` and state the relationship: `reference` keeps the timbre, rhythm, and delivery without copying the signal, `fully_copy` makes it the complete final track, `partially_copy` keeps part of the timeline or selected layers, and `weak_reference` keeps only broad similarity. The second pass starts from a settled voice and timing instead of inventing speech from nothing. For the identical file, wire `LoadAudio` into `CreateVideo` instead of relying on the prompt.
+
+Canvas size trades voice quality for render time. A 32×32 pass is nearly free, but voices can pick up a robotic edge at that size. Raise the canvas when the voice has to hold up in the final cut, and expect the pass to cost more as you do. Speech and lyrics usually survive the small canvas. Sound effects and scoring tied to on-screen action do not, so render those in the second pass and let `partially_copy` combine them with the first track.
+
+### Faster sampling with Model Sparse Attention (#16072)
+
+[`Model Sparse Attention`](https://github.com/Comfy-Org/ComfyUI/pull/16072) runs block-sparse attention in place of full attention. Connect it on the model line, between the turbo LoRA switch (`ComfySwitchNode`) and `BasicGuider`, model in and model out. It needs ComfyUI **0.35.0+**, CUDA, and a GPU with a compiled `sol-attn` kernel. Otherwise every call falls back to dense attention and `verbose` logs the reason. Short sequences are usually faster dense, so the gain grows with canvas and clip length.
+
+| `method` | Weights it needs |
+| --- | --- |
+| `sol-attn` | None. Runs on any H3 checkpoint |
+| `sla` | A model distilled against this selection, not a base H3 checkpoint |
+| `vsa` | FastH3-VSA checkpoints from the [FastVideo speedup](/tutorials/video/minimax/minimax-h3-fastvideo) workflow |
+
+`start_percent` and `end_percent` bound where sparsification applies. Outside the window attention runs dense, and the node ships with `start_percent` **0.2** and `end_percent` **1.0**, which leaves the last steps sparse. End at **0.9** so the closing steps denoise at full attention, and start earlier than 0.2 when you want more savings: the middle of the schedule takes sparsification better than either end.
+
+`tau` (default **1.3**) is the speed and quality slider for `sol-attn`. Higher is sparser: **1.0** keeps about 16% of key blocks exact, **1.5** about 7%, **2.0** about 2.7%. There is no best value, only a point on that trade. `sla` and `vsa` swap `tau` for `keep_percent` (default **10**), the share of key blocks each query block keeps exactly.
+
+`min_tokens` (**12288**) leaves shorter sequences dense without saying so. At the 16:9 template canvas of **864×480**, a 5 s clip packs about **15k** tokens and runs sparse, while a 3 s clip stays near **9k** and gains nothing until you lower `min_tokens`. The count is per forward pass, so with context windows connected it is per window, and a low-resolution pass can fall under the gate. Set `verbose` to log whether each shape ran sparse and the reason it stayed dense.
+
+`sink_conditioning` keeps H3's packed text, audio and reference rows exact. The default `exact_kv_and_rows` also runs the generated-audio query rows dense, so the soundtrack holds up while the video attention is sparsified.
