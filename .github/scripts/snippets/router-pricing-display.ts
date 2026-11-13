@@ -171,6 +171,8 @@ const phrases: Record<string, Translation> = {
   "Output image tokens": ["Image output", "画像出力", "图像输出", "이미지 출력", "Salida de imagen"],
   "Output video tokens": ["Video output", "動画出力", "视频输出", "동영상 출력", "Salida de video"],
   "Reasoning tokens": ["Reasoning", "推論", "推理", "추론", "Razonamiento"],
+  "Input tokens": ["Input", "入力", "输入", "입력", "Entrada"],
+  "Output tokens": ["Output", "出力", "输出", "출력", "Salida"],
   "Cached input tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력", "Entrada en caché"],
   "Cached input text tokens": ["Cached input", "キャッシュ入力", "缓存输入", "캐시 입력", "Entrada en caché"],
   "Cache-write input text tokens": ["Cache write", "キャッシュ書き込み", "缓存写入", "캐시 쓰기", "Escritura en caché"],
@@ -222,6 +224,7 @@ const units: Record<string, Translation> = {
   "additional reference image": ["extra reference image", "追加参照画像", "额外参考图像", "추가 참조 이미지", "imagen de referencia adicional"],
   "usage credit": ["Meshy credit", "Meshy クレジット", "Meshy 积分", "Meshy 크레딧", "crédito de Meshy"],
   "video credit": ["Kling credit", "Kling クレジット", "Kling 积分", "Kling 크레딧", "crédito de Kling"],
+  "PixVerse credit": ["PixVerse credit", "PixVerse クレジット", "PixVerse 积分", "PixVerse 크레딧", "crédito de PixVerse"],
   "variable based on reported usage": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량", "uso por solicitud"],
   "variable per request": ["request usage", "リクエスト使用量", "请求用量", "요청 사용량", "uso por solicitud"],
   "variable with output video duration": ["video duration", "動画の長さ", "视频时长", "동영상 길이", "duración del video"],
@@ -243,6 +246,7 @@ const omittedPhrases = new Set([
   "The request charge varies with completed output duration.", "The charge varies with image dimensions, duration, and frame rate.",
   "The request charge depends on image dimensions and scale.",
   "Rate applies to provider-reported video-credit quantity.", "Rate applies to the usage-credit quantity reported for the request.",
+  "Rate applies to the PixVerse credit quantity reported for the request.",
 ]);
 
 export function formatOption(conditions: string | undefined, locale: PricingLocale): string {
