@@ -2,14 +2,15 @@
 title: "前端扩展的连接回调迁移"
 sidebarTitle: "连接回调"
 description: "onConnectionsChange 与节点移除回调的顺序、子图边界处的 SubgraphIO，以及 ComfyUI 扩展中的 graph.events。"
-translationSourceHash: 06a9ae24
+translationSourceHash: 9a2f855a
 translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
 translationBlockHashes:
   "_intro": cd84d91b
   "Check for SubgraphIO at subgraph boundaries": c049a9fe
   "Subscribe to node lifecycle events with graph.events": 1100692e
   "Node removal fires callbacks in this order (partially tested)": 720324f8
-  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 87ff3f70
+  "Unresolvable subgraph links are pruned on load": 09efbd4a
   "API prompt import does not reconnect resolved inputs": 619d6b69
   "Reject connections before they are made": b9b94a8e
   "Removing a link inside the output callback skips the input callback": 3317def4
@@ -68,7 +69,17 @@ graph.events.addEventListener('node:added', (e) => {
 
 ## 工作流加载时会在 onConnectionsChange 运行之前解析对等节点
 
-`graph.configure()` 会在任何节点自身的 `configure()` 运行之前创建工作流中的每个节点，并为其恢复的连线触发 `onConnectionsChange`。因此，当你的 `onConnectionsChange` 回调在加载期间触发时，每个对等节点都已存在，其连线也已完成注册，所以在该回调内部通过 `graph.getNodeById()` 以及连线查找都能正确解析到目标。
+`graph.configure()` 会在任何节点自身的 `configure()` 运行之前创建工作流中的每个节点，并为其恢复的连线触发 `onConnectionsChange`。因此，当你的 `onConnectionsChange` 回调在加载期间为恢复的连线触发时，每个对等节点都已存在，其连线也已完成注册，所以在该回调内部通过 `graph.getNodeById()` 以及连线查找都能正确解析到目标。从子图定义中清除的连线是例外，详见下一节。
+
+## 加载时会清除无法解析的子图连线
+
+加载子图定义时，子图内永远无法解析的连线会被删除。连线无法解析的情况包括：起点或终点节点缺失、子图边界槽位超出范围，或节点删除了该连线所指向的已序列化输入。每条被删除的连线都会在每个仍然存在的端点节点上触发 `onConnectionsChange(type, index, false, link, slotOrIO)`。加载期间新出现的 `false` 通知表示该连线被清除，而不是用户断开了连接。
+
+- **时机。** 清除在配置子图定义时进行，发生在其节点及各节点的 `configure()` 调用之后，并在任何 `onGraphConfigured` 或 `onAfterGraphConfigured` 钩子运行之前。定义了这两个钩子之一的节点不会被判定为删除了输入，因为它们可能会在这些钩子中添加输入；嵌套的子图节点除外。
+- **回调中的状态。** 在第一个回调触发之前，所有被清除的连线都已从子图中移除，子图边界输入和输出槽位中的过期 ID 也已清除。仍可解析的连线保持不变。
+- **故障隔离。** 每个端点的回调都在各自的 `try` 中运行。抛出的异常会作为警告报告，不会跳过另一个端点、其余被清除的连线或加载的其余部分。
+
+将加载期间的断开视为用户操作的处理程序（例如移除动态输入）应检查 `app.configuringGraph`，它在工作流加载期间为 `true`。
 
 ## 导入 API prompt 时不会重新连接已解析的输入
 
