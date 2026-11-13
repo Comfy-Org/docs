@@ -65,8 +65,8 @@ describe("public Router pricing", () => {
     const routes = catalog.flatMap((model) => model.providers.map((provider) => ({ model, provider })));
     expect(catalog.length).toBeGreaterThan(0);
     expect(routes.length).toBeGreaterThan(0);
-    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
-    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(routes.map(({ provider }) => provider))].sort()).toEqual(["Comfy", "Higgsfield", "Kelly", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
+    expect([...new Set(tables.map((table) => table.provider))].sort()).toEqual(["Comfy", "Higgsfield", "Kelly", "MiniMax", "Pika", "Runware", "Tencent", "WaveSpeed", "fal"].sort());
     for (const { model, provider } of routes) {
       expect(page).toContain(`](/${model.page})`);
       expect(page).toContain(`](/${model.page}) | \`${model.id}\` |`);
@@ -214,8 +214,8 @@ describe("public Router pricing", () => {
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
-    expect(snapshot.rates).toHaveLength(776);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(747);
+    expect(snapshot.rates).toHaveLength(839);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(810);
     for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
@@ -574,12 +574,10 @@ describe("public Router pricing", () => {
       ["[Seedance 1.0 Pro Fast](/development/comfy-router/models/byteplus/seedance-1-0-pro-fast-251015/code)", "`byteplus/seedance-1-0-pro-fast-251015`", "211", "-"],
     ]);
 
-    const audio = tables.find((table) => table.section === "Seedance 1.5 Pro audio rates")!;
-    expect(audio.headers).toEqual(["Name", "Model ID", "No audio Credits / 1M tokens", "Audio Credits / 1M tokens"]);
-    expect(audio.rows).toEqual([[
-      "[Seedance 1.5 Pro](/development/comfy-router/models/byteplus/seedance-1-5-pro-251215/code)",
-      "`byteplus/seedance-1-5-pro-251215`", "253.2", "506.4",
-    ]]);
+    // Cloud sunset Seedance 1.5 Pro (Comfy-Org/cloud#19006): its rates stay in the
+    // snapshot as retired, so neither its audio table nor any row for it renders.
+    expect(tables.find((table) => table.section === "Seedance 1.5 Pro audio rates")).toBeUndefined();
+    expect(tables.some((table) => table.rows.some((row) => row[1] === "`byteplus/seedance-1-5-pro-251215`"))).toBe(false);
   });
 
   test("moves Kling V3 Standard into the name and removes its otherwise-empty option column", () => {
