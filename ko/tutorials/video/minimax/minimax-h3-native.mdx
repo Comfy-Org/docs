@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 텍스트·이미지·레퍼런스 기반 비디오 워크플로"
 description: "ComfyUI의 MiniMax H3 네이티브 워크플로 단계별 예제입니다. 가이드 고정과 잠재 노이즈 마스크로 생성 비디오를 더 세밀하게 제어할 수 있습니다."
 sidebarTitle: "네이티브 워크플로"
-translationSourceHash: 9e8d385c
+translationSourceHash: b8e5f4d2
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": 4f5274f5
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
-  "MiniMax H3 Reference to Video (R2V)": 961829df
-  "Advanced workflows with the native nodes": 37164e51
+  "MiniMax H3 Reference to Video (R2V)": 3faa7b7c
+  "Advanced workflows with the native nodes": 60c93dce
 ---
 
 이 페이지는 세 가지 기본 MiniMax H3 템플릿과 네이티브 노드 고급 기법을 다룹니다. 기능, 튜닝, 가속은 [MiniMax H3 개요](/ko/tutorials/video/minimax/minimax-h3)를 참조하세요.
@@ -218,7 +218,7 @@ ComfyUI/
 1. **태그**: `<Picture 1>`, `<Video 1>`, `<Audio 1>`(`ref_image_0` → `<Picture 1>`). 순서: 이미지, 비디오, 오디오
 2. **역할**: 각 참조가 정체성, 스타일, 모션, 카메라, 목소리 중 무엇을 담당하는지
 3. **한도**: 이미지 **9**, 비디오 **3**, 독립 오디오 **3**
-4. **비디오 FPS**: **24fps** 읽기(메타데이터 없음). 로드 전 24fps 변환
+4. **비디오 FPS와 길이**: **24fps**로 읽고 메타데이터는 쓰지 않으므로 먼저 프레임레이트를 변환하세요. 참조 비디오는 생성 `length`에 맞춰 잘리므로, 5초 생성에 15초 참조를 넣으면 앞 5초만 쓰입니다. 대응 사운드트랙은 잘리지 않고 전체 길이로 들어갑니다
 5. **비디오 사운드**: 화면과 사운드트랙 분리; `ref_video_audio_N` ↔ `ref_video_N` 없으면 `<Audio N>` 참조로 쓰이지 않음
 6. **오디오 번호**: 비디오 사운드트랙이 먼저 `<Audio N>`, 이후 독립 클립; 화면 번호와 독립
 7. **VAE**: 비디오 사운드트랙 `vae`+`audio_vae`; 독립 오디오 `audio_vae`만
@@ -249,12 +249,37 @@ H3 노드 `positive`·latent를 `MiniMaxH3AddGuide`에 연결:
 
 예: 앞 **22** 프레임을 프레임 **0**에서 이어감; 124프레임 중 프레임 **60** 정지로 포즈 강제.
 
-조건이지 V2V 아님: 빈 latent 샘플; `denoise`는 V2V처럼 가이드 강도 조절 안 함. 전체 스타일 R2V; 부분 편집 [Fun ControlNet Union](/ko/tutorials/video/minimax/minimax-h3-fun-controlnet) 마스크.
+조건이지 V2V 아님: 빈 latent 샘플; `denoise`는 V2V처럼 가이드 강도 조절 안 함. 전체 스타일 R2V; 부분 편집은 [Fun ControlNet Union](/ko/tutorials/video/minimax/minimax-h3-fun-controlnet) 마스크 또는 아래에 설명하는 latent 노이즈 마스크.
 
 [멀티프레임 레퍼런스](/ko/tutorials/video/minimax/minimax-h3-multiframe) 템플릿 참고.
+
+### 컨텍스트 윈도우로 긴 클립 생성 (#17425)
+
+`MiniMaxH3ContextWindows`는 생성을 겹치는 윈도우로 나눠 샘플링해, 모델이 한 번의 생성에서 학습한 약 362프레임을 넘는 클립을 만듭니다. 모델 로더와 샘플러 사이의 모델 경로에 넣습니다. ComfyUI **0.44.0** 이상이 필요합니다.
+
+두 길이 모두 실제 프레임 단위이며 **17k+5**여야 합니다. `context_length`(기본 **124**, 최소 **22**)는 윈도우 길이, `context_overlap`(기본 **39**)은 다음 윈도우와 겹치는 길이입니다. 노드는 겹침을 윈도우보다 17프레임 한 블록 짧게 제한하므로 윈도우는 항상 앞으로 나아갑니다. `length`를 1654프레임(24fps에서 약 69초)으로 두고 **362 / 39**로 실행하면 5개 윈도우로 샘플링합니다.
+
+샘플링은 윈도우 하나씩 실행되므로 VRAM 사용량은 클립 길이보다 윈도우가 좌우합니다. latent 전체와 노이즈, 샘플러 누적 버퍼, VAE 디코드는 클립에 비례해 늘어납니다. 오디오도 같은 경계에서 나뉘어 이음매를 넘어도 동기화됩니다.
+
+윈도우 구성 방식에서 두 가지 제약이 생깁니다.
+
+- 가이드는 그 프레임과 겹치는 윈도우만 조건으로 줍니다. 첫/끝 프레임 클립에서는 중간 윈도우에 가이드가 없어 드리프트나 환각이 생깁니다. 캐릭터나 목소리를 길게 유지해야 하는 샷은 [R2V](#minimax-h3-레퍼런스-기반-비디오-생성-r2v)를 사용하세요. 레퍼런스는 타임라인에 묶이지 않으며 `split_conds_to_windows`를 끄면(기본값) 모든 윈도우에 적용됩니다.
+- 겹치는 프레임은 융합되지만 각 윈도우가 이어질 내용을 따로 예측하므로, 카메라가 공간을 이동하면 이음매에서 배경이 달라질 수 있습니다. 고정 카메라와 느린 움직임은 깔끔하게 늘어납니다.
+
+#### 구간마다 다른 프롬프트
+
+긴 테이크의 구간마다 프롬프트를 따로 쓰려면, 구간마다 `MiniMax H3 Image to Video`(또는 `MiniMax H3 Reference to Video`) 노드로 인코딩하고 `positive` 출력을 클립 순서대로 `ConditioningCombine`에 연결한 뒤 컨텍스트 윈도우 노드에서 `split_conds_to_windows`(고급)를 켭니다. 이 노드들도 latent를 출력하지만 샘플러에 연결한 것만 사용됩니다.
+
+프롬프트는 테이크를 시간 기준 같은 길이의 구간으로 나누고, 각 윈도우는 자기 중심이 속한 구간의 컨디셔닝으로 샘플링합니다. 구간 수는 윈도우 수가 아니라 프롬프트 수를 따릅니다. **1654**프레임을 **362 / 39**로 처리하면 윈도우 5개가 균등하게 배치되어 프롬프트 5개가 1대1로 대응합니다. 반대로 길이가 윈도우 경계에서 끝나지 않으면 마지막 윈도우들이 몰려 사용되지 않는 구간이 생깁니다.
+
+각 구간은 자기 노드의 레퍼런스만 봅니다. 테이크 전체에서 같은 인물을 유지하려면 모든 프롬프트 노드에 레퍼런스를 연결하세요. 이 플래그를 꺼도 프롬프트가 하나로 합쳐지지는 않으며, 연결한 모든 프롬프트가 각 윈도우에 동시에 적용됩니다.
 
 ### 잠재 노이즈 마스크 인페인팅 및 확장 (#15375)
 
 [토큰 단위 마스크](https://github.com/Comfy-Org/ComfyUI/pull/15375)로 비디오·오디오 latent 일부 재생성.
 
-샘플러 `denoise_mask`: **0** 유지, **1** 재생성. 비디오 2×2 latent 패치, 오디오 latent 프레임 단위. 인페인팅, 제거, 확장.
+`SetLatentNoiseMask`로 마스크를 소스 latent에 붙인 뒤 그 latent를 샘플러의 `latent_image`에 연결합니다: **0** 유지, **1** 재생성. 마스크는 latent 그리드로 리샘플됩니다. 2×2 패치 최댓값은 각 패치의 timestep만 정하고, 모델 출력은 마스크 자체로 스케일되므로 한 패치(32픽셀)보다 미세한 경계도 남습니다. 오디오 마스크는 latent 프레임 단위입니다. 인페인팅, 제거, 확장에 쓰고 나머지는 그대로 유지합니다.
+
+마스크는 스위치가 아니라 가중치입니다. 매 스텝 마스크 값으로 재생성한 latent와 원본 latent를 섞으므로, 경계를 부드럽게 하면 변화가 서서히 들어가고 딱딱한 이음매가 남지 않습니다. 마스크를 대상보다 몇 픽셀 바깥까지 키우고 흐리게 하면(`Grow Mask` 후 `Convert Mask to Image`, `Blur Image`, `Convert Image to Mask`) 그림자와 접지면도 재생성 범위에 들어갑니다.
+
+마스크 바깥도 모델 조건으로 들어가므로 재생성 영역은 주변 화면으로 채워집니다. 피사체를 비슷한 피사체로 바꾸는 것은 효과적입니다. 움직이는 크고 대비가 강한 물체를 지우는 것은 불안정합니다. 그림자와 반사, 원래 있던 공간이 계속 그 물체를 끌어옵니다.
