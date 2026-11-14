@@ -3,21 +3,23 @@ title: "Guía de despliegue de Comfy API"
 sidebarTitle: "Guía de despliegue"
 description: "Despliega flujos de ComfyUI en endpoints GPU: Builds, versiones, regiones, escalado de workers, límites del espacio de trabajo y monitorización del despliegue."
 icon: "cloud-arrow-up"
-translationSourceHash: 4df17332
+translationSourceHash: fbee2a94
 translationFrom: development/serverless/overview.mdx
 translationBlockHashes:
   "_intro": f163eb63
-  "Platform concepts": cd4243ce
+  "Platform concepts": 7dd0b0f4
   "The Build file": 70f351b1
   "Update and release": 66e5f4ab
   "Regions and GPU availability": fe40705f
   "Workspace limits": e0643567
   "Monitor and call a deployment": ff860dab
+  "Use workspace library models in API requests": ab60f3f3
   "Operate a deployment": de5e72b5
   "Inspect and clean up": 0033fd9b
-  "FAQ": 08ef9084
+  "FAQ": 4eff1368
   "Next steps": 0045baa9
 ---
+
 
 
 Comfy API permite que tu aplicación ejecute flujos de trabajo de ComfyUI a través de un endpoint gestionado. Empaquetas la versión de ComfyUI, los modelos, los nodos personalizados y las dependencias que necesita el flujo de trabajo, y luego Comfy lo ejecuta en GPUs gestionadas. Úsalo cuando necesites un entorno repetible y un endpoint al que tu aplicación pueda llamar.
@@ -33,7 +35,7 @@ Comfy API permite que tu aplicación ejecute flujos de trabajo de ComfyUI a trav
 
 Los flujos de trabajo compatibles con [Comfy Cloud](/es/development/deploy/cloud) pueden ejecutarse allí sin crear un Build ni un despliegue.
 
-Para agregar un modelo a un despliegue sin crear un Build nuevo, súbelo a la biblioteca de tu espacio de trabajo. Consulta [Modelos de la biblioteca del espacio de trabajo](/es/development/serverless/library-models).
+Para agregar un modelo a un despliegue sin crear un Build nuevo, súbelo a la biblioteca de tu espacio de trabajo. Consulta [Agregar tu propia LoRA o modelo](/es/development/deploy/cloud-custom-builds#agregar-tu-propio-lora-o-modelo).
 
 <Card title="Inicio rápido de la API de Comfy" icon="play" href="/es/development/serverless/quickstart">
   Comienza con un agente o elige otra forma de proporcionar tu entorno o flujo de trabajo.
@@ -92,6 +94,43 @@ Las opciones `--min` y `--max` establecen los límites de workers. Ejecuta `comf
 
 También puedes llamar al endpoint con los [Comfy SDKs](/es/development/api-development/sdks). Establece `COMFY_BASE_URL` con la URL del despliegue y proporciona una clave API. Consulta [Elegir una URL base](/es/development/api-development/sdks#elegir-una-url-base).
 
+## Usar modelos de la biblioteca del espacio de trabajo en solicitudes a la API
+
+Un despliegue ejecuta modelos `.safetensors` de la biblioteca de tu espacio de trabajo, incluso cuando su release no los incluye. Para subir un modelo en el editor de Comfy Cloud o en la Developer Platform, consulta [Agrega tu propia LoRA o modelo](/es/development/deploy/cloud-custom-builds#agregar-tu-propio-lora-o-modelo).
+
+Para subir desde una terminal, define el tipo de modelo con `--type` y luego verifica que el archivo esté en la biblioteca:
+
+```bash
+comfy assets library upload my_style.safetensors --type loras
+comfy assets library ls --tags models,loras
+```
+
+En el [flujo de trabajo en formato API](/es/development/api-development/workflow-api-format), define la entrada del cargador con el nombre del archivo de la biblioteca, incluida la extensión `.safetensors`:
+
+```json
+"10": {
+  "class_type": "LoraLoader",
+  "inputs": {
+    "lora_name": "my_style.safetensors",
+    "strength_model": 1.0,
+    "strength_clip": 1.0,
+    "model": ["4", 0],
+    "clip": ["4", 1]
+  }
+}
+```
+
+Envía el flujo de trabajo con `comfy deploy run`, los [SDK de Comfy](/es/development/api-development/sdks) o la [API v2 de Comfy](/es/api-reference/v2/overview):
+
+```bash
+comfy deploy run --deployment <deployment-id> --workflow workflow_api.json
+```
+
+Para usar una LoRA diferente, cambia `lora_name` por el nombre de otro archivo de la biblioteca en la siguiente solicitud. No necesitas un Build nuevo, un release nuevo ni volver a desplegar.
+
+- Un flujo de trabajo puede indicar hasta 100 modelos de la biblioteca. Un cargador que indica un modelo número 101 de la biblioteca falla como si el archivo no estuviera en la biblioteca.
+- Mantén los nombres de archivo únicos en todas las carpetas que lee un mismo cargador. Si la biblioteca tiene el mismo nombre de archivo en dos de ellas, una tarea enviada a través de la API no carga ninguno de los dos archivos.
+
 ## Operar un despliegue
 
 ```bash
@@ -136,9 +175,9 @@ comfy deploy events --deployment dep_123456
 
     La facturación de almacenamiento comienza con un despliegue:
 
-    - Cuando despliegas un release, sus modelos se preparan en el almacenamiento en red que comparten los workers del despliegue. Ese almacenamiento es de solo lectura después del despliegue y se factura por GB-mes mientras exista cualquier despliegue del Build en esa región, incluso mientras un despliegue está en pausa con `comfy deploy stop`. Los modelos que una tarea usa de tu [biblioteca del espacio de trabajo](/es/development/serverless/library-models) no se preparan allí. El worker los descarga para la tarea.
+    - Cuando despliegas un release, sus modelos se copian de forma provisional al almacenamiento en red que comparten los workers del despliegue. Ese almacenamiento es de solo lectura después del despliegue y se factura por GB-mes mientras exista cualquier despliegue del Build en esa región, incluso mientras un despliegue está en pausa con `comfy deploy stop`. Los modelos que una tarea usa de tu [biblioteca del espacio de trabajo](/es/development/serverless/library-models) no se copian allí. El worker los descarga para la tarea.
     - Cada worker también recibe un disco de contenedor fijo de 50 GB. Es efímero y solo se factura mientras el worker está en ejecución, como parte del costo de cómputo del worker.
-    - Eliminar un despliegue libera su cómputo. El almacenamiento en red preparado se limpia poco después de eliminar el último despliegue que lo usa en esa región, y la facturación correspondiente termina.
+    - Eliminar un despliegue libera su cómputo. El almacenamiento en red provisional se limpia poco después de eliminar el último despliegue que lo usa en esa región, y la facturación correspondiente termina.
 
     Para conocer las tarifas de almacenamiento actuales, consulta la [página de precios de Comfy](https://www.comfy.org/pricing). El catálogo de cómputo (`comfy deploy refs compute`) y el diálogo de despliegue también muestran las tarifas que se aplican a un despliegue.
   </Accordion>
@@ -166,11 +205,11 @@ comfy deploy events --deployment dep_123456
     comfy deploy events --deployment <deployment-id>
     ```
 
-    Si la GPU o la región seleccionada no tiene capacidad, reintenta más tarde o ejecuta `comfy deploy refs compute` y elige un par de región y GPU disponible. Incluye los IDs del Build, del release y del despliegue cuando pidas ayuda.
+    Si la GPU o la región seleccionada no tiene capacidad, reintenta más tarde o ejecuta `comfy deploy refs compute` y elige una combinación de región y GPU disponible. Incluye los IDs del Build, del release y del despliegue cuando pidas ayuda.
   </Accordion>
 
   <Accordion title="¿Qué pasa cuando elimino un despliegue?">
-    Eliminar un despliegue quita su endpoint y libera su cómputo. No elimina el Build ni sus releases. Después de eliminar el último despliegue que usa ese Build en una región, su almacenamiento en red preparado se limpia y la facturación de almacenamiento termina poco después.
+    Eliminar un despliegue quita su endpoint y libera su cómputo. No elimina el Build ni sus releases. Después de eliminar el último despliegue que usa ese Build en una región, su almacenamiento en red provisional se limpia y la facturación de almacenamiento termina poco después.
 
     Eliminar el Build es una operación aparte: `comfy build delete --id <build-id> --yes`.
   </Accordion>
