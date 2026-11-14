@@ -2,23 +2,24 @@
 title: "Comfy Router 的能力与限制"
 sidebarTitle: "能力与限制"
 description: "选择 Comfy Router 还是合作伙伴代理，为长时间运行的调用做好规划，并了解恢复、速率限制与资产存储。"
-translationSourceHash: b4d8209c
+translationSourceHash: 691c2e79
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
   "What Router supports": 2cc63403
   "Queued submission": d0798008
-  "Calls are cut off at a server deadline": 6dd44c43
+  "Calls are cut off at a server deadline": c8724f59
   "Recovery depends on the provider": da9d8904
   "Request bodies are capped": 675b77c8
-  "Requests are rate limited per caller": 249d4d51
+  "Requests are rate limited per caller": 83156651
   "No progress while a call runs": 75d42d8d
-  "Comfy charges and usage": cf6e2050
-  "Models without a pre-flight estimate": f6dfd921
+  "Comfy charges and usage": 06a72e74
+  "Models without a pre-flight estimate": 2b25596f
   "Router does not cover every partner operation": 786c0fb2
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
 
 
 
@@ -56,7 +57,7 @@ LTX v1 的文生视频和图生视频操作出于同样的原因返回原始视�
 
 ## 调用会在服务器截止时间被中断
 
-Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。请将客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
+Router 的默认截止时间是 **10 分钟**，具体可由部署方配置。该时间从请求到达时开始计算，因此请求上传也计入其中：如果请求体届时尚未完全到达，Router 会在向提供商发起任何调用之前返回 `504` / `deadline_exceeded`；剩余时间不足以完成调用时也会以同样方式拒绝。请将客户端超时设置为大于该值，这样 Router 才能先返回它自己的错误和请求 ID。
 
 `504` / `deadline_exceeded` 表示 Router 停止了等待；`504` / `provider_timeout` 表示提供商超时。超时或连接中断并不能证明某次生成未被计费，也不会取消提供商已接受的工作。在重试之前，请先阅读[超时与收集](/zh/development/comfy-router/errors#超时与收集)。
 
@@ -87,7 +88,7 @@ Router 会拒绝正文大于 **100 MiB（104,857,600 字节）** 的请求。该
 | `429` / `concurrency_limit_exceeded` | 并发调用过多，或承诺支出上限下的余量不足。 | 减少并发工作。支出响应头可将支出上限与调用次数限制区分开。 |
 | `429` / `rate_limited` | 请求额度已耗尽。 | 等待 `Retry-After` 后再重试。 |
 
-请求速率限制适用于调用以及目录和 schema 读取，包括在生成前即被拒绝的请求。它按经过身份验证的调用方计算，而不是按来源 IP 计算。使用调用方自己的提供商密钥发起的调用不受此限制；提供商侧的限制仍然适用。
+请求速率限制适用于 Router 的每一项操作：调用、目录和 schema 读取、成本估算，以及排队请求的提交、状态查询、结果读取和取消调用，还包括在生成之前即被拒绝的请求。它依据经过身份验证的调用方计算，而不是按来源 IP 计算。使用调用方自己的提供商密钥发起的调用不受此限制；提供商侧的限制仍然适用。轮询排队中的请求会像其他任何调用一样消耗相同的额度，因此应按状态读取所建议的间隔进行轮询，而不是以紧凑循环的方式轮询。`rate_limited` 拒绝不会改变排队中请求的任何状态：该请求会继续运行，而被拒绝的取消调用没有取消任何内容，因此请在 `Retry-After` 之后再次发送取消请求。
 
 缓存目录和 schema 读取结果。使用 `ETag` 和 `If-None-Match` 重新验证这些结果。有关重试和承诺支出字段的说明，请参阅[响应头](/zh/development/comfy-router/headers)。
 
@@ -105,7 +106,7 @@ Router 只返回最终响应，不提供流式 token、服务器发送事件、�
 
 模型目录提供计费事实，包括 `billing.charges_on_policy_rejection`，但不提供价格。请显式处理 `yes`、`no` 和 `unknown`。当该值为 `yes` 时，同步的 `content_policy_violation` 错误可能带有 `X-Comfy-Credits-Used`：当提供商拒绝了模型已生成的输出、且 Comfy 为该被拒绝的生成记录了用量时，就会带上该响应头，并包含该数量。输入端拒绝、同一密钥的重放，以及金额过小、无法在响应头的两位小数中显示的收费，都不会带有该响应头；没有该响应头的拒绝表示未报告，而不是免费。参见[计费](/zh/development/comfy-router/billing#模型计费事实)。
 
-要在运行之前查看价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。在估算功能逐步推出的期间，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中会省略 `estimate`。两者的价格都来自 Comfy 为该次运行计费所依据的费率卡（对按供应商报告的成本计费的模型，则改为依据供应商公布的价格表进行估算），但该数字只是估算值，并非最终收费；最终以你工作区的用量与计费记录中的结算金额为准。它也不是价格锁定。使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍然只是一次运行的事后四舍五入数字，而不是收据。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检成本估算)。无法在运行前定价的模型列在[没有预检估算的模型](#无法预先估算的模型)中。
+要在运行之前了解价格，可以调用 `POST /v2/models/{provider}/{model}/estimate`，或读取已排队提交的 `201` 响应中的 `estimate` 对象。如果某个部署关闭了估算功能，该路由会返回 `403`，并附带 `error_type: not_enabled`，同时提交响应中会省略 `estimate`。两者的价格都取 Comfy 的标准目录价（对按供应商报告的成本计费的模型，则改为依据供应商公布的价格表定价：当该价格表完全决定了金额时，对一小批选择加入的模型标记为 `exact`，否则标记为 `estimated`，其中也包括部分本可由该价格表完全确定金额的报价），且不反映合同价格或客户特定费率：拥有议定价格的工作区会按目录价给出报价，但按合同费率计费。该数字只是估算值，并非最终收费；你工作区的用量与计费记录中的结算金额才是最终结果。它也不是价格锁定。使用你自己的提供商密钥运行不会被 Comfy 计费，即使 `/estimate` 为其返回了数字；而 `unknown` 估算不包含任何数字，这并不意味着免费。`X-Comfy-Credits-Used` 仍然只是一次运行的事后四舍五入数字，而不是收据。关于如何解读 `exact`、`estimated` 和 `unknown`，参见[预检成本估算](/zh/development/comfy-router/reference#预检成本估算)。无法在运行前定价的模型列在[没有预检估算的模型](#无法预先估算的模型)中。
 
 ## 无法预先估算的模型
 
@@ -120,7 +121,7 @@ Router 目前还无法在运行前可靠地为对以下模型的调用定价，�
 - **freepik**: `freepik/ai-image-upscaler-precision-v2`, `freepik/ai-skin-enhancer-creative`, `freepik/ai-skin-enhancer-faithful`, `freepik/ai-skin-enhancer-flexible`
 - **heygen**: `heygen/starfish`
 - **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
-- **kling**: `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`, `kling/videos-video-extend`
+- **kling**: `kling/kling-4.0`, `kling/kling-image-o1`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`
 - **moonvalley**: `moonvalley/image-to-video`, `moonvalley/text-to-video`, `moonvalley/video-to-video`
 - **openai**: `openai/gpt-image-1.5`
 - **openrouter**: `openrouter/chat-completions`
@@ -131,7 +132,7 @@ Router 目前还无法在运行前可靠地为对以下模型的调用定价，�
 
 {/* END GENERATED: models without a pre-flight estimate */}
 
-对 `openai/gpt-image-2`、`openai/gpt-image-2.5-flare` 和 `openai/gpt-image-2.5-sunburst` 的编辑操作同样没有预先估算。对这些模型发起编辑调用，或发起携带输入图像的生成调用，都会返回 `source: unknown`。对它们发起仅含文本的生成调用则可以估算，这就是它们未出现在上述列表中的原因。
+对 `openai/gpt-image-2`、`openai/gpt-image-2.5-flare`、`openai/gpt-image-2.5-sunburst`、`openai/gpt-image-2.6-flare` 和 `openai/gpt-image-2.6-sunburst` 的编辑操作同样没有预先估算。对这些模型发起编辑调用，或发起携带输入图像的生成调用，都会返回 `source: unknown`。对它们发起仅含文本的生成调用则可以估算，这就是它们未出现在上述列表中的原因。
 
 ## Router 并不覆盖每一项合作伙伴操作
 
