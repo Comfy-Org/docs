@@ -2,21 +2,24 @@
 title: "Comfy API：Serverless 部署"
 description: "使用 Comfy API 将 ComfyUI 工作流部署为托管 GPU 端点：Build、版本、区域、Worker 扩缩容、工作区限额与部署监控。"
 icon: "cloud-arrow-up"
-translationSourceHash: 2184a3a5
+translationSourceHash: fbee2a94
 translationFrom: development/serverless/overview.mdx
 translationBlockHashes:
   "_intro": f163eb63
-  "Platform concepts": 97134dfe
+  "Platform concepts": 7dd0b0f4
   "The Build file": 70f351b1
   "Update and release": 66e5f4ab
   "Regions and GPU availability": fe40705f
   "Workspace limits": e0643567
   "Monitor and call a deployment": ff860dab
+  "Use workspace library models in API requests": ab60f3f3
   "Operate a deployment": de5e72b5
   "Inspect and clean up": 0033fd9b
-  "FAQ": 54896279
+  "FAQ": 4eff1368
   "Next steps": 0045baa9
 ---
+
+
 
 Comfy API 可让你的应用通过托管端点运行 ComfyUI 工作流。你需要打包工作流所需的 ComfyUI 版本、模型、自定义节点和依赖项，然后由 Comfy 在托管 GPU 上运行。适合需要可重复的运行环境，以及供应用调用的端点的场景。
 
@@ -25,11 +28,13 @@ Comfy API 可让你的应用通过托管端点运行 ComfyUI 工作流。你需�
 | 概念 | 含义 |
 | --- | --- |
 | **工作区** | 管理成员、Build、部署和使用限额的团队账户。 |
-| **Build** | ComfyUI 环境定义，包括 ComfyUI 版本、模型、自定义节点和依赖项。 |
-| **Build 版本 / 发布版本** | 为特定部署目标（例如 `linux/nvidia`）准备的编号 Build 版本。 |
+| **Build** | ComfyUI 环境定义，包含其版本、模型、自定义节点和依赖关系。 |
+| **Build 版本 / 发布版本** | 为某个部署目标（例如 `linux/nvidia`）准备的带编号的 Build 版本。 |
 | **部署** | 使用某个发布版本运行的端点，拥有自己的 GPU、区域和 worker 设置。 |
 
-受 [Comfy Cloud](/zh/development/deploy/cloud) 支持的工作流可以直接在那里运行，无需创建 Build 或部署。
+受 [Comfy Cloud](/zh/development/deploy/cloud) 支持的工作流可以直接在云端运行，无需创建 Build 或部署。
+
+如果要为部署添加模型而不创建新的 Build，请将其上传到你的工作区库。请参阅 [添加自己的 LoRA 或模型](/zh/development/deploy/cloud-custom-builds#添加自己的-lora-或模型)。
 
 <Card title="Comfy API 快速入门" icon="play" href="/zh/development/serverless/quickstart">
   从 agent 开始，或选择其他方式来提供你的环境或工作流。
@@ -88,6 +93,43 @@ comfy deploy refs compute --region <region>
 
 你也可以使用 [Comfy SDKs](/zh/development/api-development/sdks) 调用该端点。将 `COMFY_BASE_URL` 设置为部署 URL，并提供 API 密钥。请参阅[选择基础 URL](/zh/development/api-development/sdks#选择基础-url)。
 
+## 在 API 请求中使用工作区库模型
+
+部署会运行工作区库中的 `.safetensors` 模型，即使该发布版本并不包含这些模型。要在 Comfy Cloud 编辑器中或开发者平台上上传模型，请参阅[添加自己的 LoRA 或模型](/zh/development/deploy/cloud-custom-builds#添加自己的-lora-或模型)。
+
+要从终端上传，请使用 `--type` 设置模型类型，然后确认该文件已存在于库中：
+
+```bash
+comfy assets library upload my_style.safetensors --type loras
+comfy assets library ls --tags models,loras
+```
+
+在 [API 格式的工作流](/zh/development/api-development/workflow-api-format)中，将加载器的输入设置为库中的文件名，并包含 `.safetensors`：
+
+```json
+"10": {
+  "class_type": "LoraLoader",
+  "inputs": {
+    "lora_name": "my_style.safetensors",
+    "strength_model": 1.0,
+    "strength_clip": 1.0,
+    "model": ["4", 0],
+    "clip": ["4", 1]
+  }
+}
+```
+
+使用 `comfy deploy run`、[Comfy SDK](/zh/development/api-development/sdks) 或 [Comfy API v2](/zh/api-reference/v2/overview) 发送工作流：
+
+```bash
+comfy deploy run --deployment <deployment-id> --workflow workflow_api.json
+```
+
+要使用其他 LoRA，只需在下一次请求中把 `lora_name` 改为另一个库文件名。无需新的 Build、发布或重新部署。
+
+- 一个工作流最多可以引用 100 个库模型。如果某个加载器引用了第 101 个库模型，就会失败，表现得就像该文件不在库中一样。
+- 请确保同一个加载器所读取的各个文件夹中文件名唯一。如果库中有两个文件夹包含相同的文件名，通过 API 发送的任务将不会加载其中任何一个文件。
+
 ## 部署运维
 
 ```bash
@@ -128,11 +170,11 @@ comfy deploy events --deployment dep_123456
   </Accordion>
 
   <Accordion title="未部署的 Build 会产生存储费用吗？">
-    不会。Build 及其发布版本免费存储在你的账户中。在部署之前，Build 的存储占用不会计费。
+    不会。Build 及其发布版本免费存储在你的账户中。在部署之前，Build 的存储占用不会产生费用。
 
     存储计费从部署开始：
 
-    - 部署某个发布版本时，其模型会被暂存到该部署的 worker 共享的网络存储上。部署完成后该存储为只读，只要该区域内还存在该 Build 的任何部署，就会按 GB-月 计费，包括使用 `comfy deploy stop` 暂停部署期间。
+    - 部署某个发布版本时，其模型会被暂存到该部署的 worker 共享的网络存储上。部署完成后该存储为只读，只要该区域内还存在该 Build 的任何部署，就会按 GB-月 计费，包括使用 `comfy deploy stop` 暂停部署期间。任务从你的[工作区库](/zh/development/serverless/library-models)中使用的模型不会暂存到那里，而是由 worker 为该任务下载。
     - 每个 worker 还会获得一块固定的 50 GB 容器磁盘。它是临时的，仅在 worker 运行期间计费，并计入该 worker 的计算费用。
     - 删除部署会释放其计算资源。当该区域内最后一个使用该暂存网络存储的部署被删除后，存储会很快被清理，其计费也随之结束。
 
@@ -142,7 +184,7 @@ comfy deploy events --deployment dep_123456
   <Accordion title="活跃 worker 如何计费，按什么小时费率计费？">
     `--min` 设置 **活跃 worker** 的数量：这类 worker 始终处于运行状态，因此请求永远不会等待冷启动。活跃 worker 在其运行的整个期间都按秒计费，无论它是否正在处理任务。
 
-    超过 `--min`、最多到 `--max` 的 worker 是 **弹性 worker**。弹性 worker 从其启动的那一刻起（包括启动和模型加载）按秒计费，一直计到任务处理结束，再加上缩减前的一段短暂空闲窗口（目前为 30 秒）。弹性 worker 缩减后不再产生费用。当设置为 `--min 0` 时，整个部署会缩减到零，空闲时不产生计算费用，代价是第一个请求会有冷启动。
+    超过 `--min`、最多到 `--max` 的 worker 是 **弹性 worker**。弹性 worker 从其启动的那一刻起（包括启动和模型加载）按秒计费，一直计到任务处理结束，再加上缩减前的一段短暂空闲窗口（目前为 30 秒）。弹性 worker 缩减后不再产生费用。当设置为 `--min 0` 时，整个部署会缩减到零，空闲时不产生计算费用，代价是第一个请求需要冷启动。
 
     计费按 worker 的实际每秒用量计算，再乘以正在运行的 worker 数量。如果你的工作区积分已用完，部署会被自动停止。
 

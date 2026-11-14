@@ -1,0 +1,309 @@
+---
+title: "通过 Comfy Router 使用 V3.5"
+description: "通过 Comfy Router 调用 pixverse/v3.5：端点、请求结构和 Router 返回的响应。"
+sidebarTitle: "V3.5"
+translationSourceHash: c6a6b3a8
+translationFrom: development/comfy-router/models/pixverse/v3-5/code.mdx
+translationBlockHashes:
+  "_intro": 2772d5c1
+  "Quick start": dc3a1030
+  "Schema": 48bf7abc
+  "Examples": 0600cc10
+---
+{/* 已生成文件。由 `pnpm code-pages:gen` 从 router-schemas/pixverse/v3.5.json 生成。 */}
+
+import RouterCodeFooter from "/snippets/zh/comfy-router/model-code-footer.mdx";
+
+`pixverse/v3.5` 的 API 参考，由 Comfy Router 从 Pixverse 提供。
+
+**输入：** 文本 · **输出：** 视频
+
+## 快速开始
+
+在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建一个密钥，并将其导出为 `COMFY_API_KEY`。Python 和 TypeScript 代码片段使用 Comfy SDK（`pip install comfy-sdk` 和 `npm install @comfyorg/sdk`）；cURL 代码片段是通过原始 HTTP 进行的同一调用。
+
+**模型 ID：** `pixverse/v3.5`
+
+**端点：** `POST https://api.comfy.org/v2/models/pixverse/v3.5`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="等待结果">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 从环境变量读取 COMFY_API_KEY。
+# SDK 会自动创建幂等键，并在自动重试时复用它。
+with Comfy() as client:
+    result = client.models.run(
+        "pixverse/v3.5",
+        {
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "prompt": "a single red maple leaf falling onto still water",
+            "quality": "360p",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量读取 COMFY_API_KEY。
+// SDK 会自动创建幂等键，并在自动重试时复用它。
+const { data } = await comfy.models.run("pixverse/v3.5", {
+  aspect_ratio: "16:9",
+  duration: 5,
+  prompt: "a single red maple leaf falling onto still water",
+  quality: "360p",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/pixverse/v3.5 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"aspect_ratio\": \"16:9\", \"duration\": 5, \"prompt\": \"a single red maple leaf falling onto still water\", \"quality\": \"360p\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="排队并稍后收集">
+同一个请求体，发送到 `POST https://api.comfy.org/v2/models/pixverse/v3.5/requests`。运行被受理后，Router 会立即返回 `201` 和 `request_id`，结果准备就绪后即可收集，收集方可以是当前进程，也可以是另一个进程。[排队交付](/zh/development/comfy-router/queue)介绍了状态、取消和收集的完整流程。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 从环境变量读取 COMFY_API_KEY。
+# 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "pixverse/v3.5",
+            {
+                "aspect_ratio": "16:9",
+                "duration": 5,
+                "prompt": "a single red maple leaf falling onto still water",
+                "quality": "360p",
+            },
+        )
+        print("request_id:", handle.request_id)  # 连同模型 ID，这就是另一个进程所需的全部信息。
+
+        # 轮询直到请求完成，并等待服务器指定的 Retry-After 时间。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # 提供商自身的 payload，与 models.run() 返回的值相同。
+        # 失败或已取消的请求会在这里抛出类型化的 Router 错误。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境变量读取 COMFY_API_KEY。
+// 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+const handle = await comfy.models.submit("pixverse/v3.5", {
+  aspect_ratio: "16:9",
+  duration: 5,
+  prompt: "a single red maple leaf falling onto still water",
+  quality: "360p",
+});
+console.log("requestId:", handle.requestId); // 连同模型 ID，这就是另一个进程所需的全部信息。
+
+// 轮询直到请求完成，并等待服务器指定的 Retry-After 时间。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// 与 models.run() 返回的相同结果。失败或已取消的请求会在这里被拒绝。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 提交。Router 返回 201，以及 request_id、status_url、response_url 和 cancel_url。
+curl https://api.comfy.org/v2/models/pixverse/v3.5/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"aspect_ratio\": \"16:9\", \"duration\": 5, \"prompt\": \"a single red maple leaf falling onto still water\", \"quality\": \"360p\"}"
+
+# 2. 轮询直到 status 为 COMPLETED，并等待每个响应指定的 Retry-After 秒数。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/pixverse/v3.5/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 收集。返回 200 和模型的原生输出；若仍在运行，则返回 202 和状态响应体。
+curl https://api.comfy.org/v2/models/pixverse/v3.5/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Schema
+
+### 输入
+
+<ParamField body="aspect_ratio" type="string" required>
+  可选值：`16:9`、`4:3`、`1:1`、`3:4`、`9:16`、`2:3`、`3:2`、`21:9`
+</ParamField>
+
+<ParamField body="duration" type="integer" required>
+  范围：`1` 到 `15`
+</ParamField>
+
+<ParamField body="generate_audio_switch" type="boolean" default="false">
+   
+</ParamField>
+
+<ParamField body="model" type="string">
+  PixVerse 文生视频模型标识符。在 Comfy Router 的 `POST /v2/models/pixverse/{model}` 路由上，该字段由路径提供，可以省略。
+</ParamField>
+
+<ParamField body="motion_mode" type="string">
+  可选值：`normal`、`fast`
+</ParamField>
+
+<ParamField body="negative_prompt" type="string">
+   
+</ParamField>
+
+<ParamField body="prompt" type="string" required>
+   
+</ParamField>
+
+<ParamField body="quality" type="string" required>
+  可选值：`360p`、`540p`、`720p`、`1080p`
+</ParamField>
+
+<ParamField body="seed" type="integer">
+   
+</ParamField>
+
+<ParamField body="style" type="string">
+  可选值：`anime`、`3d_animation`、`clay`、`comic`、`cyberpunk`
+</ParamField>
+
+<ParamField body="template_id" type="integer">
+   
+</ParamField>
+
+<ParamField body="water_mark" type="boolean">
+   
+</ParamField>
+
+本文档根据 Router 在 `GET /v2/models/pixverse/v3.5/openapi.json` 提供的 schema 生成，该文档也是 Router 在请求到达提供商之前用于校验调用的同一份文档。
+
+### 输出
+
+<ResponseField name="ErrCode" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="ErrMsg" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp" type="object" required>
+   
+</ResponseField>
+
+<ResponseField name="Resp.create_time" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp.credits" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.id" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.modify_time" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp.negative_prompt" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp.outputHeight" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.outputWidth" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.prompt" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp.resolution_ratio" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.seed" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.size" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="Resp.status" type="integer" required>
+  可选值：`1`、`5`、`6`、`7`、`8`
+</ResponseField>
+
+<ResponseField name="Resp.style" type="string">
+   
+</ResponseField>
+
+<ResponseField name="Resp.url" type="string" required>
+   
+</ResponseField>
+
+## 示例
+
+### 输入
+
+```json
+{
+  "aspect_ratio": "16:9",
+  "duration": 5,
+  "prompt": "a single red maple leaf falling onto still water",
+  "quality": "360p"
+}
+```
+
+### 输出
+
+```json
+{
+  "ErrCode": 0,
+  "ErrMsg": "",
+  "Resp": {
+    "credits": 1,
+    "id": 4242,
+    "status": 1,
+    "url": "https://example.invalid/pixverse/v6/out.mp4"
+  }
+}
+```
+
+
+<RouterCodeFooter />
