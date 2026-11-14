@@ -180,7 +180,7 @@ const RETIRED_RATES = new WeakSet<MetronomeRate>();
 const CLOUD_SOURCE_REF = "https://github.com/Comfy-Org/cloud/";
 // Rates a keyed price superseded, by the resolved rates array they were dropped
 // from. catalogRates still checks them so supersession cannot hide a mistyped
-// snapshot model ID behind a stageable Cloud rate.
+// snapshot model ID or serving provider behind a stageable Cloud rate.
 const SUPERSEDED_RATES = new WeakMap<MetronomeRate[], MetronomeRate[]>();
 
 function loadMetronomeData(file = METRONOME_FILE): MetronomeData {
@@ -238,26 +238,42 @@ function resolveKeyedRates(rates: MetronomeRate[]): MetronomeRate[] {
 
 /**
  * Splits rates into those the page renders and staged rates whose model the
- * catalog does not list yet. A rates PR can land before the spec sync that adds
- * its models; staged rates render once the sync lands. Only rates from a
- * Comfy-Org/cloud supplemental source can be staged, so a mistyped model ID in
- * the snapshot or a third-party source still fails.
+ * catalog does not list yet, or whose serving provider is not yet a declared
+ * Router alternate on that model. A rates PR can land before the spec sync that
+ * adds its models or providers; staged rates render once the sync lands. Only
+ * rates from a Comfy-Org/cloud supplemental source can be staged, so a mistyped
+ * model ID or provider in the snapshot or a third-party source still fails.
  */
+function providerIsDeclared(model: CatalogModel, metronomeProvider: string): boolean {
+  const owner = providerLabel(model.id).toLowerCase();
+  return model.providers.some((provider) => provider.toLowerCase() === metronomeProvider.toLowerCase())
+    || metronomeProvider.toLowerCase() === owner;
+}
+
 function catalogRates(rates: MetronomeRate[], models: CatalogModel[]): { rates: MetronomeRate[]; staged: MetronomeRate[]; retired: MetronomeRate[] } {
-  const modelIds = new Set(models.map((model) => model.id));
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  const modelIds = new Set(modelsById.keys());
   const absent = rates.filter((rate) => !modelIds.has(rate.model_id));
   const retired = absent.filter((rate) => RETIRED_RATES.has(rate));
-  const staged = absent.filter((rate) => !RETIRED_RATES.has(rate));
-  const checked = [...absent, ...(SUPERSEDED_RATES.get(rates) ?? []).filter((rate) => !modelIds.has(rate.model_id))];
+  const stagedAbsent = absent.filter((rate) => !RETIRED_RATES.has(rate));
+  const superseded = SUPERSEDED_RATES.get(rates) ?? [];
+  const checked = [...absent, ...superseded.filter((rate) => !modelIds.has(rate.model_id))];
   const missingModels = [...new Set(checked.filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => rate.model_id))];
   if (missingModels.length) throw new Error(`${METRONOME_FILE}: Router model IDs are absent from the current catalog: ${missingModels.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog, or marked catalog_when_absent "retired" when Cloud withdrew the id`);
-  return { rates: rates.filter((rate) => modelIds.has(rate.model_id)), staged, retired };
+  const present = rates.filter((rate) => modelIds.has(rate.model_id));
+  const undeclared = present.filter((rate) => !providerIsDeclared(modelsById.get(rate.model_id)!, rate.serving_provider));
+  const supersededUndeclared = superseded.filter((rate) => modelIds.has(rate.model_id) && !providerIsDeclared(modelsById.get(rate.model_id)!, rate.serving_provider));
+  const illegalProviders = [...new Set([...undeclared, ...supersededUndeclared].filter((rate) => !CLOUD_SOURCED_RATES.has(rate)).map((rate) => `${rate.model_id} (${rate.serving_provider})`))];
+  if (illegalProviders.length) {
+    throw new Error(`${METRONOME_FILE}: Pricing provider is neither the owner nor a declared Router alternate: ${illegalProviders.join(", ")}. Only rates under a supplemental_sources entry whose source_ref points at ${CLOUD_SOURCE_REF} can be staged ahead of the catalog`);
+  }
+  return { rates: present.filter((rate) => !undeclared.includes(rate)), staged: [...stagedAbsent, ...undeclared], retired };
 }
 
 function stagedRatesWarning(staged: MetronomeRate[]): string | undefined {
-  const ids = [...new Set(staged.map((rate) => rate.model_id))].sort();
-  if (!ids.length) return undefined;
-  return `${METRONOME_FILE}: skipping ${staged.length} staged rate(s) for model IDs absent from the current catalog, which render once a spec sync adds them: ${ids.join(", ")}`;
+  const labels = [...new Set(staged.map((rate) => `${rate.model_id} (${rate.serving_provider})`))].sort();
+  if (!labels.length) return undefined;
+  return `${METRONOME_FILE}: skipping ${staged.length} staged rate(s) that render once a spec sync adds their model or serving provider to the catalog: ${labels.join(", ")}`;
 }
 
 function retiredRatesWarning(retired: MetronomeRate[]): string | undefined {
@@ -1201,6 +1217,7 @@ function findUnpricedRoutes(models: CatalogModel[], rates: MetronomeRate[]): Unp
   for (const rate of rates) {
     const model = modelsById.get(rate.model_id);
     if (!model) continue;
+    if (!providerIsDeclared(model, rate.serving_provider)) continue;
     priced.add(routeKey({ model_id: model.id, provider: displayProvider(model.id, model.providers, rate.serving_provider) }));
   }
   return models.flatMap((model) => model.providers
@@ -1256,8 +1273,9 @@ function checkPricingCoverage(unpriced: UnpricedRoute[], waivers: UnpricedWaiver
 }
 
 function pricingCoverageErrors(): string[] {
-  const data = loadMetronomeData();
-  return checkPricingCoverage(findUnpricedRoutes(loadCatalog(), data.rates), loadUnpricedWaivers());
+  const models = loadCatalog();
+  const { rates } = catalogRates(loadMetronomeData().rates, models);
+  return checkPricingCoverage(findUnpricedRoutes(models, rates), loadUnpricedWaivers());
 }
 
 if (import.meta.main) {
