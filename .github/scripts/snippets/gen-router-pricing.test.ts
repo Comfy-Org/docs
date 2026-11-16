@@ -121,15 +121,22 @@ describe("public Router pricing", () => {
       expect(row).toContain(expected);
     }
 
-    const moonvalley = tables.find((table) => table.provider === "Comfy"
-      && table.headers.includes("5s Credits / request")
-      && table.rows.some((row) => row[1] === "`moonvalley/image-to-video`"))!;
-    expect(moonvalley.headers).toEqual(["Name", "Model ID", "5s Credits / request", "10s Credits / request"]);
-    expect(moonvalley.rows).toEqual([
-      ["[Image To Video](/development/comfy-router/models/moonvalley/image-to-video/code)", "`moonvalley/image-to-video`", "316.5", "633"],
-      ["[Text To Video](/development/comfy-router/models/moonvalley/text-to-video/code)", "`moonvalley/text-to-video`", "316.5", "633"],
-      ["[Video To Video](/development/comfy-router/models/moonvalley/video-to-video/code)", "`moonvalley/video-to-video`", "474.75", "844"],
+    // Cloud withdrew Moonvalley from the Router catalog (Comfy-Org/cloud#19318): its
+    // rates stay in the snapshot under a retired source but no longer render.
+    const moonvalleySource = snapshot.supplemental_sources!.find((source) => source.source_ref === "https://github.com/Comfy-Org/cloud/pull/19318")!;
+    expect(moonvalleySource.catalog_when_absent).toBe("retired");
+    const moonvalley = catalogRates(moonvalleySource.rates, catalog);
+    expect(moonvalley.rates).toEqual([]);
+    expect(moonvalley.staged).toEqual([]);
+    expect(moonvalley.retired.map((rate) => [rate.model_id, rate.conditions, rate.credits])).toEqual([
+      ["moonvalley/image-to-video", "5s", "316.5"],
+      ["moonvalley/image-to-video", "10s", "633.0"],
+      ["moonvalley/text-to-video", "5s", "316.5"],
+      ["moonvalley/text-to-video", "10s", "633.0"],
+      ["moonvalley/video-to-video", "5s", "474.75"],
+      ["moonvalley/video-to-video", "10s", "844.0"],
     ]);
+    expect(sourcePage).not.toContain("moonvalley/");
   });
 
   test("resolves keyed prices per model before a provider-wide usage rail", () => {
