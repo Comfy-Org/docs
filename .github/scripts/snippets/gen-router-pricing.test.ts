@@ -221,7 +221,7 @@ describe("public Router pricing", () => {
   test("preserves every route's credit amounts and shows a unit in the cell or token header", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
-    expect(snapshot.rates).toHaveLength(860);
+    expect(snapshot.rates).toHaveLength(862);
     expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(831);
     for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
