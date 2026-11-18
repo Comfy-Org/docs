@@ -88,7 +88,7 @@ describe("public Router pricing", () => {
     const providersFor = (id: string) => catalog.find((model) => model.id === id)!.providers;
     expect(providersFor("fal/patina")).toEqual(["fal"]);
     expect(providersFor("wavespeed/seedvr2")).toEqual(["WaveSpeed"]);
-    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "MiniMax", "Pika", "Runware", "WaveSpeed"]);
+    expect(providersFor("openai/gpt-image-2")).toEqual(["Comfy", "fal", "MiniMax", "Runware", "WaveSpeed"]);
     expect(providersFor("kling/kling-v3")).toEqual(["Comfy", "Higgsfield", "Tencent"]);
     expect(page).not.toContain("Model ID prefixes identify model owners.");
     expect(page).not.toContain("[See provider coverage]");
@@ -137,6 +137,18 @@ describe("public Router pricing", () => {
       ["moonvalley/video-to-video", "10s", "844.0"],
     ]);
     expect(sourcePage).not.toContain("moonvalley/");
+
+    // Cloud withdrew Luma's Photon models (Comfy-Org/cloud#19320) the same way.
+    const photonSource = snapshot.supplemental_sources!.find((source) => source.source_ref === "https://github.com/Comfy-Org/cloud/pull/19320")!;
+    expect(photonSource.catalog_when_absent).toBe("retired");
+    const photon = catalogRates(photonSource.rates, catalog);
+    expect(photon.rates).toEqual([]);
+    expect(photon.staged).toEqual([]);
+    expect(photon.retired.map((rate) => [rate.model_id, rate.credits])).toEqual([
+      ["luma/photon-1", "2.2026"],
+      ["luma/photon-flash-1", "0.5733"],
+    ]);
+    expect(sourcePage).not.toContain("luma/photon");
   });
 
   test("resolves keyed prices per model before a provider-wide usage rail", () => {
@@ -222,7 +234,7 @@ describe("public Router pricing", () => {
     expect(snapshot.credits_per_usd).toBe(211);
     // Counts cover the whole rates file, so they hold before and after a spec sync lists staged models.
     expect(snapshot.rates).toHaveLength(860);
-    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(831);
+    expect(snapshot.rates.filter((rate) => rate.kind !== "usage")).toHaveLength(829);
     for (const rate of listedRates.filter((candidate) => candidate.kind !== "usage")) {
       const model = catalog.find((candidate) => candidate.id === rate.model_id)!;
       const provider = displayProvider(model.id, model.providers, rate.serving_provider);
