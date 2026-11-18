@@ -39,9 +39,13 @@ Add these as repository secrets. Until `SNOWFLAKE_ACCOUNT` and `POSTHOG_API_KEY`
 Hugging Face's API only exposes running totals, so each run saves that day's
 totals in `state/hf-downloads.json`. A week's or month's downloads are the
 difference between snapshots, and a period with no snapshot near its start is
-skipped. Periods up to Oct 18, 2026 came from publisher analytics and keep their
+skipped. Periods up to Nov 16, 2026 came from publisher analytics and keep their
 shares; `build-rankings-data.py` merges new periods into the existing data file
 rather than replacing it.
+
+`hf-repos.json` lists each repo under its current Hugging Face name. Comfy-Org
+renamed many repos in November 2026 (like `Wan_2.2_ComfyUI_Repackaged` to
+`Wan-2.2`); `was` keeps the old name so the hub page links still match.
 
 ## Desktop v1 hardware
 

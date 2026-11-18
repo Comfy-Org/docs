@@ -3,6 +3,11 @@
 -- week). A generation is a call, or the number of outputs a call asks for (1 to 16).
 -- Only shares and growth reach the page. {start} and {end} are filled in by
 -- fetch-rankings-sources.py.
+-- Some providers (Kling, Krea, Tripo, Recraft, Freepik, Vidu and others) leave the
+-- call's model empty. Those calls take the model the request asked for when the
+-- billing record has it, or the model in the endpoint path, and otherwise count
+-- under the provider and output type, like "kling (video)", so they still count
+-- toward their type's total.
 with bounds as (
     select '{start}'::date as start_week, '{end}'::date as end_week
 ),
@@ -14,7 +19,10 @@ calls as (
         c.api_name                                              as api_name,
         c.model                                                 as model_raw,
         lower(c.model)                                          as m,
-        lower(coalesce(p:endpoint::string, ''))                 as ep,
+        coalesce(p:requested_model, p:model, p:model_name, p:model_version)::string as req,
+        p:tier::string                                          as tier,
+        -- Long hex ids in the path (like a Topaz video id) are masked so they can't match a rule.
+        regexp_replace(lower(coalesce(p:endpoint::string, '')), '[0-9a-f-]{20,}', '*') as ep,
         lower(coalesce(p:video_type::string, ''))               as vt,
         lower(coalesce(p:mode::string, ''))                     as md,
         (coalesce(p:input_images::float, 0) > 0
@@ -37,13 +45,13 @@ calls as (
     lateral (select coalesce(try_parse_json(a.params), b.properties) as p) j
     where c.created_at >= bd.start_week
       and c.created_at <  bd.end_week
-      -- Calls with no model name (some Kling, Recraft and Freepik calls) can't be ranked.
-      and c.model is not null
     qualify row_number() over (partition by c.call_id order by c.created_at) = 1
 ),
 classified as (
     select *,
         case
+            -- Comfy Cloud workflow runs aren't a model call
+            when api = 'comfy-cloud' then null
             -- LLM / text models: excluded
             when ep in ('responses', 'v1/messages', 'api/v1/chat/completions', 'api/v3/responses')
               or api in ('anthropic')
@@ -88,16 +96,33 @@ classified as (
             else 'Text to image'
         end as use_case
     from calls
+),
+labeled as (
+    select *,
+        case
+            when model_raw is not null then trim(model_raw)
+            when req is not null then regexp_replace(trim(req), '^[^/]+/', '')
+            -- Krea, Ideogram and some Kling endpoints name the model, like krea/krea-3
+            when regexp_substr(ep, '(^|/)(' || api || '-v?[0-9][^/]*)', 1, 1, 'e', 2) is not null
+                then regexp_substr(ep, '(^|/)(' || api || '-v?[0-9][^/]*)', 1, 1, 'e', 2)
+            when api = 'rodin' and lower(tier) like 'gen-%' then 'rodin-' || lower(tier)
+            else api || ' (' || case
+                when use_case in ('Text to image', 'Image edit', 'Image tools') then 'image'
+                when use_case in ('Image to video', 'Text to video', 'Video to video') then 'video'
+                else lower(use_case) end || ')'
+        end as label
+    from classified
 )
 -- LLM calls (use_case null) are dropped; build-rankings-data.py turns use cases into output types.
+-- Names are grouped case-insensitively ("Bloom 2" and "bloom 2" are one model).
 select
     dateadd(day, 1 - dayofweekiso(created_at::date), created_at::date)::date as week,
-    model_raw::varchar                                                       as model,
+    mode(label)::varchar                                                     as model,
     api_name::varchar                                                        as api_name,
     use_case::varchar                                                        as use_case,
     count(*)                                                                 as calls,
     sum(outputs)                                                             as generations
-from classified
+from labeled
 where use_case is not null
-group by 1, 2, 3, 4
+group by 1, lower(label), 3, 4
 order by 1, 6 desc

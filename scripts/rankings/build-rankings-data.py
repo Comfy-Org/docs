@@ -70,8 +70,8 @@ def local_page(file_name):
     return slug and "local/" + slug
 
 
-def repo_page(repo):
-    files = HUB["repos"].get(repo, [])
+def repo_page(repo, was=None):
+    files = HUB["repos"].get(repo) or HUB["repos"].get(was, [])
     main = [s for s in files if not AUX.search(s)] or files
     fam = tokens(repo.split("/", 1)[1])
     best = max(main, key=lambda s: (len(tokens(s) & fam), -len(s)), default=None)
@@ -81,11 +81,17 @@ def repo_page(repo):
 # 1. Generations: share of each output type's generations per model by week,
 # month and quarter, plus each type's change between the last two periods, never counts.
 with open(f"{HERE}/model-types.json", encoding="utf-8") as f:
-    KNOWN = json.load(f)
+    KNOWN = {k.lower(): v for k, v in json.load(f).items()}
 TYPE_OF_CASE = {"Text to image": "Image", "Image edit": "Image", "Image tools": "Image", "Image to video": "Video",
                 "Text to video": "Video", "Video to video": "Video", "Speech": "Speech", "3D": "3D"}
 gen = rd('model_generations')
-names = {r['model'] for r in gen} | set(KNOWN)
+# The query groups names case-insensitively; each model shows under its most used spelling.
+spellings = collections.defaultdict(collections.Counter)
+for r in gen:
+    spellings[r['model'].lower()][r['model']] += int(r['calls'])
+for r in gen:
+    r['model'] = spellings[r['model'].lower()].most_common(1)[0][0]
+names = {r['model'].lower() for r in gen} | set(KNOWN)
 
 
 def final_name(model, api):
@@ -96,7 +102,7 @@ def final_name(model, api):
     if model.startswith('Other models'):
         return 'Other models'
     base = re.sub(r'-preview$', '', model)
-    return base if base != model and base in names else model
+    return base if base != model and base.lower() in names else model
 
 
 weeks = sorted({r['week'] for r in gen})
@@ -110,7 +116,7 @@ for r in gen:
 kind = {}
 for m in calls:
     case = by_case[m].most_common(1)[0][0]
-    t = KNOWN.get(m) or TYPE_OF_CASE.get(case)
+    t = KNOWN.get(m.lower()) or TYPE_OF_CASE.get(case)
     if t:
         kind[m] = (t, case)
 # Models with fewer than 200 calls in the window are grouped as Other models.
@@ -191,7 +197,7 @@ speed = [[r['type'], r['kind'], r['model'], num(r['p50_wait_s']), num(r['p90_wai
 
 # 4. Downloads: share within output type per period, counts dropped
 with open(f"{HERE}/hf-repos.json", encoding="utf-8") as f:
-    REPO_OF = {v["name"]: k for k, v in json.load(f).items()}
+    REPO_OF = {v["name"]: (k, v.get("was")) for k, v in json.load(f).items()}
 dl = rd('model_downloads_typed')
 # The live feed only has the periods since daily snapshots started, so periods
 # it doesn't cover keep the shares already in the output file.
@@ -220,7 +226,7 @@ for g in ["Weekly", "Monthly"]:
     for t in ['Image', 'Video', 'Image tools', 'Audio', '3D', 'Text encoders & VAEs']:
         models = sorted({m for (tt, m, p) in cell if tt == t} | {m for (tt, m, p) in kept if tt == t})
         if models:
-            types.append({"name": t, "models": [dict({"m": m, "s": [share(t, m, p) for p in ps]}, **link(repo_page(REPO_OF.get(m, "")) or landing_page(m))) for m in models]})
+            types.append({"name": t, "models": [dict({"m": m, "s": [share(t, m, p) for p in ps]}, **link(repo_page(*REPO_OF.get(m, ("",))) or landing_page(m))) for m in models]})
     downloads[g] = {"periods": ps, "types": types}
 
 # Same start as fetch-rankings-sources.py: the last year, never before Dec 2025.
