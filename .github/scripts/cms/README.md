@@ -176,7 +176,11 @@ The verifier exits nonzero for a missing locale, duplicate record, unpublished
 record, or any content mismatch. Do not call the launch verified until it passes.
 If it fails, the named owner pauses the launch and uses the recorded before-state
 to restore an overwritten record or remove the new record through the reviewed CMS
-admin path. Run the same readback again after rollback.
+admin path. Do not use `cms:verify-live` to verify the rollback because it compares
+the public record with the new staging content. Instead, fetch every locale from the
+public releases API and compare restored records with the saved before-state payload.
+If the rollback removes a newly created version, confirm that no exact-version record
+remains in any configured locale.
 
 ## Published registry
 
