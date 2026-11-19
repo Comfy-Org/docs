@@ -39,7 +39,21 @@ function requireEnv(name: string): string {
   return val;
 }
 
-function parseArgs(argv: string[]): {
+function optionValue(argv: string[], index: number, option: string): string {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${option} requires a value.`);
+  }
+  return value;
+}
+
+function inlineOptionValue(arg: string, option: string): string {
+  const value = arg.slice(`${option}=`.length);
+  if (!value.trim()) throw new Error(`${option} requires a value.`);
+  return value;
+}
+
+export function parseArgs(argv: string[]): {
   dryRun: boolean;
   skipRegistry: boolean;
   yes: boolean;
@@ -61,13 +75,19 @@ function parseArgs(argv: string[]): {
       // Back-compat: registry refresh is now default; flag is ignored.
     }
     else if (arg === "--yes" || arg === "-y") yes = true;
-    else if (arg === "--rendered-preview" && argv[i + 1]) renderedPreview = argv[++i];
-    else if (arg.startsWith("--rendered-preview=")) {
-      renderedPreview = arg.slice("--rendered-preview=".length);
+    else if (arg === "--rendered-preview") {
+      renderedPreview = optionValue(argv, i, arg);
+      i++;
     }
-    else if (arg === "--rollback-owner" && argv[i + 1]) rollbackOwner = argv[++i];
+    else if (arg.startsWith("--rendered-preview=")) {
+      renderedPreview = inlineOptionValue(arg, "--rendered-preview");
+    }
+    else if (arg === "--rollback-owner") {
+      rollbackOwner = optionValue(argv, i, arg);
+      i++;
+    }
     else if (arg.startsWith("--rollback-owner=")) {
-      rollbackOwner = arg.slice("--rollback-owner=".length);
+      rollbackOwner = inlineOptionValue(arg, "--rollback-owner");
     }
     else if (!arg.startsWith("-")) versions.push(arg.replace(/^v/i, ""));
   }
@@ -348,4 +368,4 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+if (import.meta.main) main();
