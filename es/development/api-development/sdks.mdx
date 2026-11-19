@@ -3,7 +3,7 @@ title: "SDK de Comfy: clientes de Python y TypeScript para ComfyUI"
 description: "Ejecuta flujos de trabajo de ComfyUI desde Python o TypeScript en Comfy Cloud, tu propio despliegue: recursos, tareas, eventos en vivo y reintentos idempotentes."
 sidebarTitle: "SDK"
 icon: "code"
-translationSourceHash: da14b84c
+translationSourceHash: 6b80f44d
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": c92c7b51
@@ -13,6 +13,7 @@ translationBlockHashes:
   "Choosing a base URL": 0e77e81c
   "Retrying a submit: the idempotency key": 7c83d78f
   "Watching a job run": 34d74bcc
+  "Failure categories": 2450a048
   "Tracing an output back to its workflow": b01886a3
   "Label jobs and find them later": 5e8d85e5
   "What the SDKs cover today": 69ebfcc7
@@ -316,6 +317,92 @@ Existen tres cosas con nombres parecidos en las dos superficies, y solo una de e
 No existe `subscribe()` en el cliente de Comfy Cloud, ni `job.subscribe()` en ningún lado. El equivalente de `subscribe` en Cloud es `run()`: envía y espera un estado terminal.
 
 La transmisión es un feed en vivo, no un registro reproducible. Existe para que puedas mostrar el progreso, no para que dependas de ella para obtener resultados. Lo que manda es el sondeo de la tarea, y `run()`, `wait()` y `result()` recurren al sondeo de forma automática. Consulta las [Notas de diseño](/es/development/api-development/sdks-design#consulta-primero-transmite-para-el-progreso) para saber por qué.
+
+## Categorías de fallo
+
+Cuando una tarea falla, `error.category` indica el motivo en una palabra, de modo que tu código pueda decidir qué hacer sin analizar `error.message`. Solo las tareas de un [despliegue de Comfy API](#despliegue-de-comfy-api) la incluyen. Comfy Cloud no establece este campo.
+
+| Categoría | Qué ocurrió |
+|---|---|
+| `invalid_input` | Se rechazó un valor o un archivo de entrada, o superó un límite. |
+| `content_refused` | La moderación de un nodo de socio rechazó el contenido. |
+| `out_of_gpu_memory` | La GPU se quedó sin memoria. |
+| `missing_model_or_node` | El flujo de trabajo necesita un archivo de modelo, una clase de nodo o un paquete de Python que el despliegue no tiene. |
+| `workflow_logic` | El propio flujo de trabajo es incorrecto: un tipo, un enlace o una forma que no coinciden, ningún nodo de salida o una dependencia circular. |
+| `other` | Ninguna de las anteriores. Una caída del proveedor o un tiempo de espera agotado por sí solos también acaban aquí. |
+
+Una tarea recibe una categoría solo cuando su flujo de trabajo o sus entradas causaron el fallo.
+
+**El campo está en el objeto `error` de la tarea** en la respuesta de submit, get y cancel, y en el evento `status` de fallo del flujo de eventos. La lista de tareas no lo incluye: sus elementos solo contienen el mensaje y el detalle del error, así que lee la tarea por su id.
+
+**El campo está ausente cuando:**
+
+- La tarea no ha fallado.
+- La plataforma causó el fallo, o el fallo no pudo atribuirse a tu flujo de trabajo ni a tus entradas.
+- La tarea falló antes de que existieran las categorías.
+- El contenido de las tareas de la cuenta se ha depurado.
+- La tarea se ejecutó en Comfy Cloud.
+
+**Trata un valor desconocido como `other`.** El conjunto de categorías puede crecer dentro de v2. Una categoría ausente significa que la tarea no tiene ninguna, y también puedes tratarla como `other`.
+
+**Una categoría describe el informe de fallo almacenado con la tarea.** Volver a leer la tarea nunca la clasifica de nuevo, y una categoría es una etiqueta de mejor esfuerzo, no una garantía de exactitud. Úsala para elegir el siguiente paso, como pedir al usuario que corrija una entrada.
+
+La versión actual del SDK todavía no expone el campo. El SDK de Python lo descarta de `JobFailed.error`, así que lee la tarea por HTTP. El SDK de TypeScript lo conserva en tiempo de ejecución pero no lo tipa, así que convierte el error con un cast:
+
+<CodeGroup>
+```python Python
+import os
+import httpx
+from comfy_sdk import JobFailed
+
+KNOWN_CATEGORIES = {
+    "invalid_input",
+    "content_refused",
+    "out_of_gpu_memory",
+    "missing_model_or_node",
+    "workflow_logic",
+    "other",
+}
+
+api_key = "comfyui-..."  # la misma clave que pasas a Comfy(api_key=...)
+base_url = os.environ.get("COMFY_BASE_URL") or "https://cloud.comfy.org"  # si no está definida o está vacía, se usa Comfy Cloud, igual que en el cliente
+
+job = client.submit(wf)
+try:
+    job.result()
+except JobFailed:
+    response = httpx.get(
+        f"{base_url}/api/v2/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    response.raise_for_status()
+    category = (response.json().get("error") or {}).get("category")
+    if category not in KNOWN_CATEGORIES:
+        category = "other"  # ausente o desconocida
+```
+
+```typescript TypeScript
+import { JobFailed } from "@comfyorg/sdk";
+
+const KNOWN_CATEGORIES = new Set([
+  "invalid_input",
+  "content_refused",
+  "out_of_gpu_memory",
+  "missing_model_or_node",
+  "workflow_logic",
+  "other",
+]);
+
+try {
+  await client.run(wf);
+} catch (err) {
+  if (!(err instanceof JobFailed)) throw err;
+  const raw = (err.error as { category?: string } | null)?.category;
+  const category =
+    raw !== undefined && KNOWN_CATEGORIES.has(raw) ? raw : "other"; // ausente o desconocida
+}
+```
+</CodeGroup>
 
 ## Rastrear una salida hasta su flujo de trabajo
 

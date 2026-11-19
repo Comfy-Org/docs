@@ -3,7 +3,7 @@ title: "Comfy SDK：ComfyUI 向け Python・TypeScript クライアント"
 description: "Comfy Cloud、デプロイ環境、または自前の ComfyUI に対して Python または TypeScript から ComfyUI ワークフローを実行し、アセット、ジョブ、ライブイベント、冪等なリトライを扱います。"
 sidebarTitle: "SDK"
 icon: "code"
-translationSourceHash: da14b84c
+translationSourceHash: 6b80f44d
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": c92c7b51
@@ -13,6 +13,7 @@ translationBlockHashes:
   "Choosing a base URL": 0e77e81c
   "Retrying a submit: the idempotency key": 7c83d78f
   "Watching a job run": 34d74bcc
+  "Failure categories": 2450a048
   "Tracing an output back to its workflow": b01886a3
   "Label jobs and find them later": 5e8d85e5
   "What the SDKs cover today": 69ebfcc7
@@ -319,6 +320,92 @@ eventLoop: for await (const event of job.events()) {
 Comfy Cloud クライアントに `subscribe()` はなく、どこにも `job.subscribe()` はありません。`subscribe` に相当する Cloud の機能は `run()` です。送信し、終了状態を待ちます。
 
 ストリームはライブフィードであり、再生可能なログではありません。進捗を表示するためのものであり、結果の取得に依存するためのものではありません。ジョブのポーリングこそが信頼できる情報源であり、`run()`、`wait()`、`result()` は自動的にポーリングにフォールバックします。理由については、[設計ノート](/ja/development/api-development/sdks-design#まずポーリング、進捗はストリームで) を参照してください。
+
+## 失敗カテゴリ
+
+ジョブが失敗すると、`error.category` が失敗の理由を一言で示します。`error.message` を解析しなくても、コードが次の処理を選べます。このフィールドを持つのは [Comfy API デプロイ](#comfy-api-デプロイ)上のジョブだけです。Comfy Cloud はこのフィールドを設定しません。
+
+| カテゴリ | 発生した内容 |
+|---|---|
+| `invalid_input` | 入力の値またはファイルが拒否されたか、上限を超えました。 |
+| `content_refused` | パートナーノードのモデレーションがコンテンツを拒否しました。 |
+| `out_of_gpu_memory` | GPU のメモリが不足しました。 |
+| `missing_model_or_node` | ワークフローが必要とするモデルファイル、ノードクラス、または Python パッケージが、デプロイにありません。 |
+| `workflow_logic` | ワークフロー自体に誤りがあります。型、リンク、形状の不一致、出力ノードの欠如、依存関係の循環などです。 |
+| `other` | 上記のいずれでもありません。プロバイダーの障害やタイムアウトだけの場合も、ここに入ります。 |
+
+カテゴリが付くのは、ワークフローまたは入力が失敗の原因だった場合だけです。
+
+**このフィールドはジョブの `error` オブジェクトにあります。** submit、get、cancel のレスポンスと、イベントストリームの失敗を示す `status` イベントに含まれます。ジョブ一覧には含まれません。一覧の項目にはエラーメッセージと詳細だけが入っているため、ジョブを ID で取得してください。
+
+**このフィールドがないのは、次の場合です。**
+
+- ジョブが失敗していない。
+- プラットフォーム側が原因の失敗である、または失敗をワークフローや入力に結び付けられなかった。
+- カテゴリが利用可能になる前にジョブが失敗した。
+- アカウントのジョブの内容が消去されている。
+- ジョブが Comfy Cloud で実行された。
+
+**未知の値は `other` として扱ってください。** カテゴリの種類は v2 の中で増えることがあります。カテゴリがない場合は、そのジョブにカテゴリがないという意味で、これも `other` と同じように扱えます。
+
+**カテゴリは、ジョブと一緒に保存された失敗レポートを表します。** ジョブを読み直しても再分類されません。カテゴリはベストエフォートのラベルであり、正確さを保証するものではありません。入力の修正をユーザーに求めるなど、次の対応を選ぶために使ってください。
+
+現在の SDK リリースは、このフィールドをまだ公開していません。Python SDK は `JobFailed.error` からこれを取り除くため、ジョブを HTTP で読み取ってください。TypeScript SDK は実行時には保持しますが型を持たないため、エラーをキャストします。
+
+<CodeGroup>
+```python Python
+import os
+import httpx
+from comfy_sdk import JobFailed
+
+KNOWN_CATEGORIES = {
+    "invalid_input",
+    "content_refused",
+    "out_of_gpu_memory",
+    "missing_model_or_node",
+    "workflow_logic",
+    "other",
+}
+
+api_key = "comfyui-..."  # Comfy(api_key=...) に渡すのと同じキー
+base_url = os.environ.get("COMFY_BASE_URL") or "https://cloud.comfy.org"  # 未設定または空の場合は Comfy Cloud、クライアントと同じ
+
+job = client.submit(wf)
+try:
+    job.result()
+except JobFailed:
+    response = httpx.get(
+        f"{base_url}/api/v2/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    response.raise_for_status()
+    category = (response.json().get("error") or {}).get("category")
+    if category not in KNOWN_CATEGORIES:
+        category = "other"  # なし、または未知の値
+```
+
+```typescript TypeScript
+import { JobFailed } from "@comfyorg/sdk";
+
+const KNOWN_CATEGORIES = new Set([
+  "invalid_input",
+  "content_refused",
+  "out_of_gpu_memory",
+  "missing_model_or_node",
+  "workflow_logic",
+  "other",
+]);
+
+try {
+  await client.run(wf);
+} catch (err) {
+  if (!(err instanceof JobFailed)) throw err;
+  const raw = (err.error as { category?: string } | null)?.category;
+  const category =
+    raw !== undefined && KNOWN_CATEGORIES.has(raw) ? raw : "other"; // なし、または未知の値
+}
+```
+</CodeGroup>
 
 ## 出力を生成元のワークフローまで遡る
 
