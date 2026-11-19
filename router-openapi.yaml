@@ -1022,7 +1022,7 @@ components:
           schema:
             $ref: '#/components/schemas/RouterValidationErrorResponse'
     RouterProviderError:
-      description: The provider's own response could not be turned into a result (`provider_error`). The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. `X-Comfy-Upstream-Status` carries the provider's own status when Router's typed failure carrier held one; absent, either the failure came with no such status (a poll-transport failure, for example) or this 502 did not come from the provider at all.
+      description: The provider's own response could not be turned into a result (`provider_error`). The body is `RouterErrorResponse` and the bucket is repeated on `X-Comfy-Error-Type`. `X-Comfy-Upstream-Status` carries the provider's own status when Router's typed failure carrier held one; absent, either the failure came with no such status (a poll-transport failure, for example) or this 502 did not come from the provider at all. `Retry-After` is present when the poll leg ended without a verdict on the generation - the generation is still running and will bill on completion, and the `Idempotency-Key` is parked with its handle - and names when a retry with the same key will collect it; it is absent on a terminal provider verdict, which is the one thing that distinguishes the two on the wire.
       headers:
         X-Comfy-Error-Type:
           $ref: '#/components/headers/RouterErrorTypeHeader'
@@ -1030,6 +1030,8 @@ components:
           $ref: '#/components/headers/RouterRequestIdHeader'
         X-Comfy-Upstream-Status:
           $ref: '#/components/headers/RouterUpstreamStatusHeader'
+        Retry-After:
+          $ref: '#/components/headers/RouterRetryAfterHeader'
       content:
         application/json:
           schema:
@@ -1352,7 +1354,7 @@ components:
         format: uuid
         example: 6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21
     RouterRetryAfterHeader:
-      description: 'Seconds to wait before retrying the same request with the same `Idempotency-Key`. It is set on the two answers such a retry can actually collect from: a `409` carrying `error_type: concurrency_limit_exceeded`, where the original call for that key is still running, and a `deadline_exceeded` `504`, where Comfy stopped holding the connection but still holds a handle to a generation the provider is running. In both cases the value is the interval Router itself would wait before asking again, which is the one honest number this route has for "ask again later". Absent when there is nothing to collect: an unkeyed call, a bound that expired before the provider accepted anything, or a `409` that refuses the key outright instead of asking the caller to wait.'
+      description: 'Seconds to wait before retrying the same request with the same `Idempotency-Key`. It is set on the three answers such a retry can actually collect from: a `409` carrying `error_type: concurrency_limit_exceeded`, where the original call for that key is still running; a `deadline_exceeded` `504`, where Comfy stopped holding the connection but still holds a handle to a generation the provider is running; and a `provider_error` `502` whose poll leg ended without a verdict on the generation, where the key is parked with that same handle. A retry after the `502` or the `504` normally collects, or is told to use a new key, rather than dispatching a second generation; the one exception is a `502` whose park itself failed (the reservation was gone, or the park write errored), which leaves no handle to collect and lets a same-key retry dispatch and bill a fresh generation. In every case the value is the interval Router itself would wait before asking again, which is the one honest number this route has for "ask again later". On an unkeyed call there is no handle to collect and the value is only a pacing hint. Absent when there is nothing to collect: a bound that expired before the provider accepted anything, or a `409` that refuses the key outright instead of asking the caller to wait.'
       required: false
       schema:
         type: integer
