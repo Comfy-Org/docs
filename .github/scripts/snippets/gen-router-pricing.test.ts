@@ -213,7 +213,7 @@ describe("public Router pricing", () => {
       expect(localePage.indexOf(callout)).toBeLessThan(localePage.indexOf("<PricingCurrencyToggle"));
       expect(localePage.indexOf(callout)).toBeGreaterThan(localePage.indexOf("{/* Generated pricing page. */}"));
     }
-    expect(pricingCopy.en.routerSite).toBe("Comfy Router charges the model maker's list price. See current prices and compare models at [router.comfy.org](https://router.comfy.org/#pricing).");
+    expect(pricingCopy.en.routerSite).toBe("Comfy Router charges the model maker's list price. See current prices and compare models at [router.comfy.org](https://router.comfy.org/#pricing). Some rates in the tables below can differ from what Router charges, so check router.comfy.org before you rely on a price.");
   });
 
   test("shows GPU-second pricing only for rates whose own unit is GPU-second", () => {
