@@ -18,7 +18,7 @@ paths:
   /v2/models:
     get:
       summary: List the models Comfy Router can run.
-      description: 'Comfy Router''s model catalog - one page of the canonical model IDs that `POST /v2/models/{provider}/{model}` accepts. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry''s `provider` and `model` are the two path segments of the invocation route and reference the same schema components that route''s path parameters do, and `id` is those two segments joined by `/`.'
+      description: 'Comfy Router''s model catalog - one page of the canonical model IDs Comfy Router serves. An entry without a `realtime` block is a model that `POST /v2/models/{provider}/{model}` runs. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry''s `provider` and `model` are the two path segments of the invocation route and reference the same schema components that route''s path parameters do, and `id` is those two segments joined by `/`.'
       operationId: listRouterModels
       tags:
       - Comfy Router
@@ -743,6 +743,8 @@ components:
           type: string
           description: 'The current strong `ETag` of this model''s `GET /v2/models/{provider}/{model}/openapi.json` document. Send it as `If-None-Match` on that read to get a `304` while the schema is unchanged, or compare it with the value seen last time to learn which models'' schemas changed without fetching every document. Absent whenever that read would not answer `200` for this caller at this moment: the schema service is not available, the model''s document cannot be rendered, or the model stopped being available to this caller while the response was being built. An absent tag is not a schema change; re-read the model''s document to learn its current tag.'
           example: '"9f2c1e0b7a4d3c6e8f5a2b1d0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e"'
+        realtime:
+          $ref: '#/components/schemas/RouterModelRealtime'
       required:
       - id
       - provider
@@ -776,6 +778,52 @@ components:
       type: object
       description: 'A partner model''s native JSON output document, returned to the caller as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI''s spec-driven codegen needs a class to generate. For the concrete shape one model returns, read that model''s own document at `GET /v2/models/{provider}/{model}/openapi.json`, whose `200` carries the per-model output schema when Comfy has described it.'
       additionalProperties: true
+    RouterModelRealtime:
+      type: object
+      description: 'How to open a session with a realtime model. Present only on realtime models, and absent on every model that runs through `POST /v2/models/{provider}/{model}`: a realtime model is not run through that route, which refuses its id with `model_not_found`. Read the connection details from here rather than building them from a table of serving providers or wire formats in the client.'
+      properties:
+        connect_url:
+          type: string
+          description: 'The path, on the same host that served this catalog, that opens a session with this model. It is a path, not a full URL: take the scheme and host from the base URL used to read `GET /v2/models`, using `wss` (or `ws`) for a `GET` WebSocket upgrade and keeping `https` for a `POST`. Use it as given; it already names the serving route Comfy chose for the model, and the client is not asked to choose one.'
+          example: /v2/realtime/google/google/genie-4
+        method:
+          type: string
+          description: 'The HTTP method `connect_url` is called with: `GET` for a WebSocket upgrade, `POST` for a route that mints a session or carries WebRTC signalling over HTTP.'
+          example: GET
+        transport:
+          type: string
+          description: How the session runs. `websocket` - a WebSocket that carries the session's messages. `websocket_media_frames` - a WebSocket whose messages also carry image or video frames. `webrtc` - media flows over WebRTC, negotiated either over the WebSocket at `connect_url` (`GET`) or by HTTP signalling calls to it (`POST`). `session_post` - a `POST` that mints a session and answers with the details to join it.
+          example: websocket
+        wire_format:
+          type: string
+          description: 'The encoding of the messages the client sends and receives on `connect_url`: `json` or `msgpack`. For a `POST` route it is the request and response body encoding.'
+          example: json
+        auth:
+          type: array
+          description: The ways `connect_url` accepts the caller's credentials. `x-api-key` - a Comfy API key in the `X-API-Key` header. `comfy-realtime.v1` - the `Sec-WebSocket-Protocol` value the client offers, which the upgrade selects. `comfy-bearer` - a Firebase ID token offered as the `Sec-WebSocket-Protocol` entry `comfy-bearer.<token>` beside `comfy-realtime.v1`, for a browser that cannot set headers on a WebSocket. A method the route does not accept is not listed.
+          items:
+            type: string
+          example:
+          - x-api-key
+          - comfy-realtime.v1
+          - comfy-bearer
+        billing_unit:
+          type: string
+          description: What a session is metered in. `per_second` - wall-clock seconds of an open session.
+          example: per_second
+        max_session_seconds:
+          type: integer
+          minimum: 1
+          description: The longest one session can run, in seconds. A session also ends sooner when the caller's balance runs out.
+          example: 120
+      required:
+      - connect_url
+      - method
+      - transport
+      - wire_format
+      - auth
+      - billing_unit
+      - max_session_seconds
     RouterModelSegment:
       type: string
       description: Lowercase `model` segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`.
