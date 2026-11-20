@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogRates, checkPricingCoverage, compactOptions, displayProvider, isComfyGpuMetered, findUnpricedRoutes, groupImageTiers, groupResolutionTiers, groupRates, loadCatalog, loadMetronomeData, loadUnpricedWaivers, render, resolveKeyedRates, retiredRatesWarning, stagedRatesWarning, tokenPriceCell, validateCreditConversion } from "./gen-router-pricing.ts";
 import type { UnpricedWaiver } from "./gen-router-pricing.ts";
-import { formatAmount, formatOption, formatUnit } from "./router-pricing-display.ts";
+import { formatAmount, formatOption, formatUnit, pricingCopy } from "./router-pricing-display.ts";
 
 const catalog = loadCatalog();
 const snapshot = loadMetronomeData();
@@ -184,7 +184,8 @@ describe("public Router pricing", () => {
 
   test("discloses the credit conversion and keeps billing metadata private", () => {
     expect(page).toContain("| Name | Model ID | Option | Credits |");
-    expect(sourcePage).toContain("\n\n211 credits = $1 USD.\n\n<PricingCurrencyToggle");
+    expect(sourcePage).toContain("\n\n211 credits = $1 USD.\n\n<Tip>\n");
+    expect(sourcePage).toContain("\n</Tip>\n\n<PricingCurrencyToggle");
     expect(sourcePage).toContain('import { PricingCurrencyToggle } from "../../snippets/router-pricing-currency.jsx";');
     expect(sourcePage).toContain('<PricingCurrencyToggle creditsLabel="Credits" usdLabel="USD">');
     expect(sourcePage).not.toContain("Use the currency switch");
@@ -201,6 +202,18 @@ describe("public Router pricing", () => {
     expect(page).not.toContain("Extra conditions");
     expect(page).not.toContain("How billing works");
     expect(page).toContain("Unpublished prices do not mean free usage.");
+  });
+
+  test("links to router.comfy.org for current list prices in every locale, above the price tables", () => {
+    for (const locale of ["en", "ja", "zh", "ko", "es"] as const) {
+      const localePage = render(locale);
+      const callout = `<Tip>\n${pricingCopy[locale].routerSite}\n</Tip>`;
+      expect(localePage).toContain(callout);
+      expect(localePage).toContain("[router.comfy.org](https://router.comfy.org/#pricing)");
+      expect(localePage.indexOf(callout)).toBeLessThan(localePage.indexOf("<PricingCurrencyToggle"));
+      expect(localePage.indexOf(callout)).toBeGreaterThan(localePage.indexOf("{/* Generated pricing page. */}"));
+    }
+    expect(pricingCopy.en.routerSite).toBe("Comfy Router charges the model maker's list price. See current prices and compare models at [router.comfy.org](https://router.comfy.org/#pricing). Some rates in the tables below can differ from what Router charges, so check router.comfy.org before you rely on a price.");
   });
 
   test("shows GPU-second pricing only for rates whose own unit is GPU-second", () => {

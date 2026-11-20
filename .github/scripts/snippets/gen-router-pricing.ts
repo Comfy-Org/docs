@@ -1188,6 +1188,10 @@ import { PricingCurrencyToggle } from "${currencyToggleImport}";
 
 ${copy.intro(data.credits_per_usd)}
 
+<Tip>
+${copy.routerSite}
+</Tip>
+
 <PricingCurrencyToggle creditsLabel="${copy.credits}" usdLabel="USD">
 ${renderCurrencyView(locale, "credits")}
 ${renderCurrencyView(locale, "usd")}
