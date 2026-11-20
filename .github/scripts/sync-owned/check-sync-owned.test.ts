@@ -22,6 +22,7 @@ const ALWAYS_GUARDED = [
   "development/comfy-router/limitations.mdx",
   "development/comfy-router/higgsfield-byok.mdx",
   "development/comfy-router/litellm.mdx",
+  "development/comfy-router/realtime.mdx",
   "router-schemas/openai/gpt-image-1.json",
 ];
 
@@ -50,6 +51,7 @@ const EDITABLE = [
   "zh/development/comfy-router/pricing.mdx",
   "router-pricing/metronome-rates.json",
   "zh/development/comfy-router/litellm.mdx",
+  "ja/development/comfy-router/realtime.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.yaml",
   "snippets/comfy-router/model-code-footer.mdx",
   ".github/scripts/snippets/gen-code-pages.ts",
@@ -238,6 +240,7 @@ describe("formatFailure", () => {
       "development/comfy-router/limitations.mdx": "Edit the upstream limitations.mdx",
       "development/comfy-router/higgsfield-byok.mdx": "Edit the upstream higgsfield-byok.mdx",
       "development/comfy-router/litellm.mdx": "Edit the upstream litellm.mdx",
+      "development/comfy-router/realtime.mdx": "Edit the upstream realtime.mdx",
       "development/comfy-router/pricing.mdx": "router-pricing:gen",
       "router-schemas/openai/gpt-image-1.json": "Edit the upstream contract",
       "development/comfy-router/models.mdx": "code-pages:gen",
@@ -288,6 +291,7 @@ describe("the guarded paths exist in this repository", () => {
     "development/comfy-router/limitations.mdx",
     "development/comfy-router/higgsfield-byok.mdx",
     "development/comfy-router/litellm.mdx",
+    "development/comfy-router/realtime.mdx",
     "development/comfy-router/pricing.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",

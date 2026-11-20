@@ -269,6 +269,7 @@ describe("sync-owned Router pages", () => {
     );
     expect(syncOwnedNote("zh/development/comfy-router/models.mdx")).toContain("(models-index)");
     expect(syncOwnedNote("ko/development/comfy-router/reference.mdx")).toContain("(reference)");
+    expect(syncOwnedNote("es/development/comfy-router/realtime.mdx")).toContain("(realtime)");
   });
 
   test("syncOwnedNote is null for hand-curated inputs and ordinary pages", () => {

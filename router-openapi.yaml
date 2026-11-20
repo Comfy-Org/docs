@@ -18,7 +18,7 @@ paths:
   /v2/models:
     get:
       summary: List the models Comfy Router can run.
-      description: 'Comfy Router''s model catalog - one page of the canonical model IDs that `POST /v2/models/{provider}/{model}` accepts. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry''s `provider` and `model` are the two path segments of the invocation route and reference the same schema components that route''s path parameters do, and `id` is those two segments joined by `/`.'
+      description: 'Comfy Router''s model catalog - one page of the canonical model IDs Comfy Router serves. An entry without a `realtime` block is a model that `POST /v2/models/{provider}/{model}` runs. An SDK calls this on cold start to discover what is runnable, and the `model_not_found` suggestions come from the same catalog, so an ID listed here that then 404s on invocation would be worse than either failure alone. That agreement is structural rather than a promise: an entry''s `provider` and `model` are the two path segments of the invocation route and reference the same schema components that route''s path parameters do, and `id` is those two segments joined by `/`.'
       operationId: listRouterModels
       tags:
       - Comfy Router
@@ -145,7 +145,7 @@ paths:
               $ref: '#/components/schemas/RouterModelInput'
       responses:
         '200':
-          description: 'OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model''s native contract when possible, falling back to the alternate provider''s own raw response on a translation failure - logged, never silent), the shape is this model''s own native output; with `strict_mode=true` it is the alternate provider''s response returned unchanged. For most models that is JSON (`RouterModelOutput`); for a model whose partner answers a generation directly as bytes - the ElevenLabs audio models are the first in the catalog - it is those bytes, and the response carries the partner''s own `Content-Type` (`audio/mpeg`, `audio/wav`, ...) rather than `application/json`. A client must branch on the response `Content-Type` and must not assume a JSON document; the per-model contract is published at `GET /v2/models/{provider}/{model}/openapi.json`. This response carries `X-Content-Type-Options: nosniff`, so a partner media type is taken at its word and never sniffed into something else. When this response was replayed from the record held against an `Idempotency-Key` rather than produced by running the model again, it carries `Idempotent-Replayed: true` and is not charged a second time.'
+          description: 'OK - without `model_provider`, or with `model_provider` and `strict_mode=false` (the default, translated back into this model''s native contract when possible, falling back to the alternate provider''s own raw response on a translation failure - logged, never silent), the shape is this model''s own native output; with `strict_mode=true` it is the alternate provider''s response returned unchanged. For most models that is JSON (`RouterModelOutput`); for a model whose partner answers a generation directly as bytes - the ElevenLabs audio models are the first in the catalog - it is those bytes, and the response carries the partner''s own `Content-Type` (`audio/mpeg`, `audio/wav`, ...) rather than `application/json`. A client must branch on the response `Content-Type` and must not assume a JSON document; the per-model contract is published at `GET /v2/models/{provider}/{model}/openapi.json`. This response carries `X-Content-Type-Options: nosniff`, so a partner media type is taken at its word and never sniffed into something else. When this response was replayed from the record held against an `Idempotency-Key` rather than produced by running the model again, it carries `Idempotent-Replayed: true` and is not charged a second time. For a model enrolled in stream-direct, a request with `stream: true` may be answered as `text/event-stream` (the provider''s own event stream) while that serving mode is enabled; otherwise `stream` is settled to false and the response is a single document.'
           headers:
             X-Comfy-Request-Id:
               $ref: '#/components/headers/RouterRequestIdHeader'
@@ -175,6 +175,9 @@ paths:
               schema:
                 type: string
                 format: binary
+            text/event-stream:
+              schema:
+                type: string
         '400':
           $ref: '#/components/responses/RouterRunRequestError'
         '401':
@@ -667,7 +670,7 @@ components:
         meaning: 'A service Comfy Router depends on is temporarily unavailable and the caller did nothing wrong. Retry it with backoff: it is the one bucket here whose condition clears on its own, without the caller changing the request and without a concurrency slot freeing, which is what distinguishes it from the other retryable answers (`concurrency_limit_exceeded`, `deadline_exceeded`). It is separate from `internal_error` - which is a `500` and means Router itself failed - so a client can tell "come back shortly" from "this call is not going to work".'
       - value: rate_limited
         tier: transport
-        meaning: 'The caller has spent an allowance measured over a window and must wait for that window to roll. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller''s own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window, and `Retry-After` the seconds to wait.'
+        meaning: 'The caller has spent an allowance measured over a window and must wait for that window to roll, or the model provider throttled the call before starting any generation. It shares `429` with `concurrency_limit_exceeded` and is not the same thing: that one clears the moment one of the caller''s own in-flight calls finishes, so retrying in seconds is right, whereas nothing the caller does drains this one early. `detail` names the window, and `Retry-After` the seconds to wait. On a provider''s limit, `X-Comfy-Upstream-Status` carries its `429`, and `Retry-After` carries the provider''s own wait only when it sent one.'
       - value: cancelled
         tier: transport
         meaning: 'A queued request was withdrawn — through the cancel route, or by an operator — before it produced a result; it is terminal, and it is not by itself a statement about the charge. Cancelling stops Comfy waiting and it does not always stop the partner working, so a request cancelled while it was still `IN_QUEUE` was never dispatched and cannot be charged, whereas one cancelled after it was admitted may still be charged — a partner generation that completes is charged whether or not anyone collected it, which is why the cancel route calls the ask a request rather than a guarantee. It is not `client_disconnected`: that one says nobody is listening any more while a generation may still be running and billable, whereas this says the request itself was withdrawn. A caller polling the status read sees `200` with this in the body, because the request ended and so the read succeeded. Collecting the result of such a request answers `409` in Router''s error envelope: that read also worked, and what it found is a request whose terminal state - the caller''s own decision - leaves nothing to return. It is deliberately not `410`, which on that route means the result aged out of its retention window, and not a `5xx`, which would report the caller''s own cancellation as a Router fault and read to a polling client as worth retrying.'
@@ -740,6 +743,8 @@ components:
           type: string
           description: 'The current strong `ETag` of this model''s `GET /v2/models/{provider}/{model}/openapi.json` document. Send it as `If-None-Match` on that read to get a `304` while the schema is unchanged, or compare it with the value seen last time to learn which models'' schemas changed without fetching every document. Absent whenever that read would not answer `200` for this caller at this moment: the schema service is not available, the model''s document cannot be rendered, or the model stopped being available to this caller while the response was being built. An absent tag is not a schema change; re-read the model''s document to learn its current tag.'
           example: '"9f2c1e0b7a4d3c6e8f5a2b1d0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e"'
+        realtime:
+          $ref: '#/components/schemas/RouterModelRealtime'
       required:
       - id
       - provider
@@ -773,6 +778,52 @@ components:
       type: object
       description: 'A partner model''s native JSON output document, returned to the caller as-is. Its concrete shape is owned by the partner rather than by Comfy, so this is an open object: Router does not narrow, rename, or re-envelope the fields. It is a named component (never an inline anonymous object) because ComfyUI''s spec-driven codegen needs a class to generate. For the concrete shape one model returns, read that model''s own document at `GET /v2/models/{provider}/{model}/openapi.json`, whose `200` carries the per-model output schema when Comfy has described it.'
       additionalProperties: true
+    RouterModelRealtime:
+      type: object
+      description: 'How to open a session with a realtime model. Present only on realtime models, and absent on every model that runs through `POST /v2/models/{provider}/{model}`: a realtime model is not run through that route, which refuses its id with `model_not_found`. Read the connection details from here rather than building them from a table of serving providers or wire formats in the client.'
+      properties:
+        connect_url:
+          type: string
+          description: 'The path, on the same host that served this catalog, that opens a session with this model. It is a path, not a full URL: take the scheme and host from the base URL used to read `GET /v2/models`, using `wss` (or `ws`) for a `GET` WebSocket upgrade and keeping `https` for a `POST`. Use it as given; it already names the serving route Comfy chose for the model, and the client is not asked to choose one.'
+          example: /v2/realtime/google/google/genie-4
+        method:
+          type: string
+          description: 'The HTTP method `connect_url` is called with: `GET` for a WebSocket upgrade, `POST` for a route that mints a session or carries WebRTC signalling over HTTP.'
+          example: GET
+        transport:
+          type: string
+          description: How the session runs. `websocket` - a WebSocket that carries the session's messages. `websocket_media_frames` - a WebSocket whose messages also carry image or video frames. `webrtc` - media flows over WebRTC, negotiated either over the WebSocket at `connect_url` (`GET`) or by HTTP signalling calls to it (`POST`). `session_post` - a `POST` that mints a session and answers with the details to join it.
+          example: websocket
+        wire_format:
+          type: string
+          description: 'The encoding of the messages the client sends and receives on `connect_url`: `json` or `msgpack`. For a `POST` route it is the request and response body encoding.'
+          example: json
+        auth:
+          type: array
+          description: The ways `connect_url` accepts the caller's credentials. `x-api-key` - a Comfy API key in the `X-API-Key` header. `comfy-realtime.v1` - the `Sec-WebSocket-Protocol` value the client offers, which the upgrade selects. `comfy-bearer` - a Firebase ID token offered as the `Sec-WebSocket-Protocol` entry `comfy-bearer.<token>` beside `comfy-realtime.v1`, for a browser that cannot set headers on a WebSocket. A method the route does not accept is not listed.
+          items:
+            type: string
+          example:
+          - x-api-key
+          - comfy-realtime.v1
+          - comfy-bearer
+        billing_unit:
+          type: string
+          description: What a session is metered in. `per_second` - wall-clock seconds of an open session.
+          example: per_second
+        max_session_seconds:
+          type: integer
+          minimum: 1
+          description: The longest one session can run, in seconds. A session also ends sooner when the caller's balance runs out.
+          example: 120
+      required:
+      - connect_url
+      - method
+      - transport
+      - wire_format
+      - auth
+      - billing_unit
+      - max_session_seconds
     RouterModelSegment:
       type: string
       description: Lowercase `model` segment of the canonical `{provider}/{model}` model ID - the model to run within that provider. Shared by the invocation route's `model` path parameter and a catalog entry's `model` field, for the same no-drift reason as `RouterProviderSegment`.
@@ -1123,7 +1174,7 @@ components:
       name: fallback_provider
       in: query
       required: false
-      description: 'Controls whether Router retries this call against another of the model''s registered providers when the first attempt fails for a reason attributable to Router''s own side or to the specific provider tried - never for a reason attributable to the request itself (an unretried failure is refused exactly as it always was). Omitted, or any value other than `false`, turns fallback on (the default) and Router scans the model''s registered alternates in a fixed order and retries once against the first eligible one. `false` turns fallback off: a failure is refused, never retried. A successful fallback response carries the `X-Comfy-Router-Fallback-Provider` header, naming the provider that served it; a fallback attempt that itself also fails does not carry the header, and no case retries a generation that may already have been submitted to a provider. Fallback also turns itself off, regardless of this parameter, on a request that resolved a bring-your-own-key credential, on a request whose body selects a multipart operation, and under `strict_mode=true` - each binds the call to one specific provider and cannot be faithfully replayed against another: the alternate leg would dispatch on Comfy''s own key rather than on the caller''s credential, no alternate translator is guaranteed to carry the multipart media field, and a strict body is already shaped for one provider rather than for the native contract. Each of those is inert, not refused - no retry is attempted and the first attempt''s own failure reaches the caller unchanged. Only an explicit `model_provider` is refused, and see that parameter for the `409`s it answers with; note that fallback''s multipart disable is unconditional, while `model_provider`''s multipart `409` applies only to a leg whose translator cannot serve the operation. A Seedance 2.x body carrying an `asset://` reference in a `content[]` image, video or audio url is likewise never retried on another provider (the ids are BytePlus virtual-library assets): its first attempt''s own failure reaches the caller unchanged. A workspace configured for direct provider calls only never runs this retry, and refuses a non-default `model_provider` with `403` unless the request replays an already accepted `Idempotency-Key`.'
+      description: 'Controls whether Router retries this call against another of the model''s registered providers when the first attempt fails for a reason attributable to Router''s own side or to the specific provider tried - never for a reason attributable to the request itself (an unretried failure is refused exactly as it always was). Omitted, or any value other than `false`, turns fallback on (the default) and Router scans the model''s registered alternates in order (by provider name unless Comfy has configured a different order for the model) and retries once against the first eligible one. `false` turns fallback off: a failure is refused, never retried. A successful fallback response carries the `X-Comfy-Router-Fallback-Provider` header, naming the provider that served it; a fallback attempt that itself also fails does not carry the header, and no case retries a generation that may already have been submitted to a provider. Fallback also turns itself off, regardless of this parameter, on a request that resolved a bring-your-own-key credential, on a request whose body selects a multipart operation, and under `strict_mode=true` - each binds the call to one specific provider and cannot be faithfully replayed against another: the alternate leg would dispatch on Comfy''s own key rather than on the caller''s credential, no alternate translator is guaranteed to carry the multipart media field, and a strict body is already shaped for one provider rather than for the native contract. Each of those is inert, not refused - no retry is attempted and the first attempt''s own failure reaches the caller unchanged. Only an explicit `model_provider` is refused, and see that parameter for the `409`s it answers with; note that fallback''s multipart disable is unconditional, while `model_provider`''s multipart `409` applies only to a leg whose translator cannot serve the operation. A Seedance 2.x body carrying an `asset://` reference in a `content[]` image, video or audio url is likewise never retried on another provider (the ids are BytePlus virtual-library assets): its first attempt''s own failure reaches the caller unchanged. A workspace configured for direct provider calls only never runs this retry, and refuses a non-default `model_provider` with `403` unless the request replays an already accepted `Idempotency-Key`.'
       schema:
         type: string
     ModelProvider:
