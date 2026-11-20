@@ -89,6 +89,7 @@ pnpm cms:preview -- --project comfyui v0.25.1          # Step 3: dry-run sync (c
 pnpm cms:sync -- --project comfyui v0.25.1             # Step 3: push drafts (after staging approved)
 pnpm cms:publish -- --project comfyui v0.25.1          # publish + refresh published-versions.json
 # Cloud: pnpm cms:preview|sync|publish -- --project cloud …  only after Hard gate confirmation
+pnpm cms:verify-live -- --project cloud v0.25.1        # exact public API readback, all locales
 ```
 
 Default: **comfyui + cloud** on prepare. **Sync/publish/preview default for agents: comfyui only** — add `--project cloud` only when the user **explicitly confirms Cloud** after the agent asks (hard gate; every CMS push/publish request; includes preview).
@@ -143,6 +144,43 @@ pnpm cms:publish -- --project comfyui v0.25.1 --no-registry   # publish only, sk
 - Default (no version): all **unpublished EN versions** that have EN drafts in Strapi
 - Bulk: add `--yes` or `CMS_PUBLISH_CONFIRM=1`; all drafts: `CMS_PUBLISH_ALL=1`
 - Uses Strapi Content API `PUT ?status=published`
+
+## Cloud launch evidence and rollback
+
+Cloud is a production launch, not a test send. Before publishing, record all of the
+following in the launch issue or PR:
+
+1. The exact target version and confirmation that Cloud is running that version.
+2. A rendered preview from the native What's New component using the exact staged
+   content. A Markdown diff or `cms:preview` output is not a rendered preview.
+3. A named rollback owner and the before-state for all seven locales. For a new
+   version, the before-state records that the version is absent. For an overwrite,
+   save the current public API payload so the owner can restore the prior content.
+
+The Cloud write path requires the preview and ownership evidence on the command:
+
+```bash
+pnpm cms:publish -- --project cloud v0.25.1 \
+  --rendered-preview artifacts/cloud-v0.25.1-whats-new.png \
+  --rollback-owner "Release owner"
+```
+
+After the API cache refreshes, verify the exact staged content, target version,
+publish metadata, and every configured locale in one read-only command:
+
+```bash
+pnpm cms:verify-live -- --project cloud v0.25.1
+```
+
+The verifier exits nonzero for a missing locale, duplicate record, unpublished
+record, or any content mismatch. Do not call the launch verified until it passes.
+If it fails, the named owner pauses the launch and uses the recorded before-state
+to restore an overwritten record or remove the new record through the reviewed CMS
+admin path. Do not use `cms:verify-live` to verify the rollback because it compares
+the public record with the new staging content. Instead, fetch every locale from the
+public releases API and compare restored records with the saved before-state payload.
+If the rollback removes a newly created version, confirm that no exact-version record
+remains in any configured locale.
 
 ## Published registry
 
