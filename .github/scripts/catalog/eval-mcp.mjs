@@ -3,7 +3,9 @@
  * Run the fixed catalog questions against a Comfy Docs MCP server and score them.
  *
  * Usage:
- *   node .github/scripts/catalog/eval-mcp.mjs                                # production
+ *   Run against PR previews only. Production runs land in Mintlify's agent search analytics
+ *   and drown out real queries (they were the top 6 agent searches on 2026-11-20).
+ *
  *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp
  *   node .github/scripts/catalog/eval-mcp.mjs --out results/eval-<label>.json
  *   node .github/scripts/catalog/eval-mcp.mjs --compare results/eval-baseline.json
@@ -23,7 +25,8 @@ const args = Object.fromEntries(
     return acc;
   }, []),
 );
-const url = args.url ?? "https://docs.comfy.org/mcp";
+if (!args.url) throw new Error("Pass --url https://<preview>.mintlify.site/mcp. Production runs pollute agent search analytics.");
+const url = args.url;
 const { questions } = JSON.parse(readFileSync(join(here, "eval-questions.json"), "utf8"));
 
 let rpcId = 0;
@@ -71,6 +74,7 @@ function check(expect, got) {
     if (expect.pageStartsWith) return top.some((p) => p.startsWith(expect.pageStartsWith));
     if (expect.pageEquals) return top.includes(expect.pageEquals);
     if (expect.pageIn) return top.some((p) => expect.pageIn.includes(p));
+    if (expect.pageStartsWithAny) return top.some((p) => expect.pageStartsWithAny.some((x) => p.startsWith(x)));
   }
   if ("exit" in got) {
     return got.exit === (expect.exit ?? 0) && (expect.contains ?? []).every((s) => got.text.includes(s));
