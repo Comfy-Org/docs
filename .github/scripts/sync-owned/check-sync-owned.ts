@@ -16,7 +16,7 @@
  * `git status --porcelain --untracked-files=all` over: `openapi-v2.yaml`,
  * `router-openapi.yaml`, `development/comfy-router/reference.mdx`,
  * `development/comfy-router/quickstart.mdx`, `development/comfy-router/limitations.mdx`,
- * `development/comfy-router/higgsfield-byok.mdx`, `development/comfy-router/pricing.mdx`,
+ * `development/comfy-router/higgsfield-byok.mdx`,
  * `development/comfy-router/litellm.mdx`, `development/comfy-router/realtime.mdx`,
  * `router-schemas`,
  * `development/comfy-router/models`, `development/comfy-router/models.mdx`,
@@ -36,14 +36,9 @@
  *     pages are generated, so `code.yaml` stays editable and is in fact where an
  *     edit to a generated model page belongs.
  *
- * `development/comfy-router/pricing.mdx` is guarded CONDITIONALLY. The sync copies
- * an upstream page over it, but it is also GENERATED in this repository by
- * `bun run router-pricing:gen` from `router-pricing/metronome-rates.json` and the
- * model pages, and that generator rewrites it on the sync's own pull request. So a
- * change to the generator or the rate snapshot has to commit it, and a page that
- * matches `gen-router-pricing.ts --check` is passed. A page that does not match is
- * a hand-edit, which both the next sync and the next regeneration revert. The
- * caller passes that verdict in as `routerPricingFresh`.
+ * `development/comfy-router/pricing.mdx` is NOT guarded. The sync does not write
+ * it and nothing here generates it: it is a hand-written page in every locale that
+ * points readers at router.comfy.org for Router prices.
  *
  * The three GENERATED page kinds (`development/comfy-router/models.mdx`, the
  * per-model `code.mdx`, and `development/comfy-router/providers.mdx`) are guarded
@@ -82,11 +77,11 @@ export type SyncOwnedRule = {
   /** Where the edit belongs instead. One sentence, rendered under the file. */
   guidance: string;
   /**
-   * Which generator writes the page: `code-pages` (`bun run code-pages:gen`) or
-   * `router-pricing` (`bun run router-pricing:gen`). Excused when that generator's
-   * output is fresh, which makes the page its output rather than a hand-edit.
+   * Set when `bun run code-pages:gen` writes the page. Excused when that
+   * generator's output is fresh, which makes the page its output rather than a
+   * hand-edit.
    */
-  generated?: "code-pages" | "router-pricing";
+  generated?: "code-pages";
 };
 
 /**
@@ -143,13 +138,6 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
       "Hand-written upstream and published here verbatim. Edit the upstream realtime.mdx.",
   },
   {
-    id: "pricing",
-    test: (p) => p === "development/comfy-router/pricing.mdx",
-    guidance:
-      "GENERATED pricing page, and it does not match the generator's output, so this is a hand-edit. Change router-pricing/metronome-rates.json or the generator and re-run `bun run router-pricing:gen`.",
-    generated: "router-pricing",
-  },
-  {
     id: "router-schemas",
     test: (p) => p === "router-schemas" || p.startsWith("router-schemas/"),
     guidance:
@@ -197,11 +185,6 @@ export type CheckOptions = {
    * Defaults to `false`, so an unknown verdict guards rather than waves through.
    */
   generatedPagesFresh?: boolean;
-  /**
-   * Whether `development/comfy-router/pricing.mdx` matches
-   * `gen-router-pricing.ts --check`. Defaults to `false`, like `generatedPagesFresh`.
-   */
-  routerPricingFresh?: boolean;
 };
 
 export function check(rawPaths: readonly string[], options: CheckOptions = {}): Report {
@@ -219,13 +202,7 @@ export function check(rawPaths: readonly string[], options: CheckOptions = {}): 
   for (const path of paths) {
     const rule = SYNC_OWNED_RULES.find((r) => r.test(path));
     if (!rule) continue;
-    const fresh =
-      rule.generated === "code-pages"
-        ? options.generatedPagesFresh
-        : rule.generated === "router-pricing"
-          ? options.routerPricingFresh
-          : false;
-    if (fresh) {
+    if (rule.generated === "code-pages" && options.generatedPagesFresh) {
       excused.push(path);
       continue;
     }
@@ -281,11 +258,10 @@ async function main() {
   }
 
   const generatedPagesFresh = process.env.GENERATED_PAGES_FRESH === "true";
-  const routerPricingFresh = process.env.ROUTER_PRICING_FRESH === "true";
-  const report = check(parsePaths(await Bun.stdin.text()), { generatedPagesFresh, routerPricingFresh });
+  const report = check(parsePaths(await Bun.stdin.text()), { generatedPagesFresh });
   if (report.excused.length > 0) {
     console.log(
-      `ℹ️ ${report.excused.length} generated page(s) allowed: they match what their generator (\`bun run code-pages:gen\` or \`bun run router-pricing:gen\`) emits, so they are a regeneration and not a hand-edit.`,
+      `ℹ️ ${report.excused.length} generated page(s) allowed: they match what \`bun run code-pages:gen\` emits, so they are a regeneration and not a hand-edit.`,
     );
   }
   if (report.offences.length === 0) {

@@ -16,7 +16,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { formatAmount } from "./router-pricing-display.ts";
 
 const ROOT = join(import.meta.dir, "../../..");
 const SPEC_GLOB = "development/comfy-router/models/**/code.yaml";
@@ -1001,109 +1000,6 @@ export function opaqueOutputExample(s: ModelSchema): string {
 /** One model on a page, with whatever alternate serving providers its document lists. */
 type NativeLegs = { model: string; legs: AltProvider[] };
 
-/** One row of `router-pricing/metronome-rates.json`, the same snapshot `pricing.mdx` renders from. */
-export type LegRate = {
-  model_id: string;
-  serving_provider: string;
-  kind: string;
-  unit: string;
-  price_usd?: string;
-  credits?: string;
-  conditions?: string;
-  effective_from: string;
-  effective_until?: string;
-  entitled?: boolean;
-};
-export type RateSnapshot = { snapshot_at: string; rates: LegRate[] };
-
-const RATES_FILE = "router-pricing/metronome-rates.json";
-
-/**
- * Validate a parsed rate snapshot, flattening its supplemental sources into the
- * rates. A missing `snapshot_at` would switch off the started/ended filters in
- * `legPrice` and a row without its keys would crash it, so either fails loudly here.
- */
-export function readRateSnapshot(data: unknown): RateSnapshot {
-  const d = (data ?? {}) as { snapshot_at?: unknown; rates?: unknown; supplemental_sources?: unknown };
-  if (typeof d.snapshot_at !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(d.snapshot_at)) throw new Error(`${RATES_FILE}: missing or malformed snapshot_at`);
-  if (!Array.isArray(d.rates)) throw new Error(`${RATES_FILE}: rates must be an array`);
-  const sources = d.supplemental_sources ?? [];
-  if (!Array.isArray(sources) || !sources.every((s) => s && typeof s === "object" && (s.rates === undefined || Array.isArray(s.rates)))) {
-    throw new Error(`${RATES_FILE}: supplemental_sources must be a list of sources with rate arrays`);
-  }
-  const rates: LegRate[] = [...d.rates, ...sources.flatMap((s: { rates?: LegRate[] }) => s.rates ?? [])];
-  for (const r of rates) {
-    const keys = ["model_id", "serving_provider", "kind", "unit", "effective_from"] as const;
-    if (!r || typeof r !== "object" || !keys.every((k) => typeof r[k] === "string" && r[k])) {
-      throw new Error(`${RATES_FILE}: malformed rate row ${JSON.stringify(r)}`);
-    }
-  }
-  return { snapshot_at: d.snapshot_at, rates };
-}
-
-let rateSnapshot: RateSnapshot | undefined;
-/** The repo's rate snapshot, read once; its supplemental sources count as rates too. */
-function routerRates(): RateSnapshot {
-  if (rateSnapshot) return rateSnapshot;
-  return (rateSnapshot = readRateSnapshot(JSON.parse(readFileSync(join(ROOT, RATES_FILE), "utf8"))));
-}
-
-/**
- * Round a decimal credit amount to 2 places, half up, on the decimal string
- * itself (`20.256` -> `20.26`) so binary floating point cannot round it down.
- * This is the rounding `X-Comfy-Credits-Used` reports.
- */
-export function roundCredits(value: string): string | undefined {
-  const m = /^(\d+)(?:\.(\d+))?$/.exec(value);
-  if (!m) return undefined;
-  const frac = m[2] ?? "";
-  const cents = BigInt(m[1] + (frac + "00").slice(0, 2)) + (frac.length > 2 && frac[2] >= "5" ? 1n : 0n);
-  const s = cents.toString().padStart(3, "0");
-  return formatAmount(`${s.slice(0, -2)}.${s.slice(-2)}`);
-}
-
-/**
- * The price of one leg, from its CURRENT rate rows: priced (not usage-based),
- * not explicitly un-entitled, started and not ended by the snapshot date, and at
- * the latest `effective_from` among those with the same conditions and unit (a
- * newer row for one condition does not hide an unended row for another). The provider label matches without
- * regard to case, as `gen-router-pricing.ts` labels some providers differently. No matching row means no price line: the page
- * never guesses a price, and a tier the snapshot does not carry never appears.
- */
-export function legPrice(model: string, provider: string, snapshot: RateSnapshot): string | undefined {
-  const asOf = snapshot.snapshot_at.slice(0, 10);
-  const live = snapshot.rates.filter(
-    (r) =>
-      r.model_id === model &&
-      r.serving_provider.toLowerCase() === provider.toLowerCase() &&
-      r.kind !== "usage" &&
-      r.entitled !== false &&
-      r.price_usd !== undefined &&
-      r.credits !== undefined &&
-      !(asOf && r.effective_from.slice(0, 10) > asOf) &&
-      !(r.effective_until && asOf && r.effective_until.slice(0, 10) <= asOf)
-  );
-  if (!live.length) return undefined;
-  const group = (r: (typeof live)[number]) => `${r.conditions ?? ""}\u0000${r.unit}`;
-  const latest = new Map<string, string>();
-  for (const r of live) if (r.effective_from > (latest.get(group(r)) ?? "")) latest.set(group(r), r.effective_from);
-  const current = live.filter((r) => r.effective_from === latest.get(group(r)));
-  const amounts = current.map((r) => {
-    const credits = roundCredits(r.credits!);
-    if (!credits || !/^\d+(\.\d+)?$/.test(r.price_usd!)) return undefined;
-    const unit = r.unit.startsWith("per ") ? r.unit : `per ${r.unit}`;
-    // A condition is free text from the rate snapshot: one outside the limit-token
-    // charset (plus `=`, `;`, `,`) could break the MDX or carry a `<provider>/<model>`
-    // id, so it costs the leg its price line rather than being printed.
-    if (current.length > 1 && r.conditions && !isRateCondition(r.conditions)) return undefined;
-    const conditions = current.length > 1 && r.conditions ? ` (${r.conditions})` : "";
-    return `${credits} credits ($${formatAmount(r.price_usd!)}) ${unit}${conditions}`;
-  });
-  return amounts.every(Boolean) ? amounts.join("; ") : undefined;
-}
-
-const isRateCondition = (v: string) => /^[A-Za-z0-9][A-Za-z0-9 _:.+=;,-]*$/.test(v);
-
 /** `a`, `a or b`, `a, b or c`. */
 const orList = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`);
 
@@ -1117,11 +1013,11 @@ function rejectedInput(r: RejectedInput): string {
 
 /**
  * The indented sub-bullets under a leg row that carries `limits`. They are
- * indented on purpose: `gen-router-pricing.ts` counts a page's serving providers
- * as the column-0 `- **<Label>**` lines in this section, so a limit line must
- * never start one.
+ * indented so they read as details of that row: each column-0 `- **<Label>**`
+ * line in this section is one serving provider. No price is printed here;
+ * Router prices are published at router.comfy.org.
  */
-export function legLimitLines(model: string, leg: AltProvider, snapshot: RateSnapshot): string[] {
+export function legLimitLines(leg: AltProvider): string[] {
   const l = leg.limits;
   if (!l) return [];
   const label = providerLabel(leg.provider);
@@ -1135,8 +1031,6 @@ export function legLimitLines(model: string, leg: AltProvider, snapshot: RateSna
   }
   if (l.aspect_ratios) accepts.push(`aspect ratio ${orList(l.aspect_ratios)}`);
   if (accepts.length) lines.push(`Limits: ${accepts.join("; ")}`);
-  const price = legPrice(model, label, snapshot);
-  if (price) lines.push(`Price: ${price}`);
   if (l.rejected_inputs) {
     const how = l.rejected_with ? `Rejected with \`${l.rejected_with}\`` : "Rejected";
     lines.push(`${how}: ${l.rejected_inputs.map(rejectedInput).join(", ")}`);
@@ -1161,7 +1055,7 @@ const callExample = (model: string, provider?: string) =>
  * `model_provider` is served by Router directly, and every row below it is the
  * same endpoint with that one query parameter added.
  */
-export function servingProvidersSection(natives: NativeLegs[], rates?: RateSnapshot): string {
+export function servingProvidersSection(natives: NativeLegs[]): string {
   const withLegs = natives.filter((n) => n.legs.length > 0);
   if (!withLegs.length) return "";
   const rows = (n: NativeLegs) =>
@@ -1171,8 +1065,7 @@ export function servingProvidersSection(natives: NativeLegs[], rates?: RateSnaps
       // it gets no "as <id>": naming its held-back catalog id would publish it.
       ...n.legs.flatMap((leg) => [
         `- **${providerLabel(leg.provider)}**${leg.model_id ? `, as \`${leg.model_id}\`` : ""}: ${callExample(n.model, leg.provider)}`,
-        // Only a leg with limits reads the rate snapshot, so a page without one never depends on it.
-        ...(leg.limits ? legLimitLines(n.model, leg, rates ?? routerRates()) : []),
+        ...(leg.limits ? legLimitLines(leg) : []),
       ]),
     ].join("\n");
   // A page that documents one model needs no header per model; a curated spec
