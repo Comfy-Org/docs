@@ -50,8 +50,9 @@ describe("collectAnchors", () => {
 
   test("follows snippet imports", () => {
     const anchors = collectAnchors("zh/installation/desktop/windows.mdx");
-    // Step titles inside an imported snippet count as page anchors
-    expect(anchors.some((a) => a.includes("desktop-settings"))).toBe(true);
+    // Headings inside an imported snippet count as page anchors:
+    // "自动更新" lives only in /snippets/zh/desktop/update.mdx
+    expect(anchors).toContain("自动更新");
   });
 });
 
