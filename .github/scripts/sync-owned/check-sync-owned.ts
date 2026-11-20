@@ -17,7 +17,8 @@
  * `router-openapi.yaml`, `development/comfy-router/reference.mdx`,
  * `development/comfy-router/quickstart.mdx`, `development/comfy-router/limitations.mdx`,
  * `development/comfy-router/higgsfield-byok.mdx`, `development/comfy-router/pricing.mdx`,
- * `development/comfy-router/litellm.mdx`, `router-schemas`,
+ * `development/comfy-router/litellm.mdx`, `development/comfy-router/realtime.mdx`,
+ * `router-schemas`,
  * `development/comfy-router/models`, `development/comfy-router/models.mdx`,
  * `development/comfy-router/providers.mdx` and `docs.json`. When the sync gains a
  * path, add a rule here and to the workflow's `paths:` filter in the same change,
@@ -134,6 +135,12 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === "development/comfy-router/litellm.mdx",
     guidance:
       "Hand-written upstream and published here verbatim. Edit the upstream litellm.mdx.",
+  },
+  {
+    id: "realtime",
+    test: (p) => p === "development/comfy-router/realtime.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream realtime.mdx.",
   },
   {
     id: "pricing",
