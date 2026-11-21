@@ -8,7 +8,7 @@
  *   node .github/scripts/catalog/check-aliases.mjs --templates ../workflow_templates
  *   node .github/scripts/catalog/check-aliases.mjs --strict   # exit 1 on any unresolved provider or page
  *
- * Sources: Router pages and their API IDs, router-schemas/, router-pricing/,
+ * Sources: Router pages and their API IDs, router-schemas/,
  * Partner Node tutorial folders, legacy partner-node folders, docs.json (English),
  * and workflow_templates (logos, model names, model files) when the folder exists.
  */
@@ -42,9 +42,6 @@ const sources = {
   "Legacy partner-node folders": [...new Set(dirs("built-in-nodes/partner-node").flatMap((d) => dirs(join("built-in-nodes/partner-node", d))))],
   "Template logos": [],
 };
-const pricing = read("router-pricing/metronome-rates.json");
-sources["Pricing model_id prefixes"] = [...new Set(pricing.rates.map((r) => r.model_id.split("/")[0]))];
-sources["Pricing serving_provider"] = [...new Set(pricing.rates.map((r) => r.serving_provider))];
 
 let tplIndex = null;
 if (existsSync(join(templatesDir, "templates/index.json"))) {

@@ -8,7 +8,7 @@
  *
  * Inputs (nothing here is hand-written per model):
  *   Router pages (development/comfy-router/models/<provider>/<model>/code.mdx): model IDs, input/output
- *   router-pricing/metronome-rates.json: rates, with the router.comfy.org tip from router-pricing-display.ts
+ *   Pricing: none in the docs. Model pages point to router.comfy.org and the estimate endpoint (#2443).
  *   catalog-src/: provider IDs (cloud snapshot + docs layer), model aliases, product rules
  *   workflow_templates: templates per model, local model files and folders, nodes
  *   English tutorial pages: linked when they name the model's ID, files, or templates
@@ -26,9 +26,6 @@ const tplDir = resolve(root, args.includes("--templates") ? args[args.indexOf("-
 const OUT = "catalog";
 const TODAY = new Date().toISOString().slice(0, 10);
 const CHANGE_DAYS = 90;
-
-const { pricingCopy } = await import(join(root, ".github/scripts/snippets/router-pricing-display.ts"));
-const pricingTip = pricingCopy.en.routerSite;
 
 const { providers, lookup } = loadProviders();
 const { models: aliasModels } = readJson("catalog-src/models.json");
@@ -194,11 +191,6 @@ for (const rec of models.values()) {
   rec.cloudTemplate = [...dedicated].sort((a, b) => (b.usage ?? 0) - (a.usage ?? 0))[0] ?? null;
 }
 
-// ---------- pricing
-const pricing = readJson("router-pricing/metronome-rates.json");
-const rateRows = [...pricing.rates, ...(pricing.supplemental_sources ?? []).flatMap((s) => (s.rates ?? []).filter((r) => r.entitled !== false))];
-const ratesFor = (id) => rateRows.filter((r) => r.model_id === id);
-
 // ---------- page writers
 const written = [];
 function write(path, frontmatter, body) {
@@ -227,7 +219,7 @@ function modelPage(rec) {
   const open = rec.license === "open-weights";
   const title = `${rec.name} ${phrase} model (${rec.id}): where to run it${rec.routerIds.length ? " and pricing" : ""}`;
   const ways = [rec.routerIds.length && "Comfy Router", open && "ComfyUI locally", rec.templateList.length && "Comfy Cloud"].filter(Boolean);
-  const description = clampDescription(`${rec.name} is a ${phrase} model from ${prov}. Run it with ${list(ways.length ? ways : ["ComfyUI"])}; templates, files, nodes, and rates.`);
+  const description = clampDescription(`${rec.name} is a ${phrase} model from ${prov}. Run it with ${list(ways.length ? ways : ["ComfyUI"])}; templates, files, nodes, and pricing.`);
 
   const products_ = modelProducts(rec);
   let body = `${tagBlock({
@@ -276,12 +268,11 @@ function modelPage(rec) {
     body += `\n## Nodes\n\n${rec.nodes.map((n) => `- [${n}](/built-in-nodes/${n})`).join("\n")}\n`;
   }
 
-  const rates = rec.routerIds.flatMap(ratesFor);
-  if (rates.length) {
-    body += `\n## Pricing\n\n<Tip>\n${pricingTip}\n</Tip>\n\nRouter rates at ${pricing.credits_per_usd} credits per USD:\n\n| Model ID | Served by | Credits | USD | Unit | Conditions |\n| --- | --- | ---: | ---: | --- | --- |\n`;
-    for (const r of rates.slice(0, 40)) body += `| \`${r.model_id}\` | ${mdEscape(r.serving_provider)} | ${r.credits} | ${r.price_usd} | ${mdEscape(r.unit)} | ${mdEscape(r.conditions ?? "")} |\n`;
-    if (rates.length > 40) body += `\n${rates.length - 40} more rates are on the pricing page.\n`;
-    body += `\nSee [Comfy Router pricing](/development/comfy-router/pricing) for every rate.\n`;
+  if (rec.routerIds.length) {
+    body += `\n## Pricing\n\nComfy Router charges the model maker's list price, billed from your workspace credits (211 credits = $1 USD). Current per-model prices are on [router.comfy.org](https://router.comfy.org).\n\n`;
+    body += `- Price a call before you run it: \`POST https://api.comfy.org/v2/models/${rec.routerIds[0]}/estimate\`.\n`;
+    body += `- Billing facts, such as whether a refused request is charged: the \`billing\` field from \`GET https://api.comfy.org/v2/models/${rec.routerIds[0]}\`.\n`;
+    body += `\nSee [Comfy Router pricing](/development/comfy-router/pricing) and [Billing](/development/comfy-router/billing#model-billing-facts).\n`;
   }
   write(rec.path, { title, description }, body);
 }
@@ -426,7 +417,7 @@ for (const [prod, c] of Object.entries(changes)) {
 | [/catalog/products](/catalog/products) | What products Comfy has and where each one's docs start |
 ${outputs.map((o) => `| [/catalog/router/${slug(o)}](/catalog/router/${slug(o)}) | Which ${OUTPUT_PHRASE[o] ?? o} models Comfy Router serves |`).join("\n")}
 | [/catalog/local/models](/catalog/local/models) | Which open-weights models run locally, with files and folders |
-| \`/catalog/models/<provider>/<model>\` | Where one model runs (Router, local, Cloud, Partner Nodes), its templates, nodes, and Router rates |
+| \`/catalog/models/<provider>/<model>\` | Where one model runs (Router, local, Cloud, Partner Nodes), its templates, nodes, and where to find Router prices |
 ${Object.keys(changes).map((p) => `| [/catalog/changes/${p}](/catalog/changes/${p}) | What's new in ${changes[p].title} |`).join("\n")}
 
 Model IDs are Comfy Router IDs (\`provider/model\`), such as \`kling/kling-v3\`. Open-weights models without a Router version use \`<provider>/<model>\`, such as \`bfl/flux-2-dev\`. Provider IDs match Comfy's partner catalog.
@@ -461,5 +452,5 @@ writeFileSync(docsPath, `${JSON.stringify(docs, null, 2)}\n`);
 const withTpl = allModels.filter((m) => m.templateList.length).length;
 const withTut = allModels.filter((m) => m.tutorials.length).length;
 console.log(`Wrote ${written.length} pages (${allModels.length} models: ${routerModels.length} on Router, ${openModels.length} open-weights), removed ${removed} stale.`);
-console.log(`Models with templates: ${withTpl}, with tutorials: ${withTut}, with nodes: ${allModels.filter((m) => m.nodes.length).length}, with rates: ${routerModels.filter((m) => m.routerIds.some((id) => ratesFor(id).length)).length}/${routerModels.length}.`);
+console.log(`Models with templates: ${withTpl}, with tutorials: ${withTut}, with nodes: ${allModels.filter((m) => m.nodes.length).length}.`);
 console.log(`Router outputs: ${outputs.join(", ")}. Changes: ${Object.entries(changes).map(([k, c]) => `${k} ${(c.rows ?? c.blocks).length}`).join(", ")}.`);
