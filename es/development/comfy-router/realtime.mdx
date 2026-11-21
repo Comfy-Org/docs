@@ -2,16 +2,17 @@
 title: "Sesiones de voz en tiempo real con Comfy Router"
 sidebarTitle: "Voz en tiempo real"
 description: "Abre una sesión WebSocket de voz en tiempo real de Grok Voice con Comfy Router: endpoint, autenticación, costo por segundo, límites y códigos de cierre."
-translationSourceHash: 85ed57bc
+translationSourceHash: 2555a808
 translationFrom: development/comfy-router/realtime.mdx
 translationBlockHashes:
   "_intro": c24aeb22
   "Authentication": 588d5135
-  "WebSocket sessions": 5bdbc9ae
+  "WebSocket sessions": 9f0733ee
   "WebRTC world models": e3d1be35
   "Errors": 507d94b1
   "Next": aedde44a
 ---
+
 
 La mayoría de los modelos de Router aceptan una solicitud y devuelven un resultado finalizado. Los modelos en tiempo real, en cambio, mantienen una sesión activa: envías entrada mientras el modelo se ejecuta y recibes su salida a medida que se produce. Router los sirve en dos superficies:
 
@@ -50,7 +51,7 @@ Abre una sesión con una actualización a WebSocket en `wss://api.comfy.org/v2/r
 ### Reglas de la sesión
 
 - **Una sola sesión WebSocket activa por espacio de trabajo.** Una segunda actualización mientras hay una activa se rechaza con `429` y `code: router.realtime.session_already_live`. Cierra la primera sesión antes de abrir otra.
-- **La medición comienza en el `101`.** El cobro corre desde el momento en que la actualización se completa hasta que termina la sesión, en segundos enteros, con un mínimo de un segundo. Abrir una sesión y cerrarla de inmediato igual cobra ese mínimo.
+- **La medición comienza con la primera trama.** El cobro corre en segundos enteros, con un mínimo de un segundo. Para `google/genie-4`, el cobro comienza cuando el modelo envía su primera trama; si la sesión termina antes de eso, dentro de los primeros 20 segundos, no se factura. Si no ha llegado ninguna trama después de 20 segundos, el cobro cuenta desde el momento en que la actualización se completó. Los demás modelos se cobran desde el `101`.
 - **El saldo se vuelve a verificar mientras la sesión está en curso.** Router mide la sesión y vuelve a verificar tu saldo cada 15 segundos. Si el saldo todavía cubre algo de tiempo, el límite de la sesión se acorta para coincidir (una sesión de Genie 4 entonces termina en ese límite con `1000`). Cuando el saldo ya no cubre ni un segundo más, o la cuenta está bloqueada, Router corta la conexión sin trama de cierre (la mayoría de los clientes reportan el código de cierre `1006`). Si te quedaste sin créditos, recarga antes de reconectar. La duración máxima de una sesión también se acorta de antemano a lo que cubre tu saldo.
 
 ### Genie 4
@@ -59,7 +60,7 @@ Abre una sesión con una actualización a WebSocket en `wss://api.comfy.org/v2/r
 
 | `event_type` | Campos | Notas |
 | --- | --- | --- |
-| `world_setup` | `world_prompt: { "text": "..." }` | Debe ser el primer evento. El prompt es requerido, no vacío y de 8 KiB como máximo. Solo texto: se rechaza un `reference_image` o cualquier campo de imagen o video. Repetir el mismo `world_setup` se ignora; enviar uno con un prompt diferente finaliza la sesión. |
+| `world_setup` | `world_prompt: { "text": "..." }` | Debe ser el primer evento. El prompt es requerido, no puede estar vacío y admite como máximo 8 KiB. Solo texto: se rechaza un `reference_image` o cualquier campo de imagen o video. Repetir el mismo `world_setup` se ignora; enviar uno con un prompt diferente finaliza la sesión. |
 | `user_action` | `action`, `input` | `action` es `key_down`, `key_up` o `key_click`. `input` es una de las diez teclas de abajo. |
 | `input` | `content: [{ "type": "text", "text": "..." }]` | Dirige el mundo con texto. Solo partes de texto, cada una de 8 KiB como máximo. |
 | `interaction.complete` | ninguno | Finaliza la sesión de forma ordenada. Envíalo sin otros campos. |
@@ -74,7 +75,7 @@ Las diez teclas que puede indicar un `user_action`:
 
 Cualquier otro tipo de evento, campo o tecla, un `user_action` o `input` antes de `world_setup`, o una avalancha sostenida de eventos (más allá de una ráfaga de unos 120 y luego unos 60 por segundo) finaliza la sesión con el código de cierre `1008` (violación de política). Nada del mensaje rechazado llega al modelo.
 
-Los eventos del propio modelo regresan por el mismo socket. Una sesión termina:
+Los eventos del propio modelo vuelven por el mismo socket. Una sesión termina:
 
 - después del evento `interaction.completed` del modelo, con el código de cierre `1000`;
 - después del evento `error` del modelo, con el código de cierre del proveedor o `1011`;
@@ -115,7 +116,7 @@ async def main():
             max_size=None,
         )
     except InvalidStatus as err:
-        # Una mejora rechazada: el cuerpo es JSON con detail, error_type y code.
+        # Un upgrade rechazado: el cuerpo es JSON con detail, error_type y code.
         print(err.response.status_code, err.response.body.decode(errors="replace"))
         return
 
@@ -192,11 +193,11 @@ El ejemplo del navegador envía un `key_down` y un `key_up` por cada pulsación 
 
 Puedes enviar estos eventos de cliente: `session.update`, `x-fal-session.configure`, `input_audio_buffer.append`, `input_audio_buffer.commit`, `input_audio_buffer.clear`, `conversation.item.create`, `conversation.item.delete`, `conversation.item.truncate`, `response.create` y `response.cancel`. Cada evento puede incluir únicamente sus campos documentados.
 
-- Limita las herramientas a las herramientas `function` que ejecuta el cliente. El servicio rechaza las herramientas del lado del servidor, como los servidores MCP y la búsqueda web o en X.
+- Las herramientas se limitan a las herramientas `function` que ejecuta el cliente. El servicio rechaza las herramientas del lado del servidor, como los servidores MCP y la búsqueda web o en X.
 - El servicio rechaza contenido de imagen y video en cualquier parte de un evento.
-- Si se establece `session.model`, debe ser `grok-voice-latest`, `grok-voice-3.0` o `grok-voice-2.0`.
+- Si defines `session.model`, debe ser `grok-voice-latest`, `grok-voice-3.0` o `grok-voice-2.0`.
 
-Un mensaje que incumpla estas reglas no se reenvía y finaliza la sesión con el código de cierre `1008`. El máximo de la sesión es de **30 minutos**, que se reduce de antemano a lo que cubra tu saldo; al alcanzar el límite, la conexión se cierra sin una trama de cierre.
+Un mensaje que incumpla estas reglas no se reenvía y finaliza la sesión con el código de cierre `1008`. El límite de la sesión es de **30 minutos**, que se reduce de antemano a lo que cubra tu saldo; al alcanzar el límite, la conexión se cierra sin una trama de cierre.
 
 Una sesión de Grok Voice cuesta **$0.0011869 por segundo** (aproximadamente $0.0712 por minuto; con 211 créditos = $1, cerca de 0.25 créditos por segundo o 15 créditos por minuto). Se factura todo el tiempo que el socket permanece abierto, haya o no audio en circulación.
 
