@@ -2,14 +2,15 @@
 title: "フロントエンド拡張機能向けの接続コールバック移行"
 sidebarTitle: "接続コールバック"
 description: "ComfyUI拡張機能における onConnectionsChange とノード削除コールバックの順序、サブグラフ境界での SubgraphIO、graph.events についての説明。"
-translationSourceHash: 06a9ae24
+translationSourceHash: 9a2f855a
 translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
 translationBlockHashes:
   "_intro": cd84d91b
   "Check for SubgraphIO at subgraph boundaries": c049a9fe
   "Subscribe to node lifecycle events with graph.events": 1100692e
   "Node removal fires callbacks in this order (partially tested)": 720324f8
-  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 87ff3f70
+  "Unresolvable subgraph links are pruned on load": 09efbd4a
   "API prompt import does not reconnect resolved inputs": 619d6b69
   "Reject connections before they are made": b9b94a8e
   "Removing a link inside the output callback skips the input callback": 3317def4
@@ -79,7 +80,17 @@ graph.events.addEventListener('node:added', (e) => {
 
 ## ワークフローの読み込みでは、onConnectionsChange が実行される前にピアノードが解決される
 
-`graph.configure()` は、どのノードの `configure()` も実行される前にワークフロー内のすべてのノードを作成し、復元されたリンクに対して `onConnectionsChange` を発火します。そのため、読み込み中に `onConnectionsChange` コールバックが発火した時点では、すべてのピアノードがすでに存在し、そのリンクもすでに登録されているので、そのコールバック内からの `graph.getNodeById()` やリンクの検索は正しく解決されます。
+`graph.configure()` は、どのノードの `configure()` も実行される前にワークフロー内のすべてのノードを作成し、復元されたリンクに対して `onConnectionsChange` を発火します。そのため、読み込み中に復元されたリンクに対して `onConnectionsChange` コールバックが発火した時点では、すべてのピアノードがすでに存在し、そのリンクもすでに登録されているので、そのコールバック内からの `graph.getNodeById()` やリンクの検索は正しく解決されます。次のセクションで説明するように、サブグラフ定義から削除されたリンクは例外です。
+
+## 解決できないサブグラフのリンクは読み込み時に削除される
+
+サブグラフ定義の読み込み時に、決して解決できないサブグラフ内のリンクは削除されます。リンクが解決できないのは、起点または終点のノードが存在しない場合、サブグラフ境界のスロットが範囲外の場合、またはノードがリンクの接続先だったシリアライズ済みの入力を削除した場合です。削除されたリンクごとに、まだ存在するすべての端点ノードで `onConnectionsChange(type, index, false, link, slotOrIO)` が発火します。読み込み中に新しく届く `false` 通知は、ユーザーが切断したのではなく、リンクが削除されたことを意味します。
+
+- **タイミング。** 削除はサブグラフ定義の構成時に、そのノードと各ノードの `configure()` 呼び出しの後、かつ `onGraphConfigured` や `onAfterGraphConfigured` フックが実行される前に行われます。これらのフックのいずれかを定義しているノードは、フックから入力を追加する可能性があるため、入力を削除したとは判定されません。ただし、ネストされたサブグラフノードは例外です。
+- **コールバック内の状態。** 最初のコールバックが発火する前に、削除対象のリンクはすべてサブグラフから取り除かれ、サブグラフの境界入力・出力スロットから古い ID が消去されています。まだ解決できるリンクには手を加えません。
+- **障害の分離。** 各端点のコールバックはそれぞれ独立した `try` で実行されます。例外は警告として報告され、もう一方の端点、残りの削除対象リンク、または読み込みの残りの処理がスキップされることはありません。
+
+読み込み中の切断をユーザー操作として扱うハンドラー（動的な入力を削除するものなど）は、ワークフローの読み込み中に `true` になる `app.configuringGraph` を確認してください。
 
 ## API prompt インポートでは解決済みの入力が再接続されない
 

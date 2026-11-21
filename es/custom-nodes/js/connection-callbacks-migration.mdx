@@ -2,14 +2,15 @@
 title: "Migración de callbacks de conexión para extensiones del frontend"
 sidebarTitle: "Callbacks de conexión"
 description: "Orden de los callbacks onConnectionsChange y de eliminación de nodos, SubgraphIO en los límites de subgrafos y graph.events en extensiones de ComfyUI."
-translationSourceHash: 06a9ae24
+translationSourceHash: 9a2f855a
 translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
 translationBlockHashes:
   "_intro": cd84d91b
   "Check for SubgraphIO at subgraph boundaries": c049a9fe
   "Subscribe to node lifecycle events with graph.events": 1100692e
   "Node removal fires callbacks in this order (partially tested)": 720324f8
-  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 87ff3f70
+  "Unresolvable subgraph links are pruned on load": 09efbd4a
   "API prompt import does not reconnect resolved inputs": 619d6b69
   "Reject connections before they are made": b9b94a8e
   "Removing a link inside the output callback skips the input callback": 3317def4
@@ -67,7 +68,17 @@ Para obtener el nodo eliminado desde el controlador `onConnectionsChange` de un 
 
 ## La carga del flujo de trabajo resuelve los nodos pares antes de que se ejecute onConnectionsChange
 
-`graph.configure()` crea todos los nodos del flujo de trabajo antes de que se ejecute el `configure()` propio de cualquier nodo y de que se dispare `onConnectionsChange` para sus enlaces restaurados. Por eso, cuando tu callback `onConnectionsChange` se dispara durante la carga, todos los nodos pares ya existen y su enlace ya está registrado, así que `graph.getNodeById()` y las búsquedas de enlaces desde dentro de ese callback se resuelven correctamente.
+`graph.configure()` crea todos los nodos del flujo de trabajo antes de que se ejecute el `configure()` propio de cualquier nodo y de que se dispare `onConnectionsChange` para sus enlaces restaurados. Por eso, cuando tu callback `onConnectionsChange` se dispara durante la carga para un enlace restaurado, todos los nodos pares ya existen y su enlace ya está registrado, así que `graph.getNodeById()` y las búsquedas de enlaces desde dentro de ese callback se resuelven correctamente. Los enlaces eliminados de una definición de subgrafo son la excepción, como se describe en la siguiente sección.
+
+## Los enlaces de subgrafo que no se pueden resolver se eliminan al cargar
+
+Cuando se carga una definición de subgrafo, se eliminan los enlaces dentro de ella que nunca podrán resolverse. Un enlace no puede resolverse cuando falta su nodo de origen o de destino, cuando un slot del límite del subgrafo está fuera de rango, o cuando un nodo eliminó la entrada serializada a la que apuntaba el enlace. Cada enlace eliminado dispara `onConnectionsChange(type, index, false, link, slotOrIO)` en cada nodo extremo que todavía existe. Una nueva notificación `false` durante la carga significa que el enlace se eliminó, no que un usuario lo desconectó.
+
+- **Momento.** La eliminación se ejecuta cuando se configura la definición del subgrafo, después de sus nodos y de sus llamadas a `configure()`, y antes de que se ejecute cualquier hook `onGraphConfigured` u `onAfterGraphConfigured`. Los nodos que definen cualquiera de esos hooks no se consideran como si hubieran eliminado una entrada, porque pueden añadir entradas desde esos hooks. Los nodos de subgrafo anidados son la excepción.
+- **Estado dentro del callback.** Antes de que se dispare el primer callback, todos los enlaces eliminados ya se han quitado del subgrafo, y los ID obsoletos se han borrado de los slots de entrada y salida del límite del subgrafo. Los enlaces que todavía se resuelven no se modifican.
+- **Aislamiento de fallos.** El callback de cada extremo se ejecuta en su propio `try`. Una excepción se informa como advertencia y no omite el otro extremo, los demás enlaces eliminados ni el resto de la carga.
+
+Los manejadores que tratan una desconexión durante la carga como una acción del usuario, por ejemplo al quitar una entrada dinámica, deben comprobar `app.configuringGraph`, que es `true` mientras se carga un flujo de trabajo.
 
 ## La importación de prompts de API no reconecta las entradas resueltas
 
