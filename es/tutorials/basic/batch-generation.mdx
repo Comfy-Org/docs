@@ -1,0 +1,382 @@
+---
+title: "Generación por lotes en ComfyUI"
+sidebarTitle: "Generación por lotes"
+description: "Ejecuta un flujo de trabajo muchas veces cambiando la semilla, el prompt o cualquier ajuste, y compara los resultados en una cuadrícula."
+translationSourceHash: 5bdcd163
+translationFrom: tutorials/basic/batch-generation.mdx
+translationBlockHashes:
+  "_intro": a3840911
+  "Batch Seeds": 20a53d9a
+  "Batch Prompts": ba9a995f
+  "Batch Any Setting": 6dcb15cb
+  "Loops": 165e6f50
+  "Settings Grids": 4a1ccbcb
+  "Scripting with the Comfy API": 8c8a9166
+  "Try It Yourself": 715af502
+---
+
+La **generación por lotes** significa ejecutar un flujo de trabajo muchas veces y cambiar algo entre una ejecución y otra: la semilla, el prompt, el CFG, el sampler, el modelo o varios de estos a la vez. Una **cuadrícula de configuraciones** es uno de sus usos: el mismo prompt y la misma semilla, con una o dos configuraciones cambiadas por celda, para que puedas ver qué hace cada configuración.
+
+Esta guía empieza con el caso más simple y agrega un paso a la vez:
+
+1. [Semillas por lotes](#batch-seeds): muchas variaciones de un prompt
+2. [Prompts por lotes](#batch-prompts): una ejecución por prompt
+3. [Cualquier configuración por lotes](#batch-any-setting): una ejecución por cada valor de CFG, steps o cualquier otra entrada
+4. [Bucles](#loops): Iniciar bucle y Finalizar bucle
+5. [Cuadrículas de configuraciones](#settings-grids): cruzar dos o más configuraciones y organizar los resultados
+6. [Scripts con la API de Comfy](#scripting-with-the-comfy-api): cualquier combinación, en cualquier tamaño
+
+![Un barrido de CFG con una sola semilla: CFG 3, 6 y 9 con SDXL, etiquetados y organizados por el nodo Cuadrícula de imágenes](/images/tutorial/basic/batch-generation/cfg-sweep-grid-labeled.png)
+
+| Método | Qué cambia entre ejecuciones | Sección |
+|--------|---------------------------|---------|
+| Conteo de lotes | La semilla, o cualquier widget ajustado a `increment` o `randomize` | [Semillas por lotes](#batch-seeds) |
+| `batch_size` | El ruido de cada imagen en una pasada de muestreo | [Semillas por lotes](#batch-seeds) |
+| Listas | Cualquier entrada que ingreses desde una lista: semilla, prompt, CFG, steps | [Prompts por lotes](#batch-prompts), [Cualquier configuración por lotes](#batch-any-setting) |
+| Iniciar bucle / Finalizar bucle | Cualquier entrada, una iteración a la vez | [Bucles](#loops) |
+| Un nodo de gráfico XY | Dos o tres configuraciones del sampler, cruzadas | [Cuadrículas de configuraciones](#settings-grids) |
+| Un script | Cualquier cosa, en todas las combinaciones | [Scripts](#scripting-with-the-comfy-api) |
+
+<Tip>
+¿Solo necesitas una cuadrícula de configuraciones sencilla o quieres ver qué muestra una antes de crear la tuya? Las páginas de texto a imagen con modelos abiertos en [Comfy Hub](https://comfy.org/hub/workflows) tienen una pestaña **Grid** con CFG, steps, sampler y scheduler lado a lado con una sola semilla, sin necesidad de configurar nada. Prueba la [pestaña Grid de MOSS-Image](https://comfy.org/hub/workflows/moss-image-text-to-image/). Consulta [Cuadrículas de configuraciones](#settings-grids) para obtener más información.
+</Tip>
+
+<Note>
+Algunos pasos usan nodos personalizados. Todos los nodos personalizados que se mencionan en esta página están instalados en [Comfy Cloud](https://cloud.comfy.org), donde los nodos personalizados se revisan antes de agregarlos. En tu propia instalación de ComfyUI, primero [instala el paquete de nodos](/es/installation/install_custom_node).
+</Note>
+
+## Semillas por lote {#batch-seeds}
+
+La semilla decide el ruido inicial, así que una semilla nueva da una composición nueva del mismo prompt. Cambiar la semilla es el lote más sencillo.
+
+### Conteo de lotes
+
+**Conteo de lotes** está en la barra de ejecución, junto al botón **Run**. Define cuántas veces se pone en cola el flujo de trabajo por cada clic. Consulta [la barra de ejecución](/es/interface/overview) para ver dónde se encuentra.
+
+1. Establece `control after generate` en la semilla del `KSampler` como `randomize` o `increment`.
+2. Establece **Conteo de lotes** en el número de imágenes que quieras.
+3. Haz clic en **Run**. Cada ejecución en cola recibe la siguiente semilla.
+
+![Conteo de lotes establecido en 4 junto al botón Run](/images/tutorial/basic/batch-generation/batch-count.png)
+
+`control after generate` funciona en cualquier widget numérico que lo tenga, no solo en la semilla. Si todos los widgets están en `fixed`, todas las ejecuciones en cola son idénticas y dan la misma imagen.
+
+### batch_size en el latente
+
+`batch_size` en el nodo `Empty Latent Image` crea varios latentes a la vez, y el `KSampler` les aplica el denoising juntos en una sola pasada. Cada imagen del lote recibe un ruido distinto.
+
+1. En `Empty Latent Image`, establece `batch_size` en el número de imágenes, por ejemplo `4`.
+2. Haz clic en **Run**. `Save Image` las guarda todas.
+
+Un lote más grande usa más VRAM, ya que todas las imágenes se muestrean al mismo tiempo.
+
+### Semillas específicas
+
+Para volver a ejecutar semillas que ya te gustan, por ejemplo para compararlas con una configuración nueva, alimenta la semilla desde una lista:
+
+1. Agrega un nodo [Int](/es/built-in-nodes/PrimitiveInt) por cada semilla.
+2. Agrega un nodo [Create List](/es/built-in-nodes/CreateList) y conecta cada `Int` a su siguiente entrada libre. Las entradas nuevas aparecen a medida que conectas.
+3. Conecta la salida `list` de `Create List` con la entrada `seed` del `KSampler`.
+4. Haz clic en **Run**. El `KSampler` se ejecuta una vez por semilla.
+
+![Tres nodos Int con semillas 42, 1234 y 98765 unidos por Create List y conectados a la entrada seed del KSampler](/images/tutorial/basic/batch-generation/seed-list.png)
+
+La siguiente sección explica cómo funcionan las listas.
+
+## Prompts por lote {#batch-prompts}
+
+Cuando un nodo recibe una **lista**, ComfyUI lo ejecuta una vez por cada elemento y pasa todos los resultados al siguiente nodo. Una lista de prompts conectada a `CLIP Text Encode` genera una imagen por cada prompt.
+
+### Un nodo de texto por prompt
+
+1. Agrega un nodo [Text (Multiline)](/es/built-in-nodes/PrimitiveStringMultiline) por cada prompt.
+2. Únelos con `Create List`.
+3. Conecta la salida `list` a la entrada `text` del `CLIP Text Encode` positivo.
+4. Haz clic en **Run**. Cada prompt se codifica y se muestrea como su propia ejecución.
+
+![Tres nodos Text (Multiline), uno por prompt, unidos con Create List y conectados a la entrada text de CLIP Text Encode](/images/tutorial/basic/batch-generation/prompt-list.png)
+
+### Un prompt por línea
+
+Cuando tienes más de unos pocos prompts, mantenlos en una sola caja de texto, con un prompt por línea, y divídelos en una lista con el nodo **splitlines (from data list)** del paquete [Basic data handling](https://github.com/StableLlama/ComfyUI-basic_data_handling).
+
+1. Agrega un nodo `Text (Multiline)` y escribe un prompt por línea.
+2. Agrega un nodo **splitlines (from data list)** (busca `splitlines`) y conecta el texto a su entrada `string`. Deja `keepends` desactivado, para que los saltos de línea no formen parte de los prompts.
+3. Conecta su salida a la entrada `text` del `CLIP Text Encode` positivo.
+4. Haz clic en **Run**. Cada línea se convierte en su propia ejecución.
+
+![Un nodo Text (Multiline) con cuatro prompts, uno por línea, conectado a splitlines (from data list), que alimenta la entrada text de CLIP Text Encode](/images/tutorial/basic/batch-generation/prompt-per-line.png)
+
+De esta manera puedes pegar un archivo de prompts completo en la caja de texto. Las líneas vacías se convierten en prompts vacíos, así que elimínalas primero.
+
+## Lotes en cualquier ajuste {#batch-any-setting}
+
+Una lista puede alimentar casi cualquier entrada, no solo la semilla y el prompt. Para conectar una lista a un widget como `cfg`, arrastra la conexión sobre el widget. Para recorrer varios valores de CFG:
+
+1. Agrega un nodo [Float](/es/built-in-nodes/PrimitiveFloat) por cada valor de CFG, por ejemplo `3`, `6` y `9`.
+2. Únelos con `Create List` y conecta la lista a la entrada `cfg` del `KSampler`.
+3. Mantén la semilla fija: establece `control after generate` de la semilla en `fixed`.
+4. Conecta `VAE Decode` a un nodo [Make Image Grid](/es/built-in-nodes/ImageGrid) y luego a `Save Image`.
+5. Haz clic en **Run**. El `KSampler` y `VAE Decode` se ejecutan una vez por cada valor de CFG, y `Make Image Grid` recibe todas las imágenes.
+
+![Nodos Float para CFG 3, 6 y 9 unidos con Create List a la entrada cfg del KSampler, con VAE Decode alimentando Make Image Grid y Save Image](/images/tutorial/basic/batch-generation/cfg-list.png)
+
+`steps`, `denoise`, el tamaño de la imagen y la fuerza de LoRA funcionan igual, con nodos `Int` o `Float`.
+
+<Warning>
+Cuando un nodo recibe **más de una lista**, ComfyUI empareja los elementos por posición: el primero con el primero, el segundo con el segundo, y el último elemento de la lista más corta se repite. No genera todas las combinaciones. Tres prompts y tres semillas dan tres imágenes, no nueve. Para cruzar dos configuraciones, consulta [Cuadrículas de configuraciones](#settings-grids) o [Scripting con la API de Comfy](#scripting-with-the-comfy-api).
+</Warning>
+
+**Menús desplegables.** `sampler_name`, `scheduler` y los archivos de modelo son menús desplegables, que una lista de valores de texto no puede alimentar directamente. Para comparar unos cuantos, copia los nodos `KSampler` y `VAE Decode` una vez por cada valor, conéctalos al mismo modelo, prompts y latente, configura cada copia de forma distinta y reúne las imágenes con `Make Image Grid`. Para muestreadores y programadores, el nodo de gráfico XY de [Cuadrículas de configuraciones](#settings-grids) es más rápido.
+
+## Bucles {#loops}
+
+Los nodos [Start Loop](/es/built-in-nodes/StartLoop) y [End Loop](/es/built-in-nodes/EndLoop) ejecutan los nodos que quedan entre ellos una vez por iteración. `Start Loop` tiene tres modos:
+
+| Modo | Iteraciones |
+|------|------------|
+| `simple` | `num_iterations` veces, con `iteration_index` empezando en 0 |
+| `For` | Desde `start_iteration_index` hasta (sin incluirlo) `max_iteration`, en pasos de `step` |
+| `List` | Una vez por cada elemento de la `list` conectada; el elemento actual sale por `list_item` |
+
+Para iterar sobre una lista de valores, por ejemplo CFG:
+
+1. Crea la lista con nodos `Float` y `Create List`, como se muestra arriba. Una lista de prompts o seeds funciona de la misma manera.
+2. Añade un nodo `Start Loop`, establece `mode` en `List` y conecta la lista a su entrada `list`.
+3. Conecta `list_item` de `Start Loop` a la entrada que quieras cambiar, aquí la entrada `cfg` del `KSampler`.
+4. Añade un nodo `End Loop`. Conecta la salida `IMAGE` de `VAE Decode` a `output_value` y activa `accumulate` para que End Loop devuelva la imagen de cada iteración, no solo la última.
+5. Conecta las `outputs` de `End Loop` a `Make Image Grid` y después a `Save Image`.
+6. Haz clic en **Run**.
+
+![Una lista de CFG conectada a Start Loop en modo List, list_item conectado a la entrada cfg del KSampler, y VAE Decode alimentando End Loop con accumulate activado, luego Make Image Grid y Save Image](/images/tutorial/basic/batch-generation/loop-list.png)
+
+Con una sola lista, un bucle y una lista simple dan las mismas imágenes. Un bucle también permite que una iteración pase un valor a la siguiente (`next_iteration_value` en End Loop, `current_iteration_value` en Start Loop), y un bucle se puede anidar dentro de otro conectando el `iteration_index` del bucle externo al `parent_iteration` del bucle interno.
+
+<Note>
+Start Loop y End Loop son nodos recientes del núcleo. Si no los encuentras, [actualiza ComfyUI](/es/installation/update_comfyui). Comfy Cloud se actualiza después de cada versión estable de ComfyUI.
+</Note>
+
+## Cuadrículas de configuraciones {#settings-grids}
+
+Una cuadrícula de configuraciones mantiene constantes el prompt, el modelo y la semilla, y solo cambia las configuraciones del sampler, así que cualquier diferencia entre dos celdas proviene de la configuración que cambiaste. Con una semilla aleatoria, cada celda también obtendría una composición distinta y ya no podrías saber si un cambio vino de la configuración o del ruido.
+
+Las cuatro configuraciones de `KSampler` que más afectan a una imagen, aparte del prompt y del modelo, son:
+
+| Configuración | Qué cambia |
+|---------|-----------------|
+| `cfg` | Qué tan estrictamente sigue el modelo el prompt. Los valores bajos se ven sueltos y suaves; los altos, saturados y con nitidez excesiva. |
+| `steps` | Cuántos pasos de denoising realiza el sampler. Más pasos añaden detalle hasta cierto punto; después, solo añaden tiempo. |
+| `sampler_name` | El algoritmo que elimina el ruido en cada paso (`euler`, `dpmpp_2m`, etc.). |
+| `scheduler` | Cómo baja el nivel de ruido de un paso al siguiente (`normal`, `karras`, `simple`, etc.). |
+
+Un barrido completo se multiplica rápido: 4 valores de CFG × 3 recuentos de pasos × 3 muestreadores × 2 programadores dan 72 imágenes. Empieza con una o dos configuraciones, encuentra el rango que se vea bien y luego redúcelo.
+
+### La pestaña Grid en Comfy Hub
+
+Si solo necesitas una cuadrícula de configuraciones simple, no tienes que crearla. Las páginas de texto a imagen de modelos abiertos en [Comfy Hub](https://comfy.org/hub/workflows) tienen una pestaña **Grid** con un barrido pregenerado de CFG × pasos × sampler × programador con una sola semilla, por ejemplo [MOSS-Image](https://comfy.org/hub/workflows/moss-image-text-to-image/).
+
+- Elige qué configuraciones van en las columnas y filas, y haz clic en cualquier celda para verla a tamaño completo.
+- Escribe tu propio prompt, elige los valores a comparar y haz clic en **Run** para ejecutarlos en lote en Comfy Cloud. La pestaña muestra cuántas imágenes son y cuánto cuesta antes de que ejecutes.
+- **Download with workflow** guarda una imagen que puedes arrastrar a ComfyUI para cargar sus configuraciones exactas.
+
+![La pestaña Grid en la página de MOSS-Image en Comfy Hub: prompt, CFG, pasos, sampler y programador, la imagen seleccionada y la cuadrícula de resultados debajo](/images/tutorial/basic/batch-generation/hub-grid-tab.jpg)
+
+Para más configuraciones, otros modelos o tu propio flujo de trabajo, crea la cuadrícula tú mismo como se describe a continuación.
+
+### Cruzar configuraciones con un nodo de gráfico XY
+
+El nodo **FL KSampler XYZ Plot** del paquete [Fill-Nodes](https://github.com/filliptm/ComfyUI_Fill-Nodes) reemplaza el `KSampler` y cruza hasta tres configuraciones por ti. Renderiza cada combinación y devuelve una imagen con los valores escritos a lo largo de los ejes.
+
+1. Reemplaza el `KSampler` por **FL KSampler XYZ Plot**. Conecta `model`, `positive`, `negative`, `latent_image` y el `vae` de tu cargador de checkpoint.
+2. Establece la semilla y los valores base de las configuraciones que no vas a cambiar.
+3. Establece `x_axis` y `y_axis` en dos de `steps`, `cfg`, `denoise`, `sampler_name` y `scheduler`.
+4. Escribe los valores de cada eje en `x_values` y `y_values`, separados por comas, por ejemplo `euler,dpmpp_2m` y `4,8`.
+5. Para cruzar una tercera configuración, establece `z_axis` y `z_values`. `z_stack_mode` coloca las cuadrículas adicionales debajo o al lado unas de otras.
+6. Conecta la salida `IMAGE` a `Save Image` y haz clic en **Run**.
+
+![FL KSampler XYZ Plot configurado con sampler_name euler,dpmpp_2m en el eje x y cfg 4,8 en el eje y, conectado a Save Image](/images/tutorial/basic/batch-generation/xyz-plot-node.png)
+
+![Un gráfico XY de FL KSampler XYZ Plot: euler y dpmpp_2m en horizontal, CFG 4 y 8 en vertical, una semilla](/images/tutorial/basic/batch-generation/xyz-sampler-cfg.jpg)
+
+Para cruzar otras entradas, como prompts × semillas o intensidad de LoRA × CFG, usa [bucles anidados](#loops) o un [script](#scripting-with-the-comfy-api).
+
+### Organizar tu propia cuadrícula
+
+Cuando las imágenes provienen de una lista o un bucle, el nodo [Cuadrícula de imágenes](/es/built-in-nodes/ImageGrid) las organiza en filas, de izquierda a derecha y de arriba abajo.
+
+| Entrada | Qué hace |
+|-------|--------------|
+| `columns` | Imágenes por fila. Configúralo con el número de valores de tu eje horizontal. |
+| `cell_width`, `cell_height` | El tamaño al que se redimensiona cada imagen. |
+| `padding` | Píxeles entre celdas. |
+
+Para etiquetar cada celda, coloca un nodo [Superponer texto](/es/built-in-nodes/TextOverlay) entre `VAE Decode` y `Make Image Grid`. Crea una segunda lista de etiquetas, como `CFG 3`, `CFG 6` y `CFG 9`, con nodos `Text` y `Create List`, y conéctala a la entrada `text`. Como las imágenes y las etiquetas son ambas listas, cada imagen recibe la etiqueta en la misma posición. La cuadrícula de la parte superior de esta página se hizo así.
+
+![VAE Decode alimenta a Superponer texto, cuya entrada text viene de Create List con las etiquetas CFG 3, CFG 6 y CFG 9, y luego Cuadrícula de imágenes](/images/tutorial/basic/batch-generation/label-cells.png)
+
+## Crear scripts con la API de Comfy {#scripting-with-the-comfy-api}
+
+Más allá de dos o tres configuraciones, o para combinar prompts, seeds y modelos, un script es más simple que un gráfico. Construye todas las combinaciones, envía cada una como su propia tarea y guarda los resultados con un registro de lo que cambió en cada ejecución.
+
+### 1. Exportar el flujo de trabajo en formato API
+
+1. Crea y prueba el flujo de trabajo para una ejecución en ComfyUI.
+2. Abre el menú del flujo de trabajo y elige **Export (API)**. Esto guarda el gráfico en [formato API](/es/development/api-development/workflow-api-format), donde la clave de cada nodo es su ID.
+3. Abre el JSON y anota el ID de cada nodo que quieras cambiar. En el flujo de trabajo predeterminado de texto a imagen, el `KSampler` es `"3"` y el `CLIP Text Encode` positivo es `"6"`.
+
+### 2. Poner en cola una tarea por combinación
+
+[Comfy API v2](/es/api-reference/v2/overview) acepta el gráfico en formato API en `POST /api/v2/jobs` y devuelve una tarea que puedes consultar en `GET /api/v2/jobs/{id}`. La misma API funciona en Comfy Cloud y, mediante [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), en tu propio ComfyUI, así que el script de abajo funciona en ambos cambiando `BASE_URL`.
+
+Comfy Cloud ejecuta un número fijo de tareas a la vez según el plan y mantiene el resto en una cola:
+
+| Plan | Tareas en ejecución a la vez |
+|------|------------------------------|
+| Estándar | 1 |
+| Creador | 3 |
+| Pro | 5 |
+
+Puedes tener hasta 100 tareas en cola. Ejecutar más de una tarea a la vez requiere la API y un plan de pago. Consulta [Límites de concurrencia de Cloud](/es/development/deploy/cloud-usage#límites-de-simultaneidad) para más detalles.
+
+En `AXES`, cada clave es `<node ID>.<input name>` y cada valor es la lista de valores que quieres probar. El script ejecuta todas las combinaciones. Mantiene como máximo `MAX_IN_FLIGHT` tareas enviadas a la vez, así que un lote grande nunca llena la cola, y reduce el ritmo cuando el servidor responde `429`. Necesita Python 3.9 o superior y `pip install requests`. Primero, asigna tu [clave API](/es/development/api-development/getting-an-api-key) a `COMFY_API_KEY`.
+
+```python batch.py
+import itertools, json, os, time
+import requests
+
+BASE_URL = "https://cloud.comfy.org"  # ComfyUI propio mediante comfy-api-proxy: "http://127.0.0.1:8189"
+API_KEY = os.environ.get("COMFY_API_KEY", "")
+HEADERS = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+
+WORKFLOW_FILE = "workflow_api.json"  # desde Export (API)
+MAX_IN_FLIGHT = 5                    # ajústalo al límite de ejecución de tu plan; nunca por encima de 100
+OUT_DIR = "batch"
+
+# "<node ID>.<input name>": valores a probar. Se ejecuta cada combinación.
+AXES = {
+    "3.seed": [42],
+    "3.cfg": [3.0, 5.0, 7.0],
+    "3.sampler_name": ["euler", "dpmpp_2m"],
+    "6.text": ["a red fox in snow, photo", "a lighthouse at dusk, oil painting"],
+}
+
+def apply(graph, cell):
+    for key, value in cell.items():
+        node_id, name = key.split(".", 1)
+        graph[node_id]["inputs"][name] = value
+
+def submit(graph):
+    while True:
+        r = requests.post(f"{BASE_URL}/api/v2/jobs", headers=HEADERS, json={"workflow": graph})
+        if r.status_code == 429:  # cola llena o límite de tasa: espera y reintenta
+            time.sleep(int(r.headers.get("Retry-After", "10")))
+            continue
+        r.raise_for_status()
+        return r.json()["id"]
+
+def save_outputs(job, name):
+    files = []
+    for i, output in enumerate(o for o in job["outputs"] if o["type"] == "image"):
+        data = requests.get(output["url"], headers=HEADERS).content  # sigue la redirección al almacenamiento
+        ext = os.path.splitext(output["name"])[1] or ".png"
+        path = os.path.join(OUT_DIR, f"{name}_{i}{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        files.append(path)
+    return files
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(WORKFLOW_FILE) as f:
+        base = json.load(f)
+
+    cells = [dict(zip(AXES, values)) for values in itertools.product(*AXES.values())]
+    pending = [(f"{n:04d}", cell) for n, cell in enumerate(cells)]
+    in_flight = {}  # ID de trabajo -> (nombre, celda)
+    manifest = {}   # nombre -> qué cambió esa ejecución y sus archivos
+
+    while pending or in_flight:
+        while pending and len(in_flight) < MAX_IN_FLIGHT:
+            name, cell = pending.pop(0)
+            graph = json.loads(json.dumps(base))
+            apply(graph, cell)
+            in_flight[submit(graph)] = (name, cell)
+
+        time.sleep(3)
+        for job_id, (name, cell) in list(in_flight.items()):
+            r = requests.get(f"{BASE_URL}/api/v2/jobs/{job_id}", headers=HEADERS)
+            if r.status_code != 200:
+                continue  # límite de tasa o error transitorio: comprobar de nuevo en la siguiente ronda
+            job = r.json()
+            if job["status"] == "succeeded":
+                manifest[name] = {"settings": cell, "files": save_outputs(job, name)}
+                with open(os.path.join(OUT_DIR, "manifest.json"), "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, indent=2, ensure_ascii=False)
+            elif job["status"] not in ("failed", "canceled", "expired"):
+                continue  # aún en cola o en ejecución
+            else:
+                print(f"{name} {cell}: {job['status']} {job.get('error')}")
+            del in_flight[job_id]
+            print(f"{len(cells) - len(pending) - len(in_flight)}/{len(cells)} done")
+
+if __name__ == "__main__":
+    main()
+```
+
+Los archivos están numerados (`0000_0.png`, `0001_0.png` y así sucesivamente), y `batch/manifest.json` registra las configuraciones de cada uno.
+
+Algunas entradas comunes de `AXES`:
+
+```python
+"3.seed": list(range(1, 9)),             # ocho semillas
+"3.seed": [42],                          # una semilla fija, para una cuadrícula de configuraciones
+"3.scheduler": ["normal", "karras"],     # cualquier menú desplegable, por el nombre de su opción
+"6.text": [line.strip() for line in open("prompts.txt", encoding="utf-8") if line.strip()],  # un prompt por línea
+```
+
+<Tip>
+Los [SDK de Comfy](/es/development/api-development/sdks) para Python y TypeScript encapsulan estos endpoints, incluidas las subidas, la espera de tareas y el reintento cuando la cola está llena.
+</Tip>
+
+### 3. Organizar los resultados
+
+Para convertir un lote con script en una cuadrícula, reúne los archivos guardados con unas pocas líneas de [Pillow](https://pillow.readthedocs.io/) (`pip install pillow`). Este ejemplo coloca una configuración en las columnas y otra en las filas, mantiene el resto fijo y escribe los valores a lo largo de los bordes:
+
+```python make_grid.py
+import json
+from PIL import Image, ImageDraw
+
+COLS = ("3.cfg", [3.0, 5.0, 7.0])
+ROWS = ("3.sampler_name", ["euler", "dpmpp_2m"])
+FIXED = {"3.seed": 42, "6.text": "a red fox in snow, photo"}
+CELL, LABEL = 384, 100
+
+with open("batch/manifest.json", encoding="utf-8") as f:
+    runs = list(json.load(f).values())
+
+def path(col, row):
+    want = {COLS[0]: col, ROWS[0]: row, **FIXED}
+    for run in runs:
+        if all(run["settings"].get(k) == v for k, v in want.items()):
+            return run["files"][0]
+    raise KeyError(f"no run with {want}")
+
+sheet = Image.new("RGB", (LABEL + CELL * len(COLS[1]), LABEL + CELL * len(ROWS[1])), "white")
+draw = ImageDraw.Draw(sheet)
+for x, col in enumerate(COLS[1]):
+    draw.text((LABEL + x * CELL + 8, 12), f"{COLS[0]} {col}", fill="black")
+for y, row in enumerate(ROWS[1]):
+    draw.text((6, LABEL + y * CELL + 8), f"{row}", fill="black")
+    for x, col in enumerate(COLS[1]):
+        img = Image.open(path(col, row)).convert("RGB").resize((CELL, CELL))
+        sheet.paste(img, (LABEL + x * CELL, LABEL + y * CELL))
+sheet.save("grid.png")
+```
+
+Crea una hoja por cada combinación de las configuraciones restantes, por ejemplo, una hoja de CFG × sampler para cada prompt.
+
+## Pruébalo tú mismo
+
+1. Descarga la imagen de cuadrícula que está arriba de esta página y arrástrala a ComfyUI. Carga el flujo de trabajo de barrido de CFG (usa `sd_xl_base_1.0.safetensors`).
+2. Reemplaza los nodos `Float` por nodos `Int` y conecta la lista a `seed` en su lugar, o reemplázalos por un nodo **splitlines (from data list)** y conéctalo al prompt.
+3. Cuando necesites cada combinación de varias configuraciones, exporta el flujo de trabajo con **Export (API)** y ejecútalo con el script.
