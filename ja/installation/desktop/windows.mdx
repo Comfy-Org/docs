@@ -3,7 +3,7 @@ title: "Windows 向け Comfy Desktop"
 description: "Windows に Comfy Desktop をインストール：システム要件、セットアップ手順、アップデート、Windows 10 以降で ComfyUI をローカル実行するためのクリーンなアンインストール。"
 icon: "windows"
 sidebarTitle: "Windows"
-translationSourceHash: 592ccfc9
+translationSourceHash: c0edf571
 translationFrom: installation/desktop/windows.mdx
 translationBlockHashes:
   "_intro": 27d36d8f
@@ -11,6 +11,7 @@ translationBlockHashes:
   "Installation": 955f804c
   "Updating Comfy Desktop": b0efe5cd
   "Uninstalling": 4b80edaa
+  "If ComfyUI Crashes with a Windows Error Code": cc96864d
 ---
 import MigrateTip from "/snippets/ja/desktop/migrate.mdx"
 import UpdateGuide from "/snippets/ja/desktop/update.mdx"
@@ -72,3 +73,45 @@ Comfyデスクトップをアンインストールすると、ランチャーア
 1. **アプリデータフォルダーを削除します**: `%APPDATA%\Comfy Desktop`
 2. **個々のインストールをアプリ内から削除する**か、`%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs`（作成された場所がそこである場合は `%USERPROFILE%\ComfyUI-Installs`）と設定したカスタムインストールディレクトリを手動で削除します
 3. **共有モデルライブラリ** `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared`（または `%USERPROFILE%\ComfyUI-Shared`）は、これらのファイルが不要になった場合のみ削除します
+
+## ComfyUI が Windows のエラーコードでクラッシュした場合
+
+ComfyUI のプロセスがネイティブの障害で終了すると、Windows は原因の分からない大きな終了コードを返します。Comfy Desktop は、失敗が現れる場所でその 10 進数と 16 進数の組を読み解きます。
+
+- **起動中**: 起動が失敗し、`Process exited with code 3221225477 / 0xC0000005 (memory access violation ...)` と、ComfyUI 出力の最後の数行が表示されます。
+- **ComfyUI の起動後**: インスタンスのウィンドウは閉じず、**ComfyUI exited unexpectedly** と `exit code 3221225477 / 0xC0000005`、エラー出力の末尾、そして **Restart ComfyUI** と **Back** の操作が表示されます。クラッシュするのはそのインスタンスだけです。
+
+2 つの数値は同じ値で、10 進数の 3221225477 が 0xC0000005（STATUS_ACCESS_VIOLATION）、つまり Windows におけるセグメンテーション違反です。Comfy Desktop はこれをメモリアクセス違反として報告し、通常は ComfyUI の不具合ではなくネイティブライブラリの破損または欠落だと説明します。ただしコードだけではどのライブラリが原因かは分かりません。別のコンポーネントが壊したメモリでモジュールが落ちることもあるため、ログと以下のモジュール名で絞り込みます。
+
+Windows が報告する他のネイティブ障害も同じ 10 進数と 16 進数の組で示され、名前は付きません。`0xC000001D` は不正命令で、通常は CPU にそのビルドが要求する命令セットがないことを意味します。`0xC0000409` はフェイルファスト終了で、多くの場合はスタックバッファオーバーラン、`0xC0000374` はヒープ破損です。
+
+### ログ全体を確認する
+
+失敗のメッセージに表示されるのは ComfyUI 出力の最後の数行だけです。実行の完全な出力はインストールフォルダーのログファイルに書き出されます。
+
+```
+<install folder>\logs\comfyui.log
+```
+
+インスタンスの **管理パネル** には、同じインストールのシェルを開く [ターミナルタブ](/ja/installation/desktop/usage/manage#ターミナルタブ) があるので、そこから読むこともできます。最後の数行が Python のインポート処理であれば、パッケージの読み込み中に終了しています。ワークフローまで進んでいたかどうかは、ログのより前の行で確認できます。
+
+### 問題のモジュールを特定する
+
+クラッシュしたライブラリは ComfyUI のログには残りません。Windows のイベントビューアーに記録されます。
+
+1. `Win+R` を押して `eventvwr.msc` と入力し、Enter を押します。
+2. **Windows ログ → アプリケーション** を開きます。
+3. クラッシュ時刻に記録された **アプリケーション エラー** イベントを選びます。**エラーが発生したアプリケーション名**（または **アプリケーションのパス**）がそのインスタンスの `python.exe` を示すので、同じイベントの **エラーが発生したモジュール名** を確認します。
+
+| モジュール | 原因 | 対処 |
+|---|---|---|
+| `nvcuda.dll`、`nvml.dll` | GPU ドライバーが、このインストールの CUDA ビルドより古い | NVIDIA ドライバーを更新します。CUDA 13 のビルドは 580 以降、それ以前の CUDA ビルドはより低いバージョンでも動作します |
+| `torch*.dll`、`cudnn*.dll`、`cublas*.dll` | インスタンス環境の PyTorch または CUDA パッケージが壊れている、または一部だけ置き換わっている | インスタンスを再インストールするか、[更新タブ](/ja/installation/desktop/usage/manage#更新タブ) で PyTorch を切り替えます |
+| `msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll` | Microsoft Visual C++ ランタイムが不足している | Microsoft Visual C++ 2015-2022 Redistributable (x64) をインストールしてから再起動します |
+
+`0xC0000005` のクラッシュでは、Comfy Desktop が `C:\Windows\System32` にあるこれら 3 つのランタイムファイルを確認し、不足があればメッセージにその旨を追加します。この注記が出た場合はランタイムのインストールが解決策であり、以下のモジュール表は当てはまりません。Windows がまったく見つけられないライブラリは、エラーモジュールとしては現れず `0xC0000135`（STATUS_DLL_NOT_FOUND）で失敗します。
+
+### そのほかに確認する原因
+
+- **メモリに収まらないモデル。** 大きなテキストエンコーダーや拡散モデルの読み込み直後にクラッシュを繰り返す場合、メモリが上限になっている可能性が高いです。ログと、システムメモリおよび GPU メモリの使用量を確認してから、より小さなモデルか軽い精度を試してください。
+- **依存関係の同期が途中で止まった。** インストールや更新では ComfyUI の `requirements.txt` を使って環境を同期します（PyTorch のパッケージは PyTorch 側で別に扱われます）。大きなダウンロードには時間がかかり、接続断や応答しないミラーなどで中断されると、バージョンの合わないパッケージが残って次回の起動でクラッシュすることがあります。環境を手作業で修復せず、インスタンスを再インストールしてください。**Uninstall** はインストールフォルダーとその中のすべてのファイルを削除するため、そこに置いたファイルは先に移動してください。共有ディレクトリ内のモデルは影響を受けません。

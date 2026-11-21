@@ -65,3 +65,45 @@ To fully remove everything:
 1. **Delete the app data folder**: `%APPDATA%\Comfy Desktop`
 2. **Delete individual installations** from within the app, or manually delete `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Installs` (or `%USERPROFILE%\ComfyUI-Installs` if that is where they were created). Also delete any custom installation directories you configured
 3. **Delete the shared model library** at `%LOCALAPPDATA%\Comfy-Desktop\ComfyUI-Shared` (or `%USERPROFILE%\ComfyUI-Shared`) only if you no longer need these files
+
+## If ComfyUI Crashes with a Windows Error Code
+
+When ComfyUI's process dies from a native fault, Windows reports a large exit code that says nothing about the cause. Comfy Desktop decodes the pair wherever the failure surfaces:
+
+- **During startup**: the launch fails with `Process exited with code 3221225477 / 0xC0000005 (memory access violation ...)`, followed by the last lines of ComfyUI's output.
+- **After ComfyUI has started**: the instance window stays open and shows **ComfyUI exited unexpectedly** with `exit code 3221225477 / 0xC0000005`, the tail of the error output, and the **Restart ComfyUI** and **Back** actions. The crash ends that instance only.
+
+The two numbers are the same value: 3221225477 in decimal is 0xC0000005 (STATUS_ACCESS_VIOLATION), the Windows equivalent of a segmentation fault. Comfy Desktop reports it as a memory access violation, usually a faulty or missing native library rather than a ComfyUI bug. The code alone does not prove which library is at fault, because a module can fault on memory that another component corrupted, so use the log and the faulting module below to narrow it down.
+
+The same decimal and hexadecimal pair covers the other native faults Windows reports, without a name for them: `0xC000001D` is an illegal instruction, which usually means the CPU lacks an instruction set the build requires, `0xC0000409` is a fail-fast exit, most often from a stack buffer overrun, and `0xC0000374` is heap corruption.
+
+### Read the Full Log
+
+The failure message shows only the last lines of ComfyUI's output. The complete output of the run is written to a log file in the installation folder:
+
+```
+<install folder>\logs\comfyui.log
+```
+
+The instance's **Manage** panel has a [Terminal tab](/installation/desktop/usage/manage#terminal-tab) that opens a shell for the same installation, if you would rather read the file from there. If the last lines are a Python import chain, the process died while a package was loading; earlier lines in the log show whether the run had already reached a workflow.
+
+### Find the Faulting Module
+
+The library that crashed is not in ComfyUI's log. Windows records it in Event Viewer:
+
+1. Press `Win+R`, type `eventvwr.msc`, and press Enter.
+2. Open **Windows Logs → Application**.
+3. Select the **Application Error** event logged at the crash time. Its **Faulting application name** (or **Faulting application path**) names the instance's `python.exe`; read the **Faulting module name** from the same event.
+
+| Faulting module | Cause | Fix |
+|---|---|---|
+| `nvcuda.dll`, `nvml.dll` | The GPU driver is older than the CUDA build in this installation | Update the NVIDIA driver. CUDA 13 builds expect driver 580 or newer, earlier CUDA builds accept a lower version |
+| `torch*.dll`, `cudnn*.dll`, `cublas*.dll` | A damaged or partially replaced PyTorch or CUDA package in the instance's environment | Reinstall the instance, or switch PyTorch from the [Update tab](/installation/desktop/usage/manage#update-tab) |
+| `msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll` | The Microsoft Visual C++ runtime is missing | Install the Microsoft Visual C++ Redistributable for Visual Studio 2015-2022 (x64), then launch again |
+
+On a `0xC0000005` crash Comfy Desktop checks for those three runtime files in `C:\Windows\System32` and adds a note to the message when one is missing. When that note appears, installing the redistributable is the fix and the faulting module table does not apply: a library Windows cannot find at all fails with `0xC0000135` (STATUS_DLL_NOT_FOUND) instead of appearing as a faulting module.
+
+### Other Causes to Rule Out
+
+- **A model that does not fit in memory.** If the crash repeats right after a large text encoder or diffusion model starts loading, memory is the likely limit. Check the log and how much system RAM and GPU memory are in use, then try a smaller model or a lighter precision.
+- **An interrupted dependency sync.** Installing or updating an instance syncs the environment with ComfyUI's `requirements.txt`, and PyTorch packages are handled by the PyTorch stack instead. A large download can take a long time, and if it is cut off, for example by a dropped connection or a mirror that stops responding, the environment can keep mismatched packages and the next launch can crash. Reinstall the instance instead of repairing the environment by hand. **Uninstall** deletes the installation folder and everything in it, so move any files you keep there first; models in shared directories are not affected.
