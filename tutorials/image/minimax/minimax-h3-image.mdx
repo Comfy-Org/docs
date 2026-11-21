@@ -58,7 +58,7 @@ Edit a picture by describing the change. The template loads the source as `<Pict
 
 **Input materials**
 
-The template ships with one source picture, loaded as `<Picture 1>` in its `LoadImage` node.
+The template ships with one source picture, loaded as `<Picture 1>` in its `Load Image` node.
 
 <CardGroup cols={1}>
   <Card title="vintage_yellow_taxi.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/vintage_yellow_taxi.png">
@@ -126,15 +126,47 @@ Native output is about 16 MP. Every edge is generated on a multiple of 32 px, an
 | 9:16 | 3072 x 5472 |
 | 21:9 | 6272 x 2688 |
 
-Smaller canvases work too and cost less time. In the text-to-image template the resolution selector sets the aspect ratio and the target megapixels separately, so 4 MP is a starting point rather than a limit.
+The model works from about 4 MP to 20 MP, and gives its best results around 16 MP. That is also the top of the resolution selector, so render at 16 MP and downscale afterwards when the GPU has the memory.
+
+Below 4 MP the output degrades. The resolution selector in the text to image template sets the aspect ratio and the target megapixels separately.
+
+### Fixing over-processed text to image output
+
+Connect any picture to the `image_1` input of `MiniMax H3 Image Conditioning` when text-only output comes out over-processed: pores and moles exaggerated, skin and fabric reading as crusty. A larger canvas does not help, since the artifacts persist at 16 MP.
+
+The conditioning node sits inside the Text to Image subgraph. Add a `Load Image` node there and wire it to `image_1`. What the picture shows does not matter, so a blank image works.
+
+Disconnect `vae` on the conditioning node to keep the cost at the vision tokens alone. The picture then reaches only the text encoder, and `VAEDecode` keeps its own VAE connection. Any small picture is enough, since the node rescales it to a 1024 px short edge.
+
+If the crustiness persists, change only the sampler. Change `sampler_name` on the Text to Image subgraph node and keep the shipped `simple`, 6 steps and guidance 1: at 16 MP and those settings, `er_sde` and the `dpmpp_*_sde_gpu` samplers render skin and fabric more cleanly.
+
+`lcm` smooths a text-only run further, but at these step counts it repeats fine detail such as iris patterns. Do not combine it with the `image_1` picture from the first fix: both soften the output.
+
+`er_sde` picked from `sampler_name` runs at its defaults. To reach its noise controls, replace the `KSampler` inside the Text to Image subgraph with `SamplerCustomAdvanced`. Wire `SamplerER_SDE` to sampler, `RandomNoise` to noise, `BasicScheduler` to sigmas (model from the loader, `simple`, 6 steps, denoise 1), `BasicGuider` to guider (the loader plus the conditioning node's `positive`), and the conditioning node's `LATENT` to latent_image.
+
+`s_noise` scales the noise injected at each step, around a default of 1.0. Raise it slightly when the result looks smeared, and lower it when it looks grainy. `solver_type` on `ODE`, or `eta` at 0, puts the sampler in ODE mode and zeroes `s_noise`.
 
 ## Reference images in image editing
 
-The image editing template sends the source image to the model as `<Picture 1>`. Additional images are labelled in order, `<Picture 2>`, `<Picture 3>`, up to 16 references, and the prompt addresses each one by its label. The first picture is the one being edited; the rest supply identity, props, materials, or composition. A short instruction is enough, for example replacing the vehicle in `<Picture 1>` with the one in `<Picture 2>`.
+The image editing template sends the source image to the model as `<Picture 1>`. Additional images are labelled in order, `<Picture 2>`, `<Picture 3>`, up to 16 references, and the prompt addresses each one by its label. The first picture is the one being edited and the rest supply identity, props, materials, or composition, so a short instruction is enough: replacing the vehicle in `<Picture 1>` with the one in `<Picture 2>`.
 
-To add a reference, place another `Load Image` node in the workflow and connect it to both the prompt generation step and the conditioning node. Reference images need no preparation: the template rounds the source to a multiple of 32 px, and ComfyUI scales the internal copies itself, a 1024 px short edge for the vision side and a short edge clamped between 1024 and 2048 px for the VAE side, both on the 32 px grid.
+To add a reference, place another `Load Image` node in the workflow and connect it to both the prompt generation step and the conditioning node. Keep the VAE input on the conditioning node connected: the template already wires it, and with the VAE the reference pictures are also anchored as image latents, so the edit follows the source more closely. Give every reference a short edge of at least 1024 px, and 2048 px when identity matters: the node resizes them for you, upscales anything below 1024 px (those pixels are interpolation), and discards detail beyond 2048 px.
 
-If an edit runs out of memory, enable the `Resize Image/Mask` node in the template and lower its megapixels before sampling.
+Without the resize node, an edit comes back at the source's size. Enable it to generate at a set target instead: 4 MP on template packs where it ships active, and bypassed at 1 MP on pack 0.11.104, where you select it, press `Ctrl-B`, then set the target. Lower the target before sampling if the edit runs out of memory.
+
+The model reads the picture it edits at a short edge of 2048 px at most, which is roughly 4 MP at 1:1 and 7 MP at 16:9. A target above that adds generated detail rather than source detail, so put the target at that size when detail matters and upscale the result afterwards.
+
+### Writing an edit prompt
+
+Leave the expander on and a short instruction is enough: it rewrites your text into the shape the model reads best. Turn it off to write the prompt yourself, and use that same shape.
+
+1. **Name what you refer to, element first.** `The woman in a red coat in <Picture 1> is <Subject 1>`, with enough visible detail to single her out. Every definition names its `<Picture N>`.
+2. **Describe the target image, then give each subject its outcome.** `<Subject 1> is fully preserved`, or `<Subject 1> is partially preserved; her face and coat remain, while her pose changes to a lean toward <Subject 2>`.
+3. **Describe only what changed or is new.** The surface a removed object leaves behind goes here, and so does any text the edit adds.
+
+Content with no source in a reference takes no subject number. Name a removed element once with its `<Picture N>` in the target description, then describe the area it leaves.
+
+`<Subject N>` is wording the text encoder reads, not a binding the sampler enforces, so the description is what holds an edit together. State what changes and what stays instead of assuming the reference carries it. The official editing example shows the full structure: [revised_prompt.edit.txt](https://github.com/MiniMax-AI/MiniMax-H3-Image/blob/main/examples/revised_prompt.edit.txt).
 
 ## Prompt expander
 

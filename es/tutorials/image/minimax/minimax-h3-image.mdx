@@ -2,15 +2,15 @@
 title: "MiniMax-H3-Image: texto a imagen de 16 MP y edición de imágenes en ComfyUI"
 description: "Ejecuta MiniMax-H3-Image en ComfyUI: un checkpoint de pesos abiertos para texto a imagen y edición de imágenes a unos 16 MP, destilado a 6 pasos del sampler."
 sidebarTitle: "MiniMax H3 Image"
-translationSourceHash: fa53bb99
+translationSourceHash: 511a5007
 translationFrom: tutorials/image/minimax/minimax-h3-image.mdx
 translationBlockHashes:
   "_intro": 42477b29
   "Key features": eaf127b0
-  "Templates": 38b9fa7f
+  "Templates": c243d13b
   "Model downloads": 27a8bb4a
-  "Sampling and canvas size": b35e183e
-  "Reference images in image editing": 8f40b9eb
+  "Sampling and canvas size": f7e332cd
+  "Reference images in image editing": 582a9382
   "Prompt expander": 3a73bb44
 ---
 import UpdateReminder from "/snippets/es/tutorials/update-reminder.mdx"
@@ -67,7 +67,7 @@ Edita una imagen describiendo el cambio. La plantilla carga la fuente como `<Pic
 
 **Materiales de entrada**
 
-La plantilla incluye una imagen de origen, cargada como `<Picture 1>` en su nodo `LoadImage`.
+La plantilla incluye una imagen de origen, cargada como `<Picture 1>` en su nodo `Load Image`.
 
 <CardGroup cols={1}>
   <Card title="vintage_yellow_taxi.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/vintage_yellow_taxi.png">
@@ -135,15 +135,47 @@ La salida nativa es de unos 16 MP. Cada borde se genera en un múltiplo de 32 px
 | 9:16 | 3072 x 5472 |
 | 21:9 | 6272 x 2688 |
 
-Los lienzos más pequeños también funcionan y requieren menos tiempo. En la plantilla de texto a imagen, el Selector de resolución establece la relación de aspecto y los megapíxeles objetivo por separado, así que 4 MP es un punto de partida en lugar de un límite.
+El modelo trabaja entre unos 4 MP y 20 MP, y da sus mejores resultados alrededor de 16 MP. Ese es también el máximo del Selector de resolución, así que genera a 16 MP y reduce después si la GPU tiene memoria.
+
+Por debajo de 4 MP la salida se degrada. En la plantilla de texto a imagen, el Selector de resolución establece la relación de aspecto y los megapíxeles objetivo por separado.
+
+### Corregir la salida sobreprocesada de texto a imagen
+
+Conecta cualquier imagen a la entrada `image_1` de `MiniMax H3 Image Conditioning` cuando la salida solo con texto llegue sobreprocesada: poros y lunares exagerados, piel y tela con aspecto costroso. Un lienzo más grande no ayuda, porque los artefactos se mantienen a 16 MP.
+
+El nodo de acondicionamiento está dentro del subgrafo de texto a imagen. Añade allí un nodo `Load Image` y conéctalo a `image_1`. El contenido de la imagen da igual, así que una imagen en blanco también sirve.
+
+Desconecta `vae` en el nodo de acondicionamiento para que el coste se quede en los tokens de visión. La imagen solo llega al codificador de texto y `VAEDecode` conserva su propia conexión VAE. Una imagen pequeña basta, ya que el nodo la reescala a 1024 px de lado corto.
+
+Si el aspecto costroso persiste, cambia solo el sampler. Cambia `sampler_name` en el nodo del subgrafo Text to Image y deja `simple`, 6 pasos y orientación 1 como vienen: a 16 MP y con estos ajustes, `er_sde` y los samplers `dpmpp_*_sde_gpu` dibujan la piel y la tela con más limpieza.
+
+`lcm` suaviza aún más una salida solo con texto, pero con estos pasos repite detalles finos como el patrón del iris. No lo combines con el método de `image_1` anterior: ambos suavizan la salida.
+
+`er_sde` elegido en `sampler_name` se ejecuta con sus valores por defecto. Para llegar a sus controles de ruido, cambia el `KSampler` del subgrafo Text to Image por `SamplerCustomAdvanced`. Conecta `SamplerER_SDE` a sampler, `RandomNoise` a noise, `BasicScheduler` a sigmas (modelo desde el cargador, `simple`, 6 pasos, denoise 1), `BasicGuider` a guider (el cargador más el `positive` del nodo de acondicionamiento) y el `LATENT` del nodo de acondicionamiento a latent_image.
+
+`s_noise` multiplica el ruido que se inyecta en cada paso, con 1.0 por defecto. Súbelo un poco cuando el resultado se ve emborronado y bájalo cuando se ve granulado. `solver_type` en `ODE`, o `eta` a 0, deja el sampler en modo ODE y pone `s_noise` a 0.
 
 ## Imágenes de referencia en la edición de imágenes
 
-La plantilla de edición de imágenes envía la imagen fuente al modelo como `<Picture 1>`. Las imágenes adicionales se etiquetan en orden, `<Picture 2>`, `<Picture 3>`, hasta 16 referencias, y el prompt se dirige a cada una por su etiqueta. La primera imagen es la que se edita; las demás aportan identidad, accesorios, materiales o composición. Basta con una instrucción breve, por ejemplo, reemplazar el vehículo de `<Picture 1>` por el de `<Picture 2>`.
+La plantilla de edición de imágenes envía la imagen de origen al modelo como `<Picture 1>`. Las imágenes adicionales se etiquetan en orden, `<Picture 2>`, `<Picture 3>`, hasta 16 referencias, y el prompt se dirige a cada una por su etiqueta. La primera imagen es la que se edita y el resto aporta identidad, props, materiales o composición, así que basta una instrucción corta: sustituir el vehículo de `<Picture 1>` por el de `<Picture 2>`.
 
-Para añadir una referencia, coloca otro nodo `Load Image` en el flujo de trabajo y conéctalo tanto al paso de generación del prompt como al nodo de acondicionamiento. Las imágenes de referencia no necesitan preparación: la plantilla redondea la fuente a un múltiplo de 32 px y ComfyUI escala las copias internas por sí mismo, con un lado corto de 1024 px para el lado de visión y un lado corto limitado entre 1024 y 2048 px para el lado del VAE, ambos en la cuadrícula de 32 px.
+Para añadir una referencia, coloca otro nodo `Load Image` en el flujo de trabajo y conéctalo tanto al paso de generación del prompt como al nodo de acondicionamiento. Mantén conectada la entrada VAE del nodo de acondicionamiento. La plantilla ya la conecta, y con el VAE las imágenes de referencia también se anclan como latents de imagen, así que la edición sigue mejor a la fuente. Da a cada referencia un lado corto de al menos 1024 px, y de 2048 px cuando importe la identidad: el nodo las redimensiona por ti, amplía lo que queda por debajo de 1024 px (esos píxeles son interpolación) y descarta el detalle que excede 2048 px.
 
-Si una edición se queda sin memoria, habilita el nodo `Resize Image/Mask` de la plantilla y reduce sus megapíxeles antes del muestreo.
+Sin el nodo de redimensionado, la edición vuelve con el tamaño de la imagen de origen. Actívalo para generar con un objetivo fijo: 4 MP en los paquetes de plantillas que lo traen activo, y en el paquete 0.11.104 viene en bypass con 1 MP, así que selecciónalo, pulsa `Ctrl-B` y ajusta el objetivo. Baja el objetivo antes del muestreo si te quedas sin memoria.
+
+El modelo lee la imagen que edita con un lado corto de 2048 px como máximo, lo que equivale a unos 4 MP en 1:1 y 7 MP en 16:9. Un objetivo mayor que eso añade detalle generado, no detalle de la fuente, así que ajusta el objetivo a ese tamaño cuando importe el detalle y amplía el resultado después.
+
+### Cómo escribir un prompt de edición
+
+Con el expansor activo basta una instrucción corta: reescribe tu texto con la estructura que el modelo lee mejor. Si lo desactivas para escribir el prompt tú, usa esa misma estructura.
+
+1. **Nombra el elemento primero y luego asígnale el número.** `The woman in a red coat in <Picture 1> is <Subject 1>`, con el detalle visible que la identifica. Cada definición nombra su `<Picture N>`.
+2. **Describe la imagen final y da a cada sujeto su resultado.** `<Subject 1> is fully preserved`, o `<Subject 1> is partially preserved; her face and coat remain, while her pose changes to a lean toward <Subject 2>`.
+3. **Describe solo lo que cambia o es nuevo.** La superficie que deja un objeto eliminado va aquí, y también el texto que añade la edición.
+
+El contenido que no viene de una referencia no recibe número de sujeto. Nombra un elemento eliminado una vez con su `<Picture N>` en la descripción final y describe la zona que deja.
+
+`<Subject N>` es texto que lee el codificador de texto, no una unión que imponga el muestreador, así que la descripción es lo que sostiene la edición. Indica qué cambia y qué se mantiene en lugar de dar por hecho que la referencia lo arrastra. El ejemplo oficial de edición muestra la estructura completa: [revised_prompt.edit.txt](https://github.com/MiniMax-AI/MiniMax-H3-Image/blob/main/examples/revised_prompt.edit.txt).
 
 ## Expansor de prompt
 
