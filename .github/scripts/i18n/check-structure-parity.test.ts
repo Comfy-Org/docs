@@ -236,6 +236,7 @@ describe("path helpers", () => {
       "zh/tutorials/flux/flux-1-text-to-image.mdx",
       "ko/tutorials/flux/flux-1-text-to-image.mdx",
       "es/tutorials/flux/flux-1-text-to-image.mdx",
+      "de/tutorials/flux/flux-1-text-to-image.mdx",
     ]);
   });
 
