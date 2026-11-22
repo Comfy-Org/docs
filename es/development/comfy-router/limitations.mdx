@@ -2,23 +2,26 @@
 title: "Capacidades y límites de Comfy Router"
 sidebarTitle: "Capacidades y límites"
 description: "Elige Router o un proxy socio, planifica llamadas largas y entiende la recuperación, los límites de tasa y el almacenamiento de recursos."
-translationSourceHash: 7d39a026
+translationSourceHash: b6001224
 translationFrom: development/comfy-router/limitations.mdx
 translationBlockHashes:
   "_intro": 6b871cf3
-  "What Router supports": 2cc63403
-  "Queued submission": bcbb1f7c
+  "What Router supports": 1ef495de
+  "Queued submission": 86a1d09a
   "Calls are cut off at a server deadline": c8724f59
   "Recovery depends on the provider": da9d8904
   "Request bodies are capped": 675b77c8
-  "Requests are rate limited per caller": 83156651
+  "Requests are rate limited per caller": e9ecdda2
   "No progress while a call runs": 75d42d8d
   "Comfy charges and usage": 06a72e74
-  "Models without a pre-flight estimate": 0b17e7de
+  "Models without a pre-flight estimate": 3401b6ff
   "Router does not cover every partner operation": 97498758
   "Model outputs and stored assets": 06c737c1
   "Next": be85b789
 ---
+
+
+
 
 
 
@@ -35,6 +38,7 @@ Router ejecuta un modelo socio a través de una llamada HTTP síncrona o mediant
 | Generar con una sola solicitud | `POST /v2/models/{provider}/{model}` devuelve el resultado final. | Comienza con el [Inicio rápido](/es/development/comfy-router/quickstart). |
 | Enviar una tarea y recogerla más tarde | Entrega en cola: `POST /v2/models/{provider}/{model}/requests` devuelve un `request_id` para consultar y recoger. No hay webhook de finalización. | Usa la [entrega en cola](/es/development/comfy-router/queue). Un proxy de socio con operaciones de envío y consulta expone los controles propios del proveedor. |
 | Mostrar el progreso o transmitir la salida | No hay progreso en vivo, transmisión ni fotogramas de vista previa durante la llamada. | Muestra un estado indeterminado o usa una operación de proxy compatible. |
+| Interactuar con un modelo en vivo | Unos pocos modelos en tiempo real se ejecutan como sesiones en vivo por WebSocket o WebRTC, con facturación por segundo. | Consulta [Modelos en tiempo real](/es/development/comfy-router/realtime). |
 | Recuperarte tras perder la conexión | La recogida con la misma clave está disponible cuando Router conservó un identificador de una generación aceptada. | Conserva la clave y sigue la [orientación de reintentos](/es/development/comfy-router/errors#resultados-de-reintento). |
 | Conciliar los cargos de Comfy | No hay un campo universal de costo o de saldo de créditos de Comfy en la respuesta. | Usa la [facturación del espacio de trabajo](https://platform.comfy.org/settings/billing). |
 | Almacenar los resultados de forma permanente | Las URL de los recursos pueden caducar, incluidas las realojadas y las reproducidas. | Descarga los recursos; consulta [recursos de resultados](/es/development/comfy-router/reference#recursos-del-resultado). |
@@ -48,7 +52,7 @@ La ruta síncrona mantiene la conexión abierta mientras el modelo se ejecuta; c
 
 Si tu solicitud no puede permanecer abierta el tiempo suficiente, ponla en cola. Usa un [proxy de socio](#router-no-cubre-todas-las-operaciones-de-los-socios) cuando necesites los controles propios del proveedor para enviar y consultar.
 
-Cuatro modelos son solo síncronos por ahora y se rechazan con `403` / `not_enabled` si los envías a la cola: `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4` y `elevenlabs/eleven_v4_turbo`. Devuelven bytes de audio sin procesar en lugar de un documento de resultado JSON, que la entrega en cola no tiene dónde almacenar. Ejecútalos en la ruta síncrona, que devuelve esos bytes con normalidad.
+Cinco modelos son solo síncronos por ahora y se rechazan con `403` / `not_enabled` si los envías a la cola: `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_sfx_v3`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4` y `elevenlabs/eleven_v4_turbo`. Devuelven bytes de audio sin procesar en lugar de un documento de resultado JSON, que la entrega en cola no tiene dónde almacenar. Ejecútalos en la ruta síncrona, que devuelve esos bytes con normalidad.
 
 Cuatro modelos son solo de cola y se rechazan con `403` / `not_enabled` en la ruta síncrona: `ltx/ltx-video-alpha-gen`, `ltx/ltx-video-to-video-hdr`, `ltx/ltx-video-to-video-reframe` y `ltx/ltx-video-upscale`. Sus tareas pueden durar más que el tiempo durante el que se mantiene una llamada síncrona. Envía el mismo cuerpo a `POST /v2/models/ltx/{model}/requests` y recoge el resultado de la cola.
 
@@ -85,9 +89,9 @@ El límite se aplica a todas las solicitudes, lleven o no un `Idempotency-Key`. 
 | Respuesta | Causa | Acción |
 | --- | --- | --- |
 | `429` / `concurrency_limit_exceeded` | Demasiadas llamadas concurrentes, o margen insuficiente bajo el techo de gasto comprometido. | Reduce el trabajo concurrente. Los encabezados de gasto distinguen el techo de gasto del límite de cantidad de llamadas. |
-| `429` / `rate_limited` | Se agotó la cuota de solicitudes. | Espera el tiempo indicado en `Retry-After` antes de reintentar. |
+| `429` / `rate_limited` | Se agotó la cuota de solicitudes, o el proveedor del modelo limitó la llamada antes de iniciar cualquier generación (`X-Comfy-Upstream-Status: 429`). | Espera `Retry-After` antes de reintentar. El límite de un proveedor incluye `Retry-After` solo cuando el proveedor lo envió, y solo en la ruta síncrona. |
 
-El límite de tasa de solicitudes aplica a todas las operaciones del Router: la invocación, las lecturas de catálogo y esquema, las estimaciones de costo y las llamadas en cola de envío, estado, resultado y cancelación, incluidas las solicitudes rechazadas antes de la generación. Sigue al solicitante autenticado, no a la IP de origen. Las llamadas con la clave de proveedor del solicitante están exentas; los límites del proveedor siguen aplicando. Consultar una solicitud en cola consume la misma cuota que cualquier otra llamada, así que consulta al intervalo que sugiere la lectura de estado en lugar de hacerlo en un bucle cerrado. Un rechazo `rate_limited` no cambia nada en una solicitud en cola: sigue ejecutándose, y una cancelación rechazada no canceló nada, así que envíala de nuevo después de `Retry-After`.
+El límite de tasa de solicitudes aplica a todas las operaciones del Router: la invocación, las lecturas de catálogo y esquema, las estimaciones de costo y las llamadas en cola de envío, estado, resultado y cancelación, incluidas las solicitudes rechazadas antes de la generación. Sigue al solicitante autenticado, no a la IP de origen. Las llamadas con la clave de proveedor del solicitante están exentas; los límites del proveedor siguen aplicando. Consultar una solicitud en cola consume la misma cuota que cualquier otra llamada, así que consulta al intervalo que sugiere la lectura de estado en lugar de hacerlo en un bucle cerrado. Un rechazo `rate_limited` no cambia nada en una solicitud en cola: sigue ejecutándose, y una cancelación rechazada no canceló nada, así que envíala de nuevo después de `Retry-After`. Una solicitud en cola que terminó por un `429` del proveedor es distinta: su lectura de estado informa `COMPLETED` con `error_type: rate_limited`, y su lectura de resultado responde `429` / `rate_limited` sin `Retry-After` ni `X-Comfy-Upstream-Status`. Esa solicitud ya terminó y esperar no cambia la respuesta, así que envíala de nuevo.
 
 Almacena en caché las lecturas de catálogo y esquema. Revalídalas con `ETag` e `If-None-Match`. Consulta [Encabezados](/es/development/comfy-router/headers) para los campos de reintento y de gasto comprometido.
 
@@ -109,7 +113,7 @@ Para consultar un precio antes de una ejecución, llama a `POST /v2/models/{prov
 
 ## Modelos sin estimación previa
 
-Router todavía no puede calcular de forma fiable el precio de una llamada a los modelos siguientes antes de ejecutarla, así que es posible que `/estimate` y el campo `estimate` de un envío en cola respondan `source: unknown` para ellos, aunque algunos pueden devolver una cifra para un cuerpo concreto. `unknown` significa que no se dio ninguna cifra, no que la ejecución sea gratis. Las reglas de [Cargos y uso de Comfy](#cargos-y-uso-de-comfy) siguen aplicándose: una ejecución con tu propia clave de proveedor no se factura a través de Comfy, y `X-Comfy-Credits-Used` es opcional, así que si falta el encabezado significa que no se informó del costo. Un modelo que no aparezca en esta lista puede responder igualmente `unknown` para un cuerpo concreto, así que revisa `source` en cada estimación.
+Router todavía no puede calcular de forma fiable el precio de una llamada a los modelos siguientes antes de ejecutarla, así que es posible que `/estimate` y el campo `estimate` de un envío en cola respondan `source: unknown` para ellos, aunque algunos pueden devolver una cifra para un cuerpo concreto. `unknown` significa que no se dio ninguna cifra, no que la ejecución sea gratis. Las reglas de [Cargos y uso de Comfy](#cargos-y-uso-de-comfy) siguen aplicándose: una ejecución con tu propia clave de proveedor no la factura Comfy, y `X-Comfy-Credits-Used` es opcional, así que si falta el encabezado significa que no se informó del costo. Un modelo que no aparezca en esta lista puede responder igualmente `unknown` para un cuerpo concreto, así que revisa `source` en cada estimación.
 
 Esta lista se reduce a medida que crece la cobertura de estimaciones. Se genera a partir del propio código de precios de Router, y los modelos que no están disponibles públicamente nunca aparecen en ella.
 
@@ -117,19 +121,20 @@ Esta lista se reduce a medida que crece la cobertura de estimaciones. Se genera 
 
 - **bfl**: `bfl/erase-v1`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
 - **fal**: `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`
+- **freepik**: `freepik/ai-image-relight`, `freepik/ai-image-style-transfer`
 - **heygen**: `heygen/starfish`
-- **ideogram**: `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
-- **kelly**: `kelly/kelly-seedance-2.0`, `kelly/kelly-seedance-2.0-fast`, `kelly/kelly-seedance-2.5`
+- **ideogram**: `ideogram/ideogram-4-6`, `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
+- **kelly**: `kelly/kelly-kling-4.0`, `kelly/kelly-seedance-2.0`, `kelly/kelly-seedance-2.0-fast`, `kelly/kelly-seedance-2.5`
 - **kling**: `kling/kling-4.0`, `kling/kling-image-4.0`, `kling/kling-long-image-4.0`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`
 - **ltx**: `ltx/ltx-video-alpha-gen`, `ltx/ltx-video-to-video-hdr`, `ltx/ltx-video-to-video-reframe`, `ltx/ltx-video-upscale`
 - **minimax**: `minimax/minimax-gpt-image-2`, `minimax/minimax-gpt-image-2.5-flare`, `minimax/minimax-gpt-image-2.5-sunburst`, `minimax/minimax-gpt-image-2.6-flare`, `minimax/minimax-gpt-image-2.6-sunburst`, `minimax/minimax-h3-image`, `minimax/minimax-h3-image-highspeed`
 - **openai**: `openai/gpt-image-1.5`
-- **openrouter**: `openrouter/chat-completions`
 - **pika**: `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`
 - **pixverse**: `pixverse/v3.5`, `pixverse/v6`, `pixverse/v6-max`
 - **quiver**: `quiver/arrow-2`, `quiver/arrow-2-telos`
 - **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
 - **synclabs**: `synclabs/sync-3`
+- **typesafe**: `typesafe/jev-1.13.0`, `typesafe/jev-1.14.0`
 - **veed**: `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
 - **wavespeed**: `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
 
