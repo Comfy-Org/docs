@@ -1,0 +1,57 @@
+---
+title: "Node-Erweiterung"
+description: "Erweitern Sie Comfy-Nodes um neue Subgraphs in Backend-Custom-Nodes. Erfahren Sie alles zu GraphBuilder-Anforderungen und Caching."
+translationSourceHash: 02e00d1f
+translationFrom: custom-nodes/backend/expansion.mdx
+translationBlockHashes:
+  "Node Expansion": 0cf67de0
+  "See Also": b5ebf5ed
+---
+## Node-Erweiterung
+
+Normalerweise gibt die Ausführungsfunktion eines Nodes beim Ausführen sofort die Ausgabewerte dieses Nodes zurück. Die „Node-Erweiterung“ ist eine relativ fortgeschrittene Technik, mit der Nodes einen neuen Subgraph aus Nodes zurückgeben können, der im Graphen an ihre Stelle treten soll. Diese Technik ermöglicht es Custom Nodes, Schleifen zu implementieren.
+
+### Ein einfaches Beispiel
+
+Zunächst ein einfaches Beispiel dafür, wie eine Node-Erweiterung aussieht:
+
+<Tip>Wir empfehlen dringend, beim Erstellen von Subgraphen die Klasse `GraphBuilder` zu verwenden. Sie ist nicht zwingend erforderlich, verhindert aber viele einfache Fehler.</Tip>
+```python
+def load_and_merge_checkpoints(self, checkpoint_path1, checkpoint_path2, ratio):
+    from comfy_execution.graph_utils import GraphBuilder # Normalerweise am Anfang der Datei
+    graph = GraphBuilder()
+    checkpoint_node1 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path1)
+    checkpoint_node2 = graph.node("CheckpointLoaderSimple", checkpoint_path=checkpoint_path2)
+    merge_model_node = graph.node("ModelMergeSimple", model1=checkpoint_node1.out(0), model2=checkpoint_node2.out(0), ratio=ratio)
+    merge_clip_node = graph.node("ClipMergeSimple", clip1=checkpoint_node1.out(1), clip2=checkpoint_node2.out(1), ratio=ratio)
+    return {
+        # (MODEL, CLIP, VAE)-Ausgaben zurückgeben
+        "result": (merge_model_node.out(0), merge_clip_node.out(0), checkpoint_node1.out(2)),
+        "expand": graph.finalize(),
+    }
+```
+
+Derselbe Node ließ sich früher zwar auch durch manuelle Aufrufe von ComfyUI-Interna implementieren, doch mit der Erweiterung wird jeder Subnode separat im Cache gehalten (wenn Sie also `model2` ändern, müssen Sie `model1` nicht neu laden).
+
+### Anforderungen
+
+Um eine Node-Erweiterung durchzuführen, muss ein Node ein Dictionary mit den folgenden Schlüsseln zurückgeben:
+1. `result`: Ein Tupel der Ausgaben des Nodes. Es kann eine Mischung aus fertigen Werten (wie Sie sie von einem normalen Node zurückgeben würden) und Node-Ausgaben sein.
+2. `expand`: Der fertige Graph, auf dem die Erweiterung erfolgen soll. Siehe unten, falls Sie den `GraphBuilder` nicht verwenden.
+
+#### Zusätzliche Anforderungen bei Verzicht auf GraphBuilder
+
+Das für den Schlüssel `expand` erwartete Format entspricht dem ComfyUI-API-Format. Die folgenden Anforderungen werden vom `GraphBuilder` übernommen, müssen aber manuell behandelt werden, wenn Sie auf ihn verzichten:
+
+1. Node-IDs müssen im gesamten Graphen eindeutig sein. (Das gilt auch über mehrere Ausführungen desselben Nodes hinweg, wenn Listen verwendet werden.)
+2. Node-IDs müssen deterministisch und über mehrere Ausführungen des Graphen hinweg konsistent sein (einschließlich Teilausführungen aufgrund von Caching).
+
+Selbst wenn Sie den `GraphBuilder` nicht für den tatsächlichen Aufbau des Graphen verwenden möchten (z. B. weil Sie das rohe JSON des Graphen aus einer Datei laden), können Sie die Funktion `GraphBuilder.alloc_prefix()` nutzen, um ein Präfix zu erzeugen, und `comfy.graph_utils.add_graph_prefix`, um vorhandene Graphen so anzupassen, dass sie diese Anforderungen erfüllen.
+
+### Effizientes Subgraph-Caching
+
+Sie können zwar Nicht-Literal-Eingaben (wie torch-Tensoren) an Nodes innerhalb des Subgraphen übergeben, dies kann jedoch das Caching *innerhalb* des Subgraphen beeinträchtigen. Wenn möglich, sollten Sie Verbindungen zu Objekten im Subgraphen übergeben, statt die Objekte selbst. (Sie können eine Eingabe als `rawLink` in den [Additional Parameters](./datatypes#zusätzliche-parameter) der Eingabe deklarieren, um dies einfach umzusetzen.)
+
+## Siehe auch
+
+- [Subgraphs (Entwicklerhandbuch)](/de/custom-nodes/js/subgraphs) – Leitfaden für Erweiterungsautoren im Frontend

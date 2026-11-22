@@ -478,6 +478,18 @@ function buildTranslationInstructions(lang: LangConfig): string {
     lang.code === "es"
       ? "Spanish runs 20 to 30 percent longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact."
       : "",
+    lang.code === "de"
+      ? "For German, use the formal address form (Sie) throughout, matching the ComfyUI frontend's de locale (for example `Sie können`, `Ihr Workflow`). Never use the informal du/dein. Keep the product terms the frontend already established: `Workflow` (not Arbeitsablauf), `Node` and `Nodes` (not Knoten), `Custom Nodes`, `Checkpoint`, `Sampler`, `Prompt`, `Latent`, `Subgraph`, `Canvas`, `Workspace`, `Vorlage` for template, `Warteschlange` for queue, `Seitenleiste` for sidebar, `App-Modus` for app mode. Localize the section headings as `## Schema`, `### Eingaben` and `### Ausgaben`, matching the German node documentation."
+      : "",
+    lang.code === "de"
+      ? "German headings capitalize nouns but must not carry English Title Case: write `## ComfyUI installieren`, not `## ComfyUI Installieren`, and start task headings with the infinitive (`ComfyUI aktualisieren`, `Eigene Nodes installieren`), not a nominalized `Installation von ...` when a verb reads naturally."
+      : "",
+    lang.code === "de"
+      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Load Image`, `Reroute`, `Run`, `Run (On Change)`, `Run (Instant)`, `Unsupported Node Packs`, `Install All`, `Apply Changes`, `View in Manager`, `Download`, `Download all`, `Give Feedback`, `Docs`, `Help & Support`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Never invent a German rendering for a control whose UI text is English."
+      : "",
+    lang.code === "de"
+      ? "German compounds run long: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact. Prefer a natural German compound (`Installationsprogramm`) over an English-style hyphen chain, and keep CLI paths, file names, flags and JSON values untouched. Use German quotation marks „…“ for quoted prose."
+      : "",
     lang.code === "zh"
       ? "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for a term everywhere within the file. Never invent words (for example `fixed` is 固定, not 顶固). Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a 链接 (hyperlinks), while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a 连线."
       : "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for that term everywhere within the file. Never invent words for a term the glossary already covers. Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a hyperlink, while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a connection between nodes. Use the target language's own established wording for both senses and never collapse them into one word.",
