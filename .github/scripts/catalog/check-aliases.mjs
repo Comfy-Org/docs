@@ -6,15 +6,17 @@
  * Usage:
  *   node .github/scripts/catalog/check-aliases.mjs
  *   node .github/scripts/catalog/check-aliases.mjs --templates ../workflow_templates
- *   node .github/scripts/catalog/check-aliases.mjs --strict   # exit 1 on any unresolved provider or page
+ *   node .github/scripts/catalog/check-aliases.mjs --strict   # exit 1 on any blocking issue
  *
  * Sources: Router pages and their API IDs, router-schemas/,
  * Partner Node tutorial folders, legacy partner-node folders, docs.json (English),
- * and workflow_templates (logos, model names, model files) when the folder exists.
+ * workflow_templates (logos, model names, model files) when the folder exists,
+ * and the generated catalog/ pages when they exist (schema coverage, open-weights
+ * claims, queued-only routes, template tables).
  */
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { root, readJson as read, dirs, norm, loadProviders, loadRouterPages, loadEnglishPages, productMatcher } from "./lib.mjs";
+import { root, readJson as read, readText, dirs, norm, loadProviders, loadRouterPages, loadEnglishPages, productMatcher } from "./lib.mjs";
 
 const args = process.argv.slice(2);
 const strict = args.includes("--strict");
@@ -121,6 +123,103 @@ console.log(`${noProduct.length ? "MISS" : "ok  "}  English pages: ${enPages.len
 console.log(`${badRule.length ? "MISS" : "ok  "}  rules pointing at an unknown product: ${badRule.join(", ") || "none"}`);
 console.log(`      ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" · ")}`);
 
-const failed = unresolvedProviders + noProduct.length + badProv.length + badRouter.length + badRule.length;
-console.log(`\n${failed ? `${failed} blocking issue(s)` : "No blocking issues"}. Template names and files are for review, not blocking.`);
+// ---- Generated catalog content
+console.log("\n== Catalog content");
+const show = (items, cap = 10) => `${items.slice(0, cap).join(", ")}${items.length > cap ? `, ... ${items.length - cap} more` : ""}`;
+const modelPages = [];
+for (const prov of dirs("catalog/models")) {
+  for (const f of readdirSync(join(root, "catalog/models", prov)).filter((f) => f.endsWith(".mdx")).sort()) {
+    const page = `catalog/models/${prov}/${f}`;
+    const text = readText(page);
+    modelPages.push({ page, provider: prov, text, id: /^Model ID: (\S+)$/m.exec(text)?.[1] });
+  }
+}
+const pageOfModel = new Map(modelPages.filter((p) => p.id).map((p) => [p.id, p]));
+let catalogFailed = 0;
+
+// 1. Every Router page has its published request schema.
+const idedRouterPages = routerPages.filter((r) => r.id);
+const noSchema = idedRouterPages.filter((r) => !existsSync(join(root, "router-schemas", `${r.id}.json`))).map((r) => r.id);
+console.log(`${noSchema.length ? "MISS" : "ok  "}  Router pages without router-schemas/<provider>/<model>.json: ${idedRouterPages.length - noSchema.length}/${idedRouterPages.length}${noSchema.length ? `, missing: ${show(noSchema)}` : ""}`);
+
+if (!modelPages.length) {
+  console.log(`skip  catalog/ has no pages yet; content checks need gen-catalog.mjs output.`);
+} else {
+  // 2. An open-weights model that Router also serves must not be described as closed.
+  const openRouter = models.filter((m) => m.license === "open-weights" && (m.router_ids ?? []).length);
+  const noPage = [];
+  const claimedClosed = [];
+  for (const m of openRouter) {
+    for (const id of m.router_ids) {
+      const page = pageOfModel.get(id);
+      if (!page) noPage.push(`${m.id} -> ${id}`);
+      else if (page.text.includes("It has no open weights")) claimedClosed.push(page.page);
+    }
+  }
+  console.log(`${claimedClosed.length ? "MISS" : "ok  "}  Open-weights Router IDs whose page says "It has no open weights": ${claimedClosed.length}${claimedClosed.length ? ` (${show(claimedClosed)})` : ""}`);
+  if (noPage.length) console.log(`info  Open-weights Router IDs with no generated page: ${noPage.length} (${show(noPage)})`);
+
+  // 3. A queued-only schema must not be advertised on the bare synchronous route.
+  const queued = [];
+  for (const prov of dirs("router-schemas")) {
+    for (const f of readdirSync(join(root, "router-schemas", prov)).filter((f) => f.endsWith(".json"))) {
+      const schema = read(`router-schemas/${prov}/${f}`);
+      const id = schema["x-comfy-router-model-id"] ?? `${prov}/${f.replace(/\.json$/, "")}`;
+      const summary = schema.paths?.[`/v2/models/${id}`]?.post?.summary ?? "";
+      if (/Queued-only|not_enabled/.test(summary)) queued.push(id);
+    }
+  }
+  const wrongRoute = [];
+  for (const id of queued) {
+    const page = pageOfModel.get(id);
+    if (!page) {
+      wrongRoute.push(`${id} (no page)`);
+      continue;
+    }
+    const at = `https://api\\.comfy\\.org/v2/models/${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`;
+    if (!new RegExp(`POST ${at}/requests`).test(page.text) || new RegExp(`POST ${at}(?![\\w/.?=-])`).test(page.text)) wrongRoute.push(page.page);
+  }
+  console.log(`${wrongRoute.length ? "MISS" : "ok  "}  Queued-only models documented on the bare synchronous route: ${wrongRoute.length}/${queued.length}${wrongRoute.length ? ` (${show(wrongRoute)})` : ""}`);
+
+  // 4. Template tables: no api_* template on two providers; list the crowded ones for review.
+  const rowsIn = (text, heading) => {
+    const lines = text.split("\n");
+    const start = lines.indexOf(heading);
+    if (start < 0) return null;
+    const rows = [];
+    for (let i = start + 1; i < lines.length && !lines[i].startsWith("## "); i++) rows.push(lines[i]);
+    return rows;
+  };
+  const byTemplate = new Map(); // template -> provider -> pages
+  const emptyTables = [];
+  for (const p of modelPages) {
+    const prov = providerOf.get(norm(p.provider)) ?? p.provider;
+    for (const row of rowsIn(p.text, "## Workflow templates") ?? []) {
+      const name = /^\| `([^`]+)`/.exec(row)?.[1];
+      if (!name) continue;
+      if (!byTemplate.has(name)) byTemplate.set(name, new Map());
+      const byProv = byTemplate.get(name);
+      if (!byProv.has(prov)) byProv.set(prov, []);
+      byProv.get(prov).push(p.page);
+    }
+    const where = rowsIn(p.text, "## Where you can run it");
+    const head = where ? where.findIndex((l) => l.startsWith("| ---")) : -1;
+    if (head >= 0 && !where.slice(head + 1).some((l) => l.startsWith("| "))) emptyTables.push(p.page);
+  }
+  const leaked = [];
+  const crowded = [];
+  for (const [name, byProv] of byTemplate) {
+    const count = [...byProv.values()].reduce((n, pages) => n + pages.length, 0);
+    if (name.startsWith("api_") && byProv.size > 1) leaked.push(`${name} on ${[...byProv.keys()].join(" + ")}`);
+    if (count >= 4) crowded.push(`${name} (${count})`);
+  }
+  console.log(`${leaked.length ? "MISS" : "ok  "}  api_* templates listed on more than one provider: ${leaked.length}${leaked.length ? ` (${show(leaked)})` : ""}`);
+  console.log(`info  Templates on 4+ model pages: ${crowded.length}${crowded.length ? ` (${show(crowded)})` : ""}`);
+  console.log(`info  'Where you can run it' tables with a header and no rows: ${emptyTables.length}${emptyTables.length ? ` (${show(emptyTables)})` : ""}`);
+
+  catalogFailed = claimedClosed.length + wrongRoute.length + leaked.length;
+}
+
+const failed = unresolvedProviders + noProduct.length + badProv.length + badRouter.length + badRule.length + noSchema.length + catalogFailed;
+console.log(`\n${failed ? `${failed} blocking issue(s)` : "No blocking issues"}. Template names, template pages and empty tables are for review, not blocking.`);
 if (strict && failed) process.exitCode = 1;

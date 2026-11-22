@@ -8,8 +8,10 @@
  *
  *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp
  *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp --runs 5
- *   node .github/scripts/catalog/eval-mcp.mjs --out results/eval-<label>.json
- *   node .github/scripts/catalog/eval-mcp.mjs --compare results/eval-baseline.json
+ *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp --out results/eval-<label>.json
+ *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp --compare results/eval-baseline.json
+ *
+ * --url is required on every run; --runs is a positive integer (default 3).
  *
  * No LLM is involved. Each question is one MCP call plus a string check, so a
  * run is free and repeatable. Tool names are discovered with tools/list because
@@ -25,13 +27,26 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, a, i, all) => {
-    if (a.startsWith("--")) acc.push([a.slice(2), all[i + 1]?.startsWith("--") ? true : all[i + 1] ?? true]);
+    const eq = a.indexOf("=");
+    // --runs=5 must reach the validator too, not be ignored as an unknown flag.
+    if (a.startsWith("--")) acc.push(eq < 0 ? [a.slice(2), all[i + 1]?.startsWith("--") ? true : all[i + 1] ?? true] : [a.slice(2, eq), a.slice(eq + 1)]);
     return acc;
   }, []),
 );
-if (!args.url) throw new Error("Pass --url https://<preview>.mintlify.site/mcp. Production runs pollute agent search analytics.");
+
+function fail(message) {
+  console.error(`eval-mcp: ${message}`);
+  process.exit(1);
+}
+
+if (!args.url || typeof args.url !== "string")
+  fail("Pass --url https://<preview>.mintlify.site/mcp. Production runs pollute agent search analytics.");
 const url = args.url;
-const runs = Math.max(1, Number(args.runs ?? 3));
+// A strict majority needs whole runs: 1.5 would loop twice and 1 pass would win, NaN would run zero times.
+const rawRuns = args.runs ?? "3";
+if (typeof rawRuns !== "string" || !/^\d+$/.test(rawRuns) || !Number.isFinite(Number(rawRuns)) || Number(rawRuns) < 1)
+  fail(`--runs must be a positive integer such as --runs 3, got ${typeof rawRuns === "string" ? `"${rawRuns}"` : "no value"}.`);
+const runs = Number(rawRuns);
 const { questions } = JSON.parse(readFileSync(join(here, "eval-questions.json"), "utf8"));
 
 let rpcId = 0;
@@ -79,6 +94,9 @@ function check(expect, got) {
     if (expect.pageStartsWith) return top.some((p) => p.startsWith(expect.pageStartsWith));
     if (expect.pageEquals) return top.includes(expect.pageEquals);
     if (expect.pageIn) return top.some((p) => expect.pageIn.includes(p));
+    // pageStartsWith answers "a page about this family". A question about one specific page uses
+    // pageMatchesAny, because a prefix also matches more specific siblings (/minimax-h3 -> /minimax-h3-image).
+    if (expect.pageMatchesAny) return top.some((p) => expect.pageMatchesAny.some((re) => new RegExp(re).test(p)));
     if (expect.pageStartsWithAny) return top.some((p) => expect.pageStartsWithAny.some((x) => p.startsWith(x)));
   }
   if ("exit" in got) {

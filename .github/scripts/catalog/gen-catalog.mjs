@@ -19,7 +19,7 @@
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { execSync } from "node:child_process";
-import { root, readJson, readText, norm, loadProviders, loadRouterPages, loadEnglishPages, productMatcher, loadTemplates } from "./lib.mjs";
+import { root, readJson, readText, norm, loadProviders, loadRouterPages, loadRouterSchemas, loadEnglishPages, productMatcher, loadTemplates } from "./lib.mjs";
 
 const args = process.argv.slice(2);
 const tplDir = resolve(root, args.includes("--templates") ? args[args.indexOf("--templates") + 1] : "../workflow_templates");
@@ -31,6 +31,7 @@ const { providers, lookup } = loadProviders();
 const { models: aliasModels } = readJson("catalog-src/models.json");
 const { products, productOf } = productMatcher();
 const routerPages = loadRouterPages().filter((r) => r.id);
+const routerSchemas = loadRouterSchemas();
 const enPages = loadEnglishPages();
 const enPageSet = new Set(enPages);
 const tpl = loadTemplates(tplDir);
@@ -44,10 +45,82 @@ const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const list = (a) => (a.length <= 1 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a.at(-1)}`);
 const mdEscape = (s) => String(s).replace(/\|/g, "\\|").replace(/</g, "&lt;").replace(/\{/g, "&#123;").replace(/\}/g, "&#125;");
 const yamlQuote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
-const clampDescription = (s) => (s.length <= 160 ? s : `${s.slice(0, 156).replace(/[ ,.;:]+\S*$/, "")}...`);
+// Descriptions stay 40-160 characters and never end on a dangling word.
+const clampDescription = (s) => {
+  if (s.length <= 160) return s;
+  const cut = s.slice(0, 156).replace(/[ ,.;:]+\S*$/, "").replace(/[ ,;:]+\b(and|or|with|for|to|of|in|from)$/i, "");
+  return `${cut}...`;
+};
 const OUTPUT_PHRASE = { video: "video generation", image: "image generation", audio: "audio generation", "3d": "3D generation", text: "text generation", music: "music generation", speech: "speech generation" };
 const outputPhrase = (out) => list(out.map((o) => OUTPUT_PHRASE[o] ?? `${o} generation`));
 const MAIN_DIRS = new Set(["diffusion_models", "checkpoints"]);
+const MEDIA = new Set(["text", "image", "video", "audio", "3d"]);
+// Words that are initialisms in model names; "Sd3.5 Large Turbo" is not a name anyone writes.
+const ACRONYM = /^(sd|svd|sdxl|ltx|llm|api|ai|hd|t2v|i2v|r2v|v2v|t2i|i2i|flf2v|hdr|uso)(.*)$/i;
+const article = (word) => (/^[aeiou]/i.test(String(word)) ? "an" : "a");
+const prettify = (s) =>
+  String(s)
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .map((w) => {
+      const m = ACRONYM.exec(w);
+      if (m) return `${m[1].toUpperCase()}${m[2]}`;
+      return cap(w);
+    })
+    .join(" ");
+// Model names keep their initialisms: "Sd3.5" and "Sdxl" are not how anyone writes them.
+const INITIALISM = /^(sd|sdxl|svd|ltx|llm|api|ai|hd|t2v|i2v|r2v|v2v|t2i|i2i|flf2v|hdr|uso)(\d.*)?$/i;
+const fixInitialisms = (s) =>
+  String(s)
+    .split(/\s+/)
+    .map((w) => {
+      const m = INITIALISM.exec(w);
+      return m ? `${m[1].toUpperCase()}${m[2] ?? ""}` : w;
+    })
+    .join(" ");
+// Text to video and friends, from a template name, tag, or model ID segment.
+const MOTION = [
+  [/(?:text|txt)[\s_-]?to[\s_-]?video|t2v/i, "t2v", ["text"], ["video"]],
+  [/(?:image|img)[\s_-]?to[\s_-]?video|i2v/i, "i2v", ["image"], ["video"]],
+  [/reference[\s_-]?to[\s_-]?video|r2v/i, "r2v", ["image"], ["video"]],
+  [/(?:video|vid)[\s_-]?to[\s_-]?video|v2v/i, "v2v", ["video"], ["video"]],
+  [/(?:text|txt)[\s_-]?to[\s_-]?image|t2i/i, "t2i", ["text"], ["image"]],
+  [/(?:image|img)[\s_-]?to[\s_-]?image|i2i/i, "i2i", ["image"], ["image"]],
+  [/video[\s_-]?edit|image[\s_-]?edit|inpaint|outpaint/i, "edit", ["image"], ["image"]],
+];
+const motionOf = (s) => {
+  const m = MOTION.find(([re]) => re.test(String(s)));
+  return m ? { code: m[1], input: m[2], output: m[3] } : null;
+};
+const mediaTypes = (items) => [...new Set((items ?? []).map((x) => String(x?.mediaType ?? "").toLowerCase()).filter((x) => MEDIA.has(x)))];
+const onlyMedia = (list_) => list_.filter((x) => MEDIA.has(x));
+// What a template produces and consumes, from its io media types, its tags, and its name.
+function templateSignature(t) {
+  const input = new Set(mediaTypes(t.io?.inputs));
+  const output = new Set(mediaTypes(t.io?.outputs));
+  let code = null;
+  for (const tag of t.tags ?? []) {
+    const m = /^(text|image|video|audio)\s+to\s+(image|video|audio|3d)/i.exec(tag);
+    if (m) { input.add(m[1].toLowerCase()); output.add(m[2].toLowerCase()); }
+    if (/^image edit/i.test(tag)) { input.add("image"); output.add("image"); }
+    if (/^(video|animation)$/i.test(tag)) output.add("video");
+    if (/flf2v/i.test(tag)) { input.add("image"); output.add("video"); }
+    const mm = motionOf(tag);
+    if (mm) {
+      code ??= mm.code;
+      mm.input.forEach((x) => input.add(x));
+      mm.output.forEach((x) => output.add(x));
+    }
+  }
+  if (!code) code = motionOf(t.name)?.code ?? null;
+  return { code, input: [...input], output: [...output] };
+}
+// A signature fits a model when every input and output it names is one the model takes or makes.
+const signatureFits = (sig, rec) =>
+  (!sig.input.length || !rec.input.length || sig.input.every((x) => rec.input.includes(x))) &&
+  (!sig.output.length || !rec.output.length || sig.output.every((x) => rec.output.includes(x)));
+// For a provider-level name the model's own inputs are often unknown, so only the output has to agree.
+const outputFits = (sig, rec) => !sig.output.length || !rec.output.length || sig.output.every((x) => rec.output.includes(x));
 
 // ---------- models: Router pages first, then open-weights entries
 const models = new Map(); // page path -> model record
@@ -56,14 +129,15 @@ for (const r of routerPages) {
   const [apiName, seg] = r.id.split("/");
   const prov = providerId(apiName);
   const path = `${OUT}/models/${prov}/${slug(seg)}`;
+  const schema = routerSchemas.get(r.id);
   const rec = {
     path,
     id: r.id,
-    name: r.title ?? seg,
+    name: fixInitialisms(r.title ?? prettify(seg)),
     provider: prov,
     license: "closed",
-    input: r.input,
-    output: r.output,
+    input: r.input.length ? r.input : onlyMedia(schema?.input ?? []),
+    output: r.output.length ? r.output : onlyMedia(schema?.output ?? []),
     routerIds: [r.id],
     routerPages: [r],
     templates: new Set(),
@@ -81,7 +155,7 @@ for (const m of aliasModels) {
   const rec = existing ?? {
     path,
     id: m.id,
-    name: m.template_names?.[0] ?? seg,
+    name: m.template_names?.[0] ?? prettify(seg),
     provider: m.provider,
     input: [],
     output: [],
@@ -96,28 +170,106 @@ for (const m of aliasModels) {
   if (!rec.input.length) rec.input = [...new Set(linked.flatMap((l) => l.input))];
   if (!rec.output.length) rec.output = [...new Set(linked.flatMap((l) => l.output))];
   rec.aliasNames = m.template_names ?? [];
+  // A display name from catalog-src/ beats a prettified ID; Router variants of the family get the
+  // family name plus their own suffix ("Stable Diffusion 3.5" + "Large Turbo").
+  const family = m.display ?? m.template_names?.[0] ?? null;
+  if (family) rec.name = family;
+  rec.familyName = family ?? prettify(seg);
+  for (const l of linked) {
+    const suffix = variantSuffix(l.id.split("/")[1], seg);
+    if (family) l.name = suffix ? `${family} ${suffix}` : family;
+    if (l === rec) continue;
+    // These Router records serve a model whose weights are published, so they are not closed.
+    l.weights = { name: rec.familyName, path: rec.path };
+    l.license = "open-weights";
+  }
+  rec.siblings = linked.filter((l) => l !== rec);
   models.set(path, rec);
 }
 
+/** "sd3.5-large-turbo" against family "sd3.5" -> "Large Turbo". */
+function variantSuffix(routerSeg, familySeg) {
+  const a = slug(routerSeg).split("-").filter(Boolean);
+  const b = slug(familySeg).split("-").filter(Boolean);
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return i ? prettify(a.slice(i).join(" ")) : "";
+}
+
 // ---------- templates -> models
+// A name that is just a provider ("Google Gemini", "FLUX") says who makes the model, not which
+// one, so it must not resolve to a single model page.
+const providerLevel = new Set(Object.values(providers).flatMap((p) => p.names.map(norm)));
 const templateName = new Map(); // norm(display name) -> [records]
 for (const m of aliasModels) {
   const targets = m.license === "open-weights"
     ? [models.get(`${OUT}/models/${m.provider}/${slug(m.id.split("/")[1])}`)]
     : (m.router_ids ?? []).map((id) => byRouterId.get(id));
+  // These names are on the entry itself, so they are specific even when one equals a provider
+  // alias ("Hunyuan3D", "LongCat").
   for (const n of m.template_names ?? []) templateName.set(norm(n), targets.filter(Boolean));
 }
-for (const r of routerPages) if (r.title && !templateName.has(norm(r.title))) templateName.set(norm(r.title), [byRouterId.get(r.id)]);
+for (const r of routerPages) if (r.title && !providerLevel.has(norm(r.title)) && !templateName.has(norm(r.title))) templateName.set(norm(r.title), [byRouterId.get(r.id)]);
+// A Router page titled after the provider itself ("Google Gemini") is the generic page for that
+// provider. It is only ever the target of a template that names no specific model.
+const genericPages = new Map();
+for (const r of routerPages) if (r.title && providerLevel.has(norm(r.title)) && byRouterId.get(r.id)) genericPages.set(norm(r.title), byRouterId.get(r.id));
+
+// Size and speed words that tell Router variants of one family apart ("Seedance 2.0 Mini").
+const VARIANT_WORDS = new Set(["mini", "fast", "turbo", "pro", "prime", "large", "medium", "flash", "max", "lite"]);
+const variantWords = (s) => new Set(String(s).toLowerCase().split(/[^a-z0-9]+/).filter((w) => VARIANT_WORDS.has(w)));
+
+/** Pick the variant a template is about when one display name covers several Router records. */
+function pickVariants(recs, sig, name) {
+  if (recs.length <= 1) return recs;
+  const named = variantWords(name);
+  const scored = recs.map((r) => {
+    const seg = r.id.split("/")[1];
+    let score = 0;
+    if (sig.code && motionOf(seg)?.code === sig.code) score += 10;
+    if (sig.input.length && r.input.length && sig.input.every((x) => r.input.includes(x))) score += 2;
+    if (sig.output.length && r.output.length && sig.output.every((x) => r.output.includes(x))) score += 2;
+    if ([...variantWords(seg)].some((w) => named.has(w))) score += 4;
+    return { r, score };
+  });
+  const best = Math.max(...scored.map((x) => x.score));
+  return scored.filter((x) => x.score === best).map((x) => x.r);
+}
+
+/** Providers a template's own name points at ("api_bfl_flux1_expand_image" -> bfl). */
+const templateProviderRefs = (t) => {
+  const refs = new Set();
+  for (const n of t.models ?? []) if (providerLevel.has(norm(n))) refs.add(lookup.get(norm(n)));
+  for (const tok of String(t.name).split(/[\s._-]+/)) if (norm(tok).length >= 3 && lookup.has(norm(tok))) refs.add(lookup.get(norm(tok)));
+  return refs;
+};
 
 const nodeUse = new Map();
 const templateRecs = new Map(); // template name -> how many catalog models it maps to
 if (tpl) {
   for (const [name, t] of tpl.byName) {
+    const sig = templateSignature(t);
     const targets = new Set();
-    for (const n of t.models ?? []) for (const rec of templateName.get(norm(n)) ?? []) targets.add(rec);
+    const names = t.models ?? [];
+    const resolved = names.some((n) => templateName.has(norm(n)));
+    const providerNames = names.filter((n) => providerLevel.has(norm(n)));
+    for (const n of names) for (const rec of pickVariants(templateName.get(norm(n)) ?? [], sig, name)) targets.add(rec);
+    // A provider-level name with no entry of its own is weak: it only reaches the provider's
+    // generic Router page, and only when the template names no model through an entry.
+    if (!resolved) for (const n of providerNames) if (genericPages.has(norm(n))) targets.add(genericPages.get(norm(n)));
     for (const f of tpl.files.get(name) ?? []) {
       if (!MAIN_DIRS.has(f.directory)) continue;
       for (const rec of models.values()) if (rec.filePrefixes.some((p) => f.name.toLowerCase().startsWith(p))) targets.add(rec);
+    }
+    // An api_* template that names another provider belongs to that provider, not this one, and a
+    // template that consumes or makes only media this model does not is a multi-model pipeline.
+    const refs = templateProviderRefs(t);
+    const apiNamed = /^api[_-]|_api[_-]|_api$/i.test(name);
+    for (const rec of [...targets]) {
+      const providerOk = !refs.size || refs.has(rec.provider);
+      // A name that points at one model is evidence enough; a provider-level target is not.
+      const fits = (targets.size <= 1 && resolved) || (resolved ? signatureFits(sig, rec) : outputFits(sig, rec));
+      if ((apiNamed && !providerOk) || !fits) targets.delete(rec);
     }
     for (const rec of targets) rec.templates.add(name);
     templateRecs.set(name, targets.size);
@@ -142,6 +294,48 @@ const titleOf = (p) => {
   if (!existsSync(file)) return p;
   return /^title:\s*"?(.+?)"?\s*$/m.exec(readFileSync(file, "utf8"))?.[1] ?? p;
 };
+// A needle only counts as a whole token ("api_google_gemini" is not named by
+// "api_google_gemini_4_hydrogen") and never when it only appears in a markdown link target: the
+// Ideogram 4.5 page links 4.0, and a link target is not a mention of the model.
+const linkTarget = /\]\([^)\n]*\)/g;
+const mentionRe = (needle) => new RegExp(`(?<![A-Za-z0-9_-])${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`);
+const mentions = (text, needle) => mentionRe(needle).test(text.replace(linkTarget, "]"));
+const versionTokens = (s) => String(s).match(/\d+(?:\.\d+)?/g) ?? [];
+const familyOf = (s) => String(s).split(":")[0].replace(/\s+(?:in|for|with|and)\s+.*$/i, "").replace(/\d+(?:\.\d+)?/g, " ").replace(/[^A-Za-z ]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+// "Ideogram 4.5" is not the page for Ideogram 4.0 even when the page mentions it.
+const otherVariant = (recName, title) => {
+  const family = familyOf(recName);
+  if (!family || family !== familyOf(title)) return false;
+  const mine = versionTokens(recName);
+  const theirs = versionTokens(title);
+  return Boolean(theirs.length && mine.length && !theirs.some((v) => mine.includes(v)));
+};
+const runDestination = (p) => !/\/(pricing|policy|changelog)$/.test(p) && !/pricing|policy|changelog/i.test(titleOf(p));
+// A tutorial page named after another catalog model is that model's tutorial: the FLUX.1 Krea Dev
+// walkthrough is not the FLUX.1 Dev page's workflow.
+const owners = new Map(); // norm(page name) -> records with that model ID segment
+for (const rec of models.values()) {
+  const k = norm(rec.id.split("/")[1]);
+  if (!owners.has(k)) owners.set(k, new Set());
+  owners.get(k).add(rec);
+}
+const tutorialOwnerOk = (rec, p) => {
+  // The longest model ID segment the page name carries as a whole token: "beeble-switchx" and
+  // "krea-2-t2i" belong to switchx and krea-2, while "qwen-image-edit-2511" is not the page for
+  // qwen-image-edit.
+  const name = norm(p.split("/").pop());
+  let best = "";
+  for (const s of owners.keys()) {
+    const at = name.indexOf(s);
+    if (at < 0 || s.length <= best.length) continue;
+    // A short segment away from the start ("image" in "flux-1-text-to-image") is not an owner.
+    if (at > 0 && s.length < 6) continue;
+    if (at > 0 && /\d/.test(name[at - 1])) continue;
+    if (/^\d/.test(name.slice(at + s.length))) continue;
+    best = s;
+  }
+  return !best || owners.get(best).has(rec);
+};
 
 for (const rec of models.values()) {
   const tplList = [...rec.templates].map((n) => tpl?.byName.get(n)).filter(Boolean);
@@ -162,7 +356,35 @@ for (const rec of models.values()) {
     const m = /^tutorials\/partner-nodes\/([^/]+)\//.exec(p);
     return !m || providerId(m[1]) === rec.provider;
   };
-  rec.tutorials = [...tutorialText].filter(([p, text]) => partnerFolderOk(p) && needles.some((n) => text.includes(n))).map(([p]) => p);
+  // A tutorial titled after another provider is that provider's page, not this model's, even when
+  // it uses this model's files ("ByteDance USO" builds on FLUX.1). Only the leading brand segment
+  // of the title counts: provider names double as ordinary words ("Sync", "Light"), so a token
+  // further into the title says nothing about who the tutorial is for.
+  const providerTitleOk = (p) => {
+    const title = String(titleOf(p));
+    // Titled after this model: the brand in the title is the model's, not a rival provider's
+    // (FLUX.1 Krea Dev is a Krea model served by BFL).
+    if (/\d/.test(rec.name) && norm(rec.name).length >= 4 && norm(title).includes(norm(rec.name))) return true;
+    const head = title.split(/:\s|\s+(?:in|for|with)\s+/i)[0];
+    const ids = new Set(head.split(/[^A-Za-z0-9.]+/).map(norm).filter((t) => t.length >= 3 && lookup.has(t)).map((t) => lookup.get(t)));
+    return !ids.size || ids.has(rec.provider);
+  };
+  const mentionsModel = (p, text) => needles.some((n) => mentions(text, n) || mentions(p, n));
+  // A tutorial titled after the model is about it even when the body never spells the Router ID
+  // ("Runway Gen4 Turbo in ComfyUI", "Wan2.1 InfiniteTalk"). Provider-titled pages carry no
+  // discriminating power — "Google Gemini" is on every Gemini tutorial — so they are excluded.
+  const titleNamesModel = (p) => {
+    if (norm(rec.name) === norm(providers[rec.provider]?.title ?? rec.provider)) return false;
+    // The name has to be specific enough to mean something: a version number and a real name,
+    // not a bare modality word like "Image" (every image tutorial would match it).
+    if (!/\d/.test(rec.name)) return false;
+    const n = norm(rec.name);
+    return n.length >= 6 && norm(titleOf(p)).includes(n);
+  };
+  rec.tutorials = [...tutorialText]
+    .filter(([p, text]) => partnerFolderOk(p) && providerTitleOk(p) && tutorialOwnerOk(rec, p) && (mentionsModel(p, text) || titleNamesModel(p)))
+    .map(([p]) => p)
+    .filter((p) => !otherVariant(rec.name, titleOf(p)));
   // A node belongs to the model when its class name carries the provider or model family name.
   const tokens = [...new Set([...(providers[rec.provider]?.names ?? []), rec.name.split(/[\s.-]/)[0]].map(norm).filter((t) => t.length >= 3))];
   const nodes = new Set();
@@ -173,7 +395,6 @@ for (const rec of models.values()) {
   rec.templateList = tplList.sort((a, b) => Number((templateRecs.get(b.name) ?? 0) <= 1) - Number((templateRecs.get(a.name) ?? 0) <= 1) || (b.date ?? "").localeCompare(a.date ?? ""));
   // Open-weights models without a Router page: take input/output from their dedicated templates.
   if (!rec.output.length && dedicated.length) {
-    const MEDIA = new Set(["image", "video", "audio", "3d", "text"]);
     const outs = new Set();
     const ins = new Set();
     for (const t of dedicated) {
@@ -181,14 +402,22 @@ for (const rec of models.values()) {
       for (const i of t.io?.inputs ?? []) if (MEDIA.has(String(i.mediaType).toLowerCase())) ins.add(String(i.mediaType).toLowerCase());
       for (const tag of t.tags ?? []) {
         const m = /^(text|image|video|audio)\s+to\s+(image|video|audio|3d)/i.exec(tag);
-        if (m) { ins.add(m[1].toLowerCase()); outs.add(m[2].toLowerCase()); }
-        if (/^image edit/i.test(tag)) { ins.add("image"); outs.add("image"); }
+        if (m) ins.add(m[1].toLowerCase());
+        if (/^image edit/i.test(tag)) ins.add("image");
       }
+    }
+    // The template's recorded outputs are the reliable signal; its tags are only a last resort,
+    // because "Image to Video" on an image-upscale template says nothing about the model.
+    if (!outs.size) for (const t of dedicated) for (const tag of t.tags ?? []) {
+      const m = /^(?:text|image|video|audio)\s+to\s+(image|video|audio|3d)/i.exec(tag);
+      if (m) outs.add(m[1].toLowerCase());
     }
     rec.output = [...outs];
     rec.input = [...ins].filter(Boolean);
   }
   rec.cloudTemplate = [...dedicated].sort((a, b) => (b.usage ?? 0) - (a.usage ?? 0))[0] ?? null;
+  // The Cloud link a page falls back to when nothing else points anywhere: its most used template.
+  rec.cloudLink = rec.cloudTemplate ?? [...rec.templateList].sort((a, b) => (b.usage ?? 0) - (a.usage ?? 0))[0] ?? null;
 }
 
 // ---------- page writers
@@ -212,14 +441,31 @@ function modelProducts(rec) {
   return [...new Set(p)];
 }
 
+/** Titles stay short: the full form only when it fits in 65 characters. */
+function modelTitle(rec) {
+  const options = [`${rec.name}: where to run it (${rec.id})`, `${rec.name} (${rec.id})`, `${rec.name}: where to run it`, rec.name];
+  return options.find((s) => s.length <= 65) ?? rec.name.slice(0, 62).replace(/[ ,;:]+\S*$/, "");
+}
+
 function modelPage(rec) {
   const prov = providers[rec.provider]?.title ?? rec.provider;
   const outs = rec.output.length ? rec.output : ["media"];
   const phrase = rec.output.length ? outputPhrase(rec.output) : "generation";
   const open = rec.license === "open-weights";
-  const title = `${rec.name} ${phrase} model (${rec.id}): where to run it${rec.routerIds.length ? " and pricing" : ""}`;
+  const makerEcho = norm(rec.name) === norm(prov);
+  const from = makerEcho ? "" : ` from ${prov}`;
+  const title = modelTitle(rec);
   const ways = [rec.routerIds.length && "Comfy Router", open && "ComfyUI locally", rec.templateList.length && "Comfy Cloud"].filter(Boolean);
-  const description = clampDescription(`${rec.name} is a ${phrase} model from ${prov}. Run it with ${list(ways.length ? ways : ["ComfyUI"])}; templates, files, nodes, and pricing.`);
+  // Promise only the sections this page actually has.
+  const sections = [
+    rec.templateList.length && "templates",
+    open && rec.files?.length && "model files",
+    rec.nodes.length && "nodes",
+    rec.routerIds.length && "pricing",
+  ].filter(Boolean);
+  const description = clampDescription(
+    `${rec.name} is ${article(phrase)} ${phrase} model${from}. Run it with ${list(ways.length ? ways : ["ComfyUI"])}${sections.length ? `, with ${list(sections)}` : ""}.`,
+  );
 
   const products_ = modelProducts(rec);
   let body = `${tagBlock({
@@ -232,22 +478,47 @@ function modelPage(rec) {
     "Router ID": rec.routerIds.length > 1 || (rec.routerIds[0] && rec.routerIds[0] !== rec.id) ? rec.routerIds : null,
   })}\n\n`;
 
-  body += `${rec.name} is a ${phrase} model from ${prov}${rec.input.length ? `. It takes ${list(rec.input)} as input and produces ${list(outs)}` : ""}. `;
-  body += open
-    ? `It has open weights, so you can download the files and run it locally in ComfyUI${rec.routerIds.length ? ", or call the hosted version through Comfy Router" : ""}.`
-    : `It has no open weights. It runs on ${prov}'s servers, so you use it through ${list([rec.routerIds.length && "Comfy Router", rec.templateList.length && "Partner Nodes in ComfyUI and Comfy Cloud"].filter(Boolean)) || "Comfy Router"}.`;
+  body += `${rec.name} is ${article(phrase)} ${phrase} model${from}${rec.input.length ? `. It takes ${list(rec.input)} as input and produces ${list(outs)}` : ""}. `;
+  const servedBy = [...new Set(rec.routerPages.map((r) => r.servedBy).filter(Boolean))];
+  body += rec.weights
+    ? `Its weights are published: [${mdEscape(rec.weights.name)}](/${rec.weights.path}) has the model files and folders for running it locally in ComfyUI, while Comfy Router serves this hosted version.`
+    : open
+      ? `It has open weights, so you can download the files and run it locally in ComfyUI${rec.routerIds.length ? ", or call the hosted version through Comfy Router" : ""}.`
+      // Who runs the model is not in the model's own page: quote the Router page's line instead of
+      // assuming the maker's servers (Comfy hosts some models its partners publish).
+      : `It has no open weights. ${servedBy.length ? `Comfy Router serves it from ${list(servedBy)}.` : ""} You use it through ${list([rec.routerIds.length && "Comfy Router", rec.templateList.length && "Partner Nodes in ComfyUI and Comfy Cloud"].filter(Boolean)) || "Comfy Router"}.`;
   body += "\n\n## Where you can run it\n\n| Where | Page | Use it when |\n| --- | --- | --- |\n";
-  for (const r of rec.routerPages) body += `| Comfy Router (API) | [${mdEscape(r.title ?? r.id)} with Comfy Router](/${r.page}) | You call \`${r.id}\` from your own code with \`COMFY_API_KEY\` |\n`;
-  for (const t of rec.tutorials) {
+  let destinations = 0;
+  const pageLabel = (r) => (rec.routerPages.length === 1 && rec.name ? rec.name : fixInitialisms(r.title ?? r.id));
+  for (const r of rec.routerPages) {
+    body += `| Comfy Router (API) | [${mdEscape(pageLabel(r))} with Comfy Router](/${r.page}) | You call \`${r.id}\` from your own code with \`COMFY_API_KEY\` |\n`;
+    destinations++;
+  }
+  for (const t of rec.tutorials.filter(runDestination)) {
     const partner = t.startsWith("tutorials/partner-nodes/");
     body += `| ${partner ? "Partner Nodes (ComfyUI and Comfy Cloud)" : open ? "ComfyUI (local or Comfy Cloud)" : "ComfyUI"} | [${mdEscape(titleOf(t))}](/${t}) | ${partner ? "You build a workflow with the hosted model" : "You follow a step-by-step workflow tutorial"} |\n`;
+    destinations++;
   }
-  if (rec.cloudTemplate) body += `| Comfy Cloud | [Open \`${rec.cloudTemplate.name}\` on Comfy Cloud](https://cloud.comfy.org/?template=${rec.cloudTemplate.name}) | You want to run a ready-made workflow without installing anything |\n`;
-  if (!rec.routerPages.length && !rec.tutorials.length && !rec.templateList.length) body += `| ComfyUI | No dedicated page yet | Search the docs for ${rec.name} |\n`;
+  if (rec.cloudTemplate) {
+    body += `| Comfy Cloud | [Open \`${rec.cloudTemplate.name}\` on Comfy Cloud](https://cloud.comfy.org/?template=${rec.cloudTemplate.name}) | You want to run a ready-made workflow without installing anything |\n`;
+    destinations++;
+  }
+  // A table with a header and no rows says nothing; every page gets at least one way to reach it.
+  if (!destinations) {
+    const t = rec.cloudLink;
+    body += t
+      ? `| Comfy Cloud | [Open \`${t.name}\` on Comfy Cloud](https://cloud.comfy.org/?template=${t.name}) | You want to run a ready-made workflow without installing anything |\n`
+      : `| ComfyUI | No dedicated page yet | Search the docs for ${rec.name} |\n`;
+  }
 
   if (rec.routerIds.length) {
     body += `\n## Call it with Comfy Router\n\n`;
-    for (const id of rec.routerIds) body += `- \`POST https://api.comfy.org/v2/models/${id}\`. Live request schema: \`GET /v2/models/${id}/openapi.json\`.\n`;
+    for (const id of rec.routerIds) {
+      if (routerSchemas.get(id)?.queuedOnly) {
+        body += `- \`POST https://api.comfy.org/v2/models/${id}/requests\`. Live request schema: \`GET /v2/models/${id}/openapi.json\`. The synchronous \`POST /v2/models/${id}\` answers \`403 not_enabled\` for this model, so the queue is the supported path: submit, poll the status route, then collect the result.\n`;
+      } else body += `- \`POST https://api.comfy.org/v2/models/${id}\`. Live request schema: \`GET /v2/models/${id}/openapi.json\`.\n`;
+    }
+    if (rec.siblings?.length) body += `\nThe family's Router versions have their own pages: ${list(rec.siblings.map((s) => `[${mdEscape(s.name)}](/${s.path})`))}.\n`;
   }
 
   if (open && rec.files.length) {
@@ -286,16 +557,21 @@ const outputs = [...new Set(routerModels.flatMap((m) => m.output))].sort();
 for (const out of outputs) {
   const rows = routerModels.filter((m) => m.output.includes(out)).sort((a, b) => a.id.localeCompare(b.id));
   const phrase = OUTPUT_PHRASE[out] ?? `${out} generation`;
-  let body = `${tagBlock({ Product: "router", Output: out, Count: String(rows.length) })}\n\nEvery ${phrase} model you can call through Comfy Router, with its model ID. Call any of them with \`POST https://api.comfy.org/v2/models/<model ID>\` and your \`COMFY_API_KEY\`.\n\n| Model | Model ID | Provider | Input | Catalog page |\n| --- | --- | --- | --- | --- |\n`;
-  for (const m of rows) body += `| ${mdEscape(m.name)} | \`${m.routerIds.join("`, `")}\` | ${m.provider} | ${m.input.join(", ")} | [Details](/${m.path}) |\n`;
+  let body = `${tagBlock({ Product: "router", Output: out, Count: String(rows.length) })}\n\nEvery ${phrase} model you can call through Comfy Router, with its model ID. Call any of them with \`POST https://api.comfy.org/v2/models/<model ID>\` and your \`COMFY_API_KEY\`. Models marked queued run on the queue route only: submit to \`POST https://api.comfy.org/v2/models/<model ID>/requests\` and collect the result later.\n\n| Model | Model ID | Provider | Delivery | Input | Catalog page |\n| --- | --- | --- | --- | --- | --- |\n`;
+  for (const m of rows) {
+    const delivery = m.routerIds.some((id) => routerSchemas.get(id)?.queuedOnly) ? "queued" : "sync";
+    body += `| ${mdEscape(m.name)} | \`${m.routerIds.join("`, `")}\` | ${m.provider} | ${delivery} | ${m.input.join(", ")} | [Details](/${m.path}) |\n`;
+  }
   write(`${OUT}/router/${slug(out)}`, {
     title: `Comfy Router ${phrase} models: all ${rows.length} model IDs`,
-    description: clampDescription(`Every ${phrase} model on Comfy Router: model IDs, providers, and inputs, with links to where to run each one and its pricing.`),
+    description: clampDescription(`Every ${phrase} model on Comfy Router: model IDs, providers, delivery mode, and inputs, with links to where to run each one and its pricing.`),
   }, body);
 }
 
 // ---------- open-weights list
-const openModels = allModels.filter((m) => m.license === "open-weights").sort((a, b) => a.id.localeCompare(b.id));
+// A Router variant of an open-weights family reports published weights but has no files of its
+// own; the family page is the one that belongs in the local list.
+const openModels = allModels.filter((m) => m.license === "open-weights" && !m.weights).sort((a, b) => a.id.localeCompare(b.id));
 {
   let body = `${tagBlock({ Product: "local", License: "open-weights", Count: String(openModels.length) })}\n\nOpen-weights models you can download and run locally in ComfyUI, or run on Comfy Cloud. Each catalog page lists the model files, the folder each goes in, the templates, and the tutorials.\n\n| Model | Model ID | Provider | Output | Templates | Catalog page |\n| --- | --- | --- | --- | --- | --- |\n`;
   for (const m of openModels) body += `| ${mdEscape(m.name)} | \`${m.id}\` | ${m.provider} | ${m.output.join(", ")} | ${m.templateList.length} | [Details](/${m.path}) |\n`;
@@ -374,12 +650,12 @@ function updateBlocks(text, limit) {
   changes.cloud = { title: "Comfy Cloud", what: "Comfy Cloud releases that have been published to the in-app changelog", blocks };
 }
 for (const [prod, c] of Object.entries(changes)) {
-  let body = `${tagBlock({ Product: prod, Updated: TODAY })}\n\nWhat's new in ${c.title}: ${c.what}.\n\n`;
+  let body = `${tagBlock({ Product: prod, Updated: TODAY })}\n\n${c.title}: ${c.what}.\n\n`;
   if (c.blocks) body += c.blocks.length ? c.blocks.join("\n\n") : "No published entries yet.";
   else body += c.rows.length ? `Last ${CHANGE_DAYS} days:\n\n${c.header}\n${c.rows.slice(0, 80).join("\n")}${c.rows.length > 80 ? `\n\n${c.rows.length - 80} older entries are not shown.` : ""}` : `No changes in the last ${CHANGE_DAYS} days.`;
   write(`${OUT}/changes/${prod}`, {
-    title: `What's new in ${c.title}: recent changes`,
-    description: clampDescription(`What changed recently in ${c.title}: ${c.what.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/`/g, "")}.`),
+    title: `${c.title}: recent changes`,
+    description: clampDescription(`Recent changes in ${c.title}: ${c.what.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/`/g, "")}.`),
   }, body);
 }
 
@@ -418,9 +694,11 @@ for (const [prod, c] of Object.entries(changes)) {
 ${outputs.map((o) => `| [/catalog/router/${slug(o)}](/catalog/router/${slug(o)}) | Which ${OUTPUT_PHRASE[o] ?? o} models Comfy Router serves |`).join("\n")}
 | [/catalog/local/models](/catalog/local/models) | Which open-weights models run locally, with files and folders |
 | \`/catalog/models/<provider>/<model>\` | Where one model runs (Router, local, Cloud, Partner Nodes), its templates, nodes, and where to find Router prices |
-${Object.keys(changes).map((p) => `| [/catalog/changes/${p}](/catalog/changes/${p}) | What's new in ${changes[p].title} |`).join("\n")}
+${Object.keys(changes).map((p) => `| [/catalog/changes/${p}](/catalog/changes/${p}) | Recent changes in ${changes[p].title} |`).join("\n")}
 
 Model IDs are Comfy Router IDs (\`provider/model\`), such as \`kling/kling-v3\`. Open-weights models without a Router version use \`<provider>/<model>\`, such as \`bfl/flux-2-dev\`. Provider IDs match Comfy's partner catalog.
+
+Router models are called with \`POST https://api.comfy.org/v2/models/<model ID>\`, except the ones marked queued: their synchronous route answers \`403 not_enabled\`, so they run on \`POST https://api.comfy.org/v2/models/<model ID>/requests\` and the result is collected later. The [Router pages by output](/catalog/router/video) carry a Delivery column, and each model page shows its own route.
 
 ${allModels.length} model pages, generated ${TODAY}.`;
   write(`${OUT}/index`, {
