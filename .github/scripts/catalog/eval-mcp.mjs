@@ -3,14 +3,20 @@
  * Run the fixed catalog questions against a Comfy Docs MCP server and score them.
  *
  * Usage:
- *   node .github/scripts/catalog/eval-mcp.mjs                                # production
+ *   Run against PR previews only. Production runs land in Mintlify's agent search analytics
+ *   and drown out real queries (they were the top 6 agent searches on 2026-11-20).
+ *
  *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp
+ *   node .github/scripts/catalog/eval-mcp.mjs --url https://<preview>/mcp --runs 5
  *   node .github/scripts/catalog/eval-mcp.mjs --out results/eval-<label>.json
  *   node .github/scripts/catalog/eval-mcp.mjs --compare results/eval-baseline.json
  *
  * No LLM is involved. Each question is one MCP call plus a string check, so a
  * run is free and repeatable. Tool names are discovered with tools/list because
  * Mintlify makes them site-specific.
+ *
+ * Mintlify search order varies between identical calls, so each question runs
+ * --runs times (default 3) and passes when most runs pass.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,7 +29,9 @@ const args = Object.fromEntries(
     return acc;
   }, []),
 );
-const url = args.url ?? "https://docs.comfy.org/mcp";
+if (!args.url) throw new Error("Pass --url https://<preview>.mintlify.site/mcp. Production runs pollute agent search analytics.");
+const url = args.url;
+const runs = Math.max(1, Number(args.runs ?? 3));
 const { questions } = JSON.parse(readFileSync(join(here, "eval-questions.json"), "utf8"));
 
 let rpcId = 0;
@@ -71,6 +79,7 @@ function check(expect, got) {
     if (expect.pageStartsWith) return top.some((p) => p.startsWith(expect.pageStartsWith));
     if (expect.pageEquals) return top.includes(expect.pageEquals);
     if (expect.pageIn) return top.some((p) => expect.pageIn.includes(p));
+    if (expect.pageStartsWithAny) return top.some((p) => expect.pageStartsWithAny.some((x) => p.startsWith(x)));
   }
   if ("exit" in got) {
     return got.exit === (expect.exit ?? 0) && (expect.contains ?? []).every((s) => got.text.includes(s));
@@ -81,30 +90,38 @@ function check(expect, got) {
 
 const results = [];
 for (const q of questions) {
-  let got;
-  try {
-    got = await ask(q.call);
-  } catch (e) {
-    got = { error: String(e.message ?? e) };
+  let passes = 0;
+  let evidence;
+  for (let i = 0; i < runs; i++) {
+    let got;
+    try {
+      got = await ask(q.call);
+    } catch (e) {
+      got = { error: String(e.message ?? e) };
+    }
+    const ok = !got.error && check(q.expect, got);
+    if (ok) passes++;
+    // Keep evidence from a failing run when there is one: that is the run worth reading.
+    if (!evidence || !ok) evidence = got.pages?.slice(0, 5) ?? got.resources ?? got.error ?? got.text?.slice(0, 160);
   }
-  const pass = !got.error && check(q.expect, got);
-  const evidence = got.pages?.slice(0, 5) ?? got.resources ?? got.error ?? got.text?.slice(0, 160);
-  results.push({ id: q.id, question: q.question, guard: !!q.guard, pass, evidence });
+  const pass = passes * 2 > runs;
+  results.push({ id: q.id, question: q.question, guard: !!q.guard, pass, passes, runs, evidence });
 }
 
 const score = results.filter((r) => !r.guard && r.pass).length;
 const total = results.filter((r) => !r.guard).length;
 const guardsOk = results.filter((r) => r.guard).every((r) => r.pass);
-const report = { url, ranAt: new Date().toISOString(), tools: tools.map((t) => t.name), score: `${score}/${total}`, guardsOk, results };
+const report = { url, runs, ranAt: new Date().toISOString(), tools: tools.map((t) => t.name), score: `${score}/${total}`, guardsOk, results };
 
 let baseline;
 if (args.compare) baseline = JSON.parse(readFileSync(args.compare, "utf8"));
 for (const r of results) {
   const was = baseline?.results.find((b) => b.id === r.id)?.pass;
   const delta = was === undefined ? "" : was === r.pass ? "" : r.pass ? "  (fixed)" : "  (REGRESSED)";
-  console.log(`${r.pass ? "PASS" : "FAIL"}  ${String(r.id).padStart(2)}  ${r.guard ? "[guard] " : ""}${r.question}${delta}`);
+  const flaky = r.passes > 0 && r.passes < r.runs ? `  (${r.passes}/${r.runs} runs)` : "";
+  console.log(`${r.pass ? "PASS" : "FAIL"}  ${String(r.id).padStart(2)}  ${r.guard ? "[guard] " : ""}${r.question}${flaky}${delta}`);
 }
-console.log(`\nScore ${report.score} · guards ${guardsOk ? "ok" : "FAILING"} · ${url}`);
+console.log(`\nScore ${report.score} · guards ${guardsOk ? "ok" : "FAILING"} · majority of ${runs} runs · ${url}`);
 
 if (args.out) {
   mkdirSync(dirname(args.out), { recursive: true });
