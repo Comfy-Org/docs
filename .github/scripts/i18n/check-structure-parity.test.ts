@@ -9,6 +9,7 @@ import {
   englishCounterpart,
   introducesNewGap,
   isExempt,
+  LOCALES,
   localizedCounterparts,
   normalizeAssetUrl,
   strippedBody,
@@ -231,12 +232,9 @@ describe("path helpers", () => {
       "tutorials/flux/flux-1-text-to-image.mdx"
     );
     expect(englishCounterpart("ja/does/not/exist.mdx", repoRoot)).toBeNull();
-    expect(localizedCounterparts("tutorials/flux/flux-1-text-to-image.mdx", repoRoot)).toEqual([
-      "ja/tutorials/flux/flux-1-text-to-image.mdx",
-      "zh/tutorials/flux/flux-1-text-to-image.mdx",
-      "ko/tutorials/flux/flux-1-text-to-image.mdx",
-      "es/tutorials/flux/flux-1-text-to-image.mdx",
-    ]);
+    expect(localizedCounterparts("tutorials/flux/flux-1-text-to-image.mdx", repoRoot)).toEqual(
+      LOCALES.map((locale) => `${locale}/tutorials/flux/flux-1-text-to-image.mdx`)
+    );
   });
 
   test("changedEnglishFiles excludes localized and exempt paths", () => {
