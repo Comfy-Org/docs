@@ -186,6 +186,22 @@ for (const m of aliasModels) {
   rec.siblings = linked.filter((l) => l !== rec);
   models.set(path, rec);
 }
+// catalog-src can also correct a model's own facts: the task its name should state ("image
+// upscaling", not "image generation"), or input/output modalities the schema and template data get
+// wrong. It applies to Router records too, which the loop above skips.
+const byRecId = new Map();
+for (const rec of models.values()) byRecId.set(rec.id, rec);
+for (const m of aliasModels) {
+  const recs = [m.id, ...(m.router_ids ?? [])].map((id) => byRecId.get(id) ?? byRouterId.get(id)).filter(Boolean);
+  for (const rec of recs) {
+    // A closed entry carries display names too, and they are the ones a stale template label or a
+    // template name has to resolve against.
+    if (m.template_names?.length) rec.aliasNames = [...new Set([...(rec.aliasNames ?? []), ...m.template_names])];
+    if (m.task) rec.task = m.task;
+    if (m.input) rec.input = m.input;
+    if (m.output) rec.output = m.output;
+  }
+}
 
 /** "sd3.5-large-turbo" against family "sd3.5" -> "Large Turbo". */
 function variantSuffix(routerSeg, familySeg) {
@@ -214,6 +230,58 @@ for (const r of routerPages) if (r.title && !providerLevel.has(norm(r.title)) &&
 // provider. It is only ever the target of a template that names no specific model.
 const genericPages = new Map();
 for (const r of routerPages) if (r.title && providerLevel.has(norm(r.title)) && byRouterId.get(r.id)) genericPages.set(norm(r.title), byRouterId.get(r.id));
+
+// A template whose own name spells a catalog model's name belongs to that model: the model label
+// stored in the workflow goes stale (api_nano_banana_2_1_* still says "Nano Banana"). Only names
+// that carry a version take part, so "Google Gemini" cannot capture every Gemini template.
+const nameTokens = (s) => String(s).toLowerCase().match(/[a-z]+|\d+/g) ?? [];
+const nameAliases = [];
+for (const rec of models.values()) {
+  for (const n of new Set([rec.name, ...(rec.aliasNames ?? [])])) {
+    const seq = nameTokens(n);
+    if (!/\d/.test(String(n)) || seq.length < 2) continue;
+    nameAliases.push({ seq, rec });
+  }
+}
+nameAliases.sort((a, b) => b.seq.length - a.seq.length);
+const contiguousRun = (seq, toks) => {
+  // The longest slice of the alias name that appears verbatim in the template's tokens, and that
+  // carries a version number (a brand alone says nothing).
+  let best = 0;
+  for (let i = 0; i < seq.length; i++) {
+    for (let j = seq.length; j - i > best; j--) {
+      const run = seq.slice(i, j);
+      if (run.length < 2 || !run.some((t) => /^\d+$/.test(t))) continue;
+      for (let k = 0; k + run.length <= toks.length; k++) {
+        if (run.every((t, x) => toks[k + x] === t)) { best = run.length; break; }
+      }
+    }
+  }
+  return best;
+};
+const runFor = (toks, label) => {
+  let best = 0;
+  for (const { seq, rec } of nameAliases) {
+    if (label && rec.name !== label && !(rec.aliasNames ?? []).includes(label)) continue;
+    best = Math.max(best, contiguousRun(seq, toks));
+  }
+  return best;
+};
+const recordsFromTemplateName = (name, declared = []) => {
+  const toks = nameTokens(name);
+  const declaredRun = Math.max(0, ...declared.map((n) => runFor(toks, n)));
+  let best = { len: 0, recs: [] };
+  for (const { seq, rec } of nameAliases) {
+    const len = contiguousRun(seq, toks);
+    // Three tokens: a version plus what it belongs to ("nano banana 2 1"), not a stray "v2"
+    // that half the catalog shares.
+    if (len < 3 || len <= declaredRun || len < best.len) continue;
+    if (len > best.len) best = { len, recs: [rec] };
+    else if (!best.recs.includes(rec)) best.recs.push(rec);
+  }
+  // A tie means the template name does not single out a record.
+  return best.recs.length === 1 ? best.recs : [];
+};
 
 // Size and speed words that tell Router variants of one family apart ("Seedance 2.0 Mini").
 const VARIANT_WORDS = new Set(["mini", "fast", "turbo", "pro", "prime", "large", "medium", "flash", "max", "lite"]);
@@ -254,16 +322,32 @@ if (tpl) {
     const resolved = names.some((n) => templateName.has(norm(n)));
     const providerNames = names.filter((n) => providerLevel.has(norm(n)));
     for (const n of names) for (const rec of pickVariants(templateName.get(norm(n)) ?? [], sig, name)) targets.add(rec);
+    // The template's own name outranks a stale model label, but never for a pipeline that names
+    // several models on purpose.
+    const fromName = names.length <= 1 || !targets.size ? recordsFromTemplateName(name, names) : [];
+    // A template named after a model is about that model: its file list is not evidence against
+    // that (api_flux3_max_i2v downloads files several FLUX records share).
+    const claimed = fromName.length > 0;
+    if (claimed) {
+      targets.clear();
+      for (const rec of fromName) targets.add(rec);
+    }
     // A provider-level name with no entry of its own is weak: it only reaches the provider's
     // generic Router page, and only when the template names no model through an entry.
     if (!resolved) for (const n of providerNames) if (genericPages.has(norm(n))) targets.add(genericPages.get(norm(n)));
-    for (const f of tpl.files.get(name) ?? []) {
+    if (!claimed) for (const f of tpl.files.get(name) ?? []) {
       if (!MAIN_DIRS.has(f.directory)) continue;
       for (const rec of models.values()) if (rec.filePrefixes.some((p) => f.name.toLowerCase().startsWith(p))) targets.add(rec);
     }
     // An api_* template that names another provider belongs to that provider, not this one, and a
     // template that consumes or makes only media this model does not is a multi-model pipeline.
     const refs = templateProviderRefs(t);
+    // The template's own name names a provider too ("api_flux3_max_i2v", "api_qwen3_image_edit"),
+    // which is what keeps an api_* template off a row that only shares a file with it.
+    for (const tok of String(name).split(/[^A-Za-z0-9]+/)) {
+      const k = norm(tok).replace(/\d+$/, "");
+      if (k.length >= 3 && lookup.has(k)) refs.add(lookup.get(k));
+    }
     const apiNamed = /^api[_-]|_api[_-]|_api$/i.test(name);
     for (const rec of [...targets]) {
       const providerOk = !refs.size || refs.has(rec.provider);
@@ -450,7 +534,7 @@ function modelTitle(rec) {
 function modelPage(rec) {
   const prov = providers[rec.provider]?.title ?? rec.provider;
   const outs = rec.output.length ? rec.output : ["media"];
-  const phrase = rec.output.length ? outputPhrase(rec.output) : "generation";
+  const phrase = rec.task ?? (rec.output.length ? outputPhrase(rec.output) : "generation");
   const open = rec.license === "open-weights";
   const makerEcho = norm(rec.name) === norm(prov);
   const from = makerEcho ? "" : ` from ${prov}`;
@@ -522,7 +606,7 @@ function modelPage(rec) {
   }
 
   if (open && rec.files.length) {
-    body += `\n## Model files for running it locally\n\nPut each file in the matching folder under \`ComfyUI/models/\`. These come from the workflow templates below${tplCommit ? ` (workflow_templates at \`${tplCommit}\`)` : ""}.\n\n| File | Folder | Download |\n| --- | --- | --- |\n`;
+    body += `\n## Model files for running it locally\n\nPut each file in the matching folder under \`ComfyUI/\`. These come from the workflow templates below${tplCommit ? ` (workflow_templates at \`${tplCommit}\`)` : ""}.\n\n| File | Folder | Download |\n| --- | --- | --- |\n`;
     const own = (f) => Number(rec.filePrefixes.some((p) => f.name.toLowerCase().startsWith(p)));
     const sorted = [...rec.files].sort((a, b) => own(b) - own(a) || Number(MAIN_DIRS.has(b.directory)) - Number(MAIN_DIRS.has(a.directory)) || a.directory.localeCompare(b.directory));
     for (const f of sorted.slice(0, 20)) body += `| \`${f.name}\` | \`models/${f.directory}/\` | ${f.url ? `[Download](${f.url})` : "See template"} |\n`;
@@ -540,7 +624,7 @@ function modelPage(rec) {
   }
 
   if (rec.routerIds.length) {
-    body += `\n## Pricing\n\nComfy Router charges the model maker's list price, billed from your workspace credits (211 credits = $1 USD). Current per-model prices are on [router.comfy.org](https://router.comfy.org).\n\n`;
+    body += `\n## Pricing\n\nComfy Router charges the model maker's list price, billed from your workspace credits (211 credits = $1 USD). Current per-model prices are on [router.comfy.org](https://router.comfy.org). A workspace with negotiated pricing is quoted the list price and charged its contract rate, and an estimate is not the final charge: what your workspace's usage and billing records settle is what you pay.\n\n`;
     body += `- Price a call before you run it: \`POST https://api.comfy.org/v2/models/${rec.routerIds[0]}/estimate\`.\n`;
     body += `- Billing facts, such as whether a refused request is charged: the \`billing\` field from \`GET https://api.comfy.org/v2/models/${rec.routerIds[0]}\`.\n`;
     body += `\nSee [Comfy Router pricing](/development/comfy-router/pricing) and [Billing](/development/comfy-router/billing#model-billing-facts).\n`;
@@ -554,13 +638,20 @@ const allModels = [...models.values()];
 // ---------- Router lists by output
 const routerModels = allModels.filter((m) => m.routerIds.length);
 const outputs = [...new Set(routerModels.flatMap((m) => m.output))].sort();
+// One row per Router ID: a family page that lists its variants' Router IDs must not repeat the
+// variant's own row, and the count in the title and the page tags is the number of IDs a reader
+// can call.
+const routerRows = [...new Set(routerModels.flatMap((m) => m.routerIds))]
+  .map((id) => ({ id, rec: byRouterId.get(id) ?? routerModels.find((m) => m.routerIds.includes(id)) }))
+  .filter((r) => r.rec)
+  .sort((a, b) => a.id.localeCompare(b.id));
 for (const out of outputs) {
-  const rows = routerModels.filter((m) => m.output.includes(out)).sort((a, b) => a.id.localeCompare(b.id));
+  const rows = routerRows.filter((r) => r.rec.output.includes(out));
   const phrase = OUTPUT_PHRASE[out] ?? `${out} generation`;
   let body = `${tagBlock({ Product: "router", Output: out, Count: String(rows.length) })}\n\nEvery ${phrase} model you can call through Comfy Router, with its model ID. Call any of them with \`POST https://api.comfy.org/v2/models/<model ID>\` and your \`COMFY_API_KEY\`. Models marked queued run on the queue route only: submit to \`POST https://api.comfy.org/v2/models/<model ID>/requests\` and collect the result later.\n\n| Model | Model ID | Provider | Delivery | Input | Catalog page |\n| --- | --- | --- | --- | --- | --- |\n`;
-  for (const m of rows) {
-    const delivery = m.routerIds.some((id) => routerSchemas.get(id)?.queuedOnly) ? "queued" : "sync";
-    body += `| ${mdEscape(m.name)} | \`${m.routerIds.join("`, `")}\` | ${m.provider} | ${delivery} | ${m.input.join(", ")} | [Details](/${m.path}) |\n`;
+  for (const { id, rec: m } of rows) {
+    const delivery = routerSchemas.get(id)?.queuedOnly ? "queued" : "sync";
+    body += `| ${mdEscape(m.name)} | \`${id}\` | ${m.provider} | ${delivery} | ${m.input.join(", ")} | [Details](/${m.path}) |\n`;
   }
   write(`${OUT}/router/${slug(out)}`, {
     title: `Comfy Router ${phrase} models: all ${rows.length} model IDs`,
