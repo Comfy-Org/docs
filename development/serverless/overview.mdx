@@ -5,7 +5,7 @@ description: "Release Build versions to a Comfy Cloud deployment, change its GPU
 icon: "cloud-arrow-up"
 ---
 
-After you deploy your Build on Comfy Cloud, you can release new versions of the Build, change the deployment's GPU and workers, and call the deployment from your application at its own URL. A deployment costs GPU time while its workers run and storage until you delete it. You keep managing it after you create it. This page shows how to start a Build from other sources, release versions, choose the GPU and workers, call the deployment, watch it, and stop or delete it.
+After you deploy your Build on Comfy Cloud, you can release new versions of the Build, change the deployment's GPU and workers, and call the deployment from your application at its own URL. A deployment costs GPU time while its workers run and storage until you delete it. You keep managing it after you create it. This page shows how to start a Build from other sources, release versions, choose the GPU and workers, call the deployment, add a model to it, watch it, and stop or delete it.
 
 To create your first Build and deployment, see [Custom Builds](/development/deploy/cloud-custom-builds).
 
@@ -100,7 +100,7 @@ From here on, the page assumes you have a Build with at least one deployment. Ev
 
 ## Release a version of your Build
 
-A published version of a Build never changes. To add a Custom Node or a model, you publish a version, and then move the deployment onto it. The Developer Platform calls a version `v1`, `v2`, and so on. comfy-cli calls it a release.
+A published version of a Build never changes. To add a Custom Node, you publish a version, and then move the deployment onto it. To add a model or LoRA to one deployment without a new version, see [Add a model to a running deployment](#add-a-model-to-a-running-deployment). The Developer Platform calls a version `v1`, `v2`, and so on. comfy-cli calls it a release.
 
 <Warning>
   Moving a deployment to another version, or rolling it back, costs GPU time while the old and the new version both run. On the Developer Platform, the **Change version** dialog shows the amount.
@@ -319,6 +319,189 @@ Your application sends API-format Workflows to the deployment's URL with the [Co
 </Tabs>
 
 From your own code, use the [Comfy SDKs](/development/api-development/sdks). Set `COMFY_BASE_URL` to the **Deployment URL**. See [Choosing a base URL](/development/api-development/sdks#choosing-a-base-url).
+
+## Add a model to a running deployment
+
+You can add a model or LoRA to one deployment without publishing a new version of the Build. The file goes onto the same storage as the Build's models, so every worker reads it from disk with no download. The deployment keeps its URL. The Build and your other deployments don't change.
+
+You add, list, and remove a deployment's models with the deployment API, using a workspace API key.
+
+<Warning>
+  An added model counts toward the deployment's model storage, which bills as [Deployment billing](/development/deploy/cloud-usage#deployment-billing) describes. Each add also replaces the deployment's running workers with new ones that have the file, and the new workers bill GPU time as usual.
+</Warning>
+
+### Before you begin
+
+Make sure you have these:
+
+- **A deployment whose status reads Ready or Stopped**: while it starts, stops, or updates, an add is refused.
+- **The deployment's ID**: it's the first part of the **Deployment URL**, such as `dep-2bf42665-0a61-4702-962f-0774c6391e96` in `https://dep-2bf42665-0a61-4702-962f-0774c6391e96.run.comfy.app`.
+- **A workspace API key**: see [Getting an API key](/development/api-development/getting-an-api-key). The commands below read it from the `COMFY_API_KEY` environment variable and send it in the `X-API-Key` header.
+
+### Upload and add the file
+
+<Steps>
+  <Step title="Ask for an upload link">
+    Send the file's name, size, and SHA-256 hash. `kind` is always `model`:
+
+    ```bash
+    FILE=my_style.safetensors
+    SIZE=$(wc -c < "$FILE" | tr -d ' ')
+    SHA256=$(shasum -a 256 "$FILE" | cut -d ' ' -f 1)
+
+    curl -sS https://platformapi.comfy.org/builder/v1/blobs \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "{\"kind\": \"model\", \"filename\": \"$FILE\", \"sizeBytes\": $SIZE, \"sha256\": \"$SHA256\"}"
+    ```
+
+    The answer holds the upload's `blobId`, an `uploadUrl`, and `expiresAt`, the time the link stops working:
+
+    ```json
+    {
+      "blobId": "b1f0c2d4-...",
+      "deduplicated": false,
+      "uploadUrl": "https://storage.googleapis.com/...",
+      "expiresAt": "2026-11-23T20:15:00Z"
+    }
+    ```
+  </Step>
+  <Step title="Upload the file">
+    PUT the file to `uploadUrl` before `expiresAt`. The link takes only a body of the size you declared, and it needs the `x-goog-if-generation-match: 0` header:
+
+    ```bash
+    curl -sS -X PUT "<uploadUrl>" \
+      -H "x-goog-if-generation-match: 0" \
+      --upload-file "$FILE"
+    ```
+  </Step>
+  <Step title="Add the upload to the deployment">
+    Send the `blobId` and the model folder the file goes in, such as `loras` or `checkpoints`:
+
+    ```bash
+    curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+      -H "X-API-Key: $COMFY_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"blobId": "<blobId>", "type": "loras"}'
+    ```
+
+    The answer is `202` with the deployment's entry for the file, which reads `adding`:
+
+    ```json
+    {
+      "id": "655fa851-...",
+      "type": "loras",
+      "filename": "my_style.safetensors",
+      "status": "adding",
+      "sizeBytes": 134621556
+    }
+    ```
+
+    To give the file another name in the folder, add `"filename"` to the request. Without it, the file keeps the name you uploaded it with.
+  </Step>
+  <Step title="Wait until the file reads ready">
+    List the deployment's models:
+
+    ```bash
+    curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+      -H "X-API-Key: $COMFY_API_KEY"
+    ```
+
+    ```json
+    {
+      "addEnabled": true,
+      "models": [
+        { "id": "655fa851-...", "type": "loras", "filename": "my_style.safetensors", "status": "ready", "sizeBytes": 134621556 }
+      ]
+    }
+    ```
+
+    While the file reads `adding`, the deployment copies it onto its storage, starts new workers that have it, and stops the old ones. Jobs already running finish on the old workers. In our tests, a 130 MB LoRA read `ready` between 40 seconds and about 3 minutes after the add. On a stopped deployment, the file reads `ready` once its upload is complete, and the next start places it.
+  </Step>
+</Steps>
+
+A file that reads `failed` was not added. Remove it, and then add it again. If you didn't get an answer to an add, send the same add again: while the file reads `adding`, the same upload, folder, and name return the same entry.
+
+<Accordion title="Upload a large file in pieces">
+  For a large file, ask for the upload in pieces, so an expired link or a dropped connection doesn't restart the whole file. Add `"parts": true` to the upload request. The answer then holds a `parts` list instead of one `uploadUrl`. A file is split into at most 32 pieces of at least 64 MiB each, and can be up to 128 GiB.
+
+  1. PUT each piece's bytes, from `offsetBytes` for `sizeBytes` bytes of the file, to that piece's `uploadUrl`, with the same `x-goog-if-generation-match: 0` header.
+  2. If links expire before every piece is in, send `POST https://platformapi.comfy.org/builder/v1/blobs/<blobId>/parts` for fresh links to the pieces not stored yet.
+  3. When every piece is in, send `POST https://platformapi.comfy.org/builder/v1/blobs/<blobId>/complete`. It joins the pieces into one file.
+
+  With pieces, you can add the upload to the deployment before the pieces land. The deployment copies each piece as it arrives, so the file reads `ready` sooner after the upload ends.
+</Accordion>
+
+### Use the added model
+
+Name the file in your Workflow as you would a model in the Build. For a LoRA, set the loader's `lora_name` input to the file name, as [Set lora_name in the Workflow](#use-workspace-library-models-in-api-requests) shows, and send the job to the deployment.
+
+A job that names a file still `adding` is refused before it reaches a worker. The API answers `422`:
+
+```json
+{
+  "error": {
+    "code": "model_not_ready",
+    "message": "my_style.safetensors is still being added to this deployment. Try again when it shows Ready."
+  }
+}
+```
+
+A job that names a `failed` file is refused with the code `model_failed` and the message `my_style.safetensors was not added to this deployment. Remove it and add it again.` A run from the Comfy Cloud editor is refused with the same sentence.
+
+<Tip>
+  Send jobs that use the file only after it reads `ready`. A loader Node from a Custom Node pack is checked only against what the deployment listed a few seconds earlier, so a job sent right after an add can reach a worker without the file and fail with a `Value not in list` error.
+</Tip>
+
+In the Comfy Cloud editor, select the deployment under **Run on**, and then reload the page once the file reads `ready`. The editor reads the deployment's models when the page loads. The file then shows in its loader Node's list, such as the `lora_name` list of a `Load LoRA (Model and CLIP)` Node, and in the **Model Library** in the **Left sidebar**.
+
+The deployment keeps its added models when it moves to another version, rolls back, stops, and starts. If a version you move to has its own file with the same folder and name, the deployment uses the version's file.
+
+### Remove an added model
+
+<Warning>
+  Removing a model deletes the file from the deployment's storage. Jobs that name it fail. A job already running may still finish. A worker that already loaded the file may keep using it for a few minutes, and a running worker can return the saved result of a job identical to one it already ran.
+</Warning>
+
+Send the entry's `id`:
+
+```bash
+curl -sS -X DELETE https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models/<id> \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+
+The answer is `202` with the entry, which reads `removing`. The file leaves the list once it's deleted. If the version the deployment runs has its own file with the same folder and name, only the entry is removed, and the version's file stays.
+
+### Rules and errors
+
+An add follows these rules:
+
+- **The file name** is one name of letters, digits, `.`, `_`, and `-`, and starts with a letter or digit.
+- **The folder** (`type`) is a model folder, such as `loras`, `checkpoints`, or `vae`, or another folder inside `models`. It can't be `custom_nodes` or `configs`, or a different capitalization of a known folder, such as `LoRAs`.
+- **One file per folder and name**: a name the Build's version or the deployment already has in that folder is refused.
+- **The Build's model setting applies**: a Build set to **Choose which models** refuses every added model, and a Build that blocks a file name refuses that name.
+
+Each refusal adds nothing and answers with an `error` code and a `message` you can show:
+
+```json
+{
+  "error": "MODEL_NAME_TAKEN",
+  "message": "This deployment already has loras/my_style.safetensors. Remove it first, or add the file under another name."
+}
+```
+
+| Status | `error` | When |
+|--------|---------|------|
+| `400` | `INVALID_REQUEST` | `blobId` is missing, `type` isn't a model folder, or the file name breaks the rule above. |
+| `404` | `UPLOAD_NOT_FOUND` | The upload isn't this workspace's, isn't a model, or its file isn't there yet. Upload the file before you add it, unless you upload in pieces. |
+| `404` | `NOT_FOUND` | The deployment, or the entry you remove, doesn't exist in this workspace. |
+| `409` | `DEPLOYMENT_BUSY` | The deployment is starting, stopping, or updating. Add or remove the model once it reads Ready or Stopped. |
+| `409` | `MODEL_POLICY` | The Build's model setting doesn't allow the file. |
+| `409` | `MODEL_NAME_TAKEN` | The Build's version or the deployment already has a file with that folder and name. |
+| `409` | `MODEL_STORAGE_EXCEEDED` | The Build's models and the added models would need more storage than the deployment can have. |
+| `409` | `MODEL_LIST_TOO_LARGE` | The deployment has too many models to add another. The message says whether to remove an added model or use a version with fewer models. |
+| `409` | `VOLUME_SHARED` | The deployment shares its storage with another deployment, so models can't be added to it. |
+| `503` | `SERVICE_UNAVAILABLE` | The service couldn't check the add in time. Send the same add again. |
 
 ## Use workspace library models in API requests
 
