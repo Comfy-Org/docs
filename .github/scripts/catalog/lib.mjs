@@ -71,6 +71,38 @@ export function loadRouterPages() {
   return pages;
 }
 
+/**
+ * Router model schemas from router-schemas/<provider>/<model>.json, keyed by model ID.
+ * Delivery mode is read from the synchronous route's own summary, so a model that only
+ * runs on the queue is detected from the schema rather than from a list of IDs.
+ */
+export function loadRouterSchemas() {
+  const base = "router-schemas";
+  const schemas = new Map();
+  for (const prov of dirs(base)) {
+    for (const f of readdirSync(join(root, base, prov)).filter((x) => x.endsWith(".json"))) {
+      let j;
+      try {
+        j = JSON.parse(readFileSync(join(root, base, prov, f), "utf8"));
+      } catch {
+        continue;
+      }
+      const id = j["x-comfy-router-model-id"] ?? `${prov}/${f.replace(/\.json$/, "")}`;
+      const summary = j.paths?.[`/v2/models/${id}`]?.post?.summary ?? j.paths?.[`/v2/models/${id}/requests`]?.post?.summary ?? "";
+      const modalities = (key) => [...new Set((j[key] ?? []).map((m) => String(m).toLowerCase()))];
+      schemas.set(id, {
+        queuedOnly: /queued-only|403\s+not_enabled/i.test(summary),
+        aliasOf: j["x-comfy-router-alias-of"] ?? null,
+        altProviders: (j["x-comfy-router-alt-providers"] ?? []).map((a) => a.model_id ?? a.provider).filter(Boolean),
+        // Ground truth for a Router page that documents several models behind one page and so has no single Input/Output line.
+        input: modalities("x-comfy-router-input-modalities"),
+        output: modalities("x-comfy-router-output-modalities"),
+      });
+    }
+  }
+  return schemas;
+}
+
 /** English page paths from docs.json (only strings inside "pages" arrays). */
 export function loadEnglishPages() {
   const docs = readJson("docs.json");
