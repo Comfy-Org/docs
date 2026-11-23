@@ -1,0 +1,378 @@
+---
+title: "通过 Comfy Router 使用 Relief"
+description: "通过 Comfy Router 调用 meshy/relief：端点、请求结构以及 Router 返回的响应。"
+sidebarTitle: "Relief"
+translationSourceHash: 7063c352
+translationFrom: development/comfy-router/models/meshy/relief/code.mdx
+translationBlockHashes:
+  "_intro": af44e2d8
+  "Quick start": 6147e55f
+  "Schema": b2671581
+  "Examples": f68220ea
+---
+{/* 生成文件。由 `pnpm code-pages:gen` 从 router-schemas/meshy/relief.json 生成。 */}
+
+import RouterCodeFooter from "/snippets/zh/comfy-router/model-code-footer.mdx";
+
+`meshy/relief` 的 API 参考，由 Comfy Router 从 Meshy 提供。
+
+**输入：** 图像 · **输出：** 图像 + 3D
+
+## 快速开始
+
+在[你的 Comfy 工作区](https://platform.comfy.org/profile/api-keys?onboarding=router)中创建一个密钥，并将其导出为 `COMFY_API_KEY`。Python 和 TypeScript 代码片段使用 Comfy SDK（`pip install comfy-sdk` 和 `npm install @comfyorg/sdk`）；cURL 片段则是通过原始 HTTP 进行的相同调用。
+
+**模型 ID：** `meshy/relief`
+
+**端点：** `POST https://api.comfy.org/v2/models/meshy/relief`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="等待结果">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 从环境中读取 COMFY_API_KEY。
+# SDK 会自动创建幂等键，并在自动重试时复用它。
+with Comfy() as client:
+    result = client.models.run(
+        "meshy/relief",
+        {
+            "image_url": "https://example.invalid/meshy/relief/logo.png",
+            "variant": "low",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境中读取 COMFY_API_KEY。
+// SDK 会自动创建幂等键，并在自动重试时复用它。
+const { data } = await comfy.models.run("meshy/relief", {
+  image_url: "https://example.invalid/meshy/relief/logo.png",
+  variant: "low",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/meshy/relief \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"image_url\": \"https://example.invalid/meshy/relief/logo.png\", \"variant\": \"low\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="排队并稍后收集">
+相同的请求正文，发送到 `POST https://api.comfy.org/v2/models/meshy/relief/requests`。一旦运行被接纳，Router 就会返回 `201` 和一个 `request_id`；结果就绪后，可由当前进程或另一个进程收集。[队列投递](/zh/development/comfy-router/queue)会逐步介绍状态、取消和收集。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 从环境中读取 COMFY_API_KEY。
+# 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "meshy/relief",
+            {
+                "image_url": "https://example.invalid/meshy/relief/logo.png",
+                "variant": "low",
+            },
+        )
+        print("request_id:", handle.request_id)  # 连同模型 ID，这就是另一个进程所需的全部信息
+
+        # 轮询直到请求完成，并按服务器给出的 Retry-After 等待。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # 提供商自己的负载，与 models.run() 返回的值相同。
+        # 失败或已取消的请求会在这里抛出类型化的 Router 错误。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 从环境中读取 COMFY_API_KEY。
+// 每次 submit() 调用都会生成自己的 Idempotency-Key，并在自动重试时复用它。
+const handle = await comfy.models.submit("meshy/relief", {
+  image_url: "https://example.invalid/meshy/relief/logo.png",
+  variant: "low",
+});
+console.log("requestId:", handle.requestId); // 连同模型 ID，这就是另一个进程所需的全部信息
+
+// 轮询直到请求完成，并按服务器给出的 Retry-After 等待。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// 与 models.run() 返回的结果相同。失败或已取消的请求会在这里被拒绝。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 提交。Router 会返回 201，并附带 request_id、status_url、response_url 和 cancel_url。
+curl https://api.comfy.org/v2/models/meshy/relief/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"image_url\": \"https://example.invalid/meshy/relief/logo.png\", \"variant\": \"low\"}"
+
+# 2. 轮询直到状态为 COMPLETED，每次响应都会给出需要等待的 Retry-After 秒数。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/meshy/relief/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 收集。返回 200 时包含模型的原生输出，仍在运行时返回 202 及状态正文。
+curl https://api.comfy.org/v2/models/meshy/relief/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Schema
+
+### 输入
+
+<ParamField body="base_thickness_mm" type="number">
+  底板厚度（毫米），0.1 到 10。当 remove_base 为 true 时，请省略该参数或发送 0。
+
+  范围：`0` 到 `10`
+</ParamField>
+
+<ParamField body="bend_angle" type="number" default="60">
+  弯曲角度（度）。小于 1 时，浮雕保持平坦。
+
+  范围：`0` 到 `360`
+</ParamField>
+
+<ParamField body="bend_axis" type="string">
+  `xz`（默认，弯曲左右边缘）或 `yz`（弯曲上下边缘）。仅在 bend_mode 为 convex 或 concave 时适用。
+</ParamField>
+
+<ParamField body="bend_mode" type="string">
+  `off`（默认）、`convex` 或 `concave`。
+</ParamField>
+
+<ParamField body="carving_depth_mm" type="number">
+  雕刻深度（毫米）。variant 为 high 时默认值为 6，variant 为 low 时默认值为 3。
+
+  范围：`0` 到 `60`
+</ParamField>
+
+<ParamField body="carving_mode" type="string">
+  `emboss`（默认）或 `engrave`。
+</ParamField>
+
+<ParamField body="color_mapping" type="boolean" default="false">
+  根据图像为模型上色。GLB、OBJ、FBX 和 USDZ 会携带颜色；STL 和 3MF 保持白色。费用不变。
+</ParamField>
+
+<ParamField body="image_url" type="string" required>
+  jpg、jpeg、png 或 webp 图像的公开 URL 或 data URI。最大 20 MB，至少 32 x 32 像素。透明区域会填充为黑色。
+</ParamField>
+
+<ParamField body="mesh_resolution" type="integer" default="1024">
+  沿较长边的点数。值越大，文件会大得多（2048 时约为 150 MB GLB 和 300 MB STL）。
+
+  范围：`512` 到 `2048`
+</ParamField>
+
+<ParamField body="removal_threshold" type="number" default="0.01">
+  背景移除阈值。仅在 remove_base 为 true 时适用。
+
+  范围：`0.01` 到 `1`
+</ParamField>
+
+<ParamField body="remove_base" type="boolean" default="false">
+  切除背景，使浮雕没有底板。
+</ParamField>
+
+<ParamField body="should_generate_model" type="boolean" default="true">
+  设为 false 时仅生成深度图，不生成模型，也不生成预览。费用不变。
+</ParamField>
+
+<ParamField body="size_mm" type="number" default="60">
+  较长边的长度，单位为毫米。
+
+  范围：`20` 到 `250`
+</ParamField>
+
+<ParamField body="target_formats" type="string[]">
+  要生成的模型格式。以下格式中的一个或多个：glb、obj、fbx、stl、usdz 和 3mf。默认为 glb 和 stl。
+</ParamField>
+
+<ParamField body="variant" type="string">
+  `low`（默认）提供较浅的深度和更精细的细节，适用于激光或 CNC 加工。`high` 提供更深的雕塑感浮雕，适用于 3D 打印。它还会设置默认的 carving_depth_mm。
+</ParamField>
+
+本文档由 Router 在 `GET /v2/models/meshy/relief/openapi.json` 提供的 schema 生成，该 schema 也是请求到达提供商之前用于校验调用的同一份文档。
+
+### 输出
+
+<ResponseField name="consumed_credits" type="integer">
+  任务消耗的 Meshy 积分。任务失败时为 0。
+</ResponseField>
+
+<ResponseField name="created_at" type="integer">
+  任务创建时间的时间戳，单位为毫秒。
+
+  格式：`int64`
+</ResponseField>
+
+<ResponseField name="depth_map_url" type="string">
+  可下载的 2k 16 位灰度深度图 PNG 的 URL。其中的数值是相对值，而非毫米。
+</ResponseField>
+
+<ResponseField name="expires_at" type="integer">
+  任务结果过期时间的时间戳，单位为毫秒。任务未完成时为 0。
+
+  格式：`int64`
+</ResponseField>
+
+<ResponseField name="finished_at" type="integer">
+  任务完成时间的时间戳，单位为毫秒。任务未完成时为 0。
+
+  格式：`int64`
+</ResponseField>
+
+<ResponseField name="id" type="string" required>
+  任务的唯一标识符。
+</ResponseField>
+
+<ResponseField name="model_urls" type="object">
+  可下载的浮雕模型文件的 URL，每个请求的格式对应一个。仅生成深度图的任务此处为空。
+</ResponseField>
+
+<ResponseField name="model_urls.3mf" type="string">
+  可下载的 3MF 文件的 URL。
+</ResponseField>
+
+<ResponseField name="model_urls.fbx" type="string">
+  可下载的 FBX 文件的 URL。
+</ResponseField>
+
+<ResponseField name="model_urls.glb" type="string">
+  可下载的 GLB 文件的 URL，单位为米。
+</ResponseField>
+
+<ResponseField name="model_urls.mtl" type="string">
+  可下载的、用于 OBJ 文件的 MTL 材质文件的 URL。
+</ResponseField>
+
+<ResponseField name="model_urls.obj" type="string">
+  可下载的 OBJ 文件的 URL。
+</ResponseField>
+
+<ResponseField name="model_urls.stl" type="string">
+  可下载的二进制 STL 文件的 URL，单位为毫米。
+</ResponseField>
+
+<ResponseField name="model_urls.usdz" type="string">
+  可下载的 USDZ 文件的 URL。
+</ResponseField>
+
+<ResponseField name="preceding_tasks" type="integer">
+  排在前面的任务数量。仅在状态为 PENDING 时有意义。
+</ResponseField>
+
+<ResponseField name="progress" type="integer">
+  任务进度。未开始时为 0，成功时为 100。
+
+  范围：`0` 到 `100`
+</ResponseField>
+
+<ResponseField name="started_at" type="integer">
+  任务开始时间的时间戳，单位为毫秒。任务未开始时为 0。
+
+  格式：`int64`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  可能的值：`SUCCEEDED`
+</ResponseField>
+
+<ResponseField name="task_error" type="object">
+  错误对象，当任务失败时包含报错信息。
+</ResponseField>
+
+<ResponseField name="task_error.message" type="string">
+  详细的报错信息。
+</ResponseField>
+
+<ResponseField name="texture_urls" type="object[]">
+  纹理 URL。仅在 color_mapping 为是时出现。
+</ResponseField>
+
+<ResponseField name="texture_urls[].base_color" type="string">
+  可下载的基础颜色贴图图像的 URL。
+</ResponseField>
+
+<ResponseField name="texture_urls[].metallic" type="string">
+  可下载的金属度贴图图像的 URL。
+</ResponseField>
+
+<ResponseField name="texture_urls[].normal" type="string">
+  可下载的法线贴图图像的 URL。
+</ResponseField>
+
+<ResponseField name="texture_urls[].roughness" type="string">
+  可下载的粗糙度贴图图像的 URL。
+</ResponseField>
+
+<ResponseField name="thumbnail_url" type="string">
+  可下载的预览图像的 URL。仅生成深度图的任务此处为空。
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  任务类型。始终为 relief。
+</ResponseField>
+
+## 示例
+
+### 输入
+
+```json
+{
+  "image_url": "https://example.invalid/meshy/relief/logo.png",
+  "variant": "low"
+}
+```
+
+### 输出
+
+```json
+{
+  "consumed_credits": 20,
+  "created_at": 1767225600000,
+  "depth_map_url": "https://example.invalid/meshy/relief/depth.png",
+  "finished_at": 1767225663000,
+  "id": "018f2c7a-4b1e-7c3d-9a05-6e2f8b41d0c9",
+  "model_urls": {
+    "glb": "https://example.invalid/meshy/relief/model.glb",
+    "stl": "https://example.invalid/meshy/relief/model.stl"
+  },
+  "progress": 100,
+  "started_at": 1767225601000,
+  "status": "SUCCEEDED",
+  "thumbnail_url": "https://example.invalid/meshy/relief/preview.png",
+  "type": "relief"
+}
+```
+
+<RouterCodeFooter />
