@@ -1,0 +1,214 @@
+---
+title: "MoGe в ComfyUI: глубина, карты точек и рабочие процессы с 3D-сетками"
+description: "Используйте MoGe в ComfyUI для оценки монокулярной геометрии: метрическая глубина и карты точек, карты нормалей и сетка из одного изображения."
+sidebarTitle: "MoGe"
+translationSourceHash: 56282cc7
+translationFrom: tutorials/utility/moge.mdx
+translationBlockHashes:
+  "_intro": 4bce87c2
+  "Model Installation": 30e6e677
+  "Example Workflows": 83272565
+  "Community Resources": 4976f1a5
+---
+import UpdateReminder from "/snippets/ru/tutorials/update-reminder.mdx"
+
+# Введение в ComfyUI MoGe
+
+[MoGe](https://github.com/microsoft/MoGe) (CVPR 2025, Microsoft Research) представляет собой мощную модель для восстановления 3D-геометрии по монокулярным изображениям произвольных сцен. Она оценивает метрические карты точек, метрические карты глубины, карты нормалей и угол обзора камеры: всё за один прямой проход.
+
+Ключевые возможности:
+
+- **Точная оценка 3D-геометрии**: карты точек, карты глубины и карты нормалей из одного изображения: одна модель, один прямой проход
+- **Метрический масштаб** (MoGe-2, MoGe-3): карты точек и карты глубины в реальном масштабе
+- **Гибкая поддержка разрешения**: работает с различными разрешениями и соотношениями сторон (от 2:1 до 1:2)
+- **Быстрый вывод**: ~60 мс на изображение на A100 / RTX 3090 (FP16, ViT-L)
+- **Генерация сетки** как для перспективных, так и для панорамных изображений
+
+ComfyUI поставляется с чекпойнтами для трёх версий MoGe:
+
+| Файл | Версия | Метрический масштаб | Карты нормалей | Параметры |
+|------|---------|:------------:|:-----------:|:-----:|
+| `moge_1_vitl_fp16` | **MoGe-1** | - | - | 314M |
+| `moge_2_vitl_normal_fp16` | **MoGe-2** | ✅ | ✅ | 331M |
+| `moge_3_vitl_fp16` | **MoGe-3** | ✅ | ✅ | 370M |
+| `moge_3_vitg_fp16` | **MoGe-3** | ✅ | ✅ | 1.25B |
+
+> MoGe-2 добавляет метрический масштаб и высококачественную оценку карт нормалей с более резкими визуальными деталями и меньшей задержкой вывода. **MoGe-2 с нормалями (`moge_2_vitl_normal_fp16`) является рекомендуемым чекпойнтом.**
+>
+> MoGe-3 сохраняет архитектуру MoGe-2 и добавляет этап самоуправляемого разреженного объёмного уточнения (self-guided sparse volumetric refinement), что значительно улучшает мелкодетализированную геометрию карт точек. Он поставляется как чекпойнт ViT-L (`moge_3_vitl_fp16`) и более крупный чекпойнт ViT-g (`moge_3_vitg_fp16`).
+
+<UpdateReminder/>
+
+<Tip>
+ComfyUI теперь нативно поддерживает узлы MoGe. Перед началом убедитесь, что вы обновили [ComfyUI](https://github.com/Comfy-Org/ComfyUI) до последней версии.
+
+Сгенерированные модели в формате `.glb` будут сохранены в папку `ComfyUI/output/mesh`.
+</Tip>
+
+## Установить модель
+
+Скачайте чекпойнт(ы) MoGe и сохраните их в соответствующую папку ComfyUI:
+
+- **MoGe-2 (рекомендуется)**: [moge_2_vitl_normal_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors)
+- **MoGe-1 (базовый)**: [moge_1_vitl_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_1_vitl_fp16.safetensors)
+- **MoGe-3 (максимальная детализация)**: [moge_3_vitg_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_3_vitg_fp16.safetensors) (1.25B) или [moge_3_vitl_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_3_vitl_fp16.safetensors) (370M)
+
+```
+ComfyUI/
+├── models/
+│   ├── geometry_estimation/
+│   │   ├── moge_2_vitl_normal_fp16.safetensors
+│   │   ├── moge_1_vitl_fp16.safetensors
+│   │   ├── moge_3_vitg_fp16.safetensors
+│   │   └── moge_3_vitl_fp16.safetensors
+```
+
+Только для чекпойнтов MoGe-3: узлы `Run MoGe Inference` и `Run MoGe Panorama Inference` предоставляют расширенный элемент управления `refine_steps` (от 0 до 8, по умолчанию 3), который выполняет разреженные объёмные проходы уточнения по предсказанной глубине. `0` отключает уточнение, а большее число проходов повышает резкость мелких деталей и рёбер при примерно линейных затратах. Чекпойнты MoGe-1 и MoGe-2 игнорируют этот параметр.
+
+## Примеры рабочих процессов
+
+### MoGe: оценка глубины {#utility_moge_depth_estimation}
+
+Загрузите одно RGB-изображение и создайте цветной предпросмотр глубины и необработанную карту глубины.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_moge_depth_estimation-1.webp" alt="Превью рабочего процесса оценки глубины MoGe" />
+
+<CardGroup cols={2}>
+  <Card title="Запустить в Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=utility_moge_depth_estimation&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    Открыть в Comfy Cloud
+  </Card>
+  <Card title="Скачать рабочий процесс" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_moge_depth_estimation.json">
+    Скачайте JSON или найдите &quot;MoGe: Depth Estimation&quot; в Библиотеке шаблонов
+  </Card>
+</CardGroup>
+
+**Входные материалы**
+
+Загрузите этот файл в соответствующий узел `LoadImage`:
+
+<CardGroup cols={2}>
+  <Card title="alien_world.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/alien_world.png">
+    узел `LoadImage` 9 · `alien_world.png`
+  </Card>
+</CardGroup>
+
+### 1.1 Шаги запуска
+
+1. Убедитесь, что в узле `LoadMoGeModel` загружен чекпойнт MoGe.
+2. Загрузите изображение в узле `Load Image`.
+3. Нажмите `Queue` или используйте `Ctrl(cmd) + Enter`, чтобы запустить рабочий процесс.
+4. Рабочий процесс выводит цветной предпросмотр глубины, исходный предпросмотр глубины и маску.
+
+### MoGe: оценка перспективной геометрии {#3d_moge_perspective_to_mesh}
+
+Загрузите изображение, чтобы оценить его перспективную геометрию. Генерируйте 3D-карту глубины и нормали поверхности из входных данных, затем преобразуйте результат в текстурированную GLB-сетку.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_moge_perspective_to_mesh-1.webp" alt="Предпросмотр рабочего процесса MoGe: перспектива в сетку" />
+
+<CardGroup cols={2}>
+  <Card title="Запустить в Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=3d_moge_perspective_to_mesh&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    Открыть в Comfy Cloud
+  </Card>
+  <Card title="Скачать рабочий процесс" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_perspective_to_mesh.json">
+    Скачайте JSON или найдите &quot;MoGe: Perspective Geometry Estimation&quot; в библиотеке шаблонов
+  </Card>
+</CardGroup>
+
+**Входные материалы**
+
+Загрузите этот файл в соответствующий узел `LoadImage`:
+
+<CardGroup cols={2}>
+  <Card title="modern_living_room.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/modern_living_room.png">
+    Узел `LoadImage` 9 · `modern_living_room.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/modern_living_room.png" alt="Входное изображение" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+Это **монокулярная оценка геометрии**: перекрытые области и обратные стороны объектов будут отсутствовать или окажутся фрагментированными. Подход полезен для быстрого прототипирования сцены, получения референсной геометрии или визуализации глубины и нормалей в виде сетки, но он не заменяет многовидовую 3D-реконструкцию.
+
+### 2.1 Шаги запуска
+
+1. Убедитесь, что в узле `LoadMoGeModel` загружен чекпойнт MoGe
+2. Загрузите фотографию в перспективе в узле `Load Image`
+3. (Необязательно) Просмотрите предпросмотр нормалей OpenGL и DirectX
+4. Нажмите `Queue` или используйте `Ctrl(cmd) + Enter`, чтобы запустить
+
+### Moge: панорама в сетку {#3d_moge_panorama_to_mesh}
+
+Загрузите эквиректангулярную панораму 360° и создайте текстурированную GLB-сетку с цветами вершин.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_moge_panorama_to_mesh-1.webp" alt="MoGe panorama to mesh workflow preview" />
+
+<CardGroup cols={2}>
+  <Card title="Запустить в Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=3d_moge_panorama_to_mesh&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    Открыть в Comfy Cloud
+  </Card>
+  <Card title="Скачать рабочий процесс" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_panorama_to_mesh.json">
+    Скачайте JSON или найдите &quot;Moge: Panorama to Mesh&quot; в Библиотеке шаблонов
+  </Card>
+</CardGroup>
+
+**Входные материалы**
+
+Загрузите этот файл в соответствующий узел `LoadImage`:
+
+<CardGroup cols={2}>
+  <Card title="lego_street_panorama.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/lego_street_panorama.png">
+    Узел `LoadImage` 28 · `lego_street_panorama.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/lego_street_panorama.png" alt="Input panorama" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+Рабочий процесс использует `MoGePanoramaInference`, чтобы разделить панораму на 12 перспективных видов, выполнить оценку монокулярной геометрии для каждого вида независимо, а затем объединить их в единую сетку.
+
+### 3.1 Шаги запуска
+
+1. Убедитесь, что узел `LoadMoGeModel` загрузил один из чекпойнтов MoGe
+2. Загрузите панорамное изображение в равнопромежуточной проекции (equirectangular) в узле `Load Image`
+3. Нажмите `Queue` или используйте `Ctrl(cmd) + Enter`, чтобы запустить
+
+### MoGe 3: оценка геометрии {#utility_moge3_geometry_estimation}
+
+Оценивайте мелкодетализированную геометрию по одному изображению с помощью MoGe 3. Чекпойнты MoGe-3 переносят грубую карту точек на разреженную воксельную оболочку и уточняют глубину с помощью лёгких разреженных 3D-свёрток, что сохраняет тонкие структуры и разрывы глубины, которые размывают декодеры в пространстве изображения.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_moge3_geometry_estimation-1.webp" alt="Предпросмотр рабочего процесса оценки геометрии MoGe 3" />
+
+<CardGroup cols={2}>
+  <Card title="Запустить в Comfy Cloud" icon="cloud" href="https://cloud.comfy.org/?template=utility_moge3_geometry_estimation&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    Открыть в Comfy Cloud
+  </Card>
+  <Card title="Скачать рабочий процесс" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_moge3_geometry_estimation.json">
+    Скачать JSON или найдите &quot;Geometry Estimation: MoGe 3&quot; в Библиотеке шаблонов
+  </Card>
+</CardGroup>
+
+**Входные материалы**
+
+Загрузите этот файл в соответствующий узел `LoadImage`:
+
+<CardGroup cols={2}>
+  <Card title="cosmic_suitcase.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/cosmic_suitcase.png">
+    узел `LoadImage` 3 · `cosmic_suitcase.png`
+  </Card>
+</CardGroup>
+
+### 4.1 Шаги запуска
+
+1. Убедитесь, что в подграфе `Geometry Estimation (MoGe 3)` выбран чекпойнт MoGe 3: шаблон поставляется с `moge_3_vitg_fp16.safetensors`, а `moge_3_vitl_fp16.safetensors` доступен в том же раскрывающемся списке
+2. Загрузите изображение в узле `Load Image`
+3. (Необязательно) Измените `output` на узле подграфа, чтобы отобразить другую карту: `mask` используется по умолчанию, другие варианты: `depth`, `depth_colored`, `normal_opengl` и `normal_directx`
+4. Нажмите `Queue` или используйте `Ctrl(cmd) + Enter`, чтобы запустить
+
+---
+
+## Ресурсы сообщества
+
+- [MoGe на GitHub (microsoft/MoGe)](https://github.com/microsoft/MoGe): научная статья и код
+- [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe): официальные веса модели для ComfyUI
