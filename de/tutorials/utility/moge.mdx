@@ -1,0 +1,212 @@
+---
+title: "MoGe in ComfyUI: Tiefe, Punkt-Maps und 3D-Mesh-Workflows"
+description: "MoGe in ComfyUI für monokulare Geometrieschätzung: metrische Tiefe, Punkt-Maps, Normal Maps und Mesh-Erzeugung aus einem Bild."
+sidebarTitle: "MoGe"
+translationSourceHash: 56282cc7
+translationFrom: tutorials/utility/moge.mdx
+translationBlockHashes:
+  "_intro": 4bce87c2
+  "Model Installation": 30e6e677
+  "Example Workflows": 83272565
+  "Community Resources": 4976f1a5
+---
+import UpdateReminder from "/snippets/de/tutorials/update-reminder.mdx"
+
+# ComfyUI MoGe: Einführung
+
+[MoGe](https://github.com/microsoft/MoGe) (CVPR 2025, von Microsoft Research) ist ein leistungsstarkes Modell zur Rekonstruktion der 3D-Geometrie aus monokularen Bildern aus offenen Domänen. Es schätzt metrische Punktkarten, metrische Tiefenkarten, Normal Maps und das Sichtfeld der Kamera: alles in einem einzigen Vorwärtsdurchlauf.
+
+Wichtige Funktionen:
+
+- **Präzise 3D-Geometrieschätzung**: Punktkarten, Tiefenkarten und Normal Maps aus einem einzigen Bild: ein Modell, ein Vorwärtsdurchlauf
+- **Metrischer Maßstab** (MoGe-2, MoGe-3): Punktkarten und Tiefenkarten im realen Maßstab
+- **Flexible Auflösungsunterstützung**: funktioniert mit verschiedenen Auflösungen und Seitenverhältnissen (2:1 bis 1:2)
+- **Schnelle Inferenz**: ~60ms pro Bild auf A100 / RTX 3090 (FP16, ViT-L)
+- **Mesh-Generierung** sowohl aus perspektivischen als auch aus panoramischen Bildern
+
+ComfyUI liefert Checkpoints für drei MoGe-Versionen:
+
+| Datei | Version | Metrischer Maßstab | Normal Maps | Parameter |
+|------|---------|:------------:|:-----------:|:-----:|
+| `moge_1_vitl_fp16` | **MoGe-1** | - | - | 314M |
+| `moge_2_vitl_normal_fp16` | **MoGe-2** | ✅ | ✅ | 331M |
+| `moge_3_vitl_fp16` | **MoGe-3** | ✅ | ✅ | 370M |
+| `moge_3_vitg_fp16` | **MoGe-3** | ✅ | ✅ | 1.25B |
+
+> MoGe-2 ergänzt den metrischen Maßstab sowie eine hochwertige Normal-Map-Schätzung mit schärferen visuellen Details und geringerer Inferenzlatenz. **MoGe-2 mit Normal Map (`moge_2_vitl_normal_fp16`) ist der empfohlene Checkpoint.**
+>
+> MoGe-3 behält die Architektur von MoGe-2 bei und ergänzt eine selbstgesteuerte, sparse volumetrische Verfeinerungsstufe für eine deutlich verbesserte feinkörnige Punktkarten-Geometrie. Es ist als ViT-L-Checkpoint (`moge_3_vitl_fp16`) und als größerer ViT-g-Checkpoint (`moge_3_vitg_fp16`) verfügbar.
+
+<UpdateReminder/>
+
+<Tip>
+ComfyUI unterstützt MoGe-Nodes jetzt nativ. Stellen Sie vor dem Start sicher, dass Sie auf die neueste Version von [ComfyUI](https://github.com/Comfy-Org/ComfyUI) aktualisiert haben.
+
+Generierte Modelle im `.glb`-Format werden im Ordner `ComfyUI/output/mesh` ausgegeben.
+</Tip>
+
+## Modell installieren
+
+Laden Sie die MoGe-Checkpoints herunter und speichern Sie sie im entsprechenden ComfyUI-Ordner:
+
+- **MoGe-2 (empfohlen)**: [moge_2_vitl_normal_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors)
+- **MoGe-1 (Baseline)**: [moge_1_vitl_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_1_vitl_fp16.safetensors)
+- **MoGe-3 (höchste Detailtreue)**: [moge_3_vitg_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_3_vitg_fp16.safetensors) (1.25B) oder [moge_3_vitl_fp16.safetensors](https://huggingface.co/Comfy-Org/MoGe/blob/main/geometry_estimation/moge_3_vitl_fp16.safetensors) (370M)
+
+```
+ComfyUI/
+├── models/
+│   ├── geometry_estimation/
+│   │   ├── moge_2_vitl_normal_fp16.safetensors
+│   │   ├── moge_1_vitl_fp16.safetensors
+│   │   ├── moge_3_vitg_fp16.safetensors
+│   │   └── moge_3_vitl_fp16.safetensors
+```
+
+Nur für MoGe-3-Checkpoints: Die Nodes `Run MoGe Inference` und `Run MoGe Panorama Inference` bieten eine erweiterte `refine_steps`-Steuerung (0 bis 8, Standard 3), die sparse volumetrische Verfeinerungsdurchläufe über die vorhergesagte Tiefe ausführt. `0` deaktiviert die Verfeinerung, und mehr Durchläufe schärfen feine Details und Kanten zu ungefähr linearen Kosten. MoGe-1- und MoGe-2-Checkpoints ignorieren diese Einstellung.
+
+## Beispiel-Workflows
+
+### MoGe: Tiefenschätzung {#utility_moge_depth_estimation}
+
+Laden Sie ein einzelnes RGB-Bild hoch und generieren Sie eine farbige Tiefenvorschau und eine rohe Tiefenkarte.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_moge_depth_estimation-1.webp" alt="Vorschau des MoGe-Workflows zur Tiefenschätzung" />
+
+<CardGroup cols={2}>
+  <Card title="Auf Comfy Cloud ausführen" icon="cloud" href="https://cloud.comfy.org/?template=utility_moge_depth_estimation&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    In Comfy Cloud öffnen
+  </Card>
+  <Card title="Workflow herunterladen" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_moge_depth_estimation.json">
+    JSON herunterladen oder in der Vorlagenbibliothek nach &quot;MoGe: Depth Estimation&quot; suchen
+  </Card>
+</CardGroup>
+
+**Eingabematerialien**
+
+Laden Sie diese Datei in den passenden `LoadImage`-Node hoch:
+
+<CardGroup cols={2}>
+  <Card title="alien_world.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/alien_world.png">
+    `LoadImage`-Node 9 · `alien_world.png`
+  </Card>
+</CardGroup>
+
+### 1.1 Schritte zum Ausführen
+
+1. Stellen Sie sicher, dass im Node `LoadMoGeModel` ein MoGe-Checkpoint geladen ist
+2. Laden Sie ein Bild im Node `Load Image`
+3. Klicken Sie auf `Queue` oder verwenden Sie `Ctrl(cmd) + Enter`, um den Workflow auszuführen
+4. Der Workflow gibt eine farbige Tiefenvorschau, eine rohe Tiefenvorschau und eine Maskierung aus
+
+### MoGe: Perspektivische Geometrieschätzung {#3d_moge_perspective_to_mesh}
+
+Laden Sie ein Bild hoch, um dessen perspektivische Geometrie zu schätzen. Generieren Sie aus der Eingabe eine 3D-Tiefenkarte und Oberflächennormalen und konvertieren Sie diese anschließend in ein texturiertes GLB-Mesh.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_moge_perspective_to_mesh-1.webp" alt="Vorschau des Workflows MoGe Perspektive zu Mesh" />
+
+<CardGroup cols={2}>
+  <Card title="Auf Comfy Cloud ausführen" icon="cloud" href="https://cloud.comfy.org/?template=3d_moge_perspective_to_mesh&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    In Comfy Cloud öffnen
+  </Card>
+  <Card title="Workflow herunterladen" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_perspective_to_mesh.json">
+    JSON herunterladen oder in der Vorlagenbibliothek nach „MoGe: Perspective Geometry Estimation“ suchen
+  </Card>
+</CardGroup>
+
+**Eingabematerialien**
+
+Laden Sie diese Datei in den passenden `LoadImage`-Node hoch:
+
+<CardGroup cols={2}>
+  <Card title="modern_living_room.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/modern_living_room.png">
+    `LoadImage`-Node 9 · `modern_living_room.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/modern_living_room.png" alt="Eingabebild" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+Dies ist eine **monokulare Geometrieschätzung**: Verdeckte Bereiche und Rückseiten von Objekten fehlen oder sind fragmentiert. Nützlich für das schnelle Prototyping von Szenen, für Referenzgeometrie oder für die Visualisierung von Tiefe und Normalen als Mesh, aber kein Ersatz für eine Multi-View-3D-Rekonstruktion.
+
+### 2.1 Schritte zur Ausführung
+
+1. Stellen Sie sicher, dass im Node `LoadMoGeModel` ein MoGe-Checkpoint geladen wurde
+2. Laden Sie ein Perspektivfoto im Node `Load Image`
+3. (Optional) Sehen Sie sich die OpenGL- und DirectX-Normalvorschauen an
+4. Klicken Sie auf `Queue` oder verwenden Sie `Ctrl(cmd) + Enter`, um die Ausführung zu starten
+
+### Moge: Panorama zu Mesh {#3d_moge_panorama_to_mesh}
+
+Laden Sie ein equirectangulares 360°-Panoramabild hoch und generieren Sie ein texturiertes GLB-Mesh mit Vertex-Farben.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/3d_moge_panorama_to_mesh-1.webp" alt="Vorschau des Workflows MoGe Panorama zu Mesh" />
+
+<CardGroup cols={2}>
+  <Card title="Auf Comfy Cloud ausführen" icon="cloud" href="https://cloud.comfy.org/?template=3d_moge_panorama_to_mesh&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    In Comfy Cloud öffnen
+  </Card>
+  <Card title="Workflow herunterladen" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/3d_moge_panorama_to_mesh.json">
+    JSON herunterladen oder in der Vorlagenbibliothek nach „Moge: Panorama to Mesh“ suchen
+  </Card>
+</CardGroup>
+
+**Eingabematerialien**
+
+Laden Sie diese Datei in den passenden `LoadImage`-Node hoch:
+
+<CardGroup cols={2}>
+  <Card title="lego_street_panorama.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/lego_street_panorama.png">
+    `LoadImage`-Node 28 · `lego_street_panorama.png`
+  </Card>
+</CardGroup>
+
+<div style={{display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem', alignItems: 'start'}}>
+  <img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/lego_street_panorama.png" alt="Eingabe-Panorama" style={{width: '100%', height: 'auto', objectFit: 'contain'}} />
+</div>
+
+Der Workflow verwendet `MoGePanoramaInference`, um das Panorama in 12 perspektivische Ansichten aufzuteilen, für jede Ansicht unabhängig eine monokulare Geometrieschätzung auszuführen und sie anschließend zu einem einzigen Mesh zusammenzuführen.
+
+### 3.1 Schritte zum Ausführen
+
+1. Stellen Sie sicher, dass im Node `LoadMoGeModel` einer der MoGe-Checkpoints geladen ist
+2. Laden Sie ein equirektangulares Panoramabild im Node `Load Image`
+3. Klicken Sie auf `Queue` oder verwenden Sie `Ctrl(cmd) + Enter`, um die Ausführung zu starten
+
+### MoGe 3: Geometrieschätzung {#utility_moge3_geometry_estimation}
+
+Schätzen Sie mit MoGe 3 fein detaillierte Geometrie aus einem einzelnen Bild. Die MoGe-3-Checkpoints heben die grobe Punktkarte auf eine dünn besetzte Voxel-Hülle an und verfeinern die Tiefe mit leichtgewichtigen, dünn besetzten 3D-Faltungen. Dadurch bleiben dünne Strukturen und Tiefenunstetigkeiten erhalten, die bildraumbasierte Decoder verwischen.
+
+<img src="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/utility_moge3_geometry_estimation-1.webp" alt="Vorschau des MoGe 3 Workflows zur Geometrieschätzung" />
+
+<CardGroup cols={2}>
+  <Card title="Auf Comfy Cloud ausführen" icon="cloud" href="https://cloud.comfy.org/?template=utility_moge3_geometry_estimation&utm_source=docs&utm_medium=referral&utm_campaign=moge">
+    In Comfy Cloud öffnen
+  </Card>
+  <Card title="Workflow herunterladen" icon="download" href="https://github.com/Comfy-Org/workflow_templates/blob/main/templates/utility_moge3_geometry_estimation.json">
+    Laden Sie die JSON herunter oder suchen Sie in der Vorlagenbibliothek nach „Geometry Estimation: MoGe 3“
+  </Card>
+</CardGroup>
+
+**Eingabematerialien**
+
+Laden Sie diese Datei in den passenden `LoadImage`-Node hoch:
+
+<CardGroup cols={2}>
+  <Card title="cosmic_suitcase.png" icon="image" href="https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/cosmic_suitcase.png">
+    `LoadImage`-Node 3 · `cosmic_suitcase.png`
+  </Card>
+</CardGroup>
+
+### 4.1 Schritte zur Ausführung
+
+1. Stellen Sie sicher, dass im Subgraph `Geometry Estimation (MoGe 3)` ein MoGe 3 Checkpoint ausgewählt ist: Die Vorlage enthält `moge_3_vitg_fp16.safetensors`, und `moge_3_vitl_fp16.safetensors` ist im selben Dropdown-Menü verfügbar.
+2. Laden Sie ein Bild im Node `Load Image`.
+3. (Optional) Ändern Sie `output` am Subgraph-Node, um eine andere Map zu rendern: `mask` ist die Standardeinstellung, und `depth`, `depth_colored`, `normal_opengl` und `normal_directx` sind die weiteren Optionen.
+4. Klicken Sie auf `Queue`, oder verwenden Sie `Ctrl(cmd) + Enter`, um den Workflow auszuführen.
+
+## Community Resources
+
+- [MoGe GitHub (microsoft/MoGe)](https://github.com/microsoft/MoGe): Forschungsarbeit und Code
+- [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe): Offizielle Modellgewichte für ComfyUI
