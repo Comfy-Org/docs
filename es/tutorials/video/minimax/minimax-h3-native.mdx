@@ -2,14 +2,14 @@
 title: "Flujos de trabajo de MiniMax H3 en ComfyUI: texto a video, imagen a video y referencia a video"
 description: "Ejemplos paso a paso de flujos nativos de MiniMax H3 en ComfyUI, con anclaje de guías y máscaras de ruido latente para un control más fino del video."
 sidebarTitle: "Flujos nativos"
-translationSourceHash: 94049f00
+translationSourceHash: 30d2028d
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": 55fbe49c
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
   "MiniMax H3 Reference to Video (R2V)": 3faa7b7c
-  "Advanced workflows with the native nodes": 5ddf539b
+  "Advanced workflows with the native nodes": 8d591dc4
 ---
 Esta página cubre las tres plantillas base de MiniMax H3 y las técnicas avanzadas con nodos nativos. Para conocer las capacidades y elegir plantilla, consulta la [descripción general de MiniMax H3](/es/tutorials/video/minimax/minimax-h3).
 
@@ -282,3 +282,17 @@ Adjunta la máscara al latente de origen con `SetLatentNoiseMask` y pasa ese lat
 La máscara es un peso, no un interruptor: en cada paso el latent regenerado se mezcla con el original según el valor de la máscara, así que un borde suave introduce el cambio de forma gradual y no deja una costura dura. Agranda la máscara unos píxeles más allá del objeto y difumina el borde (`Grow Mask` y después `Convert Mask to Image`, `Blur Image` y `Convert Image to Mask`) para que la sombra y el borde de contacto caigan dentro de la zona regenerada.
 
 Lo que queda fuera de la máscara sigue condicionando al modelo, así que la zona regenerada se rellena con lo que la rodea. Cambiar un sujeto por otro parecido funciona. Quitar un objeto grande, de alto contraste y en movimiento no es fiable: su sombra, sus reflejos y el espacio que ocupaba lo traen de vuelta.
+
+### Acelerar el muestreo con atención dispersa
+
+[`Model Sparse Attention`](/es/built-in-nodes/BlockSparseAttention) cambia la atención densa por una ruta de bloques dispersos durante parte del muestreo, y necesita ComfyUI **0.35.0** o posterior. Se inserta en la ruta del modelo, entre el cargador y el sampler.
+
+| `method` | Requiere | Uso |
+| --- | --- | --- |
+| `sol-attn` | nada extra, sin entrenamiento | cualquier peso H3, a más resolución o duración |
+| `sla` | pesos o LoRA destilados para él | no con los pesos H3 incluidos |
+| `vsa` | pesos FastH3 con capas `to_gate_compress` | [FastH3](/es/tutorials/video/minimax/minimax-h3-fastvideo) |
+
+Solo `sol-attn` corresponde a los pesos incluidos. A 1344×768 y 362 frames, unos 100 mil tokens, puede reducir a la mitad el tiempo de atención del backend denso int8, la opción `comfy kitchen attention` en GPU Nvidia y AMD. Los clips cortos ganan menos: por debajo de `min_tokens` (12288 por defecto) la atención sigue densa, y subir `tau` (1.3 por defecto) dispersa más, mientras las filas de audio se mantienen densas con `sink_conditioning`.
+
+La atención dispersa cubre de `start_percent` a `end_percent`, 0.2 a 1.0 por defecto. Fuera de esa ventana la atención pasa por el backend denso de [`Model Attention Backend`](/es/built-in-nodes/ModelAttentionBackend), pytorch attention si el nodo no está. Dentro de ella solo corre la ruta dispersa. Activa `verbose` para ver en el log el número de tokens y si cada forma de atención usó la ruta dispersa.

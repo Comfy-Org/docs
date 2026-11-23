@@ -2,14 +2,14 @@
 title: "ComfyUI MiniMax H3 文生视频、图生视频与参考生视频工作流"
 description: "ComfyUI 中 MiniMax H3 原生工作流的逐步示例，含帧锚定与潜在噪声蒙版技巧，帮助你对生成视频做更精细的控制。"
 sidebarTitle: "原生工作流"
-translationSourceHash: 94049f00
+translationSourceHash: 30d2028d
 translationFrom: tutorials/video/minimax/minimax-h3-native.mdx
 translationBlockHashes:
   "_intro": 55fbe49c
   "MiniMax H3 Text to Video (T2V)": 8807c872
   "MiniMax H3 Image to Video (I2V)": c59554b0
   "MiniMax H3 Reference to Video (R2V)": 3faa7b7c
-  "Advanced workflows with the native nodes": 5ddf539b
+  "Advanced workflows with the native nodes": 8d591dc4
 ---
 本页涵盖三个基础 MiniMax H3 模板及原生节点高级技巧。能力与模板选择见 [MiniMax H3 概览](/zh/tutorials/video/minimax/minimax-h3)。
 
@@ -282,3 +282,17 @@ ComfyUI/
 遮罩是权重而不是开关：每一步都按遮罩值把重生成的 latent 与原始 latent 混合，因此边缘柔和时改动会逐渐过渡，不会留下硬接缝。把遮罩向外扩几个像素并把边缘做模糊（`Grow Mask`，再经 `Convert Mask to Image`、`Blur Image`、`Convert Image to Mask`），让阴影和接触边缘也落在重生成范围内。
 
 遮罩之外的内容仍会参与模型的条件计算，重生成区域是按周围画面补出来的。把主体换成相近的主体可行；移除大块高对比、还在移动的物体并不可靠：它的阴影、反射和原本占的位置会不断把它拉回来。
+
+### 使用稀疏注意力加速采样
+
+[`Model Sparse Attention`](/zh/built-in-nodes/BlockSparseAttention) 在部分采样区间把稠密注意力换成块稀疏路径，需要 ComfyUI **0.35.0** 或更高版本。把它接在模型加载器与采样器之间的模型通路上。
+
+| `method` | 依赖 | 适用 |
+| --- | --- | --- |
+| `sol-attn` | 无需额外权重，免训练 | 任意 H3 权重，高分辨率或长片段 |
+| `sla` | 为其蒸馏的权重或 LoRA | 不适用于官方 H3 权重 |
+| `vsa` | 带 `to_gate_compress` 层的 FastH3 权重 | [FastH3](/zh/tutorials/video/minimax/minimax-h3-fastvideo) |
+
+只有 `sol-attn` 与官方权重匹配。在 1344×768、362 帧（约 10 万 Token）时，它能把注意力耗时降到稠密 int8 后端的一半，也就是 Nvidia 与 AMD 显卡上的 `comfy kitchen attention` 选项。更短的片段收益更小：低于 `min_tokens`（默认 12288）时注意力保持稠密；提高 `tau`（默认 1.3）会更稀疏，音频行则由 `sink_conditioning` 保持稠密。
+
+稀疏注意力只在 `start_percent` 到 `end_percent`（默认 0.2 到 1.0）之间生效。窗口之外走 [`Model Attention Backend`](/zh/built-in-nodes/ModelAttentionBackend) 的稠密后端，没有该节点时就是 pytorch attention。窗口之内只走稀疏路径。打开 `verbose` 会输出 Token 数量和每种注意力形状是否走了稀疏。
