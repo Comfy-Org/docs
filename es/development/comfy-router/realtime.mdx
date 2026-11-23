@@ -1,0 +1,345 @@
+---
+title: "Modelos en tiempo real de Comfy Router"
+sidebarTitle: "Modelos en tiempo real"
+description: "Abre sesiones con Genie 4, los modelos de mundo de fal y Grok Voice: WebSocket, señalización WebRTC, autenticación, límites y facturación."
+translationSourceHash: 2555a808
+translationFrom: development/comfy-router/realtime.mdx
+translationBlockHashes:
+  "_intro": c24aeb22
+  "Authentication": 588d5135
+  "WebSocket sessions": 9f0733ee
+  "WebRTC world models": e3d1be35
+  "Errors": 507d94b1
+  "Next": aedde44a
+---
+
+
+La mayoría de los modelos de Router aceptan una solicitud y devuelven un resultado finalizado. Los modelos en tiempo real, en cambio, mantienen una sesión activa: envías entrada mientras el modelo se ejecuta y recibes su salida a medida que se produce. Router los sirve en dos superficies:
+
+| Modelo | Qué hace | Superficie |
+| --- | --- | --- |
+| `google/genie-4` | Modelo de mundo interactivo Genie 4, dirigido con teclas y texto | Sesión WebSocket, `GET /v2/realtime/google/google/genie-4` |
+| `xai/grok-voice/realtime` | Conversación de voz a voz con Grok Voice | Sesión WebSocket, `GET /v2/realtime/fal/xai/grok-voice/realtime` |
+| `fal-ai/abot-world-0` | Modelo de mundo interactivo, video por WebRTC | Señalización WebRTC, `POST /v2/realtime/wma/fal` |
+| `fal-ai/lingbot-world-2` | Modelo de mundo interactivo, video por WebRTC | Señalización WebRTC, `POST /v2/realtime/wma/fal` |
+
+Los cuatro se facturan **por segundo de tiempo de sesión**, con cargo al mismo saldo de créditos del espacio de trabajo que las demás llamadas a Router. Consulta [Precios de Router](/es/development/comfy-router/pricing) para ver las tarifas. Una sesión necesita un espacio de trabajo con fondos: sin créditos, la apertura se rechaza con `402`.
+
+<Note>
+  La ruta de WebSocket es `/v2/realtime/{provider}/{model}`, donde `{provider}` es el bróker que sirve el modelo y `{model}` es el id completo del modelo. Por eso `google` aparece dos veces en la ruta de Genie 4.
+</Note>
+
+## Autenticación
+
+Las rutas de Realtime aceptan las mismas credenciales que las demás llamadas a Router.
+
+- **Desde un servidor**, envía tu Clave API en `X-API-Key: comfyui-...` o `Authorization: Bearer comfyui-...` en la solicitud de actualización del WebSocket o en la solicitud de señalización. Mantén las Claves API en tu servidor; nunca las envíes a un navegador.
+- **Desde un navegador**, un WebSocket no puede establecer encabezados de solicitud. Un navegador con sesión iniciada en una cuenta de Comfy pasa su token de ID de Firebase en la oferta de subprotocolo, junto con `comfy-realtime.v1`:
+
+  ```js
+  const ws = new WebSocket(url, ["comfy-realtime.v1", "comfy-bearer." + idToken]);
+  ```
+
+  El token debe ser un token de ID de Firebase no vencido. Las Claves API nunca se aceptan de esta forma, y las credenciales nunca se aceptan en la cadena de consulta de la URL. Una oferta que lleva `comfy-bearer.` sin `comfy-realtime.v1` se rechaza con `400` antes de que se abra cualquier sesión. Cuando ofreces `comfy-realtime.v1`, el servidor lo selecciona en la respuesta `101`.
+
+  La oferta de subprotocolo se aplica solo a las sesiones WebSocket. La señalización WebRTC es HTTP normal, así que un navegador envía `Authorization: Bearer <Firebase ID token>` como encabezado ahí.
+
+## Sesiones WebSocket
+
+Abre una sesión con una actualización a WebSocket en `wss://api.comfy.org/v2/realtime/{provider}/{model}`. Router autentica la actualización, verifica tu saldo y retransmite las tramas entre tu cliente y el modelo durante toda la vida de la sesión.
+
+### Reglas de la sesión
+
+- **Una sola sesión WebSocket activa por espacio de trabajo.** Una segunda actualización mientras hay una activa se rechaza con `429` y `code: router.realtime.session_already_live`. Cierra la primera sesión antes de abrir otra.
+- **La medición comienza con la primera trama.** El cobro corre en segundos enteros, con un mínimo de un segundo. Para `google/genie-4`, el cobro comienza cuando el modelo envía su primera trama; si la sesión termina antes de eso, dentro de los primeros 20 segundos, no se factura. Si no ha llegado ninguna trama después de 20 segundos, el cobro cuenta desde el momento en que la actualización se completó. Los demás modelos se cobran desde el `101`.
+- **El saldo se vuelve a verificar mientras la sesión está en curso.** Router mide la sesión y vuelve a verificar tu saldo cada 15 segundos. Si el saldo todavía cubre algo de tiempo, el límite de la sesión se acorta para coincidir (una sesión de Genie 4 entonces termina en ese límite con `1000`). Cuando el saldo ya no cubre ni un segundo más, o la cuenta está bloqueada, Router corta la conexión sin trama de cierre (la mayoría de los clientes reportan el código de cierre `1006`). Si te quedaste sin créditos, recarga antes de reconectar. La duración máxima de una sesión también se acorta de antemano a lo que cubre tu saldo.
+
+### Genie 4
+
+`google/genie-4` genera un mundo interactivo a partir de un prompt de texto por el que luego te desplazas con pulsaciones de teclas. Acepta **solo tramas de texto**, cada una un objeto JSON con un `event_type`. Una trama binaria, o un mensaje de más de 64 KiB, finaliza la sesión.
+
+| `event_type` | Campos | Notas |
+| --- | --- | --- |
+| `world_setup` | `world_prompt: { "text": "..." }` | Debe ser el primer evento. El prompt es requerido, no puede estar vacío y admite como máximo 8 KiB. Solo texto: se rechaza un `reference_image` o cualquier campo de imagen o video. Repetir el mismo `world_setup` se ignora; enviar uno con un prompt diferente finaliza la sesión. |
+| `user_action` | `action`, `input` | `action` es `key_down`, `key_up` o `key_click`. `input` es una de las diez teclas de abajo. |
+| `input` | `content: [{ "type": "text", "text": "..." }]` | Dirige el mundo con texto. Solo partes de texto, cada una de 8 KiB como máximo. |
+| `interaction.complete` | ninguno | Finaliza la sesión de forma ordenada. Envíalo sin otros campos. |
+
+Las diez teclas que puede indicar un `user_action`:
+
+| Propósito | Teclas |
+| --- | --- |
+| Movimiento | `key_w`, `key_s`, `key_a`, `key_d` |
+| Cámara | `arrow_up`, `arrow_down`, `arrow_left`, `arrow_right` |
+| Acciones | `space`, `key_e` |
+
+Cualquier otro tipo de evento, campo o tecla, un `user_action` o `input` antes de `world_setup`, o una avalancha sostenida de eventos (más allá de una ráfaga de unos 120 y luego unos 60 por segundo) finaliza la sesión con el código de cierre `1008` (violación de política). Nada del mensaje rechazado llega al modelo.
+
+Los eventos del propio modelo vuelven por el mismo socket. Una sesión termina:
+
+- después del evento `interaction.completed` del modelo, con el código de cierre `1000`;
+- después del evento `error` del modelo, con el código de cierre del proveedor o `1011`;
+- al alcanzar el límite de sesión de **120 segundos** (o antes, si tu saldo cubre menos), con el código de cierre `1000`.
+
+El texto de error de los eventos del modelo puede reemplazarse por un mensaje genérico antes de que te llegue.
+
+<CodeGroup>
+
+```python Python
+# Python 3.10+
+# Instalar: python -m pip install "websockets>=13"
+# Ejecutar: COMFY_API_KEY=comfyui-... python genie.py
+import asyncio
+import json
+import os
+
+from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
+
+URL = "wss://api.comfy.org/v2/realtime/google/google/genie-4"
+
+
+async def receive(ws):
+    async for message in ws:
+        if isinstance(message, bytes):
+            print(f"<- {len(message)} bytes")
+            continue
+        event = json.loads(message)
+        print("<-", event.get("event_type"))
+
+
+async def main():
+    try:
+        ws = await connect(
+            URL,
+            additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+            max_size=None,
+        )
+    except InvalidStatus as err:
+        # Un upgrade rechazado: el cuerpo es JSON con detail, error_type y code.
+        print(err.response.status_code, err.response.body.decode(errors="replace"))
+        return
+
+    async with ws:
+        reader = asyncio.create_task(receive(ws))
+
+        async def send(event):
+            await ws.send(json.dumps(event))
+
+        await send({
+            "event_type": "world_setup",
+            "world_prompt": {"text": "A quiet harbor town at sunset, seen from the docks"},
+        })
+        await send({"event_type": "user_action", "action": "key_down", "input": "key_w"})
+        await asyncio.sleep(2)
+        await send({"event_type": "user_action", "action": "key_up", "input": "key_w"})
+        await send({"event_type": "user_action", "action": "key_click", "input": "arrow_left"})
+        await send({"event_type": "input", "content": [{"type": "text", "text": "Make it start to rain"}]})
+        await asyncio.sleep(5)
+        await send({"event_type": "interaction.complete"})
+
+        await reader
+        print("closed:", ws.close_code)
+
+
+asyncio.run(main())
+```
+
+```js Browser
+// Una página con sesión iniciada en una cuenta de Comfy. getIdToken() es tu
+// llamada de autenticación de Firebase; el token viaja en la oferta del subprotocolo, nunca en la URL.
+const idToken = await auth.currentUser.getIdToken();
+
+const ws = new WebSocket(
+  "wss://api.comfy.org/v2/realtime/google/google/genie-4",
+  ["comfy-realtime.v1", "comfy-bearer." + idToken],
+);
+
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({
+    event_type: "world_setup",
+    world_prompt: { text: "A quiet harbor town at sunset, seen from the docks" },
+  }));
+});
+
+// Asigna las diez teclas compatibles a los nombres de tecla de Genie 4.
+const keys = {
+  KeyW: "key_w", KeyS: "key_s", KeyA: "key_a", KeyD: "key_d",
+  ArrowUp: "arrow_up", ArrowDown: "arrow_down",
+  ArrowLeft: "arrow_left", ArrowRight: "arrow_right",
+  Space: "space", KeyE: "key_e",
+};
+for (const [type, action] of [["keydown", "key_down"], ["keyup", "key_up"]]) {
+  window.addEventListener(type, (e) => {
+    const input = keys[e.code];
+    if (!input || e.repeat || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ event_type: "user_action", action, input }));
+  });
+}
+
+ws.addEventListener("message", (e) => {
+  if (typeof e.data === "string") console.log("<-", JSON.parse(e.data).event_type);
+});
+ws.addEventListener("close", (e) => console.log("closed", e.code));
+```
+
+</CodeGroup>
+
+El ejemplo del navegador envía un `key_down` y un `key_up` por cada pulsación física de tecla y omite la repetición automática, lo que lo mantiene bien dentro de la tasa de eventos.
+
+### Grok Voice
+
+`xai/grok-voice/realtime` es una conversación de voz a voz. La sesión habla el formato de transmisión en tiempo real de fal: envía cada evento como una trama binaria codificada en [MessagePack](https://msgpack.org); las respuestas llegan como tramas binarias de MessagePack o tramas de texto JSON. Los eventos que contienen son los eventos de voz en tiempo real de xAI.
+
+Puedes enviar estos eventos de cliente: `session.update`, `x-fal-session.configure`, `input_audio_buffer.append`, `input_audio_buffer.commit`, `input_audio_buffer.clear`, `conversation.item.create`, `conversation.item.delete`, `conversation.item.truncate`, `response.create` y `response.cancel`. Cada evento puede incluir únicamente sus campos documentados.
+
+- Las herramientas se limitan a las herramientas `function` que ejecuta el cliente. El servicio rechaza las herramientas del lado del servidor, como los servidores MCP y la búsqueda web o en X.
+- El servicio rechaza contenido de imagen y video en cualquier parte de un evento.
+- Si defines `session.model`, debe ser `grok-voice-latest`, `grok-voice-3.0` o `grok-voice-2.0`.
+
+Un mensaje que incumpla estas reglas no se reenvía y finaliza la sesión con el código de cierre `1008`. El límite de la sesión es de **30 minutos**, que se reduce de antemano a lo que cubra tu saldo; al alcanzar el límite, la conexión se cierra sin una trama de cierre.
+
+Una sesión de Grok Voice cuesta **$0.0011869 por segundo** (aproximadamente $0.0712 por minuto; con 211 créditos = $1, cerca de 0.25 créditos por segundo o 15 créditos por minuto). Se factura todo el tiempo que el socket permanece abierto, haya o no audio en circulación.
+
+```js Node
+// Node 20+
+// Instalar: npm install ws @msgpack/msgpack
+// Ejecutar: COMFY_API_KEY=comfyui-... node grok-voice.mjs
+import { decode, encode } from "@msgpack/msgpack";
+import WebSocket from "ws";
+
+const ws = new WebSocket("wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime", {
+  headers: { "X-API-Key": process.env.COMFY_API_KEY },
+});
+const send = (event) => ws.send(Buffer.from(encode(event)));
+
+ws.on("unexpected-response", (_req, res) => {
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error("refused:", res.statusCode, body));
+});
+
+ws.on("open", () => {
+  send({
+    type: "session.update",
+    session: {
+      voice: "Ara",
+      instructions: "Answer in one short sentence.",
+      turn_detection: { type: null },
+    },
+  });
+  send({
+    type: "conversation.item.create",
+    item: { type: "message", role: "user", content: [{ type: "input_text", text: "Say hello." }] },
+  });
+  send({ type: "response.create" });
+});
+
+ws.on("message", (data, isBinary) => {
+  const event = isBinary ? decode(data) : JSON.parse(data.toString());
+  console.log("<-", event.type);
+  if (event.type === "response.done" || event.type === "error") ws.close(1000);
+});
+
+ws.on("close", (code) => console.log("closed", code));
+```
+
+Para enviar voz en lugar de texto, transmite audio con `input_audio_buffer.append` (`audio` en base64), luego usa `input_audio_buffer.commit` y `response.create`.
+
+## Modelos de mundo WebRTC
+
+`fal-ai/abot-world-0` y `fal-ai/lingbot-world-2` transmiten video por WebRTC. El contenido multimedia viaja **directamente entre el navegador y fal**, entre pares; Router solo gestiona la señalización HTTP que establece la conexión y añade las credenciales de fal para que tu cliente nunca las tenga.
+
+Cada llamada de señalización es un `POST` a `https://api.comfy.org/v2/realtime/wma/fal` con tu credencial de Comfy, un cuerpo JSON y el destino real en el encabezado `x-fal-target-url`. Este es el contrato de proxy que usa el cliente JavaScript de fal, así que puedes apuntar la configuración de proxy de ese cliente a esta ruta. Solo se aceptan estos destinos; cualquier otro se rechaza con `400` y `code: router.realtime.wma_target_rejected`:
+
+| `x-fal-target-url` | Cuerpo | Propósito |
+| --- | --- | --- |
+| `https://wma.fal.run/ice` | `{"app_id": "<model>"}` | Obtiene los servidores ICE. No abre ninguna sesión y no genera cargos. |
+| `https://wma.fal.run/session` | incluye `"app_id": "<model>"` | Abre una sesión. La respuesta incluye su `session_id`. |
+| `https://wma.fal.run/session/heartbeat` | `{"session_id": "<id>"}` | Mantiene viva la sesión. |
+| `https://wma.fal.run/session/close` | `{"session_id": "<id>"}` | Finaliza la sesión. `DELETE /v2/realtime/wma/fal` con el mismo cuerpo hace lo mismo. |
+
+El cuerpo debe ser un objeto JSON de como máximo 64 KiB y sin claves repetidas. Escribe `app_id` y `session_id` exactamente así; cualquier otra combinación de mayúsculas y minúsculas se rechaza con `400`.
+
+```bash
+# Obtiene los servidores ICE para un modelo de mundo (sin sesión, sin cargo).
+curl -X POST https://api.comfy.org/v2/realtime/wma/fal \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "x-fal-target-url: https://wma.fal.run/ice" \
+  -d '{"app_id": "fal-ai/lingbot-world-2"}'
+```
+
+```js
+// Latido y cierre desde un navegador con sesión iniciada en una cuenta de Comfy.
+const signal = (target, body) =>
+  fetch("https://api.comfy.org/v2/realtime/wma/fal", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+      "x-fal-target-url": target,
+    },
+    body: JSON.stringify(body),
+  });
+
+const beat = setInterval(
+  () => signal("https://wma.fal.run/session/heartbeat", { session_id: sessionId }),
+  5000,
+);
+
+// Cuando el usuario detiene: cierra la conexión entre pares y luego cierra la sesión.
+clearInterval(beat);
+peerConnection.close();
+const res = await signal("https://wma.fal.run/session/close", { session_id: sessionId });
+console.log(await res.json()); // { session_id, closed: true, settled: true | false }
+```
+
+### Ciclo de vida de la sesión y facturación
+
+- **Duración máxima.** Cada sesión dura como máximo **480 segundos**.
+- **Latidos.** Envía uno cada 5 segundos, como hace el cliente de fal. Router reenvía como máximo uno por segundo y por sesión; un latido más rápido se rechaza con `429` y `Retry-After: 1`. Los latidos y los cierres solo se aceptan para un `session_id` que tu cuenta abrió y que aún no ha cerrado; de lo contrario, la respuesta es `404` con `code: router.realtime.wma_session_not_found`.
+- **Facturación.** Una sesión se factura por segundo desde que se abre hasta 5 segundos después de su último latido, hasta el máximo de 480 segundos. Cerrar la sesión liquida la factura de inmediato; una sesión cuyos latidos se detienen durante más de 15 segundos se liquida por sí sola. Un `settled: false` en la respuesta de cierre significa que la factura todavía se está finalizando y se cargará en breve.
+- **Comprobación de saldo al abrir.** Router no puede detener una sesión entre pares una vez que empieza, así que para abrir una se necesita un saldo que cubra los 480 segundos completos de esta sesión más la duración completa de cada sesión WebRTC que tu espacio de trabajo ya tenga abierta. Si no lo cubre, `/session` se rechaza con `402` y `code: router.realtime.insufficient_credits`. Es una comprobación, no una reserva: otros gastos pueden usar el mismo saldo mientras la sesión está en curso.
+- **Sesiones simultáneas.** Un espacio de trabajo puede mantener **2** sesiones de modelos de mundo WebRTC a la vez. Una sesión cerrada conserva su cupo hasta unos 480 segundos después de abrirse (más una breve ventana de liquidación), así que cerrar y volver a abrir rápido puede rechazarse con `429` y `code: router.realtime.concurrency_limit`; espera el `Retry-After` que indique la respuesta.
+
+Cuando fal mismo responde a una llamada de señalización con un error, Router devuelve el estado y el cuerpo de fal sin cambios.
+
+## Errores
+
+Una actualización rechazada o una llamada de señalización responde con un estado HTTP y un cuerpo JSON que incluye `detail`, `error_type` y un `code` que nombra el motivo. Ramifica según `code` o `error_type`, no según `detail`. Una vez que una sesión WebSocket está abierta, los problemas se informan con un código de cierre.
+
+| Estado | `code` | Significado |
+| --- | --- | --- |
+| `400` | `router.realtime.subprotocol_required` | Una oferta `comfy-bearer.` llegó sin `comfy-realtime.v1`. |
+| `401` | | Sin credencial válida. |
+| `402` | `router.realtime.insufficient_credits` | El saldo del espacio de trabajo es demasiado bajo para abrir una sesión. |
+| `403` | `router.realtime.model_unavailable` | El modelo no está disponible para tu cuenta. |
+| `403` | `router.realtime.account_blocked` | La cuenta está bloqueada. |
+| `404` | `router.realtime.model_not_allowed` | El modelo no se sirve en esta ruta. Revisa la ruta y el id del modelo. |
+| `426` | `router.realtime.upgrade_required` | La ruta WebSocket recibió una solicitud HTTP simple. Comprueba que ningún proxy elimine los encabezados `Upgrade` y `Connection`. |
+| `429` | `router.realtime.rate_limited` | Demasiadas solicitudes, o el proveedor está al límite de capacidad. Espera `Retry-After`. |
+| `429` | `router.realtime.session_already_live` | Tu espacio de trabajo ya tiene una sesión WebSocket activa. |
+| `429` | `router.realtime.concurrency_limit` | Demasiadas sesiones simultáneas. Reintenta más tarde. |
+| `503` | `router.realtime.shutting_down` | El servidor que atiende la solicitud se está reiniciando. Reintenta. |
+
+La actualización y las llamadas de señalización `/ice` y `/session` consumen la misma [cuota de solicitudes por llamador](/es/development/comfy-router/limitations#límite-de-tasa-de-solicitudes-por-solicitante) que las demás llamadas de Router.
+
+| Código de cierre | Significado |
+| --- | --- |
+| `1000` | Fin normal: el modelo terminó, o una sesión de Genie 4 alcanzó su límite. |
+| `1006` | No llegó ninguna trama de cierre. Entre las causas del lado de Router están que una sesión de Grok Voice alcanzó su límite de tiempo, que se agotaron los créditos o que la cuenta está bloqueada; una caída de red o un timeout de proxy se ve igual. Router no lo envía; tu cliente lo reporta cuando se cae la conexión. |
+| `1008` | Un mensaje del cliente incumplió las reglas del modelo (consulta cada modelo arriba). |
+| `1011` | El modelo reportó un error. |
+| `1012` | El servidor se está reiniciando. Abre una nueva sesión. |
+
+## Siguiente
+
+<CardGroup cols={2}>
+  <Card title="Capacidades y límites" icon="list-check" href="/es/development/comfy-router/limitations">
+    Qué admite Router, además de sus plazos y límites de tasa.
+  </Card>
+  <Card title="Precios de Router" icon="coins" href="/es/development/comfy-router/pricing">
+    Tarifas y opciones de facturación.
+  </Card>
+</CardGroup>

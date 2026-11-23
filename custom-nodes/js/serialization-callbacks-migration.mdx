@@ -1,0 +1,91 @@
+---
+title: "Serialization Callback Migration for Frontend Extensions"
+sidebarTitle: "Serialization callbacks"
+description: "How onSerialize and onConfigure behave with store-backed graphs, and where ComfyUI frontend extensions should persist custom data."
+---
+
+Configuring a root `LGraph` from serialized data now requires an active
+Pinia instance. `LGraph.configure()` clears and rebuilds the graph directly
+against the ECS stores, so a test harness, worker, or standalone LiteGraph
+consumer that calls `new LGraph(data)` or `graph.configure(data)` without an
+active Pinia now fails outright instead of silently producing an empty
+graph. This is the same requirement documented in
+[Link registration migration](/custom-nodes/js/link-registration-migration).
+
+Extensions running in ComfyUI use the application's active Pinia instance.
+Do not create or activate a separate Pinia instance from extension code.
+
+`node.onConfigure`, `node.onSerialize`, `graph.onConfigure`, and
+`graph.onSerialize` keep their existing signatures and firing order. For
+connection-timing hooks see
+[Connection callbacks migration](/custom-nodes/js/connection-callbacks-migration); for
+`node.widgets` and widget value storage see
+[Widget system migration](/custom-nodes/js/widgets-migration).
+
+`onConfigure` now receives a shallow copy of the serialized data rather than
+the caller's own object. Adding, removing, or reassigning top-level keys on the
+callback argument does not change the caller's workflow JSON and is not
+persisted. Nested objects (for example `inputs`, `pos`, `properties`) are still
+shared with the caller, so mutating them in place still leaks; extensions that
+relied on either kind of mutation must store custom state on `node.properties`
+or `graph.extra` instead.
+
+## Store custom data in properties or extra
+
+Use `node.properties` for per-node extension data and `graph.extra` for
+per-graph extension data. These remain the stable, intended extension
+surfaces for persisted data.
+
+`onSerialize` and `onConfigure` are called with `this` bound to the live
+node/graph object; the argument passed to the callback is the serialized
+data object (`ISerialisedNode`/`ISerialisedGraph`), not the live node/graph.
+Because `this` is still the live object, a hook can mutate any field on it,
+including fields that are now store-backed. Don't use these hooks to
+overwrite core fields: a write via `this` from inside
+`onSerialize`/`onConfigure` goes straight through to the store, with no
+schema, ownership, or undo boundary of its own.
+
+`onSerialize` runs after the frontend has copied `graph.extra` and
+`node.properties` into the data object, so a key that the hook adds to
+`this.extra` or `this.properties` is missing from the current save. Inside
+`onSerialize`, write to the callback argument instead: `data.extra` for a
+graph, `data.properties` for a node. Otherwise, update `graph.extra` or
+`node.properties` before serialization starts.
+
+`onSerialize` holds one callback, so keep any hook another extension already
+installed:
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+Only the root graph runs `onSerialize`. Subgraph definitions are saved without
+calling a hook on the subgraph, so store subgraph data in `subgraph.extra`
+before the workflow is saved.
+
+A custom top-level key that a hook adds to `data` stays at the top level in
+`LGraph.asSerialisable()`. The legacy `LGraph.serialize()` entry point moves it
+under `data.extensions` instead, and leaves out values that are not
+JSON-compatible. When the workflow loads, `onConfigure` receives the key at the
+top level again. Keys under `extra` keep their place in both entry points.
+
+## Serialize nodes instead of enumerating properties
+
+If your extension builds a serialized or debug representation of a node by
+enumerating its own properties, switch it to `node.serialize()`.
+
+`id`, `type`, `title`, `flags`, `mode`, `color`, `bgcolor`, `shape`, and
+`showAdvanced` are now accessor properties over the node data store instead
+of own data properties on the node instance. `Object.keys(node)`,
+`for...in`, and `{ ...node }` no longer surface these fields, though direct
+reads and writes (`node.title`, `node.mode = ...`) keep working unchanged.
+`inputs`, `outputs`, and `widgets` remain own-enumerable, so
+spread/enumeration still picks those three up.
+
+For widget-level `serializeValue`, a separate serialization layer that
+builds the API prompt payload, not the workflow JSON, see
+[Widget system migration](/custom-nodes/js/widgets-migration).

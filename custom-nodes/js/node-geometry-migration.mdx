@@ -1,0 +1,86 @@
+---
+title: "Node Geometry Migration for Frontend Extensions"
+sidebarTitle: "Node geometry migration"
+description: "Node size versus rendered bounds, the applyNodePositions rename and draw-order z-order for ComfyUI frontend extensions after the layout store change."
+---
+
+## Migration checklist
+
+1. Keep using `node.pos`, `node.size`, `boundingRect`, `getBounding()`,
+   `setPos()`, `setSize()`: no signature changes required.
+2. Replace `repositionNodesVueMode()` calls with `applyNodePositions()`.
+3. If you relied on `node.size` reflecting measured/rendered content, switch
+   to `getBounding()` / `boundingRect`. With the Vue renderer, `size` now
+   strictly reflects the requested value. The legacy renderer still grows
+   `size` to fit widgets.
+4. Use the node/group geometry APIs, not the backing store; don't import
+   `layoutStore` or depend on its internal format.
+5. Writes through a removed reference update the detached object, not shared
+   layout state.
+
+## What changed
+
+`LGraphNode.pos`, `size`, `boundingRect`, `getBounding()`, `setPos()`, and
+`setSize()` keep the same signatures. These calls remain source-compatible.
+Behavior changed in the three cases below.
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+Node and group geometry now lives in a shared layout store instead of
+per-instance fields. Use the APIs above, not the store directly: it's an
+internal implementation detail.
+
+### `size` vs. rendered bounds
+
+`node.size` is the size you requested, and what gets serialized. With the Vue
+renderer, rendering never changes it. `getBounding()` and `boundingRect` return
+the rendered bounds, which can be larger than `size` when widget content needs
+more room. With the legacy canvas renderer, the node still grows to fit its
+widgets by calling `setSize()`, so `node.size` and the saved size can change
+after a draw. Use rendered bounds when you need the node's actual on-screen
+footprint.
+
+The canvas recalculates `getBounding()` and `boundingRect` at the start of each
+frame. After you change `pos` or `size`, call `node.updateArea()` before you
+read them in the same frame. With the Vue renderer, growth from DOM content
+appears only after the node has been measured.
+
+```ts
+// Before: a rendered-content resize could overwrite size, so collapsing a
+// node and re-expanding it lost the original size.
+node.size // could silently become the rendered footprint
+
+// After (Vue renderer): size stays what you set; ask for rendered bounds explicitly.
+node.size // the requested size, unchanged by rendering
+node.getBounding() // the actual rendered bounds, may be larger
+```
+
+### `repositionNodesVueMode()` renamed to `applyNodePositions()`
+
+```ts
+// Before
+canvas.repositionNodesVueMode(newPositions)
+// After
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()` remains callable as a deprecated alias.
+
+### Z-order is now unambiguous
+
+Z-order used to come from two sources that could disagree: a node's position
+in the node list, and its execution order. It's now always draw order. If
+your extension inferred stacking or hit-test order from execution order,
+switch to draw order.
+
+## Writes through removed references stay local
+
+After removal, geometry setters update only the detached node, group, or
+reroute object. They do not update shared layout state or another entity that
+now owns the same ID.

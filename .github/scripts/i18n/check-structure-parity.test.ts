@@ -235,13 +235,18 @@ describe("path helpers", () => {
       "ja/tutorials/flux/flux-1-text-to-image.mdx",
       "zh/tutorials/flux/flux-1-text-to-image.mdx",
       "ko/tutorials/flux/flux-1-text-to-image.mdx",
+      "es/tutorials/flux/flux-1-text-to-image.mdx",
     ]);
   });
 
   test("changedEnglishFiles excludes localized and exempt paths", () => {
     const repoRoot = new URL("../../..", import.meta.url).pathname;
     const files = changedEnglishFiles(repoRoot, "HEAD~1");
-    expect(files.every((f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/"))).toBe(true);
+    expect(
+      files.every(
+        (f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/") && !f.startsWith("es/"),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -264,6 +269,7 @@ describe("sync-owned Router pages", () => {
     );
     expect(syncOwnedNote("zh/development/comfy-router/models.mdx")).toContain("(models-index)");
     expect(syncOwnedNote("ko/development/comfy-router/reference.mdx")).toContain("(reference)");
+    expect(syncOwnedNote("es/development/comfy-router/realtime.mdx")).toContain("(realtime)");
   });
 
   test("syncOwnedNote is null for hand-curated inputs and ordinary pages", () => {

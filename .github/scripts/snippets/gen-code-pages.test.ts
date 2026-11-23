@@ -6,6 +6,8 @@ import {
   loadModelSchema,
   modalityCell,
   modalityLine,
+  MODEL_NOTICES,
+  modelNotices,
   modelPageRedirects,
   modelsNav,
   opaqueOutputExample,
@@ -432,6 +434,144 @@ describe("the Providers page", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Per-leg limits (BE-23008's `limits` object on an alt-provider entry). The
+// fixture is the Tencent leg on Kling V3: silent 720P only, 3 to 15 seconds,
+// the std tier only, text-to-video only. Its own catalog id is held back, so the
+// one id that must never reach a page is in the fixture too, where the exporter
+// could plausibly leak it (a `reason`).
+// ---------------------------------------------------------------------------
+
+const KLING = "kling/kling-v3";
+const KLING_PAGE = "development/comfy-router/models/kling/kling-v3/code";
+const HELD_ID = "tencent-kling-v3";
+const TENCENT_LIMITS = {
+  resolutions: ["720P"],
+  audio: ["silent"],
+  duration_seconds: { min: 3, max: 15, default: 5 },
+  aspect_ratios: ["16:9", "9:16", "1:1"],
+  rejected_inputs: [
+    { field: "image", rule: "set", reason: `text-to-video only (${HELD_ID})` },
+    { field: "image_tail", rule: "set", reason: "text-to-video only" },
+    { field: "sound", rule: "equals", values: ["on"], example: "on", reason: "no audio yet" },
+    { field: "mode", rule: "not_in", values: ["std"], example: "pro", reason: "std tier only" },
+    { field: "multi_shot", rule: "set", example: true, reason: "single shot" },
+    { field: "multi_prompt", rule: "set", reason: "single shot" },
+    { field: "shot_type", rule: "set", example: "customize", reason: "single shot" },
+  ],
+  rejected_with: "400 invalid_input",
+  fallback: { provider: "kling", default: true, opt_out: "fallback_provider=false" },
+};
+const HIGGSFIELD_KLING_LEG = { provider: "higgsfield", model_id: "higgsfield/higgsfield-kling-3-std" };
+const KLING_DOC = {
+  paths: {},
+  "x-comfy-router-alt-providers": [HIGGSFIELD_KLING_LEG, { provider: "tencent", limits: TENCENT_LIMITS }],
+};
+const EXPECTED_TENCENT_ROWS = [
+  "- **Tencent**: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=tencent`",
+  "  - Limits: 720P, silent; 3–15 seconds (default 5); aspect ratio 16:9, 9:16 or 1:1",
+  '  - Rejected with `400 invalid_input`: `image`, `image_tail`, `sound: "on"`, `mode` other than `std` (e.g. `"pro"`), `multi_shot`, `multi_prompt`, `shot_type`',
+  "  - Fallback: if Tencent fails, the request retries once on Kling (the default provider). Send `fallback_provider=false` to opt out. Rejected inputs and BYOK requests don't fall back.",
+].join("\n");
+
+describe("alt-provider leg limits", () => {
+  const legs = () => readRelations(KLING, KLING_DOC).altProviders;
+
+  test("readRelations keeps a well-formed `limits` on its leg and none on a leg without one", () => {
+    const [higgsfield, tencent] = legs();
+    expect(higgsfield).toEqual(HIGGSFIELD_KLING_LEG);
+    expect(tencent.provider).toBe("tencent");
+    expect(tencent).not.toHaveProperty("model_id");
+    expect(tencent.limits?.duration_seconds).toEqual({ min: 3, max: 15, default: 5 });
+    expect(tencent.limits?.rejected_inputs).toHaveLength(7);
+  });
+
+  test("the Tencent leg renders its row plus the four limit lines, under the row", () => {
+    const out = servingProvidersSection([{ model: KLING, legs: legs() }]);
+    expect(out).toContain(EXPECTED_TENCENT_ROWS);
+    expect(out).not.toContain("—");
+  });
+
+  test("a leg without `limits` renders byte-identically to before limits existed", () => {
+    const before = [
+      "- **Comfy** (default): `POST https://api.comfy.org/v2/models/kling/kling-v3`",
+      "- **Higgsfield**, as `higgsfield/higgsfield-kling-3-std`: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=higgsfield`",
+      "- **Tencent**:",
+    ].join("\n");
+    expect(servingProvidersSection([{ model: KLING, legs: legs() }])).toContain(before);
+    const plain = [{ model: KLING, legs: [HIGGSFIELD_KLING_LEG] }];
+    expect(servingProvidersSection(plain)).not.toContain("  - ");
+  });
+
+  test("a malformed `limits` is dropped and the leg row is kept", () => {
+    const bad = [
+      "720P",
+      [],
+      { resolutions: "720P" },
+      { resolutions: ["720P"], duration_seconds: { min: 15, max: 3 } },
+      { duration_seconds: { min: 3, max: 15, default: 30 } },
+      { rejected_inputs: [{ field: "mode", rule: "not_in" }] },
+      { rejected_inputs: [{ field: "mode", rule: "unknown_rule" }] },
+      { fallback: { provider: "kling" } },
+      { fallback: { provider: "kling", default: true, opt_out: "`rm -rf`" } },
+      // A fallback provider is printed on the page: MDX syntax must not pass as a slug.
+      { fallback: { provider: "{x}", default: true } },
+      { fallback: { provider: "<b>kling</b>", default: true } },
+      { aspect_ratios: ["<b>16:9</b>"] },
+      // A `provider/model` id smuggled into a printed value.
+      { resolutions: [`tencent/${HELD_ID}`] },
+      // A misspelled key must not leave the recognized ones published without its rule.
+      { resolutions: ["720P"], rejected_input: [{ field: "mode", rule: "set" }] },
+      { resolutions: ["720P"], rejected_inputs: [{ field: "mode", rule: "set", valeus: ["pro"] }] },
+      { resolutions: ["720P"], fallback: { provider: "kling", default: true, optout: "x=y" } },
+      {},
+    ];
+    for (const limits of bad) {
+      const [leg] = readRelations(KLING, { paths: {}, "x-comfy-router-alt-providers": [{ provider: "tencent", limits }] }).altProviders;
+      expect(leg).toEqual({ provider: "tencent" });
+      expect(servingProvidersSection([{ model: KLING, legs: [leg] }])).toContain(
+        "- **Tencent**: `POST https://api.comfy.org/v2/models/kling/kling-v3?model_provider=tencent`\n\n`strict_mode`"
+      );
+    }
+  });
+
+  test("a limited leg prints no price line: Router prices live at router.comfy.org", () => {
+    const out = servingProvidersSection([{ model: KLING, legs: legs() }]);
+    expect(out).toContain("  - Limits: 720P, silent");
+    expect(out).not.toContain("Price:");
+    expect(out).not.toContain("credits");
+  });
+
+  test("the providers matrix marks the limited cell `✓*`, adds the footnote, and leaves other cells alone", () => {
+    const pages = new Map([[KLING, { page: KLING_PAGE, title: "Kling V3" }]]);
+    const { rows, problems } = providerRelationRows(new Map([[KLING, legs()]]), [], pages);
+    expect(problems).toEqual([]);
+    const page = renderProvidersPage(rows);
+    expect(page).toContain("| Model / provider | **Comfy (default)** | **Higgsfield** | **Tencent** |");
+    expect(page).toContain(`| [Kling V3](/${KLING_PAGE}) | ✓ | ✓ | ✓* |`);
+    expect(page).toContain("\n\\* This provider serves the model with narrower limits than the default; see the model page.\n");
+    expect(page).not.toContain(HELD_ID);
+    // With no limited leg anywhere, the page is exactly what it was.
+    const plain = providerRelationRows(new Map([[KLING, [HIGGSFIELD_KLING_LEG]]]), [], pages).rows;
+    expect(plain[0]).not.toHaveProperty("limited");
+    expect(renderProvidersPage(plain)).not.toContain("✓*");
+    expect(renderProvidersPage(plain)).not.toContain("narrower limits");
+  });
+
+  test("the held-back leg id appears nowhere in a whole run", () => {
+    const schema = { authored: false, components: {}, ...readRelations(KLING, KLING_DOC) };
+    const page = renderDerivedPage(KLING, schema);
+    expect(page).toContain("Rejected with `400 invalid_input`");
+    const pages = new Map([[KLING, { page: KLING_PAGE, title: "Kling V3" }]]);
+    const providers = renderProvidersPage(providerRelationRows(new Map([[KLING, schema.altProviders]]), [], pages).rows);
+    for (const out of [servingProvidersSection([{ model: KLING, legs: schema.altProviders }]), page, providers]) {
+      expect(out).not.toContain(HELD_ID);
+      expect(out).not.toContain("tencent/");
+      expect(out).not.toContain("undefined");
+    }
+  });
+});
+
 describe("modelsNav: pricing and provider indexes sit beside the catalog", () => {
   const live = [{ model: "kling/kling-v3", page: "development/comfy-router/models/kling/kling-v3/code" }];
 
@@ -722,5 +862,28 @@ describe("renderDerivedPage: the modality line under the intro", () => {
     const text = page(WITHOUT_MODALITIES);
     expect(text).not.toContain("**Input:**");
     expect(text).not.toContain("**Output:**");
+  });
+});
+
+describe("per-model notices", () => {
+  const ROOT = join(import.meta.dir, "../../..");
+  test("the retiring xAI image models carry the migration notice on their generated pages", () => {
+    for (const model of ["xai/grok-imagine-image-quality", "xai/grok-imagine-image-pro"]) {
+      expect(MODEL_NOTICES[model]).toContain("https://docs.x.ai/developers/migration/imagine-image-quality-nov-2");
+      const page = readFileSync(join(ROOT, `development/comfy-router/models/${model}/code.mdx`), "utf8");
+      expect(page).toContain(`<Warning>\n${MODEL_NOTICES[model]}\n</Warning>`);
+      expect(renderDerivedPage(model, loadModelSchema(model)!)).toContain(MODEL_NOTICES[model]);
+    }
+  });
+
+  test("each notice names the model and date it describes", () => {
+    expect(MODEL_NOTICES["xai/grok-imagine-image-quality"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-pro` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement)");
+    expect(MODEL_NOTICES["xai/grok-imagine-image-pro"]).toContain("`grok-imagine-image-quality` on Nov 2, 2026");
+  });
+
+  test("a model without an entry renders nothing, and a repeated notice renders once per page", () => {
+    expect(modelNotices(["xai/grok-imagine-image-2.0"])).toBe("");
+    expect(modelNotices(["xai/grok-imagine-image-quality", "xai/grok-imagine-image-quality"]).match(/<Warning>/g)).toHaveLength(1);
   });
 });

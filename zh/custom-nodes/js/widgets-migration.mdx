@@ -1,0 +1,106 @@
+---
+title: "前端扩展的 Widget 系统迁移"
+sidebarTitle: "Widget 系统迁移"
+description: "ComfyUI 前端中由存储支持的 widget 值：唯一的 widget 名称、未定义的 node.widgets、widget 重命名、addCustomWidget 以及 Agent 的 setValue 调用。"
+translationSourceHash: 3011c9c5
+translationFrom: custom-nodes/js/widgets-migration.mdx
+translationBlockHashes:
+  "_intro": 87b853c9
+  "Gallery values after the PrimeVue replacement": c6a755f6
+  "Widget names must be unique and stable": 5988a23b
+  "`node.widgets` may be undefined": 7cb43a39
+  "Prefer `node.addCustomWidget()` to pushing onto `node.widgets`": 5ee6030c
+  "Remove widgets with `node.removeWidget()`": 7d19ff02
+  "Agent edits call `setValue` without a pointer event": 140c58f6
+  "Don't call `useWidgetValueStore()` from extension code": 6c2a5cd3
+---
+
+现在，widget 的值保存在由 Pinia 支持的 store 中，而不再直接存放在 widget 实例上。每个节点内的 widget 名称必须唯一，并且只有当新名称未被占用时，重命名 widget 才会成功。在首次赋值之前，`node.widgets` 也可能为 `undefined`。
+
+## PrimeVue 替换之后的图库值
+
+Vue 的 `galleria` 组件接受一个由图片网址字符串组成的数组，与 `GALLERIA` 输入 schema 相匹配。存在多张图像时会显示缩略图以及上一个/下一个按钮。导航会在第一张和最后一张图像处停止。
+
+不再支持带有 `itemImageSrc` 或 `thumbnailImageSrc` 的 PrimeVue 图像对象，请将其转换为网址字符串。该组件也不再读取 `showThumbnails`、`showItemNavigators`、`circular`、`autoPlay`、`transitionInterval`、`showIndicators`、`numVisible` 或 `responsiveOptions` 等 PrimeVue 选项。需要这些控件的扩展必须自行提供图库组件。
+
+## 控件名称必须唯一且稳定
+
+同一节点上的两个控件不能同名。如果你添加的第二个控件使用了已经占用的名称，当节点位于画面中时，前端会给新控件加上带编号的后缀（如 `strength#1`）来重命名它。按原始名称查找只会找到第一个控件：
+
+```js
+node.addWidget('number', 'strength', 0, () => {})
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // 当节点位于画面中时，为 'strength#1'
+```
+
+请为每个控件指定唯一的名称。
+
+给已注册的控件分配新的 `widget.name`，会将其存储的值移动到新名称下。如果节点上的另一个控件已经使用了该名称，则赋值会被忽略，`widget.name` 会保留其旧值，因此之后要检查 `widget.name`。按名称引用该控件的输入槽不会随之更新。不要通过移除控件再添加新控件的方式来重命名：`removeWidget()` 会删除存储的值，并清除直接绑定到该控件的输入槽。仅按名称引用它的输入槽会保留该名称。
+
+## `node.widgets` 可能为 `undefined`
+
+`node.widgets` 在被赋值至少一次之前会返回 `undefined`。
+请在添加小组件之前先初始化该数组：
+
+```ts
+export function nodeCreated(node: LGraphNode) {
+  node.widgets ??= []
+  node.widgets.push(myWidget)
+}
+```
+
+读取时同样需要做防护：
+
+```ts
+const widgetCount = node.widgets?.length ?? 0
+```
+
+**将 `node.widgets` 设为 `undefined` 会清空它。** 之后再次读取会返回
+`undefined`，而不是 `[]`。
+
+**在节点挂载到画面之前所做的修改会被自动捕获。**
+对于在构造函数或 `onNodeCreated` 中构建小组件这一常见情况，你无需自行调用任何内容。
+
+`node.widgets` 会出现在 `Object.keys(node)` 以及 `{...node}` 这类对象展开中。
+
+## 优先使用 `node.addCustomWidget()`，而不是将其推送到 `node.widgets`
+
+通过 `node.addWidget()`、`node.addCustomWidget()` 或
+`node.addDOMWidget()` 添加的控件会自动注册到存储中。直接推送到 `node.widgets` 的普通对象
+也会转换为控件实例，并在节点进入画面后完成注册。转换通常原地进行，
+但冻结对象或具有不可配置属性的对象会被替换为另一个独立的控件，因此请保留 `addCustomWidget()` 返回的控件，或
+从 `node.widgets` 中重新读取它。`addCustomWidget()` 仍是推荐的方式：
+它会返回控件，并在工作流加载时恢复控件已保存的值。
+
+```js
+node.addCustomWidget({
+  name: 'my_widget',
+  type: 'custom',
+  value: '',
+  options: {},
+  draw(ctx, node, width, y, height) {},
+  mouse(event, pos, node) {}
+})
+```
+
+如果在节点附加到画面之前读取或写入 `widget.value`，
+该值会保存在本地，并在附加时同步到存储。不会丢失任何值，
+但由存储驱动的 UI（例如右侧面板）在此之前不会看到该值。
+
+## 使用 `node.removeWidget()` 移除控件
+
+使用 `node.removeWidget(widget)` 移除控件。直接对 `node.widgets` 执行 splice 会跳过槽位清理，且被移除控件的值会一直保留在存储中，直到节点本身从画面中移除。
+
+## 应用内 Agent 编辑时会调用 `setValue` 而不带指针事件
+
+当应用内 Agent 修改一个 `BaseWidget` 实例的控件时，前端会调用 `widget.setValue(value, { node, canvas })`，这与用户编辑走的是同一个方法。此前，它直接赋值 `widget.value`，然后自己调用 `callback` 和 `onWidgetChanged`。这包括用 `addCustomWidget()` 添加或直接推入 `node.widgets` 的普通对象，因为前端会把它们转换成 `BaseWidget` 实例。DynamicGroup 行数控制器与提升后的子图宿主控件仍然走直接写入。
+
+如果你重写了 `setValue`，请接受形如 `{ node, e?, canvas? }` 的选项：这些调用永远不会设置 `e`，`canvas` 也可能缺失。不要在未检查的情况下读取 `options.e` 或 `options.canvas`。只带值调用原始 `setValue` 的包装器仍然可用：选项默认为 `{ node: widget.node }`。
+
+`callback` 和 `onWidgetChanged` 现在收到的是控件实际接受的值，而不是 Agent 发送的值。数字控件会按 `min`/`max` 夹取，并把数字字符串转换成数字。在 `callback` 中，`e` 是 `undefined`，没有画布时 `pos` 也是 `undefined`。
+
+当值在数字控件夹取和转换之后已经与当前值完全相同（`===`）时，`setValue` 会直接返回而不产生变化，因此数字控件在值为 `5` 时收到 `'5'` 不会有任何变化。当数字控件收到的值使 `Number(value)` 为 `NaN` 时也会直接返回。此时 `callback` 和 `onWidgetChanged` 都不会触发，图版本也不会变。像 `'7'` 这样的数字字符串会被转换并应用。
+
+## 不要从扩展代码中调用 `useWidgetValueStore()`
+
+不要在扩展中调用 `useWidgetValueStore()`。请改用 `node.widgets`、`node.addWidget()` / `addCustomWidget()` / `removeWidget()` 以及 `widget.value`。该 store 内部的键机制及其对 Pinia 的依赖，并不属于受支持的扩展接口。

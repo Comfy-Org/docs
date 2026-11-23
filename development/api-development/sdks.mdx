@@ -47,6 +47,30 @@ Python 3.10 or newer. Node 22 or newer.
 
 <SdkVersions />
 
+## Coding agents
+
+If a coding agent builds your Comfy Router integration, give it the `comfy-sdk` skill.
+
+The skill covers what agents usually get wrong:
+
+- Which client to use
+- Keeping the API key on the server
+- Discovering a model before calling it
+- `run` versus `submit`
+- Timeouts
+- Branching on error buckets
+
+It does not cover ComfyUI workflows. For the workflow client on this page, point the agent at this guide and the [Comfy API v2 reference](/api-reference/v2/overview).
+
+To install it in Claude Code, run:
+
+```
+/plugin marketplace add Comfy-Org/comfy-skills
+/plugin install comfy-sdk@comfy-skills
+```
+
+For any other agent, copy the [`SKILL.md`](https://github.com/Comfy-Org/comfy-skills/blob/main/claude-code-sdk/skills/comfy-sdk/SKILL.md) file into `AGENTS.md` or your Cursor rules.
+
 ## Quickstart
 
 Upload an input image, run a workflow, and write the results to disk.
@@ -128,7 +152,7 @@ const client = new Comfy({ apiKey: "comfyui-..." });
 Works out of the box. Create an [API key](/development/api-development/getting-an-api-key) and pass it to the client.
 
 <Note>
-  API access requires a paid Comfy Cloud subscription. The free tier does not include it. How many jobs you can run at once depends on your tier. See [Concurrent jobs](/development/deploy/cloud-usage#concurrent-jobs).
+  API access requires a paid Comfy Cloud subscription. The free tier does not include it. How many jobs you can run at once depends on your tier. See [Concurrency limits](/development/deploy/cloud-usage#concurrency-limits).
 </Note>
 
 <a id="serverless-deployment"></a>
@@ -277,6 +301,92 @@ Three similarly named things exist across the two surfaces, and only one of them
 There is no `subscribe()` on the Comfy Cloud client, and no `job.subscribe()` anywhere. The Cloud equivalent of `subscribe` is `run()`: submit and wait for a terminal state.
 
 The stream is a live feed, not a replayable log. It exists so you can render progress, not so you can rely on it for results. Polling the job is what is authoritative, and `run()`, `wait()`, and `result()` fall back to polling automatically. See [Design Notes](/development/api-development/sdks-design#poll-first-stream-for-progress) for why.
+
+## Failure categories
+
+When a job fails, `error.category` says why in one word, so your code can choose what to do without parsing `error.message`. Only jobs on a [Comfy API deployment](#comfy-api-deployment) carry it. Comfy Cloud does not set it.
+
+| Category | What happened |
+|---|---|
+| `invalid_input` | An input value or file was rejected, or went over a limit. |
+| `content_refused` | A partner node's moderation refused the content. |
+| `out_of_gpu_memory` | The GPU ran out of memory. |
+| `missing_model_or_node` | The workflow needs a model file, a node class or a Python package that the deployment does not have. |
+| `workflow_logic` | The workflow itself is wrong: a type, link or shape mismatch, no output node, or a dependency cycle. |
+| `other` | None of the above. A provider outage or a timeout on its own also lands here. |
+
+A job gets a category only when its workflow or its inputs caused the failure.
+
+**The field is on the job's `error` object** in the response to submit, get and cancel. The job list does not carry it: list items hold only the error message and detail, so read the job by its id. After a `failed` status on the event stream, read the job by its id too.
+
+**The field is absent when:**
+
+- The job has not failed.
+- The platform caused the failure, or the failure could not be traced to your workflow or inputs.
+- The job failed before categories were available.
+- The account's job content has been scrubbed.
+- The job ran on Comfy Cloud.
+
+**Treat an unknown value as `other`.** The set of categories can grow within v2. An absent category means the job has none, and you can handle that like `other` too.
+
+**A category describes the failure report stored with the job.** Reading the job again never classifies it again, and a category is a best-effort label, not a guarantee of accuracy. Use it to pick a next step, such as asking the user to fix an input.
+
+The current SDK release does not expose the field yet. The Python SDK drops it from `JobFailed.error`, so read the job over HTTP. The TypeScript SDK carries it at runtime but does not type it, so cast the error:
+
+<CodeGroup>
+```python Python
+import os
+import httpx
+from comfy_sdk import JobFailed
+
+KNOWN_CATEGORIES = {
+    "invalid_input",
+    "content_refused",
+    "out_of_gpu_memory",
+    "missing_model_or_node",
+    "workflow_logic",
+    "other",
+}
+
+api_key = "comfyui-..."  # the same key you pass to Comfy(api_key=...)
+base_url = os.environ.get("COMFY_BASE_URL") or "https://cloud.comfy.org"  # unset or blank means Comfy Cloud, as for the client
+
+job = client.submit(wf)
+try:
+    job.result()
+except JobFailed:
+    response = httpx.get(
+        f"{base_url}/api/v2/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    response.raise_for_status()
+    category = (response.json().get("error") or {}).get("category")
+    if category not in KNOWN_CATEGORIES:
+        category = "other"  # absent or unknown
+```
+
+```typescript TypeScript
+import { JobFailed } from "@comfyorg/sdk";
+
+const KNOWN_CATEGORIES = new Set([
+  "invalid_input",
+  "content_refused",
+  "out_of_gpu_memory",
+  "missing_model_or_node",
+  "workflow_logic",
+  "other",
+]);
+
+try {
+  await client.run(wf);
+} catch (err) {
+  if (!(err instanceof JobFailed)) throw err;
+  const raw = (err.error as { category?: string } | null)?.category;
+  const category =
+    raw !== undefined && KNOWN_CATEGORIES.has(raw) ? raw : "other"; // absent or unknown
+}
+```
+</CodeGroup>
 
 ## Tracing an output back to its workflow
 

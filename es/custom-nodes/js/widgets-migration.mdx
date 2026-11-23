@@ -1,0 +1,100 @@
+---
+title: "Migración del sistema de widgets para extensiones del frontend"
+sidebarTitle: "Migración del sistema de widgets"
+description: "Valores de widgets respaldados por el store en el frontend de ComfyUI: nombres únicos, node.widgets indefinido, renombres, addCustomWidget y setValue de Agent."
+translationSourceHash: 3011c9c5
+translationFrom: custom-nodes/js/widgets-migration.mdx
+translationBlockHashes:
+  "_intro": 87b853c9
+  "Gallery values after the PrimeVue replacement": c6a755f6
+  "Widget names must be unique and stable": 5988a23b
+  "`node.widgets` may be undefined": 7cb43a39
+  "Prefer `node.addCustomWidget()` to pushing onto `node.widgets`": 5ee6030c
+  "Remove widgets with `node.removeWidget()`": 7d19ff02
+  "Agent edits call `setValue` without a pointer event": 140c58f6
+  "Don't call `useWidgetValueStore()` from extension code": 6c2a5cd3
+---
+Los valores de los widgets ahora viven en un store respaldado por Pinia en lugar de estar directamente en la instancia del widget. Los nombres de los widgets deben ser únicos por nodo, y cambiar el nombre de un widget solo funciona cuando el nuevo nombre está disponible. `node.widgets` también puede ser `undefined` hasta que se le asigne por primera vez.
+
+## Valores de galería después del reemplazo de PrimeVue
+
+El widget `galleria` de Vue acepta un arreglo de cadenas de URL de imágenes, que coincide con el esquema de entrada `GALLERIA`. Con varias imágenes se muestran miniaturas y botones de anterior/siguiente. La navegación se detiene en la primera y la última imagen.
+
+Los objetos de imagen de PrimeVue con `itemImageSrc` o `thumbnailImageSrc` ya no son compatibles. Conviértelos a cadenas de URL. El widget ya no lee opciones de PrimeVue como `showThumbnails`, `showItemNavigators`, `circular`, `autoPlay`, `transitionInterval`, `showIndicators`, `numVisible` o `responsiveOptions`. Las extensiones que necesiten estos controles deben proporcionar su propio widget de galería.
+
+## Los nombres de los widgets deben ser únicos y estables
+
+Dos widgets en el mismo nodo no pueden compartir un nombre. Si agregas un segundo widget con un nombre que ya está en uso, el frontend renombra el nuevo widget con un sufijo numerado, como `strength#1`, cuando el nodo está en un gráfico. Una búsqueda por el nombre original encuentra solo el primer widget:
+
+```js
+node.addWidget('number', 'strength', 0, () => {})
+const second = node.addWidget('number', 'strength', 1, () => {})
+second.name // 'strength#1' una vez que el nodo está en un gráfico
+```
+
+Asigna a cada widget un nombre único.
+
+Asignar un nuevo `widget.name` a un widget registrado mueve su valor almacenado al nuevo nombre. Si otro widget del nodo ya usa ese nombre, la asignación se ignora y `widget.name` conserva su valor anterior, así que verifica `widget.name` después. Las ranuras de entrada que hacen referencia al widget por su nombre no se actualizan. No elimines un widget y agregues uno nuevo para renombrarlo: `removeWidget()` elimina el valor almacenado y borra las ranuras de entrada vinculadas directamente al widget. Las ranuras de entrada que solo hacen referencia a él por nombre conservan ese nombre.
+
+## `node.widgets` puede ser undefined
+
+`node.widgets` devuelve `undefined` hasta que se le asigna un valor al menos una vez.
+Inicializa el array antes de agregar widgets:
+
+```ts
+export function nodeCreated(node: LGraphNode) {
+  node.widgets ??= []
+  node.widgets.push(myWidget)
+}
+```
+
+La lectura con una guarda se hace de la misma forma:
+
+```ts
+const widgetCount = node.widgets?.length ?? 0
+```
+
+**Asignar `node.widgets = undefined` lo borra.** Una lectura posterior devuelve
+`undefined` de nuevo, no `[]`.
+
+**Las modificaciones hechas antes de que el nodo se conecte a un gráfico se detectan
+automáticamente.** No necesitas llamar nada por tu cuenta en el caso habitual
+de crear widgets en un constructor o en `onNodeCreated`.
+
+`node.widgets` aparece en `Object.keys(node)` y en las expansiones de objeto como
+`{...node}`.
+
+## Prefiere `node.addCustomWidget()` a empujar sobre `node.widgets`
+
+Los widgets añadidos con `node.addWidget()`, `node.addCustomWidget()` o `node.addDOMWidget()` se registran automáticamente en el store. Un objeto plano empujado directamente sobre `node.widgets` también se convierte en una instancia de widget y se registra en cuanto el nodo está en un grafo. La conversión suele ocurrir en el mismo objeto, pero un objeto congelado o con propiedades no configurables se sustituye por otro widget distinto, así que conserva el widget que devuelve `addCustomWidget()` o vuelve a leerlo desde `node.widgets`. Aun así, `addCustomWidget()` es la llamada recomendada: devuelve el widget y restaura el valor guardado del widget cuando se carga un flujo de trabajo.
+
+```js
+node.addCustomWidget({
+  name: 'my_widget',
+  type: 'custom',
+  value: '',
+  options: {},
+  draw(ctx, node, width, y, height) {},
+  mouse(event, pos, node) {}
+})
+```
+
+Si lees o escribes `widget.value` antes de que el nodo esté conectado a un grafo, el valor se mantiene localmente y se sincroniza con el store al conectarlo. No se pierde ningún valor, pero la interfaz guiada por el store (como el panel derecho) no verá el valor hasta entonces.
+
+## Eliminar widgets con `node.removeWidget()`
+
+Usa `node.removeWidget(widget)` para eliminar un widget. Si haces splice directamente sobre `node.widgets`, omites la limpieza de los slots y el valor del widget eliminado permanece en el store hasta que el nodo se elimina del gráfico.
+
+## Las ediciones del Agent llaman a `setValue` sin evento de puntero
+
+Cuando el Agent integrado cambia un widget que es una instancia de `BaseWidget`, el frontend llama a `widget.setValue(value, { node, canvas })`, el mismo método que usa una edición del usuario. Antes asignaba `widget.value` directamente y luego llamaba a `callback` y a `onWidgetChanged` por su cuenta. Esto incluye los objetos planos añadidos con `addCustomWidget()` o empujados sobre `node.widgets`, porque el frontend los convierte en instancias de `BaseWidget`. Los controladores de recuento de filas de DynamicGroup y los widgets promocionados del host del subgrafo siguen recibiendo la escritura directa.
+
+Si sobrescribes `setValue`, acepta opciones con la forma `{ node, e?, canvas? }`: en estas llamadas `e` nunca se establece y `canvas` también puede faltar. No leas `options.e` ni `options.canvas` sin comprobarlos antes. Un envoltorio que llama al `setValue` original solo con el valor sigue funcionando: las opciones toman por defecto `{ node: widget.node }`.
+
+`callback` y `onWidgetChanged` reciben ahora el valor que aceptó el widget, no el que envió el Agent. Un widget numérico limita el valor a `min`/`max` y convierte una cadena numérica en número. En `callback`, `e` es `undefined`, y `pos` también cuando no hay lienzo.
+
+`setValue` regresa sin cambios cuando el valor, después de que un widget numérico lo limite y lo convierta, ya es idéntico (`===`) al valor actual, así que `'5'` en un widget numérico con valor `5` no cambia nada. También regresa cuando un widget numérico recibe un valor para el que `Number(value)` es `NaN`. No se dispara `callback` ni `onWidgetChanged`, y la versión del grafo no cambia. Una cadena numérica como `'7'` se convierte y se aplica.
+
+## No llames a `useWidgetValueStore()` desde el código de la extensión
+
+No llames a `useWidgetValueStore()` desde las extensiones. En su lugar, usa `node.widgets`, `node.addWidget()` / `addCustomWidget()` / `removeWidget()` y `widget.value`. La gestión interna de claves del store y su dependencia de Pinia no son una superficie de extensión compatible.

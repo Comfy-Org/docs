@@ -1,0 +1,74 @@
+---
+title: "프런트엔드 확장 프로그램의 노드 지오메트리 마이그레이션"
+sidebarTitle: "노드 지오메트리 마이그레이션"
+description: "레이아웃 스토어 변경 이후 ComfyUI 프런트엔드 확장 프로그램에서의 노드 크기와 렌더링 경계, applyNodePositions 이름 바꾸기 및 그리기 순서 z-order를 설명합니다."
+translationSourceHash: 833ab6fb
+translationFrom: custom-nodes/js/node-geometry-migration.mdx
+translationBlockHashes:
+  "Migration checklist": a95abc11
+  "What changed": f4ee15bc
+  "Writes through removed references stay local": ba9b1003
+---
+
+## 마이그레이션 체크리스트
+
+1. `node.pos`, `node.size`, `boundingRect`, `getBounding()`,
+   `setPos()`, `setSize()`를 계속 사용하세요: 시그니처 변경은 필요하지 않습니다.
+2. `repositionNodesVueMode()` 호출을 `applyNodePositions()`로 바꾸세요.
+3. `node.size`가 측정/렌더링된 콘텐츠를 반영한다고 의존했다면
+   `getBounding()` / `boundingRect`로 전환하세요. Vue 렌더러에서는 이제 `size`가
+   요청된 값을 엄격하게 반영합니다. 레거시 렌더러는 여전히 위젯에 맞도록
+   `size`를 늘립니다.
+4. 백킹 스토어가 아니라 노드/그룹 지오메트리 API를 사용하세요. `layoutStore`를
+   가져오거나 내부 형식에 의존하지 마세요.
+5. 제거된 참조를 통한 쓰기는 공유 레이아웃 상태가 아닌 분리된 객체를
+   업데이트합니다.
+
+## 변경 사항
+
+`LGraphNode.pos`, `size`, `boundingRect`, `getBounding()`, `setPos()`, `setSize()`는 시그니처가 그대로 유지됩니다. 이러한 호출은 소스 호환성을 유지합니다. 동작은 아래 세 가지 경우에서 변경되었습니다.
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+노드와 그룹의 지오메트리는 이제 인스턴스별 필드가 아니라 공유 레이아웃 저장소에 저장됩니다. 저장소를 직접 사용하지 말고 위의 API를 사용하세요. 저장소는 내부 구현 세부 사항입니다.
+
+### `size`와 렌더링된 경계
+
+`node.size`는 요청한 크기이며, 직렬화되는 값입니다. Vue 렌더러에서는 렌더링이 이 값을 변경하지 않습니다. `getBounding()`과 `boundingRect`는 렌더링된 경계를 반환하며, 위젯 콘텐츠에 더 많은 공간이 필요할 때 `size`보다 클 수 있습니다. 레거시 캔버스 렌더러에서는 노드가 `setSize()`를 호출해 위젯에 맞게 계속 커지므로, 그리기 이후에 `node.size`와 저장된 크기가 변경될 수 있습니다. 노드의 실제 화면상 크기가 필요할 때는 렌더링된 경계를 사용하세요.
+
+캔버스는 각 프레임이 시작될 때 `getBounding()`과 `boundingRect`를 다시 계산합니다. `pos` 또는 `size`를 변경한 뒤 같은 프레임에서 이 값을 읽으려면 먼저 `node.updateArea()`를 호출하세요. Vue 렌더러에서는 DOM 콘텐츠로 인한 크기 증가가 노드 측정이 끝난 뒤에만 반영됩니다.
+
+```ts
+// 이전: 렌더링된 콘텐츠의 크기 조정이 size를 덮어쓸 수 있어서, 노드를 접었다가
+// 다시 펼치면 원본 크기를 잃었습니다.
+node.size // 알 수 없이 렌더링된 크기로 바뀔 수 있었음
+
+// 이후 (Vue 렌더러): size는 설정한 값 그대로 유지되며, 렌더링된 경계는 명시적으로 요청합니다.
+node.size // 요청한 크기, 렌더링에 의해 변경되지 않음
+node.getBounding() // 실제 렌더링된 경계, 더 클 수 있음
+```
+
+### `repositionNodesVueMode()`가 `applyNodePositions()`로 이름 변경됨
+
+```ts
+// 이전
+canvas.repositionNodesVueMode(newPositions)
+// 이후
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()`는 지원 중단된 별칭으로 여전히 호출할 수 있습니다.
+
+### Z 순서가 이제 모호하지 않습니다
+
+Z 순서는 이전에 서로 어긋날 수 있는 두 소스에서 결정되었습니다. 노드 목록에서의 노드 위치와 실행 순서입니다. 이제는 항상 그리기 순서입니다. 확장에서 실행 순서를 바탕으로 쌓임 순서나 히트 테스트 순서를 추론했다면, 그리기 순서로 전환하세요.
+
+## 제거된 참조를 통한 쓰기는 로컬에 유지됩니다
+
+제거 이후, geometry setter는 분리된 노드, 그룹 또는 경유점 객체만 업데이트합니다. 공유 레이아웃 상태나 이제 동일한 ID를 소유하는 다른 엔티티는 업데이트하지 않습니다.

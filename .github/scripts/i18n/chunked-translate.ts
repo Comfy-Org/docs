@@ -38,6 +38,14 @@ export interface AutoChunkConfig {
 /** Default max English chars sent in one translation API call for a H2 block. */
 export const DEFAULT_MAX_BLOCK_CHARS = 6000;
 
+/**
+ * Above this size a page cannot be translated in one API call even when it has
+ * too few H2 headings to qualify for section mode. Generated API pages carry a
+ * single "Quick start" heading above tens of thousands of characters of tabbed
+ * code, so section mode never picks them up and a single call always truncates.
+ */
+export const WHOLE_FILE_PIECE_SPLIT_CHARS = 40_000;
+
 export interface ContentBlock {
   /** Stable sync key from English (section title or `_intro`). */
   label: string;
@@ -828,6 +836,21 @@ const EN_MONTH_NAMES = [
   "December",
 ] as const;
 
+const ES_MONTH_NAMES = [
+  "enero",
+  "febrero",
+  "marzo",
+  "abril",
+  "mayo",
+  "junio",
+  "julio",
+  "agosto",
+  "septiembre",
+  "octubre",
+  "noviembre",
+  "diciembre",
+] as const;
+
 const EN_DATE_DESC_RE =
   /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})$/;
 
@@ -841,7 +864,7 @@ export function parseEnglishChangelogDate(
   return { year: Number(m[3]), month, day: Number(m[2]) };
 }
 
-/** Localized `<Update description="…">` date for ja / ko / zh. */
+/** Localized `<Update description="…">` date for es / ja / ko / zh. */
 export function formatChangelogDateForLang(
   year: number,
   month: number,
@@ -854,6 +877,8 @@ export function formatChangelogDateForLang(
       return `${year}年${month}月${day}日`;
     case "ko":
       return `${year}년 ${month}월 ${day}일`;
+    case "es":
+      return `${day} de ${ES_MONTH_NAMES[month - 1]} de ${year}`;
     default:
       return `${EN_MONTH_NAMES[month - 1]} ${day}, ${year}`;
   }
@@ -1282,8 +1307,17 @@ export function validateTranslatedBlock(
   const trTabs = countTagOpens(translated, "Tab");
   if (enTabs >= 2 && trTabs !== enTabs) return false;
 
-  const enTabsWrappers = countTagOpens(enBlock.content, "Tabs");
-  if (enTabsWrappers > 0 && countTagCloses(translated, "Tabs") < enTabsWrappers) {
+  // Splitting a page across API calls hands the model fragments whose outer
+  // wrapper can be left open (splitByMintlifyTabs keeps `<Tabs>` in the first
+  // piece and `</Tabs>` in the last), so a model may close it on its own. Both
+  // sides here are the assembled block, so opens and closes must match exactly:
+  // one surplus closer is invalid MDX that mint rejects.
+  const enTabsOpens = countTagOpens(enBlock.content, "Tabs");
+  const enTabsCloses = countTagCloses(enBlock.content, "Tabs");
+  if (
+    countTagOpens(translated, "Tabs") !== enTabsOpens ||
+    countTagCloses(translated, "Tabs") !== enTabsCloses
+  ) {
     return false;
   }
   if (enTabs > 0 && countTagCloses(translated, "Tab") !== trTabs) return false;

@@ -559,7 +559,31 @@ type SchemaDoc = {
  * native model (Router's `DirectHeld`, BE-22964): its own catalog id is held back,
  * publishes no document, and must not be printed on a public page.
  */
-export type AltProvider = { provider: string; model_id?: string };
+export type AltProvider = { provider: string; model_id?: string; limits?: LegLimits };
+
+/**
+ * One native input a leg refuses before dispatch. `set` refuses any non-empty
+ * value, `equals` refuses each value in `values`, `not_in` refuses any value
+ * outside `values`; `example` is a value that triggers the refusal.
+ */
+export type RejectedInput = { field: string; rule: "set" | "equals" | "not_in"; values?: string[]; example?: string | number | boolean };
+
+/**
+ * What an alternate-provider leg accepts when it is materially narrower than its
+ * native model: the `limits` object of an `x-comfy-router-alt-providers` entry
+ * (BE-23008, built in cloud from the constants the leg's translator enforces).
+ * Every field is optional; an absent one means "no narrower than the native schema".
+ * `rejected_with` is normalized to the one string the page prints (`400 invalid_input`).
+ */
+export type LegLimits = {
+  resolutions?: string[];
+  audio?: string[];
+  duration_seconds?: { min: number; max: number; default?: number };
+  aspect_ratios?: string[];
+  rejected_inputs?: RejectedInput[];
+  rejected_with?: string;
+  fallback?: { provider: string; default: boolean; opt_out?: string };
+};
 
 /** What an alias document says it is a leg of, from `x-comfy-router-alias-of` / `-alias-provider`. */
 export type AliasRelation = { aliasOf: string; provider: string };
@@ -635,6 +659,84 @@ const isSlug = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+
 /** A `<provider>/<model>` model ID: exactly two non-empty, slug-shaped segments. */
 const isModelId = (v: unknown): v is string => typeof v === "string" && /^[^\s/?#]+\/[^\s/?#]+$/.test(v);
 
+/**
+ * A value printed as-is on the page: no Markdown, MDX, or URL syntax, and no `/`, so
+ * nothing in `limits` can spell a `provider/model` catalog id onto a public page.
+ */
+const isLimitToken = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9 _:.+-]*$/.test(v);
+/** A request field name, dotted for a nested one. */
+const isFieldName = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z_][A-Za-z0-9_.]*$/.test(v);
+/** True when every key of `o` is one of `keys`: a misspelled key must not silently drop its rule. */
+const onlyKeys = (o: object, keys: readonly string[]) => Object.keys(o).every((k) => keys.includes(k));
+const tokenList = (v: unknown): string[] | null =>
+  Array.isArray(v) && v.length > 0 && v.every(isLimitToken) ? [...v] : null;
+
+/**
+ * A leg's `limits`, or `undefined` when it is absent, empty, or malformed in any
+ * field. All-or-nothing on purpose: a half-read object would print a leg as
+ * narrower in one way and silently as wide as its native model in another, so a
+ * bad value drops the whole object and the leg row renders exactly as it did
+ * before limits existed.
+ */
+function readLimits(raw: unknown): LegLimits | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (!onlyKeys(r, ["resolutions", "audio", "aspect_ratios", "duration_seconds", "rejected_inputs", "rejected_with", "fallback"])) return undefined;
+  const out: LegLimits = {};
+  for (const key of ["resolutions", "audio", "aspect_ratios"] as const) {
+    if (r[key] === undefined) continue;
+    const list = tokenList(r[key]);
+    if (!list) return undefined;
+    out[key] = list;
+  }
+  if (r.duration_seconds !== undefined) {
+    const d = r.duration_seconds as Record<string, unknown> | null;
+    const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+    if (!d || typeof d !== "object" || !onlyKeys(d, ["min", "max", "default"]) || !num(d.min) || !num(d.max) || d.min > d.max) return undefined;
+    if (d.default !== undefined && (!num(d.default) || d.default < d.min || d.default > d.max)) return undefined;
+    out.duration_seconds = d.default === undefined ? { min: d.min, max: d.max } : { min: d.min, max: d.max, default: d.default };
+  }
+  if (r.rejected_inputs !== undefined) {
+    if (!Array.isArray(r.rejected_inputs) || !r.rejected_inputs.length) return undefined;
+    const rejected: RejectedInput[] = [];
+    for (const entry of r.rejected_inputs) {
+      const e = (entry ?? {}) as Record<string, unknown>;
+      if (typeof e !== "object" || !onlyKeys(e, ["field", "rule", "values", "example", "reason"])) return undefined;
+      if (!isFieldName(e.field) || (e.rule !== "set" && e.rule !== "equals" && e.rule !== "not_in")) return undefined;
+      const item: RejectedInput = { field: e.field, rule: e.rule };
+      if (e.values !== undefined || e.rule !== "set") {
+        const values = tokenList(e.values);
+        if (!values) return undefined;
+        item.values = values;
+      }
+      if (e.example !== undefined) {
+        const ok = typeof e.example === "boolean" || (typeof e.example === "number" && Number.isFinite(e.example)) || isLimitToken(e.example);
+        if (!ok) return undefined;
+        item.example = e.example as RejectedInput["example"];
+      }
+      rejected.push(item);
+    }
+    out.rejected_inputs = rejected;
+  }
+  if (r.rejected_with !== undefined) {
+    // A string (`"400 invalid_input"`) or its parts (`{status: 400, code: "invalid_input"}`).
+    const w = r.rejected_with as Record<string, unknown> | string | null;
+    const text = typeof w === "string" ? w
+      : w && typeof w === "object" && onlyKeys(w, ["status", "code"]) && Number.isInteger(w.status) && isLimitToken(w.code) ? `${w.status} ${w.code}`
+      : undefined;
+    if (!isLimitToken(text)) return undefined;
+    out.rejected_with = text;
+  }
+  if (r.fallback !== undefined) {
+    const f = r.fallback as Record<string, unknown> | null;
+    // The provider is printed on the page, so it must be a plain slug (`kling`, `luma_2`), not merely a path segment.
+    if (!f || typeof f !== "object" || !onlyKeys(f, ["provider", "default", "opt_out"]) || typeof f.provider !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(f.provider) || typeof f.default !== "boolean") return undefined;
+    if (f.opt_out !== undefined && (typeof f.opt_out !== "string" || !/^[a-z_]+=[A-Za-z0-9_]+$/.test(f.opt_out))) return undefined;
+    out.fallback = f.opt_out === undefined ? { provider: f.provider, default: f.default } : { provider: f.provider, default: f.default, opt_out: f.opt_out };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
   const aliasOf = doc["x-comfy-router-alias-of"];
   if (isModelId(aliasOf) && aliasOf !== model) {
@@ -647,12 +749,16 @@ export function readRelations(model: string, doc: SchemaDoc): ModelRelations {
   const altProviders: AltProvider[] = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
-    const { provider, model_id } = entry as Record<string, unknown>;
+    const { provider, model_id, limits: rawLimits } = entry as Record<string, unknown>;
     if (!isSlug(provider)) continue;
     if (model_id !== undefined && (!isModelId(model_id) || model_id === model)) continue;
     if (seen.has(provider)) continue;
     seen.add(provider);
-    altProviders.push(model_id === undefined ? { provider } : { provider, model_id });
+    const leg: AltProvider = model_id === undefined ? { provider } : { provider, model_id };
+    // A malformed `limits` costs the leg its limits, never its row.
+    const limits = readLimits(rawLimits);
+    if (limits) leg.limits = limits;
+    altProviders.push(leg);
   }
   altProviders.sort((a, b) => (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0));
   return { altProviders };
@@ -894,6 +1000,52 @@ export function opaqueOutputExample(s: ModelSchema): string {
 /** One model on a page, with whatever alternate serving providers its document lists. */
 type NativeLegs = { model: string; legs: AltProvider[] };
 
+/** `a`, `a or b`, `a, b or c`. */
+const orList = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`);
+
+function rejectedInput(r: RejectedInput): string {
+  const code = (v: string) => `\`${v}\``;
+  if (r.rule === "set") return code(r.field);
+  if (r.rule === "equals") return r.values!.map((v) => code(`${r.field}: ${JSON.stringify(v)}`)).join(", ");
+  const example = r.example === undefined ? "" : ` (e.g. ${code(JSON.stringify(r.example))})`;
+  return `${code(r.field)} other than ${orList(r.values!.map(code))}${example}`;
+}
+
+/**
+ * The indented sub-bullets under a leg row that carries `limits`. They are
+ * indented so they read as details of that row: each column-0 `- **<Label>**`
+ * line in this section is one serving provider. No price is printed here;
+ * Router prices are published at router.comfy.org.
+ */
+export function legLimitLines(leg: AltProvider): string[] {
+  const l = leg.limits;
+  if (!l) return [];
+  const label = providerLabel(leg.provider);
+  const lines: string[] = [];
+  const accepts: string[] = [];
+  const formats = [...(l.resolutions ?? []), ...(l.audio ?? [])];
+  if (formats.length) accepts.push(formats.join(", "));
+  if (l.duration_seconds) {
+    const { min, max, default: dflt } = l.duration_seconds;
+    accepts.push(`${min === max ? min : `${min}–${max}`} seconds${dflt === undefined ? "" : ` (default ${dflt})`}`);
+  }
+  if (l.aspect_ratios) accepts.push(`aspect ratio ${orList(l.aspect_ratios)}`);
+  if (accepts.length) lines.push(`Limits: ${accepts.join("; ")}`);
+  if (l.rejected_inputs) {
+    const how = l.rejected_with ? `Rejected with \`${l.rejected_with}\`` : "Rejected";
+    lines.push(`${how}: ${l.rejected_inputs.map(rejectedInput).join(", ")}`);
+  }
+  if (l.fallback) {
+    const target = providerLabel(l.fallback.provider);
+    lines.push(
+      l.fallback.default
+        ? `Fallback: if ${label} fails, the request retries once on ${target} (the default provider).${l.fallback.opt_out ? ` Send \`${l.fallback.opt_out}\` to opt out.` : ""} Rejected inputs and BYOK requests don't fall back.`
+        : `Fallback: if ${label} fails, the request is not retried on ${target}.`
+    );
+  }
+  return lines.map((line) => `  - ${line}`);
+}
+
 const callExample = (model: string, provider?: string) =>
   `\`POST ${BASE_URL}${ROUTE}/${model}${provider ? `?model_provider=${provider}` : ""}\``;
 
@@ -911,9 +1063,10 @@ export function servingProvidersSection(natives: NativeLegs[]): string {
       `- **Comfy** (default): ${callExample(n.model)}`,
       // A leg with no `model_id` is reachable only through `model_provider`, so
       // it gets no "as <id>": naming its held-back catalog id would publish it.
-      ...n.legs.map(
-        (leg) => `- **${providerLabel(leg.provider)}**${leg.model_id ? `, as \`${leg.model_id}\`` : ""}: ${callExample(n.model, leg.provider)}`
-      ),
+      ...n.legs.flatMap((leg) => [
+        `- **${providerLabel(leg.provider)}**${leg.model_id ? `, as \`${leg.model_id}\`` : ""}: ${callExample(n.model, leg.provider)}`,
+        ...(leg.limits ? legLimitLines(leg) : []),
+      ]),
     ].join("\n");
   // A page that documents one model needs no header per model; a curated spec
   // covering several does, or the rows below it have no subject.
@@ -1045,6 +1198,25 @@ const queueNotice = (() => {
   };
 })();
 
+/**
+ * Docs-local notices for individual models, keyed by Router model id and rendered
+ * under the intro of that model's page (hand-written or derived). Use it for
+ * upstream changes the mirrored `router-schemas/` documents do not carry, such as
+ * a provider retiring a model; delete the entry and regen once it no longer applies.
+ */
+const XAI_IMAGE_QUALITY_RETIREMENT = "xAI retired `grok-imagine-image-quality` on Nov 2, 2026. Requests are now served by `grok-imagine-image-2.0` at low quality. See [xAI's migration notice](https://docs.x.ai/developers/migration/imagine-image-quality-nov-2).";
+export const MODEL_NOTICES: Record<string, string> = {
+  "xai/grok-imagine-image-pro": `xAI retired \`grok-imagine-image-pro\` on [May 15, 2026](https://docs.x.ai/developers/migration/may-15-retirement), and routed its requests to \`grok-imagine-image-quality\`. ${XAI_IMAGE_QUALITY_RETIREMENT}`,
+  "xai/grok-imagine-image-quality": XAI_IMAGE_QUALITY_RETIREMENT,
+};
+
+/** The notices for every model a page documents, each once, as `<Warning>` blocks. */
+export function modelNotices(models: string[]): string {
+  return [...new Set(models.map((model) => MODEL_NOTICES[model]).filter(Boolean))]
+    .map((notice) => `\n<Warning>\n${notice}\n</Warning>\n`)
+    .join("");
+}
+
 function renderPage(spec: Spec, dir: string): string {
   const both = spec.variants.length > 1;
   // The one-time setup a snippet cannot run without. Everything else that is
@@ -1085,7 +1257,7 @@ sidebarTitle: ${JSON.stringify(spec.name)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 ${spec.intro ?? `API Reference for ${spec.name}. ${spec.summary.replace(/\s+/g, " ").trim()}`}
-${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}${modelNotices(spec.variants.map((v) => v.model))}
 ${body}
 
 <RouterCodeFooter />
@@ -1232,7 +1404,7 @@ sidebarTitle: ${JSON.stringify(title)}
 ${previewNotice.imports}${queueNotice.imports}import RouterCodeFooter from "/snippets/comfy-router/model-code-footer.mdx";
 
 API Reference for \`${model}\`, served by Comfy Router from ${provider}.
-${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}
+${modalities ? `\n${modalities}\n` : ""}${previewNotice.body}${modelNotices([model])}
 ## ${requestExample ? "Quick start" : "Request setup"}
 
 ${setup}
@@ -1335,7 +1507,7 @@ ${jump ? `${jump}\n\n` : ""}${sections}
 // ---------------------------------------------------------------------------
 
 /** A native model covered by an alternate provider, resolved to the page that documents it. */
-type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string };
+type Coverage = { provider: string; model: string; aliasId: string; page: string; title: string; limited?: boolean };
 
 /**
  * Resolve the declared alt-provider relationship to Providers-index rows.
@@ -1359,7 +1531,7 @@ export function providerRelationRows(
   const rows: Coverage[] = [];
   const problems: string[] = [];
   const seen = new Map<string, string>();
-  const add = (provider: string, model: string, aliasId: string) => {
+  const add = (provider: string, model: string, aliasId: string, limited = false) => {
     const key = `${provider}\u0000${model}`;
     const known = seen.get(key);
     if (known !== undefined) {
@@ -1376,10 +1548,11 @@ export function providerRelationRows(
     const target = pageByModel.get(model);
     // A leg pointing at a model with no page of its own has nothing to link.
     if (!target) return;
-    rows.push({ provider, model, aliasId, page: target.page, title: target.title });
+    rows.push({ provider, model, aliasId, page: target.page, title: target.title, ...(limited ? { limited } : {}) });
   };
   // The native documents first: their lists win when the two sides disagree.
-  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id ?? "");
+  // Only a native document carries `limits`, so only its rows can be marked narrower.
+  for (const [model, legs] of legsByModel) for (const leg of legs) add(leg.provider, model, leg.model_id ?? "", leg.limits !== undefined);
   // Then every alias document, including the ones that kept a page of their own
   // because the model they alias is not documented here yet.
   for (const a of aliasDocs) add(a.provider, a.aliasOf, a.model);
@@ -1409,7 +1582,10 @@ function providerMatrixTable(rows: Coverage[]): string {
   for (const row of rows) models.set(row.model, { page: row.page, title: row.title });
   const modelsInOrder = [...models.entries()].sort(([, a], [, b]) => a.title.localeCompare(b.title));
   const providers = providerCoverage(rows);
-  const cell = (providerRows: Coverage[], model: string) => providerRows.some((row) => row.model === model) ? "✓" : "-";
+  const cell = (providerRows: Coverage[], model: string) => {
+    const row = providerRows.find((r) => r.model === model);
+    return !row ? "-" : row.limited ? "✓*" : "✓";
+  };
   const header = ["Model / provider", "**Comfy (default)**", ...providers.map((provider) => `**${provider.label}**`)].join(" | ");
   const divider = ["---", "---", ...providers.map(() => "---")].join(" | ");
   const lines = [`| ${header} |`, `| ${divider} |`];
@@ -1443,7 +1619,7 @@ Every model uses \`POST /v2/models/{provider}/{model}\`. Comfy is the default pr
 ## Provider coverage
 
 ${providerMatrixTable(rows)}
-
+${rows.some((row) => row.limited) ? `\n\\* This provider serves the model with narrower limits than the default; see the model page.\n` : ""}
 \`strict_mode=false\` (the default) translates the native request and response for the selected provider. Fields that cannot be translated are listed in the \`X-Comfy-Router-Dropped-Params\` response header.
 `;
 }

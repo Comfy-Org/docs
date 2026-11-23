@@ -1,0 +1,30 @@
+---
+title: "前端扩展的连线注册迁移"
+sidebarTitle: "连线注册"
+description: "处理 addFloatingLink 返回 undefined、由 store 支撑的 graph.links 视图，以及 ComfyUI 前端扩展中的连线 ID 冲突。"
+translationSourceHash: ee31d5df
+translationFrom: custom-nodes/js/link-registration-migration.mdx
+---
+
+`LinkNetwork.addFloatingLink(link)` 现在返回 `LLink | undefined`。
+
+对于新的运行时连线，传入未分配的连线 ID，并使用返回的连线：
+
+```ts
+const registeredLink = graph.addFloatingLink(link)
+if (!registeredLink) return
+```
+
+注册成功时，或者同一条连线已经存在于拓扑 store 中时，注册会返回已存储的连线。如果另一个运行时连线已经占用了该 ID，注册会记录错误，让传入的连线保持未连接状态，并返回 `undefined`。它不会静默替换正在使用的连线，也不会为传入的连线分配另一个身份。`graph.floatingLinks` 仍然是用于单端连线的过滤兼容视图。
+
+`graph.links` 和 `graph.floatingLinks` 是按所有者过滤、由 store 支撑的兼容视图，而不是独立的原生 `Map` 存储。它们常规的 `Map` 读取方法使用缓存的成员快照；拓扑成员发生变化后，请获取新的迭代器，不要保留已有的迭代器。这两个视图都需要活动的 Pinia，并且不再把缺失的 store 表示成空图。
+
+与原生 `Map.set()` 一样，`view.set(id, link)` 返回视图本身，而不是注册结果。注册可能拒绝 ID 冲突或目标冲突，同时保留原有连线，因此通过视图插入的扩展应使用 `view.get(link.id) === link` 确认成功。与同一视图中的连线发生 ID 冲突后，`has()` 返回 `true`，`get()` 返回原有的那条连线。当图连接 API 和浮动连线 API 能覆盖该操作时优先使用它们，因为这些 API 会协调周边的生命周期。不要直接对任一视图调用 `Map.prototype` 方法，也不要依赖原生 `Map` 的内部存储。
+
+输入替换会在旧连线断开回调之前提交新连线，因此回调查询看到的是替换后的连线，而不是空输入。常规的连接回调随后运行。
+
+以前忽略返回值的扩展，应在保留、渲染或修改传入连线之前处理 `undefined`。不要为新的运行时连线预选连线 ID，交给图去生成。
+
+持久化 ID 的冲突修复属于工作流导入和反序列化的职责。导入序列化拓扑的扩展应在该边界规范化冲突的 ID，然后再使用运行时注册 API。
+
+构造根 `LGraph`，或从序列化数据配置一个图对象，都需要活动的 Pinia，因为图拓扑在整个生命周期中都由 store 支撑。

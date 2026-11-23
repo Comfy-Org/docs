@@ -1,0 +1,77 @@
+---
+title: "ウィジェットとカーソル向けのキャンバスポインタAPI"
+sidebarTitle: "キャンバスポインタAPI"
+description: "onPointerDown でカスタムキャンバスウィジェットのクリック、ダブルクリック、ドラッグを処理し、ComfyUI フロントエンド拡張からキャンバスカーソルを制御する方法について説明します。"
+translationSourceHash: 16ea7f38
+translationFrom: custom-nodes/js/canvas-pointer-api.mdx
+translationBlockHashes:
+  "_intro": b1d4c464
+  "Default behavior": 27a8751b
+  "Handle pointer input on a widget": e4fc63fc
+  "Control the canvas cursor": 9bcc33c8
+---
+
+キャンバスは、ポインタ入力を `CanvasPointer` 経由でルーティングします。押下がクリック、ダブルクリック、ドラッグのいずれになるかを判定し、その押下に対して割り当てたコールバックを実行します。キャンバス上に描画されたウィジェットは、`onPointerDown` を通じてこれを利用します。
+
+## デフォルトの動作
+
+- 複数の選択済み項目をドラッグする際に、Shift キーを押し続ける必要がなくなりました。複数の項目が選択されている状態で1つの項目をクリックすると、他の項目は引き続き選択解除されます。
+- 入力上の接続済みリンクをクリックしても、切断と再接続は行われなくなりました。
+- ポインタのダウンからアップまでのわずかな移動量は、引き続きクリックとして扱われます。ポインタがクリックドリフトの上限を超えて移動すると、その押下はドラッグになります。時間はこの判定に影響しません。
+- ダブルクリックには、ダブルクリック時間内に2回の押下が必要で、その間隔は最大でクリックドリフトの3倍までです。`onDoubleClick` を割り当てた押下のみがダブルクリックを完了できます。
+
+ユーザーは設定でクリックドリフトとダブルクリック時間を設定します（`Comfy.Pointer.ClickDrift` と `Comfy.Pointer.DoubleClickTime`）。
+
+### 複数項目の選択
+
+- `Ctrl` + ドラッグ: 複数選択を開始
+- `Ctrl` + `Shift` + ドラッグ: 選択に追加
+- `Ctrl` + ドラッグ、その後 `Shift`: 選択に追加
+- `Ctrl` + ドラッグ、その後 `Alt`: 選択から削除
+
+## ウィジェットでポインター入力を処理する
+
+ウィジェットに `onPointerDown` を設定します。これはポインターの押下時に実行され、ポインター、ノード、キャンバスを受け取ります。必要なコールバックをポインターに設定すると、押下が確定した時点でキャンバスが適切なものを実行します。
+
+```js
+widget.onPointerDown = function (pointer, node, canvas) {
+  const e = pointer.eDown
+  const offsetFromNode = [e.canvasX - node.pos[0], e.canvasY - node.pos[1]]
+
+  pointer.onClick = (upEvent) => {
+    console.log(pointer.eDown, pointer.eMove, pointer.eUp)
+  }
+  pointer.onDoubleClick = (upEvent) => this.customFunction(upEvent)
+
+  pointer.onDragStart = () => {}
+  pointer.onDrag = (moveEvent) => {}
+  pointer.onDragEnd = (upEvent) => {}
+  pointer.onDragCancel = () => {}
+
+  pointer.finally = () => {}
+
+  return true
+}
+```
+
+- `onClick` と `onDoubleClick` は、`onDragStart`、`onDragEnd`、`onDragCancel` と同じ押下では実行されません。`onDrag` はクリックとして終わる押下でも実行されます。クリックのドリフト範囲内の移動も受け取るためです。
+- `onDragStart` はドラッグごとに 1 回、ポインターが最初にクリックのドリフト範囲を超えて移動したときに実行されます。移動イベントが報告される前にポインターが範囲外で離された場合、`onDragStart` は離した時点で実行され、`onDragEnd` がその直後に実行され、`onDrag` は実行されません。
+- 1 回の押下で `onClick` と `onDoubleClick` の両方を設定した場合、ダブルクリックの 1 回目の押下を離すと `onClick` が実行されます。2 回目の押下では `onClick` の代わりに `onDoubleClick` が実行されるため、`onClick` は先に実行されても安全にしてください。1 回目のクリックがウィジェットではなく近くの項目に当たることもあるため、`onClick` が実行されていない状態で `onDoubleClick` が実行される場合があります。
+- `onDragEnd` はドラッグのポインターアップイベントを受け取ります。ドラッグが中断された場合（ポインターキャプチャを失った場合など）は代わりに `onDragCancel` が実行されます。
+- `finally` は押下が終わったときに 1 回実行されます。`pointer.finally` を設定すると、置き換えられるコールバックが即座に実行されます。`onPointerDown` が `true` を返さない場合、キャンバスが独自の `finally` を設定するため、あなたのコールバックはポインター押下の間に実行されます。クリーンアップを `finally` に依存する場合は `true` を返してください。
+- `pointer.eDown`、`pointer.eMove`、`pointer.eUp` により、すべてのコールバックがイベントの流れ全体にアクセスできます。
+- キャンバス自身に押下を処理させない場合は `true` を返します。
+- `onPointerDown` を追加するときは、レガシーの `widget.mouse` ハンドラーを削除してください。`onPointerDown` が `true` を返す場合、キャンバスは離した後もウィジェットを追跡し続け、ポインターが移動するたびに `widget.mouse` を呼び続けます。
+
+キャンバスがダブルクリックとドラッグを判定するため、ウィジェット側で個々のポインターイベントを計測したり時間を測ったりする必要はありません。ユーザーのクリックドリフトとダブルクリックの設定も尊重されます。
+
+## キャンバスカーソルを制御する
+
+`canvas.state.hoveringOver` は、ポインタの下にある項目タイプ（ノード、グループ、リルート、リンクなど）のビットフラグを保持します。`canvas.state.shouldSetCursor` を `false` に設定すると、キャンバスがカーソルスタイルを設定しなくなるので、その後は自分でカーソルを設定します:
+
+```js
+canvas.state.shouldSetCursor = false
+canvas.canvas.style.cursor = 'pointer'
+```
+
+`shouldSetCursor` が `false` のままでも、ノードのリサイズを開始するとリサイズカーソルが設定されます。リサイズが終了した後、カーソルを再度設定してください。

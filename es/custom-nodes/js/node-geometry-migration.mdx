@@ -1,0 +1,85 @@
+---
+title: "Migración de geometría de nodos para extensiones del frontend"
+sidebarTitle: "Migración de geometría de nodos"
+description: "Tamaño del nodo vs. límites renderizados, renombrado de applyNodePositions y z-order en extensiones del frontend de ComfyUI tras cambiar el layout store."
+translationSourceHash: 833ab6fb
+translationFrom: custom-nodes/js/node-geometry-migration.mdx
+translationBlockHashes:
+  "Migration checklist": a95abc11
+  "What changed": f4ee15bc
+  "Writes through removed references stay local": ba9b1003
+---
+## Lista de verificación de la migración
+
+1. Sigue usando `node.pos`, `node.size`, `boundingRect`, `getBounding()`, `setPos()`, `setSize()`: no se requieren cambios en las firmas.
+2. Sustituye las llamadas a `repositionNodesVueMode()` por `applyNodePositions()`.
+3. Si dependías de que `node.size` reflejara el contenido medido/renderizado, cambia a `getBounding()` / `boundingRect`. Con el renderizador de Vue, `size` ahora refleja estrictamente el valor solicitado. El renderizador clásico sigue aumentando `size` para ajustarse a los widgets.
+4. Usa las APIs de geometría de nodos y grupos, no el almacén de respaldo; no importes `layoutStore` ni dependas de su formato interno.
+5. Las escrituras mediante una referencia eliminada actualizan el objeto desvinculado, no el estado de diseño compartido.
+
+## Qué cambió
+
+`LGraphNode.pos`, `size`, `boundingRect`, `getBounding()`, `setPos()` y
+`setSize()` conservan las mismas firmas. Estas llamadas siguen siendo
+compatibles a nivel de código fuente. El comportamiento cambió en los tres
+casos siguientes.
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+La geometría de nodos y grupos ahora reside en un almacén de diseño compartido
+en lugar de en campos por instancia. Usa las APIs anteriores, no el almacén
+directamente: es un detalle de implementación interno.
+
+### `size` frente a los límites renderizados
+
+`node.size` es el tamaño que solicitaste y el que se serializa. Con el
+renderizador Vue, el renderizado nunca lo cambia. `getBounding()` y
+`boundingRect` devuelven los límites renderizados, que pueden ser mayores que
+`size` cuando el contenido del widget necesita más espacio. Con el renderizador
+de lienzo clásico, el nodo todavía crece para ajustarse a sus widgets llamando a
+`setSize()`, por lo que `node.size` y el tamaño guardado pueden cambiar después
+de un dibujo. Usa los límites renderizados cuando necesites la huella real del
+nodo en pantalla.
+
+El lienzo recalcula `getBounding()` y `boundingRect` al inicio de cada
+fotograma. Después de cambiar `pos` o `size`, llama a `node.updateArea()` antes
+de leerlos en el mismo fotograma. Con el renderizador Vue, el crecimiento por
+contenido DOM solo aparece después de medir el nodo.
+
+```ts
+// Antes: un cambio de tamaño por contenido renderizado podía sobrescribir size,
+// por lo que contraer un nodo y volver a expandirlo hacía perder el tamaño original.
+node.size // podía convertirse silenciosamente en la huella renderizada
+
+// Después (renderizador Vue): size se mantiene como lo estableciste; solicita los límites renderizados explícitamente.
+node.size // el tamaño solicitado, sin cambios por el renderizado
+node.getBounding() // los límites renderizados reales, pueden ser mayores
+```
+
+### `repositionNodesVueMode()` pasa a llamarse `applyNodePositions()`
+
+```ts
+// Antes
+canvas.repositionNodesVueMode(newPositions)
+// Después
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()` sigue siendo invocable como alias obsoleto.
+
+### El orden Z ahora no es ambiguo
+
+El orden Z solía provenir de dos fuentes que podían discrepar: la posición de un
+nodo en la lista de nodos y su orden de ejecución. Ahora siempre es el orden de
+dibujo. Si tu extensión infería el orden de apilamiento o de hit-test a partir
+del orden de ejecución, cambia al orden de dibujo.
+
+## Las escrituras mediante referencias eliminadas permanecen locales
+
+Después de la eliminación, las funciones de establecimiento de geometría actualizan solo el nodo, grupo u objeto de Reroute desconectado. No actualizan el estado de diseño compartido ni otra entidad que ahora posea el mismo ID.

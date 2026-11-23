@@ -21,6 +21,8 @@ const ALWAYS_GUARDED = [
   "development/comfy-router/quickstart.mdx",
   "development/comfy-router/limitations.mdx",
   "development/comfy-router/higgsfield-byok.mdx",
+  "development/comfy-router/litellm.mdx",
+  "development/comfy-router/realtime.mdx",
   "router-schemas/openai/gpt-image-1.json",
 ];
 
@@ -43,9 +45,11 @@ const EDITABLE = [
   "development/comfy-router/queue.mdx",
   "development/comfy-router/headers.mdx",
   "development/comfy-router/billing.mdx",
-  // Generated here by `bun run router-pricing:gen`; `router-pricing:check` guards its freshness.
+  // The Router pricing page is hand-written in every locale; the sync never writes it.
   "development/comfy-router/pricing.mdx",
   "zh/development/comfy-router/pricing.mdx",
+  "zh/development/comfy-router/litellm.mdx",
+  "ja/development/comfy-router/realtime.mdx",
   "development/comfy-router/models/openai/gpt-image-1/code.yaml",
   "snippets/comfy-router/model-code-footer.mdx",
   ".github/scripts/snippets/gen-code-pages.ts",
@@ -162,6 +166,22 @@ describe("generated pages are guarded on freshness", () => {
   });
 });
 
+// The sync copies the LiteLLM page here verbatim, so a direct edit is reverted.
+// The pricing page is hand-written here and no longer generated or synced.
+describe("the LiteLLM and pricing pages", () => {
+  const LITELLM = "development/comfy-router/litellm.mdx";
+  const PRICING = "development/comfy-router/pricing.mdx";
+
+  test("the LiteLLM page is owned even when the code pages are fresh", () => {
+    expect(classify([LITELLM], { generatedPagesFresh: true }).map((o) => o.path)).toEqual([LITELLM]);
+  });
+
+  test("the pricing page is an ordinary editable page, fresh or not", () => {
+    expect(classify([PRICING])).toEqual([]);
+    expect(classify([PRICING], { generatedPagesFresh: false })).toEqual([]);
+  });
+});
+
 describe("exemptionReason", () => {
   test("exempts the sync bot", () => {
     expect(exemptionReason(SYNC_PR_AUTHOR, "matt/some-branch")).toContain(SYNC_PR_AUTHOR);
@@ -203,6 +223,8 @@ describe("formatFailure", () => {
       "development/comfy-router/quickstart.mdx": "Edit the upstream quickstart.mdx",
       "development/comfy-router/limitations.mdx": "Edit the upstream limitations.mdx",
       "development/comfy-router/higgsfield-byok.mdx": "Edit the upstream higgsfield-byok.mdx",
+      "development/comfy-router/litellm.mdx": "Edit the upstream litellm.mdx",
+      "development/comfy-router/realtime.mdx": "Edit the upstream realtime.mdx",
       "router-schemas/openai/gpt-image-1.json": "Edit the upstream contract",
       "development/comfy-router/models.mdx": "code-pages:gen",
       "development/comfy-router/models/openai/gpt-image-1/code.mdx": "Edit the sibling code.yaml",
@@ -251,6 +273,8 @@ describe("the guarded paths exist in this repository", () => {
     "development/comfy-router/quickstart.mdx",
     "development/comfy-router/limitations.mdx",
     "development/comfy-router/higgsfield-byok.mdx",
+    "development/comfy-router/litellm.mdx",
+    "development/comfy-router/realtime.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",
   ];

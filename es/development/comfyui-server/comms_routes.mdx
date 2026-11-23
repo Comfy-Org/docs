@@ -1,0 +1,110 @@
+---
+title: "Rutas del servidor de ComfyUI (API HTTP y WebSocket)"
+sidebarTitle: "Rutas HTTP y WebSocket"
+description: "Rutas de la API del servidor de ComfyUI: endpoints GET, POST y WebSocket integrados para prompts, cola, historial, modelos y datos de usuario, además de cómo añadir rutas personalizadas."
+icon: "route"
+translationSourceHash: f6c2de44
+translationFrom: development/comfyui-server/comms_routes.mdx
+---
+
+## Rutas
+
+El servidor define una serie de métodos `get` y `post` 
+que puedes encontrar buscando `@routes` en `server.py`. Cuando envías un flujo de trabajo
+desde el cliente web, se publica en `/prompt`, que valida el prompt y lo añade a una cola de ejecución,
+devolviendo un `prompt_id` y un `number` (la posición en la cola), o `error` y `node_errors` si la validación falla.
+La cola de prompts se define en `execution.py`, que también define la clase `PromptExecutor`. 
+
+### Rutas integradas
+
+`server.py` define las siguientes rutas:
+
+#### Rutas de la API principal
+
+| ruta                           | get/post/ws | propósito                                                                 |
+| ------------------------------ | ----------- | ------------------------------------------------------------------------- |
+| `/`                            | get         | cargar la página web de Comfy                                             |
+| `/ws`                          | websocket   | endpoint WebSocket para comunicación en tiempo real con el servidor       |
+| `/embeddings`                  | get         | obtener una lista de los nombres de los embeddings disponibles            |
+| `/extensions`                  | get         | obtener una lista de las extensiones que registran un `WEB_DIRECTORY`     |
+| `/features`                    | get         | obtener las características y capacidades del servidor                    |
+| `/models`                      | get         | obtener una lista de los tipos de modelos disponibles                     |
+| `/models/{folder}`             | get         | obtener los modelos de una carpeta específica                             |
+| `/workflow_templates`          | get         | obtener un mapa de los módulos de nodos personalizados y sus flujos de trabajo de plantilla |
+| `/upload/image`                | post        | subir una imagen                                                          |
+| `/upload/mask`                 | post        | subir una máscara                                                         |
+| `/view`                        | get         | ver una imagen. Muchas opciones; consulta `@routes.get("/view")` en `server.py` |
+| `/view_metadata`/{folder_name} | get         | obtener los metadatos de un modelo                                        |
+| `/system_stats`                | get         | obtener información del sistema (versión de Python, dispositivos, VRAM, etc.) |
+| `/prompt`                      | get         | obtener el estado actual de la cola y la información de ejecución         |
+| `/prompt`                      | post        | enviar un prompt a la cola                                                |
+| `/object_info`                 | get         | obtener los detalles de todos los tipos de nodo                           |
+| `/object_info/{node_class}`    | get         | obtener los detalles de un tipo de nodo                                   |
+| `/history`                     | get         | obtener el historial de la cola                                           |
+| `/history/{prompt_id}`         | get         | obtener el historial de la cola de un prompt específico                   |
+| `/history`                     | post        | borrar el historial o eliminar un elemento del historial                  |
+| `/queue`                       | get         | obtener el estado actual de la cola de ejecución                          |
+| `/queue`                       | post        | gestionar operaciones de la cola (borrar pendientes o en ejecución)       |
+| `/interrupt`                   | post        | detener la ejecución del flujo de trabajo actual                          |
+| `/free`                        | post        | liberar memoria descargando los modelos especificados                     |
+| `/userdata`                    | get         | listar los archivos de datos de usuario de un directorio específico       |
+| `/v2/userdata`                 | get         | versión mejorada que lista archivos y directorios en formato estructurado |
+| `/userdata/{file}`             | get         | obtener un archivo de datos de usuario específico                         |
+| `/userdata/{file}`             | post        | subir o actualizar un archivo de datos de usuario                         |
+| `/userdata/{file}`             | delete      | eliminar un archivo de datos de usuario específico                        |
+| `/userdata/{file}/move/{dest}` | post        | mover o renombrar un archivo de datos de usuario                          |
+| `/users`                       | get         | obtener información de usuario                                            |
+| `/users`                       | post        | crear un usuario nuevo (solo en modo multiusuario)                        |
+
+### Comunicación por WebSocket
+
+El endpoint `/ws` ofrece comunicación bidireccional en tiempo real entre el cliente y el servidor. Se usa para:
+- Recibir actualizaciones del progreso de ejecución
+- Obtener el estado de ejecución de los nodos en tiempo real
+- Recibir mensajes de error e información de depuración
+- Ver actualizaciones en vivo cuando cambia el estado de la cola
+
+La conexión WebSocket envía mensajes JSON de distintos tipos, como:
+- `status` - Actualizaciones del estado general del sistema
+- `execution_start` - Cuando empieza la ejecución de un prompt
+- `execution_cached` - Cuando se usan resultados en caché
+- `executing` - Actualizaciones durante la ejecución de un nodo
+- `progress` - Actualizaciones del progreso de operaciones largas
+- `executed` - Cuando un nodo termina su ejecución
+
+### Rutas personalizadas
+
+Si quieres enviar un mensaje del cliente al servidor durante la ejecución, tendrás que añadir una ruta personalizada al servidor.
+Para los casos complicados tendrás que consultar la [documentación del framework aiohttp](https://docs.aiohttp.org/), pero la mayoría de los casos 
+se resuelven así:
+
+```Python
+from server import PromptServer
+from aiohttp import web
+routes = PromptServer.instance.routes
+@routes.post('/my_new_path')
+async def my_function(request):
+    the_data = await request.post()
+    # the_data ahora contiene un diccionario con los valores enviados
+    MyClass.handle_my_message(the_data)
+    return web.json_response({})
+```
+
+<Tip>A menos que sepas lo que haces, no intentes definir `my_function` dentro de una clase. 
+El decorador `@routes.post` hace mucho trabajo. En su lugar, define la función como se muestra arriba 
+y luego llama a un método de clase.</Tip>
+
+<Tip>También puedes definir un `@routes.get` si no vas a cambiar nada.</Tip>
+
+El cliente puede usar esta nueva ruta enviando un objeto `FormData` con un código parecido a este,
+lo que haría que `the_data`, en el código anterior, contenga las claves `message` y `node_id`:
+
+```Javascript
+import { api } from "../../scripts/api.js";
+function send_message(node_id, message) {
+    const body = new FormData();
+    body.append('message',message);
+    body.append('node_id', node_id);
+    api.fetchApi("/my_new_path", { method: "POST", body, });
+}
+```

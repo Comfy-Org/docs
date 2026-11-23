@@ -3,21 +3,24 @@ title: "Comfy SDK：ComfyUI 的 Python 与 TypeScript 客户端"
 description: "用 Python 或 TypeScript 对 Comfy Cloud、自建部署或自有 ComfyUI 运行 ComfyUI 工作流，并处理资产、任务、实时事件和幂等重试。"
 sidebarTitle: "SDK"
 icon: "code"
-translationSourceHash: dbb2e0a8
+translationSourceHash: 482e70a3
 translationFrom: development/api-development/sdks.mdx
 translationBlockHashes:
   "_intro": c92c7b51
   "Install": da9a0a57
+  "Coding agents": eed20c28
   "Quickstart": 02297586
-  "Choosing a base URL": 2265e6f6
+  "Choosing a base URL": 0e77e81c
   "Retrying a submit: the idempotency key": 7c83d78f
   "Watching a job run": 34d74bcc
+  "Failure categories": 3771ee22
   "Tracing an output back to its workflow": b01886a3
   "Label jobs and find them later": 5e8d85e5
   "What the SDKs cover today": 69ebfcc7
   "Reference": 71489703
   "Feedback": 14dd521e
 ---
+
 
 
 
@@ -62,6 +65,30 @@ npm i @comfyorg/sdk
 Python 3.10 或更高版本。Node 22 或更高版本。
 
 <SdkVersions />
+
+## 编程智能体
+
+用编程智能体写 Comfy Router 集成时，给它 `comfy-sdk` 技能。
+
+技能讲的是代理常错的几件事：
+
+- 选哪个客户端
+- 密钥放服务端
+- 调用前先查模型
+- `run` 还是 `submit`
+- 超时
+- 错误按类别处理
+
+ComfyUI 工作流不在它的范围内。写本页这类工作流客户端时，把本页和 [Comfy API v2 参考](/zh/api-reference/v2/overview) 都给代理看。
+
+Claude Code 里跑：
+
+```
+/plugin marketplace add Comfy-Org/comfy-skills
+/plugin install comfy-sdk@comfy-skills
+```
+
+其它代理，把 [`SKILL.md`](https://github.com/Comfy-Org/comfy-skills/blob/main/claude-code-sdk/skills/comfy-sdk/SKILL.md) 这一个文件拷进 `AGENTS.md` 或 Cursor 规则。
 
 ## 快速入门
 
@@ -114,7 +141,7 @@ await job.getOutputs("9")[0].toFile("out.png");
 |---|---|---|
 | **Comfy Cloud** | `https://cloud.comfy.org`（默认） | 必填 |
 | **Comfy API 部署** | `https://<deployment>.run.comfy.app` | 必填 |
-| **您自己的 ComfyUI** | `http://127.0.0.1:8189`（本地代理） | 默认无。可选静态 bearer 令牌 |
+| **您自己的 ComfyUI** | `http://127.0.0.1:8189`（本地代理） | 默认不需要。可选静态 bearer 令牌 |
 
 基础 URL 来自 `COMFY_BASE_URL` 环境变量，而不是构造函数参数：
 
@@ -123,7 +150,7 @@ export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # Comfy API 部署
 export COMFY_BASE_URL="http://127.0.0.1:8189"               # 自托管代理
 ```
 
-客户端每次构造时都会读取该变量，它必须是 `http(s)` URL，未设置或为空则默认为 Comfy Cloud。因此客户端本身在所有环境下都是相同的：
+每次构造客户端时都会读取该变量，它必须是 `http(s)` URL；未设置或留空即表示使用 Comfy Cloud。因此客户端本身在所有环境下都是相同的：
 
 <CodeGroup>
 ```python Python
@@ -144,7 +171,7 @@ const client = new Comfy({ apiKey: "comfyui-..." });
 开箱即用。创建 [API 密钥](/zh/development/api-development/getting-an-api-key) 并将其传递给客户端。
 
 <Note>
-  API 访问需要付费的 Comfy Cloud 订阅。免费层级不包含此权限。一次可以运行多少个任务取决于您的层级。请参阅[并发任务](/zh/development/deploy/cloud-usage#并发任务)。
+  API 访问需要付费的 Comfy Cloud 订阅。免费层级不包含此功能。同时可运行的任务数量取决于您的订阅层级。请参阅[并发限制](/zh/development/deploy/cloud-usage#并发限制)。
 </Note>
 
 <a id="serverless-deployment"></a>
@@ -293,6 +320,92 @@ eventLoop: for await (const event of job.events()) {
 Comfy Cloud 客户端上没有 `subscribe()`，任何地方也都没有 `job.subscribe()`。在 Cloud 上，`subscribe` 的等价物是 `run()`：提交并等待终止状态。
 
 该流是实时信息流，而不是可重放的日志。它的存在是为了让你能够呈现进度，而不是让你依赖它来获取结果。轮询任务才是权威来源，`run()`、`wait()` 和 `result()` 会自动回退到轮询。原因请参阅 [设计说明](/zh/development/api-development/sdks-design#先轮询再流式获取进度)。
+
+## 失败类别
+
+任务失败时，`error.category` 会用一个词说明原因，这样您的代码无需解析 `error.message` 就能决定下一步怎么做。只有 [Comfy API 部署](#comfy-api-部署)上的任务才带有该字段。Comfy Cloud 不会设置它。
+
+| 类别 | 发生了什么 |
+|---|---|
+| `invalid_input` | 某个输入值或文件被拒绝，或超出了限制。 |
+| `content_refused` | 合作伙伴节点的内容审核拒绝了该内容。 |
+| `out_of_gpu_memory` | GPU 内存不足。 |
+| `missing_model_or_node` | 工作流需要的模型文件、节点类或 Python 包在该部署中不存在。 |
+| `workflow_logic` | 工作流本身有误：类型、连线或形状不匹配，没有输出节点，或存在循环依赖。 |
+| `other` | 不属于以上任何一类。仅由提供方故障或超时导致的失败也归入此类。 |
+
+只有当失败由您的工作流或输入引起时，任务才会获得类别。
+
+**该字段位于任务的 `error` 对象中**，出现在 submit、get 和 cancel 的响应里。任务列表不包含它：列表项只有错误消息和详情，因此请通过 ID 读取该任务。在事件流中收到 `failed` 状态后，同样请通过 ID 读取该任务。
+
+**出现以下情况时，该字段不存在：**
+
+- 任务没有失败。
+- 失败由平台引起，或无法归因于您的工作流或输入。
+- 任务在类别功能可用之前就已失败。
+- 账户的任务内容已被清除。
+- 任务在 Comfy Cloud 上运行。
+
+**将未知值视为 `other`。** 类别的集合可能在 v2 内增加。类别缺失表示该任务没有类别，您也可以像处理 `other` 一样处理它。
+
+**类别描述的是随任务保存的失败报告。** 再次读取任务不会重新分类，类别只是尽力而为的标签，不保证准确。可以用它来选择下一步，例如请用户修正某个输入。
+
+当前的 SDK 版本尚未提供该字段。Python SDK 会把它从 `JobFailed.error` 中丢弃，因此请通过 HTTP 读取任务。TypeScript SDK 在运行时保留它，但没有为它声明类型，因此请对错误进行类型断言：
+
+<CodeGroup>
+```python Python
+import os
+import httpx
+from comfy_sdk import JobFailed
+
+KNOWN_CATEGORIES = {
+    "invalid_input",
+    "content_refused",
+    "out_of_gpu_memory",
+    "missing_model_or_node",
+    "workflow_logic",
+    "other",
+}
+
+api_key = "comfyui-..."  # 与传给 Comfy(api_key=...) 的相同的密钥
+base_url = os.environ.get("COMFY_BASE_URL") or "https://cloud.comfy.org"  # 未设置或为空时使用 Comfy Cloud，与客户端相同
+
+job = client.submit(wf)
+try:
+    job.result()
+except JobFailed:
+    response = httpx.get(
+        f"{base_url}/api/v2/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    response.raise_for_status()
+    category = (response.json().get("error") or {}).get("category")
+    if category not in KNOWN_CATEGORIES:
+        category = "other"  # 缺失或未知
+```
+
+```typescript TypeScript
+import { JobFailed } from "@comfyorg/sdk";
+
+const KNOWN_CATEGORIES = new Set([
+  "invalid_input",
+  "content_refused",
+  "out_of_gpu_memory",
+  "missing_model_or_node",
+  "workflow_logic",
+  "other",
+]);
+
+try {
+  await client.run(wf);
+} catch (err) {
+  if (!(err instanceof JobFailed)) throw err;
+  const raw = (err.error as { category?: string } | null)?.category;
+  const category =
+    raw !== undefined && KNOWN_CATEGORIES.has(raw) ? raw : "other"; // 缺失或未知
+}
+```
+</CodeGroup>
 
 ## 将输出回溯到其工作流
 
