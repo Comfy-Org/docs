@@ -1,224 +1,345 @@
 ---
-title: "Comfy Router リアルタイム音声セッション"
-sidebarTitle: "リアルタイム音声"
-description: "Comfy Router 経由で Grok Voice のリアルタイム WebSocket セッションを開く方法: エンドポイント、認証、秒単位の料金、セッション制限、クローズコード。"
-translationSourceHash: e4024a38
+title: "Comfy Router リアルタイムモデル"
+sidebarTitle: "リアルタイムモデル"
+description: "Genie 4、fal の world モデル、Grok Voice とのライブセッションを Comfy Router 経由で開きます。WebSocket セッション、WebRTC シグナリング、認証、制限、課金を説明します。"
+translationSourceHash: 2555a808
 translationFrom: development/comfy-router/realtime.mdx
 translationBlockHashes:
-  "_intro": a85f88e5
-  "Endpoint": 2ae36abf
-  "Authentication": 582120fe
-  "Connect": b61ae8c6
-  "Events": a3ac8c47
-  "Pricing": 25d35f6c
-  "Limits": 85e21dff
-  "Errors": 3085ba65
-  "Next": 3e8c1bd8
+  "_intro": c24aeb22
+  "Authentication": 588d5135
+  "WebSocket sessions": 9f0733ee
+  "WebRTC world models": e3d1be35
+  "Errors": 507d94b1
+  "Next": aedde44a
 ---
 
-Comfy Router は、fal が提供する xAI の Grok Voice とのリアルタイム音声対音声セッションを中継します。Comfy API キーを使って Router への WebSocket を1本開きます。Router はアカウントとクレジットを確認し、上流でセッションを開いてから、イベントを双方向に中継します。セッションの秒単位の料金は Comfy のクレジットから支払われます。
 
-## エンドポイント
+Router のほとんどのモデルは、1つのリクエストを受け取って完了した結果を返します。Realtime モデルは代わりにライブセッションを保持します。モデルの実行中に入力を送信し、生成されるそばから出力を受け取ります。Router はこれらを2つのサーフェスで提供します。
 
-```text
-wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime
-```
+| モデル | 機能 | サーフェス |
+| --- | --- | --- |
+| `google/genie-4` | Genie 4 インタラクティブワールドモデル。キー操作とテキストで誘導 | WebSocket セッション、`GET /v2/realtime/google/google/genie-4` |
+| `xai/grok-voice/realtime` | Grok Voice 音声対音声会話 | WebSocket セッション、`GET /v2/realtime/fal/xai/grok-voice/realtime` |
+| `fal-ai/abot-world-0` | インタラクティブワールドモデル。WebRTC 経由のビデオ | WebRTC シグナリング、`POST /v2/realtime/wma/fal` |
+| `fal-ai/lingbot-world-2` | インタラクティブワールドモデル。WebRTC 経由のビデオ | WebRTC シグナリング、`POST /v2/realtime/wma/fal` |
 
-リクエストは WebSocket アップグレードです（`Connection: Upgrade` と `Upgrade: websocket` を伴う `GET`）。それ以外のリクエストは `426` で拒否されます。
+4つすべてが**セッション時間の秒単位**で課金され、他の Router 呼び出しと同じワークスペースのクレジット残高から差し引かれます。料金については [Router の料金](/ja/development/comfy-router/pricing) を参照してください。セッションには資金のあるワークスペースが必要です。クレジットがない場合、セッションの開始は `402` で拒否されます。
+
+<Note>
+  WebSocket のパスは `/v2/realtime/{provider}/{model}` です。ここで `{provider}` はそのモデルを提供するプロバイダー、`{model}` は完全なモデル id です。そのため Genie 4 のパスでは `google` が2回現れます。
+</Note>
 
 ## 認証
 
-アップグレードリクエストのヘッダーで、Comfy API キーを `X-API-Key: comfyui-...` または `Authorization: Bearer comfyui-...` として送信します。Router はクエリ文字列や WebSocket サブプロトコルからキーを読み取りません。
+Realtime ルートは、他の Router 呼び出しと同じ認証情報を受け付けます。
 
-<Warning>
-ブラウザは WebSocket にヘッダーを設定できません。また、Comfy API キーを絶対にブラウザへ到達させてはいけません。サーバーからセッションを開き、オーディオをブラウザへ自分で中継してください。
-</Warning>
+- **サーバーから** は、WebSocket のアップグレードリクエストまたはシグナリングリクエストで、APIキーを `X-API-Key: comfyui-...` または `Authorization: Bearer comfyui-...` として送信します。APIキーはサーバー上に保管し、ブラウザへ配布しないでください。
+- **ブラウザから** は、WebSocket がリクエストヘッダーを設定できません。Comfy アカウントでサインインしているブラウザは、代わりに Firebase ID トークンを `comfy-realtime.v1` とともにサブプロトコルオファーで渡します:
 
-## 接続
+  ```js
+  const ws = new WebSocket(url, ["comfy-realtime.v1", "comfy-bearer." + idToken]);
+  ```
 
-アップグレードが成功したら、xAI が Grok Voice 向けに文書化しているリアルタイムイベントを送受信します。この例ではセッションを設定し、1 回のテキストターンを送信して、受信した各イベントタイプを出力します。
+  トークンは有効期限が切れていない Firebase ID トークンである必要があります。APIキーがこの方法で受け付けられることは決してなく、認証情報が URL クエリ文字列で受け付けられることもありません。`comfy-realtime.v1` を伴わずに `comfy-bearer.` を含むオファーは、セッションが開く前に `400` で拒否されます。`comfy-realtime.v1` をオファーすると、サーバーは `101` レスポンスでそれを選択します。
+
+  サブプロトコルオファーは WebSocket セッションにのみ適用されます。WebRTC シグナリングは通常の HTTP であるため、ブラウザはそこでは `Authorization: Bearer <Firebase ID token>` をヘッダーとして送信します。
+
+## WebSocket セッション
+
+`wss://api.comfy.org/v2/realtime/{provider}/{model}` への WebSocket アップグレードでセッションを開きます。Router はアップグレードを認証し、残高を確認し、セッションの存続中、クライアントとモデルの間でフレームを中継します。
+
+### セッションのルール
+
+- **ワークスペースごとに有効な WebSocket セッションは 1 つです。** セッションが有効な状態で 2 回目のアップグレードを行うと、`429` と `code: router.realtime.session_already_live` で拒否されます。別のセッションを開く前に、最初のセッションを閉じてください。
+- **メータリングは最初のフレームから開始されます。** 課金は整数秒単位で、最低 1 秒を下限として行われます。`google/genie-4` の場合、課金はモデルが最初のフレームを送信した時点で開始されます。それより前に、最初の 20 秒以内にセッションが終了した場合は請求されません。20 秒経過してもフレームが届かない場合は、アップグレードが成功した時点から課金がカウントされます。その他のモデルは `101` の時点から課金されます。
+- **セッションの実行中も残高が再確認されます。** Router はセッションを計測し、15 秒ごとに残高を再確認します。残高がまだいくらかの時間をカバーできる場合、セッションの上限はそれに合わせて短縮されます（Genie 4 のセッションは、その上限に達すると `1000` で終了します）。残高がもう 1 秒分すらカバーできなくなった場合、またはアカウントがブロックされている場合、Router は close フレームを送らずに接続を切断します（ほとんどのクライアントは close コード `1006` を報告します）。クレジットが不足している場合は、再接続する前にチャージしてください。セッションの最大長も、あらかじめ残高でカバーできる範囲に短縮されます。
+
+### Genie 4
+
+`google/genie-4` は、テキストプロンプトからインタラクティブな世界を生成し、その後キー押下でその世界を移動します。**テキストフレームのみ**を受け付け、各フレームは `event_type` を持つ JSON オブジェクトです。バイナリフレーム、または 64 KiB を超えるメッセージはセッションを終了させます。
+
+| `event_type` | フィールド | 備考 |
+| --- | --- | --- |
+| `world_setup` | `world_prompt: { "text": "..." }` | 最初のイベントでなければなりません。プロンプトは必須で、空でなく、最大 8 KiB です。テキストのみです。`reference_image` や画像またはビデオのフィールドは拒否されます。同じ `world_setup` を繰り返しても無視されます。異なるプロンプトで送信するとセッションが終了します。 |
+| `user_action` | `action`, `input` | `action` は `key_down`、`key_up`、`key_click` のいずれかです。`input` は以下の 10 個のキーのいずれかです。 |
+| `input` | `content: [{ "type": "text", "text": "..." }]` | テキストで世界を操作します。テキストパートのみで、それぞれ最大 8 KiB です。 |
+| `interaction.complete` | なし | セッションを正常に終了します。他のフィールドを付けずに送信してください。 |
+
+`user_action` で指定できる 10 個のキー:
+
+| 目的 | キー |
+| --- | --- |
+| 移動 | `key_w`, `key_s`, `key_a`, `key_d` |
+| カメラ | `arrow_up`, `arrow_down`, `arrow_left`, `arrow_right` |
+| アクション | `space`, `key_e` |
+
+他のイベントタイプ、フィールド、キー、`world_setup` より前の `user_action` または `input`、あるいは継続的なイベントの大量送信（約 120 のバーストを超え、その後 1 秒あたり約 60）は、クローズコード `1008`（ポリシー違反）でセッションを終了させます。拒否されたメッセージの内容はモデルに届きません。
+
+モデル自身のイベントは同じソケットで返されます。セッションは次の場合に終了します:
+
+- モデルの `interaction.completed` イベントの後、クローズコード `1000`。
+- モデルの `error` イベントの後、プロバイダーのクローズコードまたは `1011`。
+- **120 秒**のセッション上限（残高がそれより少ない場合はより早く）で、クローズコード `1000`。
+
+モデルのイベント内のエラーテキストは、あなたに届く前に一般的なメッセージに置き換えられることがあります。
 
 <CodeGroup>
 
 ```python Python
-# pip install websockets msgpack
+# Python 3.10+
+# インストール: python -m pip install "websockets>=13"
+# 実行: COMFY_API_KEY=comfyui-... python genie.py
 import asyncio
+import json
 import os
 
-import msgpack
-import websockets
+from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
 
-URL = "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime"
+URL = "wss://api.comfy.org/v2/realtime/google/google/genie-4"
 
 
-async def send(ws, event):
-    await ws.send(msgpack.packb(event))
+async def receive(ws):
+    async for message in ws:
+        if isinstance(message, bytes):
+            print(f"<- {len(message)} bytes")
+            continue
+        event = json.loads(message)
+        print("<-", event.get("event_type"))
 
 
 async def main():
-    async with websockets.connect(
-        URL,
-        additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
-    ) as ws:
-        await send(ws, {
-            "type": "session.update",
-            "session": {
-                "voice": "eve",
-                "instructions": "You are a helpful assistant.",
-                "turn_detection": {"type": "server_vad"},
-            },
-        })
-        await send(ws, {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Hello!"}],
-            },
-        })
-        await send(ws, {"type": "response.create"})
+    try:
+        ws = await connect(
+            URL,
+            additional_headers={"X-API-Key": os.environ["COMFY_API_KEY"]},
+            max_size=None,
+        )
+    except InvalidStatus as err:
+        # 拒否されたアップグレード: ボディは detail、error_type、code を含む JSON です。
+        print(err.response.status_code, err.response.body.decode(errors="replace"))
+        return
 
-        async for message in ws:
-            if isinstance(message, str):
-                continue  # fal 独自の x-fal-message フレーム
-            event = msgpack.unpackb(message)
-            print(event["type"])
-            if event["type"] == "response.done":
-                break
+    async with ws:
+        reader = asyncio.create_task(receive(ws))
+
+        async def send(event):
+            await ws.send(json.dumps(event))
+
+        await send({
+            "event_type": "world_setup",
+            "world_prompt": {"text": "A quiet harbor town at sunset, seen from the docks"},
+        })
+        await send({"event_type": "user_action", "action": "key_down", "input": "key_w"})
+        await asyncio.sleep(2)
+        await send({"event_type": "user_action", "action": "key_up", "input": "key_w"})
+        await send({"event_type": "user_action", "action": "key_click", "input": "arrow_left"})
+        await send({"event_type": "input", "content": [{"type": "text", "text": "Make it start to rain"}]})
+        await asyncio.sleep(5)
+        await send({"event_type": "interaction.complete"})
+
+        await reader
+        print("closed:", ws.close_code)
 
 
 asyncio.run(main())
 ```
 
-```javascript Node.js
-// npm install ws @msgpack/msgpack
-import WebSocket from "ws";
-import { encode, decode } from "@msgpack/msgpack";
+```js Browser
+// Comfy アカウントでサインインしたページ。getIdToken() は Firebase 認証呼び出しです。
+// トークンはサブプロトコルのオファーで送信され、URL には含まれません。
+const idToken = await auth.currentUser.getIdToken();
 
 const ws = new WebSocket(
-  "wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime",
-  { headers: { "X-API-Key": process.env.COMFY_API_KEY } },
+  "wss://api.comfy.org/v2/realtime/google/google/genie-4",
+  ["comfy-realtime.v1", "comfy-bearer." + idToken],
 );
 
-ws.on("unexpected-response", (req, res) => {
-  // アップグレードが拒否されました。JSON ボディに理由が示されています。
-  let body = "";
-  res.on("data", (chunk) => (body += chunk));
-  res.on("end", () => console.error(res.statusCode, body));
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({
+    event_type: "world_setup",
+    world_prompt: { text: "A quiet harbor town at sunset, seen from the docks" },
+  }));
 });
 
-const send = (event) => ws.send(encode(event));
+// サポートされる 10 個のキーを Genie 4 のキー名にマッピングします。
+const keys = {
+  KeyW: "key_w", KeyS: "key_s", KeyA: "key_a", KeyD: "key_d",
+  ArrowUp: "arrow_up", ArrowDown: "arrow_down",
+  ArrowLeft: "arrow_left", ArrowRight: "arrow_right",
+  Space: "space", KeyE: "key_e",
+};
+for (const [type, action] of [["keydown", "key_down"], ["keyup", "key_up"]]) {
+  window.addEventListener(type, (e) => {
+    const input = keys[e.code];
+    if (!input || e.repeat || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ event_type: "user_action", action, input }));
+  });
+}
+
+ws.addEventListener("message", (e) => {
+  if (typeof e.data === "string") console.log("<-", JSON.parse(e.data).event_type);
+});
+ws.addEventListener("close", (e) => console.log("closed", e.code));
+```
+
+</CodeGroup>
+
+ブラウザの例では、物理キーを 1 回押すごとに `key_down` と `key_up` を 1 つずつ送信し、自動リピートをスキップするため、イベントレートの範囲内に十分収まります。
+
+### Grok Voice
+
+`xai/grok-voice/realtime` は音声対音声の会話です。セッションは fal のリアルタイムワイヤフォーマットに従います。各イベントを [MessagePack](https://msgpack.org) でエンコードしたバイナリフレームとして送信し、応答は MessagePack バイナリフレームまたは JSON テキストフレームとして受信します。内部のイベントは xAI のリアルタイム音声イベントです。
+
+次のクライアントイベントを送信できます: `session.update`、`x-fal-session.configure`、`input_audio_buffer.append`、`input_audio_buffer.commit`、`input_audio_buffer.clear`、`conversation.item.create`、`conversation.item.delete`、`conversation.item.truncate`、`response.create`、`response.cancel`。各イベントに含められるのは、ドキュメントに記載されたフィールドのみです。
+
+- ツールは、クライアントで実行される `function` ツールに限られます。MCP サーバー、ウェブ検索、X 検索などのサーバー側ツールは拒否されます。
+- 画像やビデオのコンテンツは、イベント内のどこにあっても拒否されます。
+- `session.model` を設定する場合、`grok-voice-latest`、`grok-voice-3.0`、`grok-voice-2.0` のいずれかである必要があります。
+
+これらのルールに違反するメッセージは転送されず、クローズコード `1008` でセッションを終了させます。セッションの上限は **30 分** で、残高でカバーできる時間まで事前に短縮されます。上限に達すると、クローズフレームなしで接続が閉じられます。
+
+Grok Voice セッションの料金は **1 秒あたり $0.0011869** です（1 分あたり約 $0.0712。211 クレジット = $1 の場合、1 秒あたり約 0.25 クレジット、1 分あたり 15 クレジットに相当）。課金は、オーディオが流れているかどうかに関係なく、ソケットが開いている全時間に対して発生します。
+
+```js Node
+// Node 20 以降
+// インストール: npm install ws @msgpack/msgpack
+// 実行: COMFY_API_KEY=comfyui-... node grok-voice.mjs
+import { decode, encode } from "@msgpack/msgpack";
+import WebSocket from "ws";
+
+const ws = new WebSocket("wss://api.comfy.org/v2/realtime/fal/xai/grok-voice/realtime", {
+  headers: { "X-API-Key": process.env.COMFY_API_KEY },
+});
+const send = (event) => ws.send(Buffer.from(encode(event)));
+
+ws.on("unexpected-response", (_req, res) => {
+  let body = "";
+  res.on("data", (chunk) => (body += chunk));
+  res.on("end", () => console.error("refused:", res.statusCode, body));
+});
 
 ws.on("open", () => {
   send({
     type: "session.update",
     session: {
-      voice: "eve",
-      instructions: "You are a helpful assistant.",
-      turn_detection: { type: "server_vad" },
+      voice: "Ara",
+      instructions: "Answer in one short sentence.",
+      turn_detection: { type: null },
     },
   });
   send({
     type: "conversation.item.create",
-    item: {
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: "Hello!" }],
-    },
+    item: { type: "message", role: "user", content: [{ type: "input_text", text: "Say hello." }] },
   });
   send({ type: "response.create" });
 });
 
 ws.on("message", (data, isBinary) => {
-  if (!isBinary) return; // fal 独自の x-fal-message フレーム
-  const event = decode(data);
-  console.log(event.type);
-  if (event.type === "response.done") ws.close();
+  const event = isBinary ? decode(data) : JSON.parse(data.toString());
+  console.log("<-", event.type);
+  if (event.type === "response.done" || event.type === "error") ws.close(1000);
 });
 
 ws.on("close", (code) => console.log("closed", code));
 ```
 
-</CodeGroup>
+テキストの代わりに音声を送信するには、`input_audio_buffer.append`（base64 の `audio`）でオーディオをストリーミングし、その後 `input_audio_buffer.commit` と `response.create` を送信します。
 
-終わったらすぐにソケットを閉じてください。課金されるのは最後のレスポンスまでではなく、セッションが閉じるまでです。
+## WebRTC ワールドモデル
 
-## イベント
+`fal-ai/abot-world-0` と `fal-ai/lingbot-world-2` は WebRTC 経由でビデオをストリーミングします。メディアは**ブラウザと fal の間を直接**、ピアツーピアで流れます。Router は接続を確立するための HTTP シグナリングだけを処理し、fal の認証情報を付与するため、クライアントが認証情報を保持することはありません。
 
-Router は独自のイベントプロトコルを定義していません。サーバーイベントは fal が送信するそのままの形で届き、Router が受け付けるクライアントイベントは変更されずに転送されます。イベント一覧、セッションのフィールド、ボイス、オーディオ形式については、次を参照してください。
+すべてのシグナリング呼び出しは、Comfy の認証情報と JSON ボディを伴う `https://api.comfy.org/v2/realtime/wma/fal` への `POST` で、実際の宛先は `x-fal-target-url` ヘッダーで指定します。これは fal の JavaScript クライアントが使用するプロキシの契約なので、そのクライアントのプロキシ設定をこのルートに向けることができます。受け付けられる宛先は次のものだけです。それ以外は `400` と `code: router.realtime.wma_target_rejected` で拒否されます:
 
-- [xAI Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech) および xAI の [realtime イベントスキーマ](https://docs.x.ai/voice-realtime.ws.json)
-- fal の [Grok Voice realtime モデルページ](https://fal.ai/models/xai/grok-voice/realtime) とその [API ページ](https://fal.ai/models/xai/grok-voice/realtime/api)
+| `x-fal-target-url` | ボディ | 目的 |
+| --- | --- | --- |
+| `https://wma.fal.run/ice` | `{"app_id": "<model>"}` | ICE サーバーを取得します。セッションを開かず、課金もされません。 |
+| `https://wma.fal.run/session` | `"app_id": "<model>"` を含む | セッションを開きます。応答にはその `session_id` が含まれます。 |
+| `https://wma.fal.run/session/heartbeat` | `{"session_id": "<id>"}` | セッションを維持します。 |
+| `https://wma.fal.run/session/close` | `{"session_id": "<id>"}` | セッションを終了します。同じボディで `DELETE /v2/realtime/wma/fal` を呼んでも同じ結果になります。 |
 
-各クライアントイベントは、例のように 1 つの msgpack バイナリメッセージとして送信してください。これは fal のリアルタイムクライアントが使用するフレーミングであり、モデルのイベントも同じ方法で、`session.created` で始まる msgpack バイナリメッセージとして返されます。fal は独自の `x-fal-message` タイプの JSON テキストメッセージ（タイミング情報）も送信しますが、これらはスキップしてかまいません。Router のチェックではクライアントイベントを 1 つの JSON テキストメッセージとして受け付けることもできますが、クライアントで JSON をテスト済みでない限り msgpack を使用してください。
+ボディはキーの重複がない、最大 64 KiB の JSON オブジェクトである必要があります。`app_id` と `session_id` はこの通りに正確に綴ってください。大文字と小文字が異なる場合は `400` で拒否されます。
 
-Router は転送前に各クライアントイベントをチェックします:
+```bash
+# ワールドモデルの ICE サーバーを取得します（セッションなし、課金なし）。
+curl -X POST https://api.comfy.org/v2/realtime/wma/fal \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "x-fal-target-url: https://wma.fal.run/ice" \
+  -d '{"app_id": "fal-ai/lingbot-world-2"}'
+```
 
-- **イベントタイプ:** `session.update`、`input_audio_buffer.append`、`input_audio_buffer.commit`、`input_audio_buffer.clear`、`conversation.item.create`、`conversation.item.delete`、`conversation.item.truncate`、`response.create`、`response.cancel`、および fal の `x-fal-session.configure`。
-- **モデル:** `session.update` 内の `model` は `grok-voice-latest`、`grok-voice-3.0`、または `grok-voice-2.0` である必要があります。
-- **ツール:** クライアントが実行する関数ツールは許可されます。サーバー側のツール（ウェブ検索、X 検索、ファイル検索、MCP）は拒否されます。
-- **メディア:** 画像とビデオの入力は拒否されます。セッションは音声とテキストのみです。
-- **サイズ:** 1 つのクライアントメッセージは最大 1 MiB です。
+```js
+// Comfy アカウントでサインインしたブラウザからハートビートとクローズを送信します。
+const signal = (target, body) =>
+  fetch("https://api.comfy.org/v2/realtime/wma/fal", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      "Content-Type": "application/json",
+      "x-fal-target-url": target,
+    },
+    body: JSON.stringify(body),
+  });
 
-拒否されたイベントは転送されず、Router はクローズコード `1008` でセッションを閉じます。
+const beat = setInterval(
+  () => signal("https://wma.fal.run/session/heartbeat", { session_id: sessionId }),
+  5000,
+);
 
-## 料金
+// ユーザーが停止したら、ピア接続を切断してからセッションをクローズします。
+clearInterval(beat);
+peerConnection.close();
+const res = await signal("https://wma.fal.run/session/close", { session_id: sessionId });
+console.log(await res.json()); // { session_id, closed: true, settled: true | false }
+```
 
-セッションには**1秒あたり$0.0011869**の費用がかかります（1分あたり約$0.0712、または1秒あたり0.2504クレジット、1分あたり約15.0クレジット。211クレジット = 1 USDのレートで）。セッションが開いている間は15秒単位で課金され、最後の端数は秒単位で切り上げて課金されます。課金はアップグレードからソケットが閉じるまで、オーディオが流れているかどうかに関係なく継続します。
+### セッションのライフサイクルと課金
 
-## 制限
+- **最大長。** 各セッションは最大 **480 秒** 実行されます。
+- **ハートビート。** fal のクライアントと同様に 5 秒ごとに 1 回送信します。Router はセッションごとに 1 秒あたり最大 1 回転送します。それより速いハートビートは `429` と `Retry-After: 1` で拒否されます。ハートビートとクローズは、お使いのアカウントが開いてまだクローズしていない `session_id` に対してのみ受け付けられます。それ以外の場合は `404` と `code: router.realtime.wma_session_not_found` が返ります。
+- **課金。** セッションは、開始した時点から最後のハートビートの 5 秒後まで、最大 480 秒まで 1 秒単位で課金されます。セッションをクローズすると請求はすぐに確定します。ハートビートが 15 秒を超えて停止したセッションは自動的に確定されます。クローズ応答の `settled: false` は、請求がまだ確定処理中であり、まもなく反映されることを意味します。
+- **開始時の残高チェック。** Router はピアツーピアセッションを開始後に停止できないため、セッションを開くには、このセッションの 480 秒全体に加えて、ワークスペースですでに開いているすべての WebRTC セッションの全長をカバーする残高が必要です。不足している場合、`/session` は `402` と `code: router.realtime.insufficient_credits` で拒否されます。これはチェックであり、予約ではありません。セッションの実行中も、他の支出が同じ残高から引き落とされる可能性があります。
+- **同時セッション。** ワークスペースは同時に **2** つの WebRTC ワールドモデルセッションを保持できます。クローズされたセッションは、開いてから約 480 秒後（さらに短い確定待ち時間）までスロットを保持するため、クローズしてすぐに開き直すと `429` と `code: router.realtime.concurrency_limit` で拒否されることがあります。応答に示された `Retry-After` の時間だけ待ってください。
 
-| 制限 | 値 |
-| --- | --- |
-| アカウントあたりのセッション | 同時に開けるセッションは1つです。2つ目を開くと `429` と `router.realtime.session_already_live` が返されます。 |
-| セッションの長さ | 最大30分で、接続時点のあなたのクレジット残高がカバーする範囲を超えることはありません。 |
-| セッション中のクレジット | Router は15秒ごとに残高を再確認し、残高が次の1秒をカバーできなくなった時点でセッションを終了します。 |
-| 接続レート | 各アップグレード試行は[呼び出し元ごとのリクエストレート](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)にカウントされ、他の Router 呼び出しと共有されます。 |
-
-セッションが時間制限に達した場合、またはクレジットが不足した場合、接続は close フレームなしで閉じることがあります（多くの場合、close コード `1006` として現れます）。チャージした後にのみ再接続するか、より長い時間が必要な場合は新しいセッションを開始してください。
+fal 自体がシグナリング呼び出しにエラーで応答した場合、Router は fal のステータスとボディをそのまま透過させます。
 
 ## エラー
 
-### アップグレード前
+拒否されたアップグレードやシグナリング呼び出しは、HTTP ステータスと、`detail`、`error_type`、および理由を示す `code` を含む JSON ボディで応答します。判定は `detail` ではなく `code` または `error_type` で分岐してください。WebSocket セッションが開いた後は、問題はクローズコードで報告されます。
 
-Router が接続を拒否した場合、プロトコルを切り替えずに HTTP ステータスと JSON ボディで応答します。
-
-```json
-{
-  "detail": "Insufficient credits to open a realtime session.",
-  "error_type": "insufficient_credits",
-  "code": "router.realtime.insufficient_credits"
-}
-```
-
-判定には `code` を使用してください。`detail` は人向けの説明です。
-
-| ステータス | `code` | 原因 | 対処 |
-| --- | --- | --- | --- |
-| `426` | `router.realtime.upgrade_required` | リクエストが WebSocket アップグレードではありませんでした。 | WebSocket クライアントで接続してください。 |
-| `401` | `router.realtime.unauthorized` | API キーが不足しているか無効です。 | `X-API-Key` または `Authorization: Bearer` で有効なキーを送信してください。 |
-| `402` | `router.realtime.insufficient_credits` | 残高がセッションの少なくとも1秒分に満たない状態です。 | クレジットを追加してから再接続してください。 |
-| `402` | `router.realtime.spend_denied` | セッションの課金先となるウォレットに資金がありません。ボディ内の `denied_reason` と `billed_workspace` がどのウォレットかを示します。 | そのワークスペースにクレジットを追加してから再接続してください。 |
-| `403` | `router.realtime.provider_disabled` | ワークスペースのパートナープロバイダーポリシーがこのプロバイダーを許可していません。 | ワークスペースの管理者に許可を依頼してください。 |
-| `404` | `router.realtime.model_not_allowed` | URL 内のモデルはリアルタイムでは利用不可です。 | URL を確認してください。 |
-| `429` | `router.realtime.rate_limited` | リクエストレートを超過しました。 | `Retry-After` を待ってから再試行してください。 |
-| `429` | `router.realtime.session_already_live` | アカウントで既に別のセッションが開かれています。 | 先にそれを閉じてください。 |
-| `429` | `router.realtime.concurrency_limit` | パートナーモデルの同時呼び出しが多すぎます。 | 同時実行数を減らして再試行してください。 |
-| `502` | `router.realtime.upstream_refused`、`router.realtime.token_mint_failed` | アップストリームのプロバイダーがセッションを開きませんでした。 | バックオフを伴って再試行してください。 |
-| `503` | その他の `router.realtime.*` コード | リアルタイムセッションが一時的に利用できません。 | バックオフを伴って再試行してください。 |
-
-### アップグレード後
-
-| クローズコード | 意味 | 対処 |
+| ステータス | `code` | 意味 |
 | --- | --- | --- |
-| `1008` | クライアントイベントが拒否されました（[イベント](#イベント)を参照）。 | イベントを修正してください。セッションは終了します。 |
-| `1012` | Router が再起動中です。 | 再接続してください。新しいセッションが開始され、新しいアップグレードから課金されます。 |
-| `1006`（クローズフレームなし） | セッションが時間制限に達した、またはクレジットが不足した際にクライアントが報告する値としてよく見られます。ネットワーク切断も同じように見えます。 | クレジットを追加するか、新しいセッションを開始してください。 |
+| `400` | `router.realtime.subprotocol_required` | `comfy-bearer.` オファーに `comfy-realtime.v1` が付いていませんでした。 |
+| `401` | | 有効な認証情報がありません。 |
+| `402` | `router.realtime.insufficient_credits` | ワークスペースの残高がセッションを開くには不足しています。 |
+| `403` | `router.realtime.model_unavailable` | モデルはお使いのアカウントでは利用できません。 |
+| `403` | `router.realtime.account_blocked` | アカウントがブロックされています。 |
+| `404` | `router.realtime.model_not_allowed` | モデルはこのルートでは提供されていません。パスとモデル ID を確認してください。 |
+| `426` | `router.realtime.upgrade_required` | WebSocket ルートに通常の HTTP リクエストが届きました。プロキシが `Upgrade` と `Connection` ヘッダーを削除していないか確認してください。 |
+| `429` | `router.realtime.rate_limited` | リクエストが多すぎるか、プロバイダーが容量上限に達しています。`Retry-After` を待ってください。 |
+| `429` | `router.realtime.session_already_live` | ワークスペースには既にライブ WebSocket セッションがあります。 |
+| `429` | `router.realtime.concurrency_limit` | 同時セッションが多すぎます。後で再試行してください。 |
+| `503` | `router.realtime.shutting_down` | リクエストを処理しているサーバーが再起動中です。再試行してください。 |
 
-その他のクローズは fal または xAI によるものです。[イベント](#イベント)にリンクされている各社のドキュメントを参照してください。
+アップグレード、および `/ice` と `/session` のシグナリング呼び出しは、他の Router 呼び出しと同じ呼び出し元ごとの[リクエスト許可](/ja/development/comfy-router/limitations#リクエストは呼び出し元ごとにレート制限される)を消費します。
+
+| クローズコード | 意味 |
+| --- | --- |
+| `1000` | 正常終了: モデルが完了したか、Genie 4 セッションが上限に達しました。 |
+| `1006` | クローズフレームが届きませんでした。Router 側の原因には、Grok Voice セッションが時間上限に達した、クレジットが不足した、アカウントがブロックされた、などがあります。ネットワーク切断やプロキシのタイムアウトも同じように見えます。Router から送信されるものではなく、接続が切断されたときにクライアントが報告します。 |
+| `1008` | クライアントメッセージがモデルのルールに違反しました（上記の各モデルを参照）。 |
+| `1011` | モデルがエラーを報告しました。 |
+| `1012` | サーバーが再起動中です。新しいセッションを開いてください。 |
 
 ## 次のステップ
 
-- [課金](/ja/development/comfy-router/billing): Router の課金方法と使用量の照合方法について説明します。
-- [エラーとリトライ](/ja/development/comfy-router/errors): 他の Router 呼び出しが返すエラーの分類について説明します。
-- [制限事項](/ja/development/comfy-router/limitations): リクエストレートやその他の制限について説明します。
+<CardGroup cols={2}>
+  <Card title="機能と制限" icon="list-check" href="/ja/development/comfy-router/limitations">
+    Router がサポートする内容、および期限とレート制限について説明します。
+  </Card>
+  <Card title="Router の料金" icon="coins" href="/ja/development/comfy-router/pricing">
+    料金と請求オプションについて説明します。
+  </Card>
+</CardGroup>

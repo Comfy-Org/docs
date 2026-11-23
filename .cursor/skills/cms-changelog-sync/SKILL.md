@@ -244,6 +244,7 @@ pnpm cms:set-attention -- cloud v0.24.0 high --save
 | `pnpm cms:preview -- v0.25.1` | **Step 3a** — Dry-run Strapi push |
 | `pnpm cms:sync -- v0.25.1` | **Step 3b** — Push/update **drafts** (run only after user confirms staging) |
 | `pnpm cms:publish -- v0.25.1` | Publish + refresh `published-versions.json` |
+| `pnpm cms:verify-live -- --project cloud v0.25.1` | Read back exact public content for every locale |
 | `pnpm cms:prepare` | Prints three-step help and exits when no mode flag is passed |
 | `pnpm cms:set-attention -- cloud v0.24.0 high` | Set attention low/high in Strapi |
 | `pnpm cms:delete-drafts --preview` | List deletable Strapi drafts |
@@ -305,7 +306,10 @@ Requires **Bun**. Loads `.env.local` automatically.
    ```bash
    pnpm cms:preview -- --project cloud v0.25.1
    pnpm cms:sync -- --project cloud v0.25.1
-   pnpm cms:publish -- --project cloud v0.25.1   # only if they asked to publish
+   pnpm cms:publish -- --project cloud v0.25.1 \
+     --rendered-preview <native-preview-URL-or-artifact> \
+     --rollback-owner <name>                    # only if they asked to publish
+   pnpm cms:verify-live -- --project cloud v0.25.1  # after the API cache refreshes
    ```
 
 7. Commit `.github/scripts/cms/staging/` and `.github/scripts/cms/published-versions.json` after publish.
@@ -364,6 +368,8 @@ When user asks to update CMS release notes:
 - [ ] Run `pnpm cms:prepare:locales` (not `cms:prepare:en`) → **wait for user approval**
 - [ ] Run `pnpm cms:preview -- --project comfyui ...` then `pnpm cms:sync -- --project comfyui ...` **only after user confirms staging**
 - [ ] **Before any Cloud push/publish:** stop and ask the user to manually confirm Cloud (hard gate). Do not sync/publish `--project cloud` until they explicitly say yes this time
+- [ ] Before Cloud publish, capture the exact native What's New rendered preview, the running target version, all-locale before-state, and a named rollback owner. Pass `--rendered-preview` and `--rollback-owner`; publish exactly one explicit version
+- [ ] After the API cache refreshes, run `pnpm cms:verify-live -- --project cloud vX.Y.Z`. Do not claim verified until every configured locale matches staging exactly
 - [ ] Remind: Strapi publish is manual; then `--write` on published-versions
 - [ ] Commit `.github/scripts/cms/staging/` together with `published-versions.json` after publish
 - [ ] Do **not** shorten docs changelog for CMS — staging is separate
