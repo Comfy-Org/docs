@@ -1,0 +1,302 @@
+---
+title: "Использовать FLUX 3 Video с Comfy Router"
+description: "Фрагменты кода на Python, TypeScript и cURL для генерации видео со звуком в FLUX 3 через Comfy Router, поля запроса и форма результата"
+sidebarTitle: "FLUX 3 Video"
+translationSourceHash: be3cd04c
+translationFrom: development/comfy-router/models/black-forest-labs/flux-3-video/code.mdx
+translationBlockHashes:
+  "_intro": bf918564
+  "Quick start": f8c84c61
+  "Schema": 1c265882
+  "Examples": 8d347442
+---
+{/* СГЕНЕРИРОВАННЫЙ ФАЙЛ. Отредактируйте code.yaml в этом каталоге и запустите `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/ru/comfy-router/model-code-footer.mdx";
+
+Справочник по API для FLUX 3 Video. FLUX 3 Video представляет собой модель генерации видео от Black Forest Labs, которая преобразует текстовый промпт в короткий клип с синхронизированным аудио.
+
+**Вход:** текст, изображение · **Выход:** видео + аудио
+
+## Быстрый старт
+
+Создайте ключ в [своём рабочем пространстве Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) и экспортируйте его как `COMFY_API_KEY`. Фрагменты на Python и TypeScript используют Comfy SDK (`pip install comfy-sdk` и `npm install @comfyorg/sdk`), а фрагмент cURL делает тот же вызов по «сырому» HTTP.
+
+**ID модели:** `bfl/flux-3-video`
+
+**Эндпоинт:** `POST https://api.comfy.org/v2/models/bfl/flux-3-video`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Дождаться результата">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# SDK автоматически создаёт ключ идемпотентности и переиспользует его для автоматических повторов.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/flux-3-video",
+            {
+                "mode": "t2v",
+                "prompt": "a single red maple leaf falling onto still water, slow motion",
+                "duration": 5,
+                "aspect_ratio": "16:9",
+                "generate_audio": True,
+            },
+        )
+
+    print("video:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из переменной окружения.
+// SDK автоматически создаёт ключ идемпотентности и переиспользует его для автоматических повторов.
+type Result = { result: { sample: string } };
+const result = await comfy.models.run<Result>("bfl/flux-3-video", {
+  mode: "t2v",
+  prompt: "a single red maple leaf falling onto still water, slow motion",
+  duration: 5,
+  aspect_ratio: "16:9",
+  generate_audio: true,
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.result.sample);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/bfl/flux-3-video \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"mode\": \"t2v\", \"prompt\": \"a single red maple leaf falling onto still water, slow motion\", \"duration\": 5, \"aspect_ratio\": \"16:9\", \"generate_audio\": true}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Поставить в очередь и забрать позже">
+То же тело запроса, отправленное на `POST https://api.comfy.org/v2/models/bfl/flux-3-video/requests`. Router отвечает `201` с `request_id`, как только запуск принят, а результат забирается, когда он готов, из этого процесса или из другого. [Доставка через очередь](/ru/development/comfy-router/queue) описывает статус, отмену и получение результата.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# Каждый вызов submit() создаёт собственный Idempotency-Key и переиспользует его для автоматических повторов.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/flux-3-video",
+            {
+                "mode": "t2v",
+                "prompt": "a single red maple leaf falling onto still water, slow motion",
+                "duration": 5,
+                "aspect_ratio": "16:9",
+                "generate_audio": True,
+            },
+        )
+        print("request_id:", handle.request_id)  # вместе с ID модели это всё, что нужно другому процессу
+
+        # Опрашивайте, пока запрос не завершится, выдерживая Retry-After, который называет сервер.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Собственный payload провайдера: то же значение, что возвращает models.run().
+        # Запрос, который завершился ошибкой или был отменён, здесь вызывает типизированную ошибку Router.
+        result = await handle.get()
+
+    print("video:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из переменной окружения.
+// Каждый вызов submit() создаёт собственный Idempotency-Key и переиспользует его для автоматических повторов.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/flux-3-video", {
+  mode: "t2v",
+  prompt: "a single red maple leaf falling onto still water, slow motion",
+  duration: 5,
+  aspect_ratio: "16:9",
+  generate_audio: true,
+});
+console.log("requestId:", handle.requestId); // вместе с ID модели это всё, что нужно другому процессу
+
+// Опрашивайте, пока запрос не завершится, выдерживая Retry-After, который называет сервер.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Тот же результат, что возвращает models.run(). Запрос, который завершился ошибкой или был отменён, отклоняется здесь.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.result.sample);
+```
+
+```bash cURL
+# 1. Отправка. Router отвечает 201 с request_id, status_url, response_url и cancel_url.
+curl https://api.comfy.org/v2/models/bfl/flux-3-video/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"mode\": \"t2v\", \"prompt\": \"a single red maple leaf falling onto still water, slow motion\", \"duration\": 5, \"aspect_ratio\": \"16:9\", \"generate_audio\": true}"
+
+# 2. Опрашивайте, пока статус не станет COMPLETED, выдерживая Retry-After секунд из каждого ответа.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/flux-3-video/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Получение. 200 с собственным выводом модели, 202 с телом статуса, пока запрос ещё выполняется.
+curl https://api.comfy.org/v2/models/bfl/flux-3-video/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Схема
+
+### Входы
+
+<ParamField body="aspect_ratio" type="string" default="&quot;auto&quot;">
+  Соотношение сторон результата: auto, 21:9, 2:1, 16:9, 4:3, 1:1, 3:4 или 9:16. При auto BFL выбирает его по промпту и референсам.
+</ParamField>
+
+<ParamField body="draft" type="boolean" default="false">
+  Режим черновика: генерируется быстрое превью, результат которого содержит URL для скачивания draft_cache. Отправьте этот пакет обратно с mode draft_enhance, чтобы отрендерить версию той же генерации в полном качестве.
+</ParamField>
+
+<ParamField body="draft_cache" type="string">
+  Только для draft_enhance. Зашифрованный пакет кэша черновика из предыдущей генерации черновика: либо скачанный пакет в base64-кодировке, либо его всё ещё действительный URL http(s). Исходные входы встроены в пакет.
+</ParamField>
+
+<ParamField body="duration" type="integer | string" default="&quot;auto&quot;">
+  Длительность видео в секундах (любое целое число от 5 до 20) или auto, чтобы подогнать под содержимое.
+
+  Range: `5` to `20`
+</ParamField>
+
+<ParamField body="generate_audio" type="boolean" default="true">
+  Генерировать синхронизированное аудио вместе с видео.
+</ParamField>
+
+<ParamField body="keyframes" type="string | number | string[] | string[] | number | string[][]">
+  Только для i2v. Изображения, которые становятся кадрами видео: каждое задаётся URL http(s) или base64, всего от одного до десяти. Принимается одно изображение, список изображений (одно начинает видео, два задают его начало и конец, большее количество распределяется равномерно и требует заданной длительности) или пары [секунды, изображение] с метками времени в порядке времени, например [[0, "..."], [3.5, "..."]]. Пара это массив из двух элементов: сначала число секунд, затем изображение.
+</ParamField>
+
+<ParamField body="mode" type="string" required>
+  Режим генерации: t2v (текст в видео), i2v (продолжение по изображению), v2v (продолжение по видео) или draft_enhance (рендер предыдущего черновика в полном качестве). Принимаются и развёрнутые псевдонимы, например text-to-video.
+</ParamField>
+
+<ParamField body="prompt" type="string">
+  Свободный промпт с описанием видео. Обязателен для всех режимов, кроме draft_enhance.
+</ParamField>
+
+<ParamField body="resolution" type="string">
+  Класс разрешения видео: hd (720p) либо fhd (1080p), qhd (2K) или uhd (4K) для результата с более высоким разрешением, который дорабатывает видео-апскейлер. По умолчанию hd для t2v, i2v и v2v и fhd для draft_enhance. Точные размеры зависят от соотношения сторон.
+
+  Possible values: `hd`, `fhd`, `qhd`, `uhd`
+</ParamField>
+
+<ParamField body="safety_tolerance" type="integer" default="2">
+  Уровень допуска для модерации вреда на входе и выходе, 0 самый строгий. Сексуальное содержимое ограничено уровнем 3, а содержимое ненависти уровнем 2, независимо от запрошенного допуска; запросы с медиа-условиями ограничены уровнем 2.
+
+  Range: `0` to `4`
+</ParamField>
+
+<ParamField body="start_video" type="string">
+  Только для v2v. Видео, которое нужно продолжить: URL http(s) или base64 MP4; сгенерированный клип продолжается с его последних кадров.
+</ParamField>
+
+<ParamField body="version" type="string" default="&quot;latest&quot;">
+  Версия эндпоинта. latest отдаёт текущий релиз; датированные закрепляемые теги релизов добавляются по мере публикации.
+</ParamField>
+
+Сгенерировано из схемы, которую Router отдаёт по `GET /v2/models/bfl/flux-3-video/openapi.json`, того же документа, по которому он проверяет вызов, прежде чем запрос дойдёт до провайдера.
+
+### Выходы
+
+<ResponseField name="cost" type="number">
+  Стоимость в кредитах, сообщённая провайдером; заполняется, когда задача переходит в статус Ready.
+
+  Format: `float`
+</ResponseField>
+
+<ResponseField name="id" type="string" required>
+  Идентификатор задачи BFL.
+</ResponseField>
+
+<ResponseField name="progress" type="number">
+  Необязательный прогресс генерации, сообщаемый BFL.
+
+  Range: `0` to `1`
+
+  Format: `float`
+</ResponseField>
+
+<ResponseField name="result" type="object" required>
+  Готовая генерация. Заполняется ровно один из двух URL-листьев: `sample` в режиме по умолчанию, `draft_cache` в режиме `draft: true`.
+</ResponseField>
+
+<ResponseField name="result.cost" type="number">
+  Стоимость задачи, сообщённая провайдером. Это число BFL, а не списание средств Comfy.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.draft_cache" type="string (uri)">
+  Подписанный URL, который режим `draft: true` возвращает ВМЕСТО `sample`; он переносится в хранилище Comfy так же, как `sample`: обычно это URL на Comfy, действительный до 24 часов, а если перенос не удалось выполнить, то собственный URL доставки BFL примерно на два часа.
+
+  Format: `uri`
+</ResponseField>
+
+<ResponseField name="result.sample" type="string (uri)">
+  Подписанный URL сгенерированного MP4. Router переносит ресурс в хранилище Comfy и перезаписывает это поле, поэтому обычно это URL на Comfy, действительный до 24 часов: он подписан на 24 часа при выпуске и воспроизводится из 23-часового кэша, так что более поздний запрос может вернуть URL, которому остался всего час; лист, для которого перенос не удалось выполнить, сохраняет собственный URL доставки BFL примерно на два часа. Отсутствует в режиме `draft: true`.
+
+  Format: `uri`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Статус задачи: Pending, Reasoning, Generating, Ready, Request Moderated, Content Moderated, Error или Task not found. Сравнивайте без учёта регистра; Router передаёт написание BFL без изменений.
+</ResponseField>
+
+## Примеры
+
+### Вход
+
+```json
+{
+  "mode": "t2v",
+  "prompt": "a single red maple leaf falling onto still water, slow motion",
+  "duration": 5,
+  "aspect_ratio": "16:9",
+  "generate_audio": true
+}
+```
+
+### Выход
+
+```json
+{
+  "id": "0a1b2c3d-...",
+  "status": "Ready",
+  "result": {
+    "sample": "https://.../out.mp4"
+  }
+}
+```
+
+`result.sample` обычно представляет собой подписанный URL, размещённый в Comfy, действительный до 24 часов с момента создания. Повторный вызов может вернуть более старый URL, а ресурс, который не удалось повторно разместить, сохраняет URL провайдера с меньшим сроком действия. Скачайте MP4 сразу, а не сохраняйте ссылку. При `draft: true` читайте `result.draft_cache`, а не ожидайте `result.sample`.
+
+<RouterCodeFooter />
