@@ -10,6 +10,7 @@
  */
 
 import { compareSemver } from "./changelog-parse.ts";
+import { validateCloudPublishSafety } from "./cms-launch-safety.ts";
 import { resolveProjects, stripProjectArg } from "./cms-args.ts";
 import { loadCmsConfig, type CmsConfig } from "./cms-config.ts";
 import { loadEnvLocal } from "./cms-env.ts";
@@ -38,26 +39,59 @@ function requireEnv(name: string): string {
   return val;
 }
 
-function parseArgs(argv: string[]): {
+function optionValue(argv: string[], index: number, option: string): string {
+  const value = argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(`${option} requires a value.`);
+  }
+  return value;
+}
+
+function inlineOptionValue(arg: string, option: string): string {
+  const value = arg.slice(`${option}=`.length);
+  if (!value.trim()) throw new Error(`${option} requires a value.`);
+  return value;
+}
+
+export function parseArgs(argv: string[]): {
   dryRun: boolean;
   skipRegistry: boolean;
   yes: boolean;
+  renderedPreview?: string;
+  rollbackOwner?: string;
   versions: string[];
 } {
   let dryRun = false;
   let skipRegistry = false;
   let yes = false;
+  let renderedPreview: string | undefined;
+  let rollbackOwner: string | undefined;
   const versions: string[] = [];
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
     if (arg === "--dry-run" || arg === "--preview") dryRun = true;
     else if (arg === "--no-registry" || arg === "--skip-registry") skipRegistry = true;
     else if (arg === "--write-registry") {
       // Back-compat: registry refresh is now default; flag is ignored.
     }
     else if (arg === "--yes" || arg === "-y") yes = true;
+    else if (arg === "--rendered-preview") {
+      renderedPreview = optionValue(argv, i, arg);
+      i++;
+    }
+    else if (arg.startsWith("--rendered-preview=")) {
+      renderedPreview = inlineOptionValue(arg, "--rendered-preview");
+    }
+    else if (arg === "--rollback-owner") {
+      rollbackOwner = optionValue(argv, i, arg);
+      i++;
+    }
+    else if (arg.startsWith("--rollback-owner=")) {
+      rollbackOwner = inlineOptionValue(arg, "--rollback-owner");
+    }
     else if (!arg.startsWith("-")) versions.push(arg.replace(/^v/i, ""));
   }
-  return { dryRun, skipRegistry, yes, versions };
+  return { dryRun, skipRegistry, yes, renderedPreview, rollbackOwner, versions };
 }
 
 async function discoverEnDrafts(
@@ -187,9 +221,28 @@ async function resolveTargetVersions(
 async function main(): Promise<void> {
   await loadEnvLocal();
   const { project: cliProject, rest } = stripProjectArg(process.argv.slice(2));
-  const { dryRun, skipRegistry, yes, versions: explicitVersions } = parseArgs(rest);
+  const {
+    dryRun,
+    skipRegistry,
+    yes,
+    renderedPreview,
+    rollbackOwner,
+    versions: explicitVersions,
+  } = parseArgs(rest);
   const config = await loadCmsConfig();
   const projects = resolveProjects(config, cliProject);
+  validateCloudPublishSafety({
+    dryRun,
+    projects,
+    explicitProject: cliProject,
+    versions: explicitVersions,
+    renderedPreview,
+    rollbackOwner,
+  });
+  if (!dryRun && projects.includes("cloud")) {
+    console.log(`Cloud rendered preview: ${renderedPreview}`);
+    console.log(`Cloud rollback owner: ${rollbackOwner}\n`);
+  }
   const client = new StrapiClient(requireEnv("CMS_BASE_URL"), requireEnv("CMS_API_TOKEN"));
 
   const ping = await client.ping(config.content_type_plural);
@@ -305,6 +358,14 @@ async function main(): Promise<void> {
   }
 
   if (failed > 0) process.exit(1);
+
+  if (projects.includes("cloud") && ok > 0) {
+    for (const version of explicitVersions) {
+      console.log(
+        `Required public readback (after cache refresh): pnpm cms:verify-live -- --project cloud v${version}`
+      );
+    }
+  }
 }
 
-main();
+if (import.meta.main) main();
