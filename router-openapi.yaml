@@ -178,6 +178,26 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '202':
+          description: 'Accepted - the run was handed to the queue instead of being run on this connection. A new call is answered `202` only when the caller asks for it with the RFC 7240 request header `Prefer: respond-async` (one preference among others, such as `Prefer: respond-async, wait=10`, or one of several `Prefer` headers, also counts; the token is matched without regard to case) and the deployment has turned the handoff on for this model: `COMFY_ROUTER_SYNC_ASYNC_HANDOFF_ENABLED` and `COMFY_ROUTER_QUEUE_ENABLED` set, and a `COMFY_ROUTER_SYNC_ASYNC_HANDOFF_MODELS` entry naming this model. All three are off by default. A call without that preference, and any call the handoff does not apply to, is answered as it always has been, with the model''s own response on this connection; the preference is a request, not a guarantee, so a client that sends it still handles the `200`. When the `202` honours this request''s preference it carries `Preference-Applied: respond-async`. One exception applies whatever the request sends: a call with an `Idempotency-Key` is first looked up against the queued requests of its workspace, so a key an earlier handed-off call bound to a queued request is answered from that request (this `202` replay, a `409` or the queue''s own refusal) and never starts a second run, and a failed lookup is refused `503`. Such a replay carries `Preference-Applied` only if the retry itself sent `Prefer: respond-async`. The reverse does not hold: a retry that adds `Prefer: respond-async` to a key whose first call ran on this connection collects or replays that original run and is never handed off. A handed-off call is admitted exactly as `POST /v2/models/{provider}/{model}/requests` admits it (the same validation, funds, entitlement, backlog and workspace checks, so a credential with no workspace is refused `403 not_enabled`), and the body is that route''s `RouterQueueSubmitResponse`: `request_id`, `status`, an optional `queue_position` and `estimate`, and the `status_url`, `response_url` and `cancel_url` to poll, read and cancel it. Poll those URLs as for any queued request; the run is charged once, when it completes, never by the poll. An `Idempotency-Key` is bound to the queued request, so a same-key retry of this call, with or without the preference, or of `POST .../requests` answers with the same `request_id` and starts nothing new, unless the queue route itself is turned off, when the retry is refused `403` until the queue route is turned back on. A call that names a `fallback_provider` other than `false`, sets `strict_mode=true`, or uses its own provider key in a way the queue cannot serve is never handed off. The handoff decision is made after this route''s own concurrency limits, so a workspace already at its limit is refused `429` here where `POST .../requests` would have queued the call.'
+          headers:
+            X-Comfy-Request-Id:
+              $ref: '#/components/headers/RouterRequestIdHeader'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/RouterIdempotentReplayedHeader'
+            X-Comfy-Router-Dropped-Params:
+              $ref: '#/components/headers/RouterDroppedParamsHeader'
+            Preference-Applied:
+              description: 'RFC 7240. `respond-async` when this `202` honours the `Prefer: respond-async` the request sent. Absent when the request did not send that preference, including a same-key replay of an already-queued call.'
+              required: false
+              schema:
+                type: string
+                enum:
+                - respond-async
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouterQueueSubmitResponse'
         '400':
           $ref: '#/components/responses/RouterRunRequestError'
         '401':
