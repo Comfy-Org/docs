@@ -1,0 +1,93 @@
+---
+title: "Elementos y voces de Kling 4.0 en Comfy Router"
+sidebarTitle: "Elementos y voces de Kling 4.0"
+description: "Envía entradas de sujeto (elemento) y voz de Kling 4.0 con Comfy Router: elementos de contents, límites, selección de modo y referencias @id."
+translationSourceHash: 2d54b33e
+translationFrom: development/comfy-router/kling-4-0-elements-voices.mdx
+translationBlockHashes:
+  "_intro": 08ec139c
+  "Element and voice items": 86df92b4
+  "Reference elements and voices in the prompt": 85b4fa3e
+  "How Router picks the mode": 19d410a3
+  "Limits": 593d7095
+  "Example request": f76e4b43
+  "Getting element and voice IDs": fc79a402
+---
+
+Kling 4.0 puede mantener un sujeto coherente durante una generación con un **elemento** (un sujeto guardado, como un personaje) y darle una **voz** concreta. A través de Comfy Router, ambos son elementos del arreglo `contents` de una solicitud a `kling/kling-4.0`. Esta página explica cómo enviarlos. El esquema completo de la solicitud está en la [página del modelo Kling 4.0](/es/development/comfy-router/models/kling/kling-4-0/code).
+
+## Elementos de tipo element y voice
+
+Cada elemento de `contents` tiene un `type`. Los elementos y las voces usan estos campos:
+
+| `type` | Campos obligatorios | Qué es |
+|--------|---------------------|--------|
+| `element` | `id`, `element_id` | Un ID de elemento de Kling que identifica un sujeto guardado. |
+| `voice` | `id`, `voice_id` | Un ID de voz de Kling: una voz predefinida o una voz personalizada. |
+
+`id` es un nombre de referencia que eliges para el elemento. Kling lo exige en cada elemento `element` y `voice`, y debe ser único dentro de la solicitud. `element_id` y `voice_id` deben ser cadenas.
+
+## Referenciar elementos y voces en el prompt
+
+Coloca el prompt en `contents` como un elemento de tipo `prompt` y haz referencia a las demás entradas escribiendo `@` seguido de su `id`. Con un elemento cuyo `id` es `hero` y una voz cuyo `id` es `narrator`, el prompt puede decir `@hero` y `@narrator`.
+
+No envíes un campo `prompt` de nivel superior junto con `contents`. Router rechaza esa combinación; el prompt va dentro de `contents`.
+
+## Cómo elige Router el modo
+
+`kling/kling-4.0` tiene un solo ID de modelo y tres modos. Router elige el modo a partir del cuerpo de la solicitud:
+
+- **Texto a video**: un `prompt` de nivel superior y sin `contents` (o con `contents` vacío).
+- **Imagen a video**: `contents` con solo elementos `prompt`, `first_frame`, `middle_frame` y `last_frame`.
+- **Video omni**: `contents` con cualquier otro tipo, incluidos `refer_image`, `feature_video`, `base_video`, `element` o `voice`.
+
+Por lo tanto, cualquier elemento `element` o `voice` envía la solicitud a video omni. No tienes que indicar el modo tú mismo.
+
+## Límites
+
+Video omni acepta hasta 15 entradas además del prompt, así que Router rechaza un arreglo `contents` de más de 16 elementos. Dentro de ese límite, una solicitud puede contener como máximo:
+
+- 10 imágenes (`first_frame`, `middle_frame`, `last_frame` y `refer_image` en total)
+- 5 videos (`feature_video` y `base_video` en total), con un solo `base_video` como máximo
+- 7 elementos
+- 3 voces
+
+Router comprueba estos límites antes de que la solicitud llegue a Kling y responde a una solicitud que supere alguno con `422` y una entrada de `detail[]` que nombra `contents`. Consulta los [errores de validación](/es/development/comfy-router/errors#errores-de-validación).
+
+Una solicitud que incluye un elemento de personaje de video se factura con la tarifa de entrada de video, igual que las solicitudes con `feature_video` o `base_video`.
+
+## Ejemplo de solicitud
+
+Esta solicitud pone en cola una generación de video omni con un elemento y una voz. Sustituye los ID de ejemplo por los tuyos.
+
+```bash
+curl https://api.comfy.org/v2/models/kling/kling-4.0/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "type": "prompt",
+        "text": "@hero walks down a rainy neon street, turns to the camera and says \"We made it.\" in the voice of @narrator."
+      },
+      { "type": "element", "id": "hero", "element_id": "<your-element-id>" },
+      { "type": "voice", "id": "narrator", "voice_id": "<your-voice-id>" }
+    ],
+    "settings": {
+      "duration": 5,
+      "resolution": "720p",
+      "aspect_ratio": "16:9"
+    }
+  }'
+```
+
+Router responde `201` con un `request_id`. Consulta el estado y recoge el resultado como se describe en [Entrega en cola](/es/development/comfy-router/queue). Para esperar el resultado en una sola llamada, envía el mismo cuerpo a `POST https://api.comfy.org/v2/models/kling/kling-4.0`.
+
+## Obtener los ID de elementos y voces
+
+Router no ofrece endpoints para crear, subir ni listar elementos o voces de Kling. Solo pasa a Kling los valores de `element_id` y `voice_id` que envías.
+
+Kling vincula los ID de elementos y de voces personalizadas a la cuenta de Kling que los creó. Router envía las solicitudes a Kling con las credenciales de Comfy, no con las tuyas, así que un elemento o una voz personalizada creados en tu propia cuenta de Kling pueden ser rechazados.
+
+Para mantener un sujeto coherente sin un elemento, envía imágenes de referencia como elementos `refer_image` o un video de referencia como elemento `feature_video`, y asigna a cada uno un `id` para referenciarlo en el prompt.

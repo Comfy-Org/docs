@@ -1,0 +1,93 @@
+---
+title: "Comfy Router での Kling 4.0 エレメントとボイス"
+sidebarTitle: "Kling 4.0 エレメントとボイス"
+description: "Comfy Router で Kling 4.0 の被写体（エレメント）とボイス入力を送る方法：contents の項目、上限、モード選択、プロンプトでの @id 参照。"
+translationSourceHash: 2d54b33e
+translationFrom: development/comfy-router/kling-4-0-elements-voices.mdx
+translationBlockHashes:
+  "_intro": 08ec139c
+  "Element and voice items": 86df92b4
+  "Reference elements and voices in the prompt": 85b4fa3e
+  "How Router picks the mode": 19d410a3
+  "Limits": 593d7095
+  "Example request": f76e4b43
+  "Getting element and voice IDs": fc79a402
+---
+
+Kling 4.0 では、**エレメント**（キャラクターなど、保存済みの被写体）を使って生成全体で被写体を一貫させ、**ボイス**で特定の声を与えられます。Comfy Router 経由では、どちらも `kling/kling-4.0` リクエストの `contents` 配列の項目です。このページでは、それらの送り方を説明します。リクエストスキーマの全体は [Kling 4.0 モデルページ](/ja/development/comfy-router/models/kling/kling-4-0/code)にあります。
+
+## エレメントとボイスの項目
+
+`contents` の各項目には `type` があります。エレメントとボイスは次のフィールドを使います。
+
+| `type` | 必須フィールド | 内容 |
+|--------|----------------|------|
+| `element` | `id`、`element_id` | 保存済みの被写体を指す Kling のエレメント ID。 |
+| `voice` | `id`、`voice_id` | Kling のボイス ID：プリセットボイスまたはカスタムボイス。 |
+
+`id` は、その項目に付ける任意の参照名です。Kling はすべての `element` と `voice` の項目に `id` を求め、リクエスト内で一意である必要があります。`element_id` と `voice_id` は文字列でなければなりません。
+
+## プロンプトでエレメントとボイスを参照する
+
+プロンプトは `prompt` タイプの項目として `contents` に入れ、他の入力は `@` に続けてその `id` を書いて参照します。エレメントの `id` が `hero`、ボイスの `id` が `narrator` なら、プロンプトで `@hero` と `@narrator` と書けます。
+
+`contents` と一緒にトップレベルの `prompt` フィールドを送らないでください。Router はその組み合わせを拒否します。プロンプトは `contents` の中に入れます。
+
+## Router がモードを選ぶ仕組み
+
+`kling/kling-4.0` はモデル ID が 1 つで、モードが 3 つあります。Router はリクエストボディからモードを選びます。
+
+- **テキストから動画**：トップレベルの `prompt` があり、`contents` がない（または空の）場合。
+- **画像から動画**：`contents` に `prompt`、`first_frame`、`middle_frame`、`last_frame` の項目だけがある場合。
+- **オムニ動画**：`contents` にそれ以外のタイプ（`refer_image`、`feature_video`、`base_video`、`element`、`voice` など）がある場合。
+
+したがって、`element` または `voice` の項目が 1 つでもあれば、リクエストはオムニ動画になります。モードを自分で設定する必要はありません。
+
+## 上限
+
+オムニ動画はプロンプトに加えて最大 15 個の入力を受け付けるため、Router は 16 項目を超える `contents` 配列を拒否します。その範囲内で、1 つのリクエストに含められるのは最大で次のとおりです。
+
+- 画像 10 枚（`first_frame`、`middle_frame`、`last_frame`、`refer_image` の合計）
+- 動画 5 本（`feature_video` と `base_video` の合計）。`base_video` は最大 1 本
+- エレメント 7 個
+- ボイス 3 個
+
+Router はリクエストが Kling に届く前にこれらの上限を確認し、いずれかを超えたリクエストには `contents` を指す `detail[]` エントリ付きの `422` を返します。[検証エラー](/ja/development/comfy-router/errors#検証エラー)を参照してください。
+
+動画キャラクターエレメントを含むリクエストは、`feature_video` や `base_video` を含むリクエストと同じく、動画入力の料金で課金されます。
+
+## リクエスト例
+
+次のリクエストは、エレメント 1 つとボイス 1 つを使うオムニ動画の生成をキューに入れます。プレースホルダーの ID は自分の ID に置き換えてください。
+
+```bash
+curl https://api.comfy.org/v2/models/kling/kling-4.0/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "type": "prompt",
+        "text": "@hero walks down a rainy neon street, turns to the camera and says \"We made it.\" in the voice of @narrator."
+      },
+      { "type": "element", "id": "hero", "element_id": "<your-element-id>" },
+      { "type": "voice", "id": "narrator", "voice_id": "<your-voice-id>" }
+    ],
+    "settings": {
+      "duration": 5,
+      "resolution": "720p",
+      "aspect_ratio": "16:9"
+    }
+  }'
+```
+
+Router は `201` と `request_id` を返します。[キュー配信](/ja/development/comfy-router/queue)の説明に従って、結果をポーリングして取得します。1 回の呼び出しで結果を待つ場合は、同じボディを `POST https://api.comfy.org/v2/models/kling/kling-4.0` に送ります。
+
+## エレメント ID とボイス ID の入手
+
+Router には、Kling のエレメントやボイスを作成、アップロード、一覧表示するエンドポイントはありません。送られた `element_id` と `voice_id` の値を Kling に渡すだけです。
+
+Kling は、エレメント ID とカスタムボイス ID を、それを作成した Kling アカウントに紐づけます。Router はあなたの認証情報ではなく Comfy の認証情報で Kling にリクエストを送るため、あなた自身の Kling アカウントで作成したエレメントやカスタムボイスは拒否される場合があります。
+
+エレメントを使わずに被写体を一貫させるには、参照画像を `refer_image` 項目として、参照動画を `feature_video` 項目として送り、それぞれにプロンプトで参照するための `id` を付けます。
