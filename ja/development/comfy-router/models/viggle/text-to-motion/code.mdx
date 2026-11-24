@@ -1,0 +1,280 @@
+---
+title: "Comfy Router で Text To Motion を使う"
+description: "Comfy Router 経由で viggle/text-to-motion を呼び出します。エンドポイント、リクエストの形状、Router が返すレスポンスについて説明します。"
+sidebarTitle: "Text To Motion"
+translationSourceHash: 4983c896
+translationFrom: development/comfy-router/models/viggle/text-to-motion/code.mdx
+translationBlockHashes:
+  "_intro": c5305a7e
+  "Quick start": 86fd0de3
+  "Schema": 389aaccc
+  "Examples": d20aae6f
+---
+{/* 生成済みファイル。`pnpm code-pages:gen` により router-schemas/viggle/text-to-motion.json から生成されています。 */}
+
+import RouterCodeFooter from "/snippets/ja/comfy-router/model-code-footer.mdx";
+
+Viggle から Comfy Router が提供する `viggle/text-to-motion` の API リファレンス。
+
+**入力:** Text · **出力:** 3D
+
+## クイックスタート
+
+[お使いの Comfy ワークスペース](https://platform.comfy.org/profile/api-keys?onboarding=router)でキーを作成し、`COMFY_API_KEY` としてエクスポートします。Python と TypeScript のスニペットでは Comfy SDK（`pip install comfy-sdk` と `npm install @comfyorg/sdk`）を使用します。cURL スニペットは、同じ呼び出しを raw HTTP で行います。
+
+**モデル ID:** `viggle/text-to-motion`
+
+**エンドポイント:** `POST https://api.comfy.org/v2/models/viggle/text-to-motion`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="結果を待つ">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# SDK は自動的に冪等性キーを作成し、自動再試行で再利用します。
+with Comfy() as client:
+    result = client.models.run(
+        "viggle/text-to-motion",
+        {
+            "duration_seconds": 5,
+            "text": "a person waves with the right hand",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// SDK は自動的に冪等性キーを作成し、自動再試行で再利用します。
+const { data } = await comfy.models.run("viggle/text-to-motion", {
+  duration_seconds: 5,
+  text: "a person waves with the right hand",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/viggle/text-to-motion \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"duration_seconds\": 5, \"text\": \"a person waves with the right hand\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="キューに送信して後で収集">
+同じボディを `POST https://api.comfy.org/v2/models/viggle/text-to-motion/requests` に送信します。Router は実行が受け付けられるとすぐに `201` と `request_id` を返し、結果は準備ができ次第、このプロセスまたは別のプロセスから収集されます。[キュー配信](/ja/development/comfy-router/queue)では、ステータス、キャンセル、収集の流れを説明します。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動再試行で再利用します。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "viggle/text-to-motion",
+            {
+                "duration_seconds": 5,
+                "text": "a person waves with the right hand",
+            },
+        )
+        print("request_id:", handle.request_id)  # モデル ID と合わせて、別のプロセスに必要な情報はこれだけです
+
+        # リクエストが完了するまでポーリングし、サーバーが指定する Retry-After を待ちます。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # プロバイダー自身のペイロードで、models.run() が返す値と同じです。
+        # 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを発生させます。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を発行し、自動再試行で再利用します。
+const handle = await comfy.models.submit("viggle/text-to-motion", {
+  duration_seconds: 5,
+  text: "a person waves with the right hand",
+});
+console.log("requestId:", handle.requestId); // モデル ID と合わせて、別のプロセスに必要な情報はこれだけです
+
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After を待ちます。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// models.run() が返すのと同じ結果です。失敗またはキャンセルされたリクエストはここで拒否されます。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 送信します。Router は 201 と request_id、status_url、response_url、cancel_url を返します。
+curl https://api.comfy.org/v2/models/viggle/text-to-motion/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"duration_seconds\": 5, \"text\": \"a person waves with the right hand\"}"
+
+# 2. ステータスが COMPLETED になるまでポーリングし、各レスポンスが指定する Retry-After 秒を待ちます。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/viggle/text-to-motion/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 収集します。モデルのネイティブ出力とともに 200、まだ実行中の場合はステータスボディとともに 202 を返します。
+curl https://api.comfy.org/v2/models/viggle/text-to-motion/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## スキーマ
+
+### 入力
+
+<ParamField body="duration_seconds" type="number">
+  アニメーションの長さ（秒）。3 から 60 の範囲です。デフォルトは 5 です。
+</ParamField>
+
+<ParamField body="guidance_scale" type="number">
+  アニメーションがテキストにどの程度従うか。0 から 30 の範囲です。デフォルトは 5 です。
+</ParamField>
+
+<ParamField body="name" type="string">
+  省略可能な表示ラベル。
+</ParamField>
+
+<ParamField body="smooth" type="boolean">
+  生成されたアニメーションをスムーズにします。デフォルトは true です。
+</ParamField>
+
+<ParamField body="text" type="string" required>
+  生成する動き。1 から 400 文字です。
+</ParamField>
+
+Router が `GET /v2/models/viggle/text-to-motion/openapi.json` で提供するスキーマから生成されており、リクエストがプロバイダーに到達する前に呼び出しを検証する際に使われるのと同じドキュメントです。
+
+### 出力
+
+<ResponseField name="credits_used" type="number">
+  ジョブに課金される Viggle クレジット。ジョブが準備完了になった時点で設定されます。
+
+  形式: `double`
+</ResponseField>
+
+<ResponseField name="duration_seconds" type="number">
+  形式: `double`
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  Viggle のエラーオブジェクト。ジョブが失敗したときに設定されます。
+</ResponseField>
+
+<ResponseField name="error.code" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.message" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.request_id" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.retryable" type="boolean">
+   
+</ResponseField>
+
+<ResponseField name="fbx" type="object">
+  1 つのファイル形式のダウンロード URL。リグごとに 1 つです。
+</ResponseField>
+
+<ResponseField name="fbx.metahuman_body_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="fbx.metahuman_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="fbx.mixamo_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="glb" type="object">
+  1 つのファイル形式のダウンロード URL。リグごとに 1 つです。
+</ResponseField>
+
+<ResponseField name="glb.metahuman_body_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="glb.metahuman_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="glb.mixamo_url" type="string">
+   
+</ResponseField>
+
+<ResponseField name="id" type="string">
+   
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  ステータス: queued、processing、ready、failed のいずれかです。
+</ResponseField>
+
+## 例
+
+### 入力
+
+```json
+{
+  "duration_seconds": 5,
+  "text": "a person waves with the right hand"
+}
+```
+
+### 出力
+
+```json
+{
+  "credits_used": 30,
+  "duration_seconds": 5.04,
+  "error": null,
+  "fbx": {
+    "metahuman_body_url": "https://example.invalid/viggle/metahuman_body.fbx",
+    "metahuman_url": "https://example.invalid/viggle/metahuman.fbx",
+    "mixamo_url": "https://example.invalid/viggle/mixamo.fbx"
+  },
+  "glb": {
+    "metahuman_body_url": "https://example.invalid/viggle/metahuman_body.glb",
+    "metahuman_url": "https://example.invalid/viggle/metahuman.glb",
+    "mixamo_url": "https://example.invalid/viggle/mixamo.glb"
+  },
+  "id": "mot_extract_6d46ca9311eead39",
+  "status": "ready"
+}
+```
+
+
+<RouterCodeFooter />
