@@ -851,6 +851,21 @@ const ES_MONTH_NAMES = [
   "diciembre",
 ] as const;
 
+const RU_MONTH_NAMES = [
+  "января",
+  "февраля",
+  "марта",
+  "апреля",
+  "мая",
+  "июня",
+  "июля",
+  "августа",
+  "сентября",
+  "октября",
+  "ноября",
+  "декабря",
+] as const;
+
 const EN_DATE_DESC_RE =
   /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})$/;
 
@@ -864,7 +879,7 @@ export function parseEnglishChangelogDate(
   return { year: Number(m[3]), month, day: Number(m[2]) };
 }
 
-/** Localized `<Update description="…">` date for es / ja / ko / zh. */
+/** Localized `<Update description="…">` date for es / ja / ko / ru / zh. */
 export function formatChangelogDateForLang(
   year: number,
   month: number,
@@ -879,6 +894,8 @@ export function formatChangelogDateForLang(
       return `${year}년 ${month}월 ${day}일`;
     case "es":
       return `${day} de ${ES_MONTH_NAMES[month - 1]} de ${year}`;
+    case "ru":
+      return `${day} ${RU_MONTH_NAMES[month - 1]} ${year}`;
     default:
       return `${EN_MONTH_NAMES[month - 1]} ${day}, ${year}`;
   }
