@@ -132,6 +132,25 @@ describe("changelog date localization", () => {
     expect(status.pendingBlocks).toEqual([]);
     expect(status.upToDate).toBe(true);
   });
+
+  test("formats Russian dates the way the ru changelog writes them", () => {
+    expect(localizeEnglishChangelogDate("November 4, 2026", "ru")).toBe("4 ноября 2026");
+    expect(localizeEnglishChangelogDate("January 1, 2026", "ru")).toBe("1 января 2026");
+    expect(localizeEnglishChangelogDate("September 30, 2025", "ru")).toBe("30 сентября 2025");
+    expect(formatChangelogDateForLang(2026, 3, 7, "ru")).toBe("7 марта 2026");
+  });
+
+  test("treats a Russian target date as in sync", () => {
+    const en = `---\n---\n${block}\n`;
+    const enHashes = documentBlockHashes(parseDocument(en, "update_blocks").blocks);
+    const target = targetMdx(
+      [{ label: "v0.26.0", body: "* **Krea2**: first draft", date: "23 июня 2026" }],
+      enHashes
+    );
+    const status = getSectionSyncStatus(en, target, "update_blocks", false, "ru");
+    expect(status.pendingBlocks).toEqual([]);
+    expect(status.upToDate).toBe(true);
+  });
 });
 
 describe("getSectionSyncStatus heading_sections", () => {
