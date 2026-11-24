@@ -1,0 +1,118 @@
+---
+title: "Leitfaden zur Umkehrung des Ausführungsmodells"
+sidebarTitle: "Ausführungsmodell"
+icon: "code-branch"
+description: "Umkehrung des ComfyUI-Ausführungsmodells: Breaking Changes bei Monkey Patching und Eingabevalidierung, Lazy Evaluation und Node-Erweiterung."
+translationSourceHash: 7b21c2f1
+translationFrom: development/comfyui-server/execution_model_inversion_guide.mdx
+translationBlockHashes:
+  "_intro": 03f1bf08
+  "Breaking Changes": 1ef26168
+  "New Functionality": b06c1a30
+---
+[PR #2666](https://github.com/Comfy-Org/ComfyUI/pull/2666) kehrt das Ausführungsmodell von einem rekursiven Modell von hinten nach vorne zu einer topologischen Sortierung von vorne nach hinten um. Während die meisten Custom Nodes weiterhin „einfach funktionieren“ sollten, dient diese Seite als Leitfaden für Ersteller von Custom Nodes zu den Dingen, die *brechen könnten*.
+
+## Inkompatible Änderungen
+
+### Monkey Patching
+
+Jeder Code, der das Ausführungsmodell per Monkey Patching verändert hat, funktioniert wahrscheinlich nicht mehr. Beachten Sie, dass die Ausführungsleistung mit diesem PR die der beliebtesten Monkey Patches übertrifft, sodass viele davon überflüssig werden.
+
+### Optionale Eingabevalidierung
+
+Vor diesem PR wurden nur Nodes tatsächlich validiert, die ausschließlich über eine Kette von `"required"`-Eingaben mit Ausgängen verbunden waren. Wenn Sie Custom Nodes hatten, die ausschließlich mit `"optional"`-Eingaben verbunden waren, haben Sie bisher nicht gesehen, dass ihre Validierung fehlschlug.
+
+<Tip>Wenn die Ausgänge Ihrer Nodes bereits mit `"required"`-Eingaben verbunden werden konnten, ist es unwahrscheinlich, dass etwas aus diesem Abschnitt auf Sie zutrifft. Er betrifft in erster Linie Autoren von Custom Nodes, die benutzerdefinierte Typen verwenden und ausschließlich `"optional"`-Eingaben nutzen.</Tip>
+
+Im Folgenden finden Sie einige Punkte, die zu einer fehlgeschlagenen Validierung führen können, zusammen mit empfohlenen Lösungen:
+
+- Verwendung reservierter [Additional Parameters](/de/custom-nodes/backend/datatypes#zusätzliche-parameter) wie `min` und `max` bei Typen, die nicht vergleichbar sind (z. B. Dictionaries), um benutzerdefinierte Widgets zu konfigurieren.
+    - Ändern Sie die verwendeten Additional Parameters in nicht reservierte Schlüssel wie `uiMin` und `uiMax`. *(Empfohlene Lösung)*
+        ```python
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "my_size": ("VEC2", {"uiMin": 0.0, "uiMax": 1.0}),
+                }
+            }
+        ```
+
+    - Definieren Sie eine benutzerdefinierte [VALIDATE_INPUTS](/de/custom-nodes/backend/server_overview#validate_inputs)-Funktion mit dieser Eingabe, sodass ihre Validierung übersprungen wird. *(Schnelle Lösung)*
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, my_size):
+            return True
+        ```
+
+- Verwendung zusammengesetzter Typen (z. B. `CUSTOM_A,CUSTOM_B`)
+    - (Bei Verwendung als Ausgang) Definieren und verwenden Sie einen Wrapper wie `MakeSmartType` [wie hier in den Unit-Tests des PR zu sehen](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R2)
+        ```python
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": (MakeSmartType("FOO,BAR"), {}),
+                    }
+                }
+
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+    - (Bei Verwendung als Eingabe) Definieren Sie eine benutzerdefinierte [VALIDATE_INPUTS](/de/custom-nodes/backend/server_overview#validate_inputs)-Funktion, die ein `input_types`-Argument entgegennimmt, sodass die Typvalidierung übersprungen wird.
+        ```python
+        @classmethod
+        def VALIDATE_INPUTS(cls, input_types):
+            return True
+        ```
+    - (Unterstützt beides, praktisch) Definieren und verwenden Sie den Decorator `@VariantSupport` [wie hier in den Unit-Tests des PR zu sehen](https://github.com/Comfy-Org/ComfyUI/pull/2666/files#diff-714643f1fdb6f8798c45f77ab10d212ca7f41dd71bbe55069f1f9f146a8f0cb9R15)
+        ```python
+        @VariantSupport
+        class MyCustomNode:
+
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "input": ("FOO,BAR", {}),
+                    }
+                }
+            
+            RETURN_TYPES = (MakeSmartType("FOO,BAR"),)
+
+            # ...
+        ```
+
+- Die Verwendung von Listen (z. B. `[1, 2, 3]`) als Konstanten in der Graph-Definition (z. B. zur Darstellung einer konstanten `VEC3`-Eingabe). Dies hätte zuvor eine Frontend-Erweiterung erfordert. Zuvor wären Listen der Größe genau `2` ohnehin fehlgeschlagen: Sie wären als defekte Verbindungen behandelt worden.
+    - Packen Sie die Listen in ein Dictionary wie `{ "value": [1, 2, 3] }`
+
+### Ausführungsreihenfolge
+
+Die Ausführungsreihenfolge hat sich schon immer danach geändert, welche Nodes zufällig welche IDs haben, jetzt kann sie sich aber zusätzlich danach ändern, welche Werte gecacht sind. Im Allgemeinen sollte die Ausführungsreihenfolge als nicht deterministisch und als änderbar betrachtet werden (über das hinaus, was durch die Struktur des Graphen vorgegeben wird).
+
+Verlassen Sie sich nicht auf die Ausführungsreihenfolge.
+
+*HIC SUNT DRACONES*
+
+## Neue Funktionalität
+
+### Änderungen an der Validierung
+
+Der Funktion `VALIDATE_INPUTS` wurden mehrere Merkmale hinzugefügt, um die Auswirkungen der oben erwähnten [optionalen Eingabevalidierung](#optionale-eingabevalidierung) zu verringern.
+
+- Die Standardvalidierung wird nun für Eingaben übersprungen, die von der Funktion `VALIDATE_INPUTS` empfangen werden.
+- Die Funktion `VALIDATE_INPUTS` kann nun `**kwargs` entgegennehmen, wodurch alle Eingaben vom Node-Ersteller als validiert behandelt werden.
+- Die Funktion `VALIDATE_INPUTS` kann eine Eingabe namens `input_types` entgegennehmen. Diese Eingabe ist ein Dict, das jede (über eine Verbindung verbundene) Eingabe dem Typ des verbundenen Ausgangs zuordnet. Wenn dieses Argument vorhanden ist, wird die Typvalidierung für die Eingänge des Nodes übersprungen.
+
+Weitere Informationen finden Sie unter [VALIDATE_INPUTS](/de/custom-nodes/backend/server_overview#validate_inputs).
+
+### Lazy Evaluation
+
+Eingaben können verzögert ausgewertet werden (Lazy Evaluation), d. h. Sie können abwarten, ob sie benötigt werden, bevor der angehängte Node und alle seine Vorfahren ausgewertet werden. Weitere Informationen finden Sie unter [Lazy Evaluation](/de/custom-nodes/backend/lazy_evaluation).
+
+### Node-Erweiterung
+
+Zur Laufzeit können Nodes zu einem Subgraph aus Nodes erweitert werden. Dadurch lassen sich Schleifen implementieren (über Endrekursion). Weitere Informationen finden Sie unter [Node-Erweiterung](/de/custom-nodes/backend/expansion).
