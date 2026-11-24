@@ -324,8 +324,6 @@ From your own code, use the [Comfy SDKs](/development/api-development/sdks). Set
 
 You can add a model or LoRA to one deployment without publishing a new version of the Build. The file goes onto the same storage as the Build's models, so every worker reads it from disk with no download. The deployment keeps its URL. The Build and your other deployments don't change.
 
-You add, list, and remove a deployment's models with the deployment API, using a workspace API key.
-
 <Warning>
   An added model counts toward the deployment's model storage, which bills as [Deployment billing](/development/deploy/cloud-usage#deployment-billing) describes. Each add also replaces the deployment's running workers with new ones that have the file, and the new workers bill GPU time as usual.
 </Warning>
@@ -335,96 +333,158 @@ You add, list, and remove a deployment's models with the deployment API, using a
 Make sure you have these:
 
 - **A deployment whose status reads Ready or Stopped**: while it starts, stops, or updates, an add is refused.
-- **The deployment's ID**: it's the first part of the **Deployment URL**, such as `dep-2bf42665-0a61-4702-962f-0774c6391e96` in `https://dep-2bf42665-0a61-4702-962f-0774c6391e96.run.comfy.app`.
-- **A workspace API key**: see [Getting an API key](/development/api-development/getting-an-api-key). The commands below read it from the `COMFY_API_KEY` environment variable and send it in the `X-API-Key` header.
-- **Adding turned on for your workspace**: before you upload, [list the deployment's models](#upload-and-add-the-file) and check that `addEnabled` reads `true`. Where it reads `false`, an add answers `404`.
+- **The model file on your computer**: a file name of letters, digits, `.`, `_`, and `-`, as [Rules and errors](#rules-and-errors) describes.
 
-### Upload and add the file
+### Add the file
 
-<Steps>
-  <Step title="Ask for an upload link">
-    Send the file's name, size, and SHA-256 hash. `kind` is always `model`:
+<Tabs>
+  <Tab title="Developer Platform">
+    1. Open the deployment's page, as [Find your deployment](#find-your-deployment) shows.
+    2. In the **Overview** tab, under **Added models**, click **Add model to this deployment**.
 
-    ```bash
-    FILE=my_style.safetensors
-    SIZE=$(wc -c < "$FILE" | tr -d ' ')
-    SHA256=$(shasum -a 256 "$FILE" | cut -d ' ' -f 1)
+       ![Deployment Overview tab with the Runtime configuration section, and the Added models section below it with the Add model to this deployment button and the line No models added to this deployment yet](/images/development/serverless/deployment-added-models-empty.png)
 
-    curl -sS https://platformapi.comfy.org/builder/v1/blobs \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "{\"kind\": \"model\", \"filename\": \"$FILE\", \"sizeBytes\": $SIZE, \"sha256\": \"$SHA256\"}"
-    ```
+    3. Drag the model file onto the box, or click the box and select the file.
 
-    The answer holds the upload's `blobId`, an `uploadUrl`, and `expiresAt`, the time the link stops working:
+       ![Added models section with a box reading Drag a model file here, or click to browse, Model folder set to loras, and the Cancel and Add buttons](/images/development/serverless/deployment-added-models-add-form.png)
 
-    ```json
-    {
-      "blobId": "b1f0c2d4-...",
-      "deduplicated": false,
-      "uploadUrl": "https://storage.googleapis.com/...",
-      "expiresAt": "2026-11-23T20:15:00Z"
-    }
-    ```
-  </Step>
-  <Step title="Upload the file">
-    PUT the file to `uploadUrl` before `expiresAt`. The link takes only a body of the size you declared, and it needs the `x-goog-if-generation-match: 0` header:
+    4. Under **Model folder**, select the folder the file goes in, such as `loras` or `diffusion_models`. The box shows the file's name and size.
+    5. Click **Add**.
 
-    ```bash
-    curl -sS -X PUT "<uploadUrl>" \
-      -H "x-goog-if-generation-match: 0" \
-      --upload-file "$FILE"
-    ```
-  </Step>
-  <Step title="Add the upload to the deployment">
-    Send the `blobId` and the model folder the file goes in, such as `loras` or `checkpoints`:
+       ![Added models section with flux-2-klein-9b-int8-convrot.safetensors (8.79 GB) in the box, Model folder set to diffusion_models, and the Add button active](/images/development/serverless/deployment-added-models-file-selected.png)
 
-    ```bash
-    curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
-      -H "X-API-Key: $COMFY_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d '{"blobId": "<blobId>", "type": "loras"}'
-    ```
+    The file shows under **Added models** with its folder, size, and status. It reads **Adding** while the deployment places the file:
 
-    The answer is `202` with the deployment's entry for the file, which reads `adding`:
+    ![Added models section with flux-2-klein-9b-int8-convrot.safetensors, diffusion\_models · 8.79 GB, a yellow dot with Adding, and a Remove button](/images/development/serverless/deployment-added-models-adding.png)
 
-    ```json
-    {
-      "id": "655fa851-...",
-      "type": "loras",
-      "filename": "my_style.safetensors",
-      "status": "adding",
-      "sizeBytes": 134621556
-    }
-    ```
+    When jobs can use the file, it reads **Ready**:
 
-    To give the file another name in the folder, add `"filename"` to the request. Without it, the file keeps the name you uploaded it with.
-  </Step>
-  <Step title="Wait until the file reads ready">
-    List the deployment's models:
+    ![Added models section with flux-2-klein-9b-int8-convrot.safetensors, diffusion\_models · 8.79 GB, a green dot with Ready, and a Remove button](/images/development/serverless/deployment-added-models-ready.png)
+  </Tab>
+  <Tab title="comfy-cli">
+    1. Check that comfy-cli is version 1.29.0 or later:
 
-    ```bash
-    curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
-      -H "X-API-Key: $COMFY_API_KEY"
-    ```
+       ```bash
+       comfy --version
+       ```
 
-    ```json
-    {
-      "addEnabled": true,
-      "models": [
-        { "id": "655fa851-...", "type": "loras", "filename": "my_style.safetensors", "status": "ready", "sizeBytes": 134621556 }
-      ]
-    }
-    ```
+    2. Find the deployment's ID, as [Find your deployment](#find-your-deployment) shows:
 
-    While the file reads `adding`, the deployment copies it onto its storage, starts new workers that have it, and stops the old ones. Jobs already running finish on the old workers. In our tests, a 130 MB LoRA read `ready` between 40 seconds and about 3 minutes after the add. On a stopped deployment, the file reads `ready` once its upload is complete, and the next start places it.
-  </Step>
-</Steps>
+       ```bash
+       comfy deploy ls --workspace
+       ```
 
-A file that reads `failed` was not added. Remove it, and then add it again. If you didn't get an answer to an add, send the same add again: while the file reads `adding`, the same upload, folder, and name return the same entry.
+    3. Upload the file and add it to the deployment. Give the model folder with `--type`, such as `loras` or `diffusion_models`:
 
-<Accordion title="Upload a large file in pieces">
-  For a large file, ask for the upload in pieces, so an expired link or a dropped connection doesn't restart the whole file. Add `"parts": true` to the upload request. The answer then holds a `parts` list instead of one `uploadUrl`. A file is split into at most 32 pieces of at least 64 MiB each, and can be up to 128 GiB.
+       ```bash
+       comfy deploy models add <deployment> my_style.safetensors --type loras
+       ```
+
+       `<deployment>` is the deployment's ID, or `<build>/<name>`. A bare name works only in the Build's folder. The command uploads the file and waits until the deployment can use it. To return as soon as the add is sent, add `--no-wait`.
+
+    4. Check that the file reads ready:
+
+       ```bash
+       comfy deploy models ls <deployment>
+       ```
+
+       Each line shows an added file's folder, name, size, and status.
+  </Tab>
+</Tabs>
+
+While the file reads adding, the deployment copies it onto its storage, starts new workers that have it, and stops the old ones. Jobs already running finish on the old workers. In our tests, a 130 MB LoRA read ready between 40 seconds and about 3 minutes after the add. On a stopped deployment, the file reads ready once its upload is complete, and the next start places it.
+
+A file that reads failed was not added. Remove it, and then add it again.
+
+<Accordion title="Add the file with the deployment API">
+  To add a file from your own code, use the deployment API with a workspace API key. You need:
+
+  - **The deployment's ID**: it's the first part of the **Deployment URL**, such as `dep-2bf42665-0a61-4702-962f-0774c6391e96` in `https://dep-2bf42665-0a61-4702-962f-0774c6391e96.run.comfy.app`.
+  - **A workspace API key**: see [Getting an API key](/development/api-development/getting-an-api-key). The commands below read it from the `COMFY_API_KEY` environment variable and send it in the `X-API-Key` header.
+
+  Before you upload, list the deployment's models, as the last step shows, and check that `addEnabled` reads `true`. Where it reads `false`, an add answers `404`.
+
+  <Steps>
+    <Step title="Ask for an upload link">
+      Send the file's name, size, and SHA-256 hash. `kind` is always `model`:
+
+      ```bash
+      FILE=my_style.safetensors
+      SIZE=$(wc -c < "$FILE" | tr -d ' ')
+      SHA256=$(shasum -a 256 "$FILE" | cut -d ' ' -f 1)
+
+      curl -sS https://platformapi.comfy.org/builder/v1/blobs \
+        -H "X-API-Key: $COMFY_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"kind\": \"model\", \"filename\": \"$FILE\", \"sizeBytes\": $SIZE, \"sha256\": \"$SHA256\"}"
+      ```
+
+      The answer holds the upload's `blobId`, an `uploadUrl`, and `expiresAt`, the time the link stops working:
+
+      ```json
+      {
+        "blobId": "b1f0c2d4-...",
+        "deduplicated": false,
+        "uploadUrl": "https://storage.googleapis.com/...",
+        "expiresAt": "2026-11-23T20:15:00Z"
+      }
+      ```
+    </Step>
+    <Step title="Upload the file">
+      PUT the file to `uploadUrl` before `expiresAt`. The link takes only a body of the size you declared, and it needs the `x-goog-if-generation-match: 0` header:
+
+      ```bash
+      curl -sS -X PUT "<uploadUrl>" \
+        -H "x-goog-if-generation-match: 0" \
+        --upload-file "$FILE"
+      ```
+    </Step>
+    <Step title="Add the upload to the deployment">
+      Send the `blobId` and the model folder the file goes in, such as `loras` or `checkpoints`:
+
+      ```bash
+      curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+        -H "X-API-Key: $COMFY_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{"blobId": "<blobId>", "type": "loras"}'
+      ```
+
+      The answer is `202` with the deployment's entry for the file, which reads `adding`:
+
+      ```json
+      {
+        "id": "655fa851-...",
+        "type": "loras",
+        "filename": "my_style.safetensors",
+        "status": "adding",
+        "sizeBytes": 134621556
+      }
+      ```
+
+      To give the file another name in the folder, add `"filename"` to the request. Without it, the file keeps the name you uploaded it with.
+    </Step>
+    <Step title="Wait until the file reads ready">
+      List the deployment's models:
+
+      ```bash
+      curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+        -H "X-API-Key: $COMFY_API_KEY"
+      ```
+
+      ```json
+      {
+        "addEnabled": true,
+        "models": [
+          { "id": "655fa851-...", "type": "loras", "filename": "my_style.safetensors", "status": "ready", "sizeBytes": 134621556 }
+        ]
+      }
+      ```
+    </Step>
+  </Steps>
+
+  If you didn't get an answer to an add, send the same add again. While the file reads `adding`, the same upload, folder, and name return the same entry.
+
+  **Upload a large file in pieces.** For a large file, ask for the upload in pieces, so an expired link or a dropped connection doesn't restart the whole file. Add `"parts": true` to the upload request. The answer then holds a `parts` list instead of one `uploadUrl`. A file is split into at most 32 pieces of at least 64 MiB each, and can be up to 128 GiB.
 
   1. PUT each piece's bytes, from `offsetBytes` for `sizeBytes` bytes of the file, to that piece's `uploadUrl`, with the same `x-goog-if-generation-match: 0` header.
   2. If links expire before every piece is in, send `POST https://platformapi.comfy.org/builder/v1/blobs/<blobId>/parts` for fresh links to the pieces not stored yet.
@@ -437,7 +497,7 @@ A file that reads `failed` was not added. Remove it, and then add it again. If y
 
 Name the file in your Workflow as you would a model in the Build. For a LoRA, set the loader's `lora_name` input to the file name, as [Set lora_name in the Workflow](#use-workspace-library-models-in-api-requests) shows, and send the job to the deployment.
 
-A job that names a file still `adding` is refused before it reaches a worker. The API answers `422`:
+A job that names a file still adding is refused before it reaches a worker. The API answers `422`:
 
 ```json
 {
@@ -448,13 +508,13 @@ A job that names a file still `adding` is refused before it reaches a worker. Th
 }
 ```
 
-A job that names a `failed` file is refused with the code `model_failed` and the message `my_style.safetensors was not added to this deployment. Remove it and add it again.` A run from the Comfy Cloud editor is refused with the same sentence.
+A job that names a failed file is refused with the code `model_failed` and the message `my_style.safetensors was not added to this deployment. Remove it and add it again.` A run from the Comfy Cloud editor is refused with the same sentence.
 
 <Tip>
-  Send jobs that use the file only after it reads `ready`. A loader Node from a Custom Node pack is checked only against what the deployment listed a few seconds earlier, so a job sent right after an add can reach a worker without the file and fail with a `Value not in list` error.
+  Send jobs that use the file only after it reads ready. A loader Node from a Custom Node pack is checked only against what the deployment listed a few seconds earlier, so a job sent right after an add can reach a worker without the file and fail with a `Value not in list` error.
 </Tip>
 
-In the Comfy Cloud editor, select the deployment under **Run on**, and then reload the page or press `R` once the file reads `ready`. The editor doesn't refresh the deployment's models on its own. The file then shows in its loader Node's list, such as the `lora_name` list of a `Load LoRA (Model and CLIP)` Node, and in the **Model Library** in the **Left sidebar**.
+In the Comfy Cloud editor, select the deployment under **Run on**, and then reload the page or press `R` once the file reads ready. The editor doesn't refresh the deployment's models on its own. The file then shows in its loader Node's list, such as the `lora_name` list of a `Load LoRA (Model and CLIP)` Node, and in the **Model Library** in the **Left sidebar**.
 
 The deployment keeps its added models when it moves to another version, rolls back, stops, and starts. If a version you move to has its own file with the same folder and name, the deployment uses the version's file.
 
@@ -464,14 +524,25 @@ The deployment keeps its added models when it moves to another version, rolls ba
   Removing a model deletes the file from the deployment's storage. Jobs that name it fail. A job already running may still finish. A worker that already loaded the file may keep using it for a few minutes, and a running worker can return the saved result of a job identical to one it already ran.
 </Warning>
 
-Send the entry's `id`:
+<Tabs>
+  <Tab title="Developer Platform">
+    1. Open the deployment's page.
+    2. Under **Added models**, on the file's row, click **Remove**.
+  </Tab>
+  <Tab title="comfy-cli">
+    Name the file as `<folder>/<name>`, or give its ID from `comfy deploy models ls`:
 
-```bash
-curl -sS -X DELETE https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models/<id> \
-  -H "X-API-Key: $COMFY_API_KEY"
-```
+    ```bash
+    comfy deploy models rm <deployment> loras/my_style.safetensors
+    ```
 
-The answer is `202` with the entry, which reads `removing`. The entry leaves the list when the removal ends, including when the file couldn't be deleted. If the version the deployment runs has its own file with the same folder and name, only the entry is removed, and the version's file stays.
+    The command asks before it removes the file. To skip the question, add `--yes`.
+  </Tab>
+</Tabs>
+
+The file reads removing, and then leaves the list when the removal ends, including when the file couldn't be deleted. If the version the deployment runs has its own file with the same folder and name, only the entry is removed, and the version's file stays.
+
+With the API, send `DELETE https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models/<id>` with your `X-API-Key` header, where `<id>` is the entry's `id`. The answer is `202` with the entry, which reads `removing`.
 
 ### Rules and errors
 
