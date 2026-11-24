@@ -1,0 +1,256 @@
+---
+title: "Ideogram 4.0 mit Comfy Router verwenden"
+description: "Python-, TypeScript- und cURL-Snippets zum Erzeugen von Bildern mit Ideogram 4.0 über HTTP via Comfy Router, inklusive Anfragefelder und Form des Ergebnisses"
+sidebarTitle: "Ideogram 4.0"
+translationSourceHash: 57905e9a
+translationFrom: development/comfy-router/models/ideogram/ideogram-v4/code.mdx
+translationBlockHashes:
+  "_intro": 5b2331fa
+  "Quick start": 9c6f1a98
+  "Schema": da4e8bcc
+  "Examples": 094048af
+---
+{/* GENERIERTE DATEI. Bearbeiten Sie code.yaml in diesem Verzeichnis und führen Sie `pnpm code-pages:gen` aus. */}
+
+import RouterCodeFooter from "/snippets/de/comfy-router/model-code-footer.mdx";
+
+API-Referenz für Ideogram 4.0. Ideogram 4.0 ist Ideograms Text-zu-Bild-Modell, das lesbaren Text in generierten Bildern darstellt.
+
+**Eingabe:** Text · **Ausgabe:** Bild
+
+## Schnellstart
+
+Erstellen Sie einen Schlüssel in [Ihrem Comfy Workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) und exportieren Sie ihn als `COMFY_API_KEY`. Die Python- und TypeScript-Snippets verwenden die Comfy SDKs (`pip install comfy-sdk` und `npm install @comfyorg/sdk`); das cURL-Snippet ist derselbe Aufruf über rohes HTTP.
+
+**Modell-ID:** `ideogram/ideogram-v4`
+
+**Endpunkt:** `POST https://api.comfy.org/v2/models/ideogram/ideogram-v4`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Auf das Ergebnis warten">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Das SDK erstellt automatisch einen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "ideogram/ideogram-v4",
+            {
+                "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+                "resolution": "1024x1024",
+                "rendering_speed": "DEFAULT",
+            },
+        )
+
+    print("image:", result["data"][0]["url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Das SDK erstellt automatisch einen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+type Result = { data: { url: string }[] };
+const result = await comfy.models.run<Result>("ideogram/ideogram-v4", {
+  text_prompt: "a single red maple leaf on a plain white background, studio lighting",
+  resolution: "1024x1024",
+  rendering_speed: "DEFAULT",
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.data[0].url);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"text_prompt\": \"a single red maple leaf on a plain white background, studio lighting\", \"resolution\": \"1024x1024\", \"rendering_speed\": \"DEFAULT\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="In Warteschlange einreihen und später abholen">
+Derselbe Body, gesendet an `POST https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests`. Router antwortet mit `201` und einer `request_id`, sobald der Lauf angenommen wurde, und das Ergebnis wird abgeholt, sobald es bereit ist, aus diesem Prozess oder einem anderen. [Queued delivery](/de/development/comfy-router/queue) erklärt Status, Abbruch und Abholung im Einzelnen.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Jeder submit()-Aufruf erzeugt seinen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "ideogram/ideogram-v4",
+            {
+                "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+                "resolution": "1024x1024",
+                "rendering_speed": "DEFAULT",
+            },
+        )
+        print("request_id:", handle.request_id)  # zusammen mit der Modell-ID alles, was ein anderer Prozess braucht
+
+        # Abfragen, bis die Anfrage abgeschlossen ist, und dabei das vom Server genannte Retry-After abwarten.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Die eigene Nutzlast des Anbieters, derselbe Wert, den models.run() zurückgibt.
+        # Eine fehlgeschlagene oder abgebrochene Anfrage löst hier den typisierten Router-Fehler aus.
+        result = await handle.get()
+
+    print("image:", result["data"][0]["url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Jeder submit()-Aufruf erzeugt seinen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+type Result = { data: { url: string }[] };
+const handle = await comfy.models.submit<Result>("ideogram/ideogram-v4", {
+  text_prompt: "a single red maple leaf on a plain white background, studio lighting",
+  resolution: "1024x1024",
+  rendering_speed: "DEFAULT",
+});
+console.log("requestId:", handle.requestId); // zusammen mit der Modell-ID alles, was ein anderer Prozess braucht
+
+// Abfragen, bis die Anfrage abgeschlossen ist, und dabei das vom Server genannte Retry-After abwarten.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Dasselbe Ergebnis, das models.run() zurückgibt. Eine fehlgeschlagene oder abgebrochene Anfrage wird hier abgelehnt.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.data[0].url);
+```
+
+```bash cURL
+# 1. Absenden. Router antwortet mit 201 und request_id, status_url, response_url und cancel_url.
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"text_prompt\": \"a single red maple leaf on a plain white background, studio lighting\", \"resolution\": \"1024x1024\", \"rendering_speed\": \"DEFAULT\"}"
+
+# 2. Abfragen, bis der Status COMPLETED lautet, und dabei die in jeder Antwort genannten Retry-After-Sekunden abwarten.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Abholen. 200 mit der nativen Ausgabe des Modells, 202 mit dem Status-Body, solange es noch läuft.
+curl https://api.comfy.org/v2/models/ideogram/ideogram-v4/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Schema
+
+### Eingaben
+
+<ParamField body="enable_copyright_detection" type="boolean">
+  Urheberrechtserkennung nach der Generierung aktivieren (Hive-Prüfung auf Ähnlichkeiten und Logos).
+</ParamField>
+
+<ParamField body="json_prompt" type="object">
+  Strukturierter V4-Prompt. Deaktiviert Magic Prompt; wird direkt verarbeitet. Geben Sie genau eines von text_prompt oder json_prompt an.
+</ParamField>
+
+<ParamField body="rendering_speed" type="string" default="&quot;DEFAULT&quot;">
+  Die Einstellung für die Rendering-Geschwindigkeit, die den Kompromiss zwischen Generierungsgeschwindigkeit und Qualität steuert
+
+  Mögliche Werte: `DEFAULT`, `TURBO`, `QUALITY`
+</ParamField>
+
+<ParamField body="resolution" type="string">
+  Ausgabeauflösung im Format BREITExHÖHE. Lassen Sie den Wert weg, damit das Modell ein Seitenverhältnis wählt. Unterstützte 2K-Werte: 2048x2048, 1440x2880, 2880x1440, 1664x2496, 2496x1664, 1792x2240, 2240x1792, 1440x2560, 2560x1440, 1600x2560, 2560x1600, 1728x2304, 2304x1728, 1296x3168, 3168x1296, 1152x2944, 2944x1152, 1248x3328, 3328x1248, 1280x3072, 3072x1280.
+</ParamField>
+
+<ParamField body="text_prompt" type="string">
+  Prompt in natürlicher Sprache. Aktiviert Magic Prompt automatisch. Geben Sie genau eines von text_prompt oder json_prompt an.
+</ParamField>
+
+Generiert aus dem Schema, das Router unter `GET /v2/models/ideogram/ideogram-v4/openapi.json` bereitstellt, also demselben Dokument, gegen das ein Aufruf validiert wird, bevor die Anfrage den Anbieter erreicht.
+
+### Ausgaben
+
+<ResponseField name="created" type="string (date-time)">
+  Zeitstempel, zu dem die Generierung erstellt wurde.
+
+  Format: `date-time`
+</ResponseField>
+
+<ResponseField name="data" type="object[]">
+  Array mit Informationen zu den generierten Bildern.
+</ResponseField>
+
+<ResponseField name="data[].is_image_safe" type="boolean">
+  Gibt an, ob das Bild als sicher eingestuft wird.
+</ResponseField>
+
+<ResponseField name="data[].prompt" type="string">
+  Der Prompt, mit dem dieses Bild generiert wurde.
+</ResponseField>
+
+<ResponseField name="data[].resolution" type="string">
+  Die Auflösung des generierten Bildes (z. B. '1024x1024').
+</ResponseField>
+
+<ResponseField name="data[].seed" type="integer">
+  Der für diese Generierung verwendete Seed-Wert.
+</ResponseField>
+
+<ResponseField name="data[].style_type" type="string">
+  Der für die Generierung verwendete Stiltyp (z. B. 'REALISTIC', 'ANIME').
+</ResponseField>
+
+<ResponseField name="data[].url" type="string">
+  URL zum generierten Bild.
+</ResponseField>
+
+## Beispiele
+
+### Eingaben
+
+```json
+{
+  "text_prompt": "a single red maple leaf on a plain white background, studio lighting",
+  "resolution": "1024x1024",
+  "rendering_speed": "DEFAULT"
+}
+```
+
+### Ausgaben
+
+```json
+{
+  "response_type": "url",
+  "created": "2026-08-27T21:00:00Z",
+  "data": [
+    {
+      "url": "https://.../image.png",
+      "prompt": "a single red maple leaf on a plain white background, studio lighting",
+      "resolution": "1024x1024",
+      "seed": 1234567890,
+      "is_image_safe": true
+    }
+  ]
+}
+```
+
+Die URL ist temporär. Laden Sie das Bild zeitnah herunter, wenn Sie es behalten möchten.
+
+<RouterCodeFooter />

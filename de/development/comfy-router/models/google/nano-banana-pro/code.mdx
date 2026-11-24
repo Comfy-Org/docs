@@ -1,0 +1,786 @@
+---
+title: "Nano Banana Pro mit Comfy Router verwenden"
+description: "Python-, TypeScript- und cURL-Snippets für die Bildgenerierung mit Nano Banana Pro (Gemini 3 Pro Image) über Comfy Router sowie Anfragefelder"
+sidebarTitle: "Nano Banana Pro"
+translationSourceHash: 63f6b907
+translationFrom: development/comfy-router/models/google/nano-banana-pro/code.mdx
+translationBlockHashes:
+  "_intro": 34f7de08
+  "Quick start": b78c780a
+  "Serving providers": caff9b45
+  "Schema": 9094176d
+  "Examples": 54f56549
+---
+
+{/* GENERATED FILE. Edit code.yaml in this directory and run `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/de/comfy-router/model-code-footer.mdx";
+
+API-Referenz für Nano Banana Pro. Nano Banana Pro (Gemini 3 Pro Image) ist die Pro-Stufe von Googles Nano-Banana-Familie zur Bilderzeugung und zielt auf komplexe Szenen und gut lesbaren Text ab.
+
+**Eingabe:** Text, Image · **Ausgabe:** Image + Text
+
+## Schnellstart
+
+Erstellen Sie einen Schlüssel in [Ihrem Comfy Workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) und exportieren Sie ihn als `COMFY_API_KEY`. Die Python- und TypeScript-Snippets verwenden die Comfy SDKs (`pip install comfy-sdk` und `npm install @comfyorg/sdk`); das cURL-Snippet ist derselbe Aufruf über reines HTTP.
+
+**Modell-ID:** `vertexai/gemini-3-pro-image`
+
+**Endpunkt:** `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image`
+
+<Tabs defaultTabIndex={1}><Tab title="Auf das Ergebnis warten">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Das SDK erstellt automatisch einen Idempotenzschlüssel und verwendet ihn bei automatischen Wiederholungen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "vertexai/gemini-3-pro-image",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "a single red maple leaf on a plain white background, studio lighting",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {
+                        "aspectRatio": "1:1",
+                    },
+                },
+            },
+        )
+
+    print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Das SDK erstellt automatisch einen Idempotenzschlüssel und verwendet ihn bei automatischen Wiederholungen erneut.
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const result = await comfy.models.run<Result>("vertexai/gemini-3-pro-image", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "a single red maple leaf on a plain white background, studio lighting",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    responseModalities: ["IMAGE"],
+    imageConfig: {
+      aspectRatio: "1:1",
+    },
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
+```
+</CodeGroup>
+  </Tab><Tab title="Warteschlange und später abrufen">
+Derselbe Body, gesendet an `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests`. Der Router antwortet mit `201` und einer `request_id`, sobald die Ausführung angenommen wurde; das Ergebnis wird, sobald es bereit ist, von diesem oder einem anderen Prozess abgerufen. [Zugestellung über die Warteschlange](/de/development/comfy-router/queue) erläutert Status, Abbruch und Abruf.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Jeder submit()-Aufruf erzeugt seinen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "vertexai/gemini-3-pro-image",
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": "a single red maple leaf on a plain white background, studio lighting",
+                            },
+                        ],
+                    },
+                ],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {
+                        "aspectRatio": "1:1",
+                    },
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # zusammen mit der Modell-ID alles, was ein anderer Prozess benötigt
+
+        # Wiederholt abfragen, bis die Anfrage abgeschlossen ist; dabei die vom Server angegebene Retry-After-Zeit abwarten.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Die eigene Payload des Anbieters, derselbe Wert, den models.run() zurückgibt.
+        # Eine fehlgeschlagene oder abgebrochene Anfrage löst hier den typisierten Router-Fehler aus.
+        result = await handle.get()
+
+    print("image (base64):", result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Jeder submit()-Aufruf erzeugt seinen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungen erneut.
+type Result = { candidates: { content: { parts: { inlineData: { data: string } }[] } }[] };
+const handle = await comfy.models.submit<Result>("vertexai/gemini-3-pro-image", {
+  contents: [
+    {
+      role: "user",
+      parts: [
+        {
+          text: "a single red maple leaf on a plain white background, studio lighting",
+        },
+      ],
+    },
+  ],
+  generationConfig: {
+    responseModalities: ["IMAGE"],
+    imageConfig: {
+      aspectRatio: "1:1",
+    },
+  },
+});
+console.log("requestId:", handle.requestId); // zusammen mit der Modell-ID alles, was ein anderer Prozess benötigt
+
+// Wiederholt abfragen, bis die Anfrage abgeschlossen ist; dabei die vom Server angegebene Retry-After-Zeit abwarten.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Dasselbe Ergebnis, das models.run() zurückgibt. Eine fehlgeschlagene oder abgebrochene Anfrage wird hier zurückgewiesen.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image (base64):", result.data.candidates[0].content.parts[0].inlineData.data);
+```
+
+```bash cURL
+# 1. Absenden. Der Router antwortet mit 201 sowie request_id, status_url, response_url und cancel_url.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"a single red maple leaf on a plain white background, studio lighting\"}]}], \"generationConfig\": {\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"1:1\"}}}"
+
+# 2. Abfragen, bis der Status COMPLETED lautet; dabei jeweils die in der Antwort angegebenen Retry-After-Sekunden abwarten.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Abrufen. 200 mit der nativen Ausgabe des Modells, 202 mit dem Status-Body, solange die Ausführung noch läuft.
+curl https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Anbieter, die das Modell bereitstellen
+
+Dieses Modell wird direkt von Comfy Router bereitgestellt, sofern die Anfrage keinen anderen Anbieter nennt. Die folgenden Anbieter stellen es ebenfalls bereit, über denselben Endpunkt und mit derselben Modell-ID, ausgewählt über den Query-Parameter `model_provider`.
+
+- **Comfy** (Standard): `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image`
+- **fal**, als `fal/fal-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=fal`
+- **MiniMax**, als `minimax/minimax-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=minimax`
+- **Pika**, als `pika/pika-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=pika`
+- **Runware**, als `runware/runware-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=runware`
+- **WaveSpeed**, als `wavespeed/wavespeed-nano-banana-pro`: `POST https://api.comfy.org/v2/models/vertexai/gemini-3-pro-image?model_provider=wavespeed`
+
+`strict_mode` ist standardmäßig `false`, daher übersetzt Router den auf dieser Seite dokumentierten nativen Request-Body in das eigene Schema des Anbieters und übersetzt die Antwort zurück. Siehe [`model_provider`, `strict_mode` und `fallback_provider`](/de/development/comfy-router/reference#post-v2modelsprovidermodel) in der API-Referenz und [Anbieter, die das Modell bereitstellen](/de/development/comfy-router/providers) für jedes Modell, das auf diese Weise geroutet wird.
+
+## Schema
+
+### Eingaben
+
+<ParamField body="contents" type="object[]" required>
+  Der Inhalt der aktuellen Unterhaltung mit dem Modell. Bei Single-Turn-Abfragen ist dies eine einzelne Instanz. Bei Multi-Turn-Abfragen ist dies ein wiederholtes Feld, das den Verlauf der Unterhaltung und die neueste Anfrage enthält.
+</ParamField>
+
+<ParamField body="contents[].parts" type="object[]" required>
+   
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData" type="object">
+  URI-basierte Daten.
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.fileUri" type="string">
+  URI
+</ParamField>
+
+<ParamField body="contents[].parts[].fileData.mimeType" type="string">
+  Der Medientyp der in den Feldern data oder fileUri angegebenen Datei. Zulässige Werte sind unter anderem die folgenden. Für gemini-2.0-flash-lite und gemini-2.0-flash beträgt die maximale Länge einer Audiodatei 8,4 Stunden und die maximale Länge einer Videodatei (ohne Audio) eine Stunde. Weitere Informationen finden Sie unter den Gemini-Anforderungen für Audio und Video. Textdateien müssen UTF-8-kodiert sein. Der Inhalt der Textdatei zählt zum Token-Limit. Für die Bildauflösung gibt es kein Limit.
+
+  Mögliche Werte: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData" type="object">
+  Inline-Daten als Rohbytes. Für gemini-2.0-flash-lite und gemini-2.0-flash können Sie mit inlineData bis zu 3000 Bilder angeben.
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.data" type="string (byte)">
+  Die Base64-Kodierung des Bildes, PDFs oder Videos, das inline in den Prompt eingefügt werden soll. Wenn Sie Medien inline einfügen, müssen Sie auch den Medientyp (mimeType) der Daten angeben. Größenlimit: 20MB
+
+  Format: `byte`
+</ParamField>
+
+<ParamField body="contents[].parts[].inlineData.mimeType" type="string">
+  Der Medientyp der in den Feldern data oder fileUri angegebenen Datei. Zulässige Werte sind unter anderem die folgenden. Für gemini-2.0-flash-lite und gemini-2.0-flash beträgt die maximale Länge einer Audiodatei 8,4 Stunden und die maximale Länge einer Videodatei (ohne Audio) eine Stunde. Weitere Informationen finden Sie unter den Gemini-Anforderungen für Audio und Video. Textdateien müssen UTF-8-kodiert sein. Der Inhalt der Textdatei zählt zum Token-Limit. Für die Bildauflösung gibt es kein Limit.
+
+  Mögliche Werte: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ParamField>
+
+<ParamField body="contents[].parts[].mediaProcessing" type="string">
+  Wie das Modell das Video dieses Teils liest. Setzen Sie „AGENTIC“, damit das Modell entscheidet, welche Segmente geprüft werden, statt einer Frame-Sammlung mit fester Rate. Lassen Sie das Feld weg, um das standardmäßige Sampling mit fester Rate zu verwenden. Unterstützt auf gemini-3.7-flash und neueren Flash-Modellen.
+</ParamField>
+
+<ParamField body="contents[].parts[].text" type="string">
+  Ein Text-Prompt oder Codeschnipsel.
+</ParamField>
+
+<ParamField body="contents[].parts[].thought" type="boolean">
+  Gibt an, dass dieser Teil ein Denk- bzw. Reasoning-Schritt des Modells ist.
+</ParamField>
+
+<ParamField body="contents[].role" type="string">
+  Mögliche Werte: `user`, `model`
+</ParamField>
+
+<ParamField body="generationConfig" type="object">
+  Sampling-, Längen- und Ausgabeeinstellungen für die Generierung. Jedes Feld ist optional: Bei den unten aufgeführten Feldern, die einen `default` deklarieren, wird dieser beim Weglassen angewendet, und die übrigen greifen auf das Verhalten des Modells selbst zurück.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig" type="object">
+  Konfiguration für die Bildgenerierung
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.aspectRatio" type="string">
+  Seitenverhältnis für generierte Bilder
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions" type="object">
+  Optional. Das Bildausgabeformat für generierte Bilder.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.compressionQuality" type="integer">
+  Optional. Die Kompressionsqualität des Ausgabebildes.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageOutputOptions.mimeType" type="string">
+  Optional. Das Bildformat, in dem die Ausgabe gespeichert werden soll, auf den Vertex-AI-Pfaden: Anfragen, die mit Comfys eigenen Anmeldedaten bedient werden, und BYOK-Anfragen, die mit einem GCP-Servicekonto authentifiziert werden. Dort werden `image/png` und `image/jpeg` akzeptiert, ohne Beachtung der Groß-/Kleinschreibung geprüft und vor dem Weiterleiten der Anfrage in Kleinbuchstaben normalisiert; jeder andere Wert wird mit einem 400-Fehler abgelehnt, der dieses Feld benennt. Beim Weglassen gilt `image/png` als Standard. Eine BYOK-Anfrage, die mit einem Google AI Studio API-Schlüssel authentifiziert wird, ist die Ausnahme: Dieses Upstream kennt diese Eigenschaft nicht und lehnt den gesamten Aufruf ab, wenn sie vorhanden ist. Deshalb wird das Feld aus der Anfrage entfernt, statt berücksichtigt oder abgelehnt zu werden, und das Ausgabeformat ist das, was AI Studio wählt. Lesen Sie auf jedem Pfad den Medientyp aus dem Antwortteil, den Sie erhalten (`inlineData.mimeType` oder `fileData.mimeType`, wenn `uploadImagesToStorage` gesetzt ist), statt den gesendeten Wert anzunehmen.
+</ParamField>
+
+<ParamField body="generationConfig.imageConfig.imageSize" type="string">
+  Optional. Gibt die Größe der generierten Bilder an. Unterstützte Werte sind 1K, 2K, 4K. Wenn nichts angegeben ist, verwendet das Modell den Standardwert 1K.
+</ParamField>
+
+<ParamField body="generationConfig.maxOutputTokens" type="integer">
+  Maximale Anzahl an Tokens, die in der Antwort generiert werden können. Ein Token entspricht etwa 4 Zeichen. 100 Tokens entsprechen ungefähr 60-80 Wörtern.
+
+  Bereich: `16` bis `65536`
+</ParamField>
+
+<ParamField body="generationConfig.responseModalities" type="`TEXT`, `IMAGE`[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.seed" type="integer">
+  Wenn der Seed auf einen bestimmten Wert festgelegt ist, bemüht sich das Modell, bei wiederholten Anfragen die gleiche Antwort zu liefern. Eine deterministische Ausgabe ist nicht garantiert. Außerdem können Änderungen am Modell oder an den Parametereinstellungen, etwa der Temperatur, selbst bei gleichem Seed-Wert zu Abweichungen in der Antwort führen. Standardmäßig wird ein zufälliger Seed-Wert verwendet. Verfügbar für die folgenden Modelle: gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-preview-04-1, gemini-2.5-pro-preview-05-0, gemini-2.0-flash-lite-00, gemini-2.0-flash-001
+</ParamField>
+
+<ParamField body="generationConfig.stopSequences" type="string[]">
+   
+</ParamField>
+
+<ParamField body="generationConfig.temperature" type="number" default="1">
+  Die Temperatur wird für das Sampling während der Antwortgenerierung verwendet, das erfolgt, wenn topP und topK angewendet werden. Die Temperatur steuert den Grad der Zufälligkeit bei der Token-Auswahl. Niedrigere Temperaturen eignen sich für Prompts, die eine weniger offene oder kreative Antwort erfordern, während höhere Temperaturen zu vielfältigeren oder kreativeren Ergebnissen führen können. Eine Temperatur von 0 bedeutet, dass immer die Token mit der höchsten Wahrscheinlichkeit ausgewählt werden. In diesem Fall sind die Antworten auf einen gegebenen Prompt weitgehend deterministisch, eine geringe Variation ist jedoch weiterhin möglich. Wenn das Modell eine zu generische oder zu kurze Antwort liefert oder eine Fallback-Antwort zurückgibt, versuchen Sie, die Temperatur zu erhöhen.
+
+  Bereich: `0` bis `2`
+
+  Format: `float`
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig" type="object">
+  Optional. Konfiguration für Thinking-Funktionen. Thinking ist ein Prozess, bei dem das Modell eine komplexe Aufgabe in kleinere Schritte zerlegt, um eine Antwort von höherer Qualität zu generieren.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.includeThoughts" type="boolean">
+  Optional. Wenn true, fügt das Modell seine Gedanken in die Antwort ein.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingBudget" type="integer">
+  Optional. Das Token-Budget für den Thinking-Prozess des Modells. Das Modell bemüht sich, innerhalb dieses Budgets zu bleiben.
+</ParamField>
+
+<ParamField body="generationConfig.thinkingConfig.thinkingLevel" type="string">
+  Optional. Die Thinking-Stufe für das Modell.
+
+  Mögliche Werte: `THINKING_LEVEL_UNSPECIFIED`, `LOW`, `MEDIUM`, `HIGH`, `MINIMAL`, `XHIGH`
+</ParamField>
+
+<ParamField body="generationConfig.topK" type="integer" default="40">
+  Top-K verändert die Art und Weise, wie das Modell Token für die Ausgabe auswählt. Ein Top-K von 1 bedeutet, dass das nächste ausgewählte Token das wahrscheinlichste unter allen Token im Vokabular des Modells ist. Ein Top-K von 3 bedeutet, dass das nächste Token unter den 3 wahrscheinlichsten Token mithilfe der Temperatur ausgewählt wird.
+
+  Bereich: `1` bis `…`
+</ParamField>
+
+<ParamField body="generationConfig.topP" type="number" default="0.95">
+  Wenn angegeben, wird Nucleus-Sampling verwendet.
+Top-P verändert die Art und Weise, wie das Modell Token für die Ausgabe auswählt. Token werden vom wahrscheinlichsten (siehe Top-K) bis zum unwahrscheinlichsten ausgewählt, bis die Summe ihrer Wahrscheinlichkeiten dem Top-P-Wert entspricht. Wenn beispielsweise die Token A, B und C eine Wahrscheinlichkeit von 0.3, 0.2 und 0.1 haben und der Top-P-Wert 0.5 ist, wählt das Modell mithilfe der Temperatur entweder A oder B als nächstes Token und schließt C als Kandidat aus.
+Geben Sie einen niedrigeren Wert für weniger zufällige Antworten und einen höheren Wert für zufälligere Antworten an.
+
+  Bereich: `0` bis `1`
+
+  Format: `float`
+</ParamField>
+
+<ParamField body="safetySettings" type="object[]">
+  Einstellungen pro Anfrage zum Blockieren unsicherer Inhalte. Wird auf GenerateContentResponse.candidates angewendet.
+</ParamField>
+
+<ParamField body="safetySettings[].category" type="string" required>
+  Mögliche Werte: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ParamField>
+
+<ParamField body="safetySettings[].threshold" type="string" required>
+  Mögliche Werte: `OFF`, `BLOCK_NONE`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_ONLY_HIGH`
+</ParamField>
+
+<ParamField body="systemInstruction" type="object">
+  Anweisungen für das Modell, um es zu besserer Leistung zu lenken. Zum Beispiel „Antworten Sie so knapp wie möglich“ oder „Verwenden Sie in Ihrer Antwort keine Fachbegriffe“. Die Textstrings zählen zum Token-Limit. Das Feld role von systemInstruction wird ignoriert und wirkt sich nicht auf die Leistung des Modells aus. Hinweis: In parts sollte nur Text verwendet werden, und der Inhalt jedes Teils sollte in einem eigenen Absatz stehen.
+</ParamField>
+
+<ParamField body="systemInstruction.parts" type="object[]" required>
+  Eine Liste geordneter Teile, die eine einzelne Nachricht bilden. Verschiedene Teile können unterschiedliche IANA-MIME-Typen haben. Zu den Limits für die Eingaben, etwa der maximalen Anzahl von Token oder der Anzahl von Bildern, siehe die Modellspezifikationen auf der Seite der Google-Modelle.
+</ParamField>
+
+<ParamField body="systemInstruction.parts[].text" type="string">
+  Ein Text-Prompt oder Code-Snippet.
+</ParamField>
+
+<ParamField body="systemInstruction.role" type="string">
+  Die Identität der Entität, die die Nachricht erstellt. Die folgenden Werte werden unterstützt: user: Dies gibt an, dass die Nachricht von einer echten Person gesendet wird, typischerweise eine benutzergenerierte Nachricht. model: Dies gibt an, dass die Nachricht vom Modell generiert wird. Der Wert model wird verwendet, um bei Multi-Turn-Konversationen Nachrichten des Modells in die Konversation einzufügen. Bei Nicht-Multi-Turn-Konversationen kann dieses Feld leer bleiben oder nicht gesetzt werden.
+
+  Mögliche Werte: `user`, `model`
+</ParamField>
+
+<ParamField body="tools" type="object[]">
+  Ein Stück Code, das es dem System ermöglicht, mit externen Systemen zu interagieren, um eine Aktion oder eine Reihe von Aktionen außerhalb des Wissens und Zuständigkeitsbereichs des Modells auszuführen. Siehe Function calling.
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations" type="object[]">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].description" type="string">
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].name" type="string" required>
+   
+</ParamField>
+
+<ParamField body="tools[].functionDeclarations[].parameters" type="object">
+  JSON-Schema für die Parameter der Funktion
+</ParamField>
+
+<ParamField body="uploadImagesToStorage" type="boolean">
+  Wenn true, werden generierte Bilder in den Cloud-Speicher hochgeladen und als signierte URLs statt als Inline-Base64-Daten zurückgegeben. Die URLs laufen nach 24 Stunden ab.
+</ParamField>
+
+<ParamField body="videoMetadata" type="object">
+  Bei Videoeingaben der Start- und End-Offset des Videos im Duration-Format. Um beispielsweise einen 10-Sekunden-Clip ab 1:00 anzugeben, setzen Sie "startOffset": \{ "seconds": 60 } und "endOffset": \{ "seconds": 70 }. Die Metadaten sollten nur angegeben werden, während die Videodaten in inlineData oder fileData vorliegen.
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset" type="object">
+  Stellt einen Dauer-Offset für Positionen auf der Video-Zeitleiste dar.
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.nanos" type="integer">
+  Vorzeichenbehaftete Sekundenbruchteile in Nanosekundenauflösung. Negative Sekundenwerte mit Bruchteilen müssen dennoch nicht-negative Nanowerte aufweisen.
+
+  Bereich: `0` bis `999999999`
+</ParamField>
+
+<ParamField body="videoMetadata.endOffset.seconds" type="integer">
+  Vorzeichenbehaftete Sekunden des Zeitraums. Muss im inklusiven Bereich von -315,576,000,000 bis +315,576,000,000 liegen.
+
+  Bereich: `-315576000000` bis `315576000000`
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset" type="object">
+  Stellt einen Dauer-Offset für Positionen auf der Video-Zeitleiste dar.
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.nanos" type="integer">
+  Vorzeichenbehaftete Sekundenbruchteile in Nanosekundenauflösung. Negative Sekundenwerte mit Bruchteilen müssen dennoch nicht-negative Nanowerte aufweisen.
+
+  Bereich: `0` bis `999999999`
+</ParamField>
+
+<ParamField body="videoMetadata.startOffset.seconds" type="integer">
+  Vorzeichenbehaftete Sekunden des Zeitraums. Muss im inklusiven Bereich von -315,576,000,000 bis +315,576,000,000 liegen.
+
+  Bereich: `-315576000000` bis `315576000000`
+</ParamField>
+
+Generiert aus dem Schema, das Router unter `GET /v2/models/vertexai/gemini-3-pro-image/openapi.json` bereitstellt, demselben Dokument, gegen das ein Aufruf validiert wird, bevor die Anfrage den Anbieter erreicht.
+
+### Ausgaben
+
+<ResponseField name="candidates" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].authors" type="string[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].endIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].license" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].publicationDate" type="string (date)">
+  Format: `date`
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].startIndex" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].title" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].citationMetadata.citations[].uri" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content" type="object">
+  Der Inhalt der aktuellen Unterhaltung mit dem Modell. Bei Single-Turn-Abfragen ist dies eine einzelne Instanz. Bei Multi-Turn-Abfragen ist dies ein wiederholtes Feld, das den Gesprächsverlauf und die neueste Anfrage enthält.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts" type="object[]" required>
+   
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData" type="object">
+  URI-basierte Daten.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.fileUri" type="string">
+  URI
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].fileData.mimeType" type="string">
+  Der Medientyp der Datei, die in den Feldern data oder fileUri angegeben ist. Zulässige Werte sind unter anderem die folgenden. Für gemini-2.0-flash-lite und gemini-2.0-flash beträgt die maximale Länge einer Audiodatei 8.4 Stunden und die maximale Länge einer Videodatei (ohne Audio) eine Stunde. Weitere Informationen finden Sie in den Gemini-Anforderungen für Audio und Video. Textdateien müssen UTF-8-kodiert sein. Der Inhalt der Textdatei zählt zum Token-Limit. Für die Bildauflösung gibt es kein Limit.
+
+  Mögliche Werte: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData" type="object">
+  Inline-Daten als Rohbytes. Für gemini-2.0-flash-lite und gemini-2.0-flash können Sie mit inlineData bis zu 3000 Bilder angeben.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.data" type="string (byte)">
+  Die Base64-Kodierung des Bilds, PDFs oder Videos, das inline in den Prompt aufgenommen werden soll. Wenn Sie Medien inline einfügen, müssen Sie auch den Medientyp (mimeType) der Daten angeben. Größenlimit: 20MB
+
+  Format: `byte`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].inlineData.mimeType" type="string">
+  Der Medientyp der Datei, die in den Feldern data oder fileUri angegeben ist. Zulässige Werte sind unter anderem die folgenden. Für gemini-2.0-flash-lite und gemini-2.0-flash beträgt die maximale Länge einer Audiodatei 8.4 Stunden und die maximale Länge einer Videodatei (ohne Audio) eine Stunde. Weitere Informationen finden Sie in den Gemini-Anforderungen für Audio und Video. Textdateien müssen UTF-8-kodiert sein. Der Inhalt der Textdatei zählt zum Token-Limit. Für die Bildauflösung gibt es kein Limit.
+
+  Mögliche Werte: `application/pdf`, `audio/mpeg`, `audio/mp3`, `audio/wav`, `image/png`, `image/jpeg`, `image/webp`, `text/plain`, `video/mov`, `video/mpeg`, `video/mp4`, `video/mpg`, `video/avi`, `video/wmv`, `video/mpegps`, `video/flv`, `image/heic`, `image/heif`, `audio/flac`, `video/webm`
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].mediaProcessing" type="string">
+  Wie das Modell das Video dieses Teils liest. Legen Sie „AGENTIC“ fest, damit das Modell entscheidet, welche Segmente untersucht werden, statt eines Samplings mit fester Frame-Rate. Lassen Sie den Wert weg, um das standardmäßige Sampling mit fester Frame-Rate zu verwenden. Unterstützt auf gemini-3.7-flash und neueren Flash-Modellen.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].text" type="string">
+  Ein Text-Prompt oder ein Code-Snippet.
+</ResponseField>
+
+<ResponseField name="candidates[].content.parts[].thought" type="boolean">
+  Gibt an, dass dieser Teil ein Denk- oder Schlussfolgerungsschritt des Modells ist.
+</ResponseField>
+
+<ResponseField name="candidates[].content.role" type="string">
+  Mögliche Werte: `user`, `model`
+</ResponseField>
+
+<ResponseField name="candidates[].finishReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].category" type="string">
+  Mögliche Werte: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="candidates[].safetyRatings[].probability" type="string">
+  Die Wahrscheinlichkeit, dass der Inhalt gegen die angegebene Sicherheitskategorie verstößt
+
+  Mögliche Werte: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="createTime" type="string">
+  Zeitstempel der Erstellung der Antwort.
+</ResponseField>
+
+<ResponseField name="modelVersion" type="string">
+  Die Modellversion, mit der die Antwort generiert wurde.
+</ResponseField>
+
+<ResponseField name="promptFeedback" type="object">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReason" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.blockReasonMessage" type="string">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].category" type="string">
+  Possible values: `HARM_CATEGORY_SEXUALLY_EXPLICIT`, `HARM_CATEGORY_HATE_SPEECH`, `HARM_CATEGORY_HARASSMENT`, `HARM_CATEGORY_DANGEROUS_CONTENT`
+</ResponseField>
+
+<ResponseField name="promptFeedback.safetyRatings[].probability" type="string">
+  Die Wahrscheinlichkeit, dass der Inhalt gegen die angegebene Sicherheitskategorie verstößt
+
+  Possible values: `NEGLIGIBLE`, `LOW`, `MEDIUM`, `HIGH`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="responseId" type="string">
+  Eindeutige Kennung für die Antwort.
+</ResponseField>
+
+<ResponseField name="usageMetadata" type="object">
+   
+</ResponseField>
+
+<ResponseField name="usageMetadata.cachedContentTokenCount" type="integer">
+  Nur Ausgabe. Anzahl der Tokens im zwischengespeicherten Teil der Eingabe (der zwischengespeicherte Inhalt).
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokenCount" type="integer">
+  Anzahl der Tokens in den Antworten.
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails" type="object[]">
+  Aufschlüsselung der Kandidaten-Tokens nach Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].modality" type="string">
+  Typ der Modalität des Eingabe- oder Ausgabeinhalts.
+
+  Possible values: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.candidatesTokensDetails[].tokenCount" type="integer">
+  Anzahl der Tokens für die angegebene Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokenCount" type="integer">
+  Anzahl der Tokens in der Anfrage. Wenn cachedContent gesetzt ist, entspricht dies weiterhin der gesamten effektiven Prompt-Größe, das heißt, die Anzahl der Tokens im zwischengespeicherten Inhalt ist darin enthalten.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails" type="object[]">
+  Aufschlüsselung der Prompt-Tokens nach Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].modality" type="string">
+  Typ der Modalität des Eingabe- oder Ausgabeinhalts.
+
+  Possible values: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.promptTokensDetails[].tokenCount" type="integer">
+  Anzahl der Tokens für die angegebene Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.thoughtsTokenCount" type="integer">
+  Anzahl der in der Thoughts-Ausgabe enthaltenen Tokens.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokenCount" type="integer">
+  Anzahl der Tokens in Prompts für die Werkzeugnutzung.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails" type="object[]">
+  Aufschlüsselung der Tokens von Prompts für die Werkzeugnutzung nach Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].modality" type="string">
+  Typ der Modalität des Eingabe- oder Ausgabeinhalts.
+
+  Possible values: `MODALITY_UNSPECIFIED`, `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`
+</ResponseField>
+
+<ResponseField name="usageMetadata.toolUsePromptTokensDetails[].tokenCount" type="integer">
+  Anzahl der Tokens für die angegebene Modalität.
+</ResponseField>
+
+<ResponseField name="usageMetadata.totalTokenCount" type="integer">
+  Gesamtzahl der Tokens (Prompt + Kandidaten).
+</ResponseField>
+
+<ResponseField name="usageMetadata.trafficType" type="string">
+  Für die Anfrage verwendeter Traffic-Typ (z. B. PROVISIONED_THROUGHPUT).
+</ResponseField>
+
+## Beispiele
+
+### Eingaben
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "a single red maple leaf on a plain white background, studio lighting"
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": [
+      "IMAGE"
+    ],
+    "imageConfig": {
+      "aspectRatio": "1:1"
+    }
+  }
+}
+```
+
+### Ausgaben
+
+```json
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "PGJhc2U2ND4="
+            }
+          }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 12,
+    "candidatesTokenCount": 1290
+  }
+}
+```
+
+### Die Parts lesen
+
+Standardmäßig enthalten generierte Bild-Parts base64-Bytes in `inlineData.data` und einen Medientyp in `inlineData.mimeType`. Dekodieren Sie die Bytes und speichern Sie sie in einer Datei. Mit `uploadImagesToStorage: true` verwenden hochgeladene Bilder stattdessen `fileData.fileUri` für eine signierte URL und `fileData.mimeType` für den Medientyp. Laden Sie diese Bilder herunter, bevor die URLs ablaufen, also 24 Stunden nach ihrer Erstellung.
+
+**`fileData` kann in einer Antwort auftauchen, die es gar nicht angefordert hat.** Die beiden Formen gelten pro Part, nicht pro Antwort: Ist `uploadImagesToStorage: true` gesetzt, bleibt ein Bild, dessen Upload fehlschlägt, als `inlineData` erhalten, sodass eine Antwort beide Formen mischen kann. Verzweigen Sie danach, welcher Schlüssel vorhanden ist, und nicht danach, was Sie angefordert haben. Der einzige Fall, der nicht eintreten kann, ist der umgekehrte: Ist das Feld nicht gesetzt oder `false`, kommt jedes generierte Bild als `inlineData` zurück, und es wird kein `fileData`-Bild-Part erzeugt. Text-Parts können ebenfalls auftauchen, und das Bild ist nicht zwingend der erste Part. Wählen Sie einen Part daher über das Feld aus, das Sie benötigen, und nicht über den Index. Der Pfad `candidates[0].content.parts[0].inlineData.data` in den Quickstart-Beispielen oben liest den einzigen Inline-Part der Beispielantwort auf dieser Seite; prüfen Sie bei einer echten Antwort `parts` auf den gewünschten Schlüssel, statt Position 0 zu indizieren.
+
+**`thoughtSignature` ist ebenfalls ein Part-Feld, und es ist groß.** Ein Part kann `thoughtSignature` tragen, eine undurchsichtige base64-Signatur der Denkweise des Modells, die existiert, damit der Gedanke in einer späteren Anfrage erneut abgespielt werden kann. Im oben generierten Schema fehlt es, weil dieses dem Request/Response-Dokument folgt, das Router veröffentlicht. Auf echten Antworten gemessen liegt es bei etwa 1 bis 2 MB pro Part, vergleichbar mit dem Bild selbst. Es lohnt sich daher, dafür Budget einzuplanen oder es explizit zu verwerfen, wenn Sie Antworten protokollieren, sie über eine serverlose Funktion weiterleiten oder sie speichern.
+
+### `imageSize` ist eine Klasse, keine Breite
+
+`generationConfig.imageConfig.imageSize` akzeptiert `1K`, `2K` oder `4K`, und jede Stufe verdoppelt beide Kanten, statt eine Breite festzulegen. Eine 16:9-Anfrage maß 1376x768 bei etwa 1.35 MB unter `1K` und 2752x1536 bei etwa 5.6 MB unter `2K`: dasselbe Seitenverhältnis, viermal so viele Pixel und rund viermal so viele Bytes. `2K` bedeutet also nicht ein Bild mit 2048 Pixel Breite, und wenn Sie einen Upload-Pfad, ein Limit für den Antwort-Body oder einen Storage-Bucket gegen `2K` dimensionieren, als wäre es eine Breite, provisionieren Sie ihn um etwa das Vierfache zu klein.
+
+### Referenzen verketten
+
+Wenn Sie ein zuvor generiertes Bild direkt wieder einspeisen, erhalten Sie einen neuen Kamera-Winkel auf dasselbe Motiv. Eine Folge von Aufnahmen einer Szene ist daher eine Kette von Aufrufen und nicht ein Prompt, der alles auf einmal beschreiben muss. Architektur, Materialien und Beleuchtung bleiben oft über eine Kette hinweg erhalten, aber das Modell garantiert es nicht. Behandeln Sie Kontinuität als ein wahrscheinliches Ergebnis, das Sie prüfen sollten, und nicht als eine Eigenschaft, auf die Sie sich verlassen können.
+
+Senden Sie das Bild in der Form zurück, die die vorherige Antwort verwendet hat. Nehmen Sie bei einem `inlineData`-Part die base64-Bytes aus `inlineData.data` und senden Sie sie unverändert als `inlineData`, wie unten gezeigt. Bei einem Part, der unter `uploadImagesToStorage: true` als `fileData` zurückkam, senden Sie stattdessen `fileData.fileUri` und `fileData.mimeType` als `fileData`-Part, solange die signierte URL noch gültig ist; ein erneutes Hochladen der Bytes als `inlineData` funktioniert ebenfalls und läuft nicht ab. Fordern Sie dann die gewünschte Änderung an:
+
+```json
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "inlineData": {
+            "mimeType": "image/png",
+            "data": "<the base64 from candidates[0].content.parts[].inlineData.data of the previous response>"
+          }
+        },
+        { "text": "the same room, viewed from the opposite corner at eye level" }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": { "aspectRatio": "16:9" }
+  }
+}
+```
+
+Jeder Aufruf ist unabhängig. Übergeben Sie daher das Bild, auf dem Sie aufbauen möchten, statt sich auf den Gesprächsverlauf zu verlassen. Achten Sie beim Verketten auf die Größe des Request-Bodys: Das Inline-Bild zählt gegen das [Limit für den Request-Body](/de/development/comfy-router/limitations#request-bodies-are-capped) von Router, und ein `2K`-Bild hat etwa viermal so viele Bytes wie ein `1K`-Bild.
+
+<RouterCodeFooter />
