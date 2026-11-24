@@ -1,0 +1,295 @@
+---
+title: "Comfy Router-Anfragen in die Warteschlange stellen"
+sidebarTitle: "Anfragen in Warteschlange"
+description: "Comfy Router-Lauf absenden, Status abfragen und später über Warteschlangen-Routen oder Python- und TypeScript-SDKs abrufen oder abbrechen."
+translationSourceHash: 2d60a78d
+translationFrom: development/comfy-router/queue.mdx
+translationBlockHashes:
+  "_intro": bb9adff0
+  "Choose a delivery mode": 04a18c01
+  "Queue routes": e666df87
+  "Submit and collect a request": 8e776a91
+  "Queue response shapes": 5d24692b
+  "Idempotency and billing": b03b4156
+  "Queue error responses": 01118a93
+  "Next": af716b3d
+---
+
+`POST /v2/models/{provider}/{model}` hält die Verbindung, bis das Modell fertig ist. Die Zustellung über die Warteschlange verwendet dieselbe Modell-ID und denselben nativen Request-Body, gibt aber bereits zurück, sobald Router den Lauf angenommen hat. Sie erhalten sofort eine `request_id` und holen das Ergebnis ab, sobald es bereit ist, aus demselben oder einem anderen Prozess.
+
+**Die synchrone Route ist auf 10 Minuten begrenzt.** Die Standard-Deadline von Router lässt sich pro Deployment konfigurieren. Ein synchroner Aufruf, der sie erreicht, wird mit `504` / `deadline_exceeded` abgebrochen, unabhängig davon, ob der Anbieter noch arbeitet. Stellen Sie einen Lauf in die Warteschlange, wenn er die Deadline überschreiten könnte oder Ihr Aufrufer eine Verbindung nicht so lange offen halten kann. Unter [Aufrufe werden bei einer Server-Deadline abgebrochen](/de/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline) erfahren Sie, was die Deadline über die Abrechnung aussagt und was nicht.
+
+Verwenden Sie die Warteschlange, wenn eine Generierung länger dauern kann als die Verbindung, die Sie offen halten können, wenn eine Webanfrage sofort zurückkehren muss, wenn Sie in einem Prozess absenden und in einem anderen abholen oder wenn Sie viele Generierungen gleichzeitig ausführen möchten. Reihenfolge, Annahme, Wiederholungen, Timeouts, Abrechnung und Ablauf werden alle auf dem Server entschieden. Die SDKs ergänzen lediglich Polling und Ergonomie, sonst nichts.
+
+## Zustellmodus auswählen
+
+| | Synchron | In Warteschlange |
+| --- | --- | --- |
+| Route | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
+| Antwort | `200` mit der nativen Ausgabe des Modells | `201` mit einer `request_id` und drei URLs |
+| Ergebnis | In der Antwort | Später abgerufen, Byte für Byte dieselbe Ausgabe |
+| Zeitgrenze | Die [10-Minuten-Frist](/de/development/comfy-router/limitations#calls-are-cut-off-at-a-server-deadline) des Routers, danach `504` / `deadline_exceeded` | Keine Zeitgrenze für den Lauf. Das abgeschlossene Ergebnis wird [24 Stunden aufbewahrt](#idempotenz-und-abrechnung) |
+
+Die SDKs (`comfy-sdk` und `@comfyorg/sdk`, 0.3.0 oder höher) stellen die Warteschlange über drei Methoden neben `run` bereit:
+
+- **`submit(model, body)`** sendet die Anfrage und gibt sofort ein Handle zurück. Das Handle bietet `status()`, `get()`, `cancel()` und einen Event-Iterator (`iter_events()` in Python, `events()` in TypeScript).
+- **`subscribe(model, body, ...)`** vereint Absenden, Abfragen und Einsammeln in einem einzigen Aufruf, mit einem Fortschritts-Callback.
+- **`handle(model, request_id)`** baut in einem anderen Prozess aus den beiden IDs ein Handle neu auf, ohne einen Aufruf auszuführen.
+
+Beide IDs werden überall benötigt, weil beide die Anfrage adressieren: Die Route lautet `/v2/models/{provider}/{model}/requests/{request_id}`.
+
+<Note>
+  `events()` ist hier **nicht** das `job.events()` des Comfy-Cloud-Clients. Dieses fragt die Statusroute ab und liefert Warteschlangenbeobachtungen (Status und Warteschlangenposition) für eine Router-Anfrage. Das Cloud-Pendant ist ein Live-SSE-Stream einer ComfyUI-Workflow-Aufgabe, der Fortschritt, Vorschauen und Ausgaben überträgt. `subscribe()` ist wieder etwas Drittes: überhaupt kein Iterator, sondern Absenden, Abfragen und Einsammeln in einem einzigen Aufruf. Siehe [`events()` ist nicht `subscribe()`](/de/development/api-development/sdks#events-is-not-subscribe).
+</Note>
+
+## Routen der Warteschlange
+
+| Route | Antwort |
+| --- | --- |
+| `POST /v2/models/{provider}/{model}/requests` | `201` mit `request_id`, `status`, `queue_position`, `status_url`, `response_url`, `cancel_url` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200` mit dem aktuellen `status` und `queue_position` sowie einem `Retry-After`-Hinweis |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | `200` mit der nativen Ausgabe des Modells, sobald der Vorgang abgeschlossen ist, `202` mit dem Status-Body, solange er noch nicht abgeschlossen ist |
+| `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED` oder `409` `ALREADY_COMPLETED` |
+
+`status` ist einer von `IN_QUEUE`, `IN_PROGRESS` oder `COMPLETED`. Es gibt keinen separaten Status für Fehlgeschlagen oder Abgebrochen: Eine Anfrage, die nicht erfolgreich war, ist `COMPLETED` und trägt einen `error_type`. Verzweigen Sie daher anhand des Vorhandenseins dieses Felds und nicht anhand eines vierten Statuswerts. Die SDKs übernehmen das für Sie: `get()` wirft einen Fehler oder weist mit dem typisierten Router-Fehler ab, statt den Fehlschlag als Ergebnis zurückzugeben.
+
+Es gibt keine Fortschrittsereignisse, Webhooks oder Prioritätsstufen: Über die Status-Route verfolgen Sie eine Anfrage. Die [API-Referenz](/de/development/comfy-router/reference#endpoints) enthält den vollständigen Vertrag für jede Route.
+
+## Anfrage einreichen und Ergebnis abholen
+
+Dies stellt dieselbe Anfrage in die Warteschlange, die auch der [Schnellstart](/de/development/comfy-router/quickstart) sendet, und holt das Bild ab. Exportieren Sie zuerst Ihren Schlüssel als `COMFY_API_KEY`.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Jeder submit()-Aufruf erzeugt einen eigenen Idempotency-Key und verwendet ihn für automatische Wiederholungen erneut.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    print("request_id:", handle.request_id)  # mit der Modell-ID alles, was ein anderer Prozess braucht
+
+    # Abfragen, bis die Anfrage abgeschlossen ist, dabei die vom Server genannte Retry-After-Zeit abwarten.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # Die eigene Nutzlast des Anbieters, derselbe Wert, den models.run() liefert.
+    # Eine fehlgeschlagene oder abgebrochene Anfrage wirft hier den typisierten Router-Fehler.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Jeder submit()-Aufruf erzeugt einen eigenen Idempotency-Key und verwendet ihn für automatische Wiederholungen erneut.
+type FluxResult = { result: { sample: string } };
+const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
+  prompt: "a red teapot on a windowsill, morning light",
+});
+console.log("requestId:", handle.requestId); // mit der Modell-ID alles, was ein anderer Prozess braucht
+
+// Abfragen, bis die Anfrage abgeschlossen ist, dabei die vom Server genannte Retry-After-Zeit abwarten.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Dasselbe Ergebnis, das models.run() liefert. Eine fehlgeschlagene oder abgebrochene Anfrage wird hier zurückgewiesen.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+BASE="https://api.comfy.org/v2/models/bfl/flux-2-pro"
+
+# 1. Einreichen. Router antwortet mit 201 und request_id, status_url, response_url und cancel_url.
+curl "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+
+# 2. Abfragen, bis der Status COMPLETED ist, dabei die Retry-After-Sekunden jeder Antwort abwarten.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Abholen. 200 mit der nativen Ausgabe des Modells, 202 mit dem Status-Body, solange die Anfrage noch läuft.
+curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+
+# 4. Eine noch nicht abgeschlossene Anfrage abbrechen. Eine Anfrage, keine Garantie.
+curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+
+Jede [Modellseite](/de/development/comfy-router/models) enthält diese Form für ihr eigenes Modell unter **In die Warteschlange stellen und später abholen**, neben dem synchronen Snippet.
+
+### Fortschritt verfolgen und in einem Aufruf abholen
+
+Wenn Sie warten und dabei den Fortschritt anzeigen möchten, fasst `subscribe` Einreichen, Abfragen und Abholen in einem Aufruf zusammen:
+
+<CodeGroup>
+```python Python
+def on_update(update):
+    print(update.status, update.queue_position)
+
+result = client.models.subscribe(
+    "bfl/flux-2-pro",
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    on_queue_update=on_update,
+    timeout=300,
+)
+```
+
+```typescript TypeScript
+const result = await comfy.models.subscribe<FluxResult>(
+  "bfl/flux-2-pro",
+  { prompt: "a red teapot on a windowsill, morning light" },
+  {
+    onQueueUpdate: (update) => console.log(update.status, update.queuePosition),
+    timeoutMs: 300_000,
+  },
+);
+```
+</CodeGroup>
+
+Der Timeout ist eine Begrenzung auf Client-Seite ohne Bedeutung auf dem Server. Läuft er ab, sendet `subscribe` einen Best-Effort-Abbruch, bevor der Fehler ausgelöst wird. Ein Abbruch wirkt nur bei einer Anfrage, die noch nicht gestartet ist: Eine beim Partner bereits laufende Generierung wird abgeschlossen und abgerechnet, ob sie jemand abholt oder nicht. Verwenden Sie `submit`, wenn die Anfrage den Aufrufer überdauern soll.
+
+### Aus einem anderen Prozess abholen
+
+Speichern Sie die `request_id` zusammen mit der Modell-ID. Beide werden benötigt, um ein Handle neu aufzubauen, und es erfolgt kein Aufruf, bis Sie es verwenden.
+
+<CodeGroup>
+```python Python
+handle = client.models.handle("bfl/flux-2-pro", request_id)
+result = handle.get()
+```
+
+```typescript TypeScript
+const handle = comfy.models.handle<FluxResult>("bfl/flux-2-pro", requestId);
+const result = await handle.get();
+```
+</CodeGroup>
+
+### Status prüfen oder abbrechen
+
+`status()` ist eine einzelne Abfrage und liefert den aktuellen Zustand. `cancel()` bittet den Server, eine noch nicht abgeschlossene Anfrage zu stoppen. Das ist eine Anfrage, keine Garantie: Ein beim Partner bereits laufender Lauf kann trotzdem abgeschlossen werden, und erst die nächste `status()`-Abfrage zeigt, was tatsächlich gilt.
+
+<CodeGroup>
+```python Python
+update = handle.status()
+print(update.status, update.queue_position, update.error_type)
+
+handle.cancel()
+```
+
+```typescript TypeScript
+const update = await handle.status();
+console.log(update.status, update.queuePosition, update.errorType);
+
+await handle.cancel();
+```
+</CodeGroup>
+
+### Asynchrones Python
+
+`AsyncComfy` spiegelt jeden Namen, jedes Argument und jede Argumentreihenfolge. Es gibt kein `submit_async`, aus demselben Grund, aus dem es kein `run_async` gibt.
+
+```python
+from comfy_sdk import AsyncComfy
+
+async with AsyncComfy() as client:
+    handle = await client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    async for update in handle.iter_events():
+        print(update.status, update.queue_position)
+    result = await handle.get()
+```
+
+### Fehler, die die SDKs auslösen
+
+Eine Anfrage, die ohne Erfolg beendet wurde, wird als `COMPLETED` mit einem `error_type` gemeldet. `get()` und `subscribe()` machen daraus den typisierten Router-Fehler des jeweiligen Bereichs: die Klassen in `comfy_sdk.router_exceptions` in Python und `routerErrors.*` in TypeScript. Der Event-Iterator löst in diesem Fall keinen Fehler aus, denn er ist eine Sicht auf den Fortschritt der Warteschlange: Ein Abschluss mit `error_type` wird als letzte Beobachtung ausgegeben, und `get()` ist die Stelle, die das Ergebnis abholt. Ein `403` `not_enabled` beim Einreichen kommt als `NotEnabled` an und ist terminal, daher wiederholen die SDKs ihn nicht.
+
+
+## Antwortformen der Warteschlange
+
+**Absenden, `201`.** `status` ist zu diesem Zeitpunkt immer `IN_QUEUE`. Die drei URLs sind absolut und werden mit demselben Schlüssel wie beim Absenden authentifiziert.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_QUEUE",
+  "queue_position": 3,
+  "status_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status",
+  "response_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "cancel_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel"
+}
+```
+
+`request_id` ist zugleich der Wert des Headers `X-Comfy-Request-Id` der Absendeanfrage. Behalten Sie die Modell-ID daneben: Die Anfrage wird über beide adressiert.
+
+**Status, `200`.** Die gleiche Form, mit dem aktuellen Zustand. `queue_position` zählt die Anfragen vor Ihrer und erreicht `0`, wenn der Lauf ganz vorne ist. `Retry-After` in dieser Antwort ist die Schätzung des Routers, wann ein erneutes Abfragen den Aufwand lohnt. Es ist ein Hinweis, keine feste Grenze, und einer Anfrage am Ende der Warteschlange wird eine längere Wartezeit mitgeteilt als einer bereits laufenden. Schnelleres Polling erfährt nichts früher und verbraucht Ihr eigenes Rate-Limit-Kontingent.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_PROGRESS",
+  "queue_position": 0,
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+Eine Anfrage, die ohne Erfolg abgeschlossen wurde, ist `COMPLETED` mit einem `error_type` und trägt dieselbe grobe Kategorie, die die Ergebnisabfrage in `X-Comfy-Error-Type` setzt. Bei Erfolg fehlt das Feld, statt `null` zu sein.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "COMPLETED",
+  "error_type": "content_policy_violation",
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+**Ergebnis.** `200` enthält die native Ausgabe des Modells, Byte für Byte das, was die synchrone Route für dasselbe Modell und dieselbe Eingabe zurückgibt, unter dem eigenen `Content-Type` des Anbieters. Solange die Anfrage nicht abgeschlossen ist, antwortet die Abfrage mit `202` und dem obigen Status-Body, sodass ein Client, der nur die Ergebnis-URL pollt, nur einen Typ parst. Eine fehlgeschlagene Anfrage kommt als Fehlerantwort mit gesetztem `X-Comfy-Error-Type` zurück, mit denselben Kategorien wie die synchrone Route.
+
+**Abbrechen.** `202` mit `CANCELLATION_REQUESTED` bedeutet, dass die Anfrage akzeptiert wurde, nicht dass der Lauf gestoppt ist. Ein Lauf, der beim Partner bereits auf dem Weg ist, kann trotzdem abgeschlossen werden, und eine beim Partner abgeschlossene Generierung wird in Rechnung gestellt, unabhängig davon, ob jemand sie abruft. Lesen Sie danach den Status: Eine wirksam gewordene Stornierung erscheint als `COMPLETED` mit `error_type: cancelled`. Eine Anfrage, die vor der Ausführung abgelaufen ist, zeigt auf dieselbe Weise `queue_timeout`. Eine bereits abgeschlossene Anfrage antwortet mit `409` und `ALREADY_COMPLETED`.
+
+## Idempotenz und Abrechnung
+
+- **Gleiche Abbuchung wie bei der synchronen Route.** Abgerechnet wird, wenn der Anbieter Comfy abrechnet. Die Zeit, die in der Warteschlange verbracht wird, wird nicht berechnet.
+- **Ein `Idempotency-Key` pro Absenden.** Das SDK erzeugt für jeden `submit`-Aufruf einen neuen Schlüssel, sodass zwei bewusste Absenden derselben Eingabe zwei Anfragen sind. Ein erneuter Versuch desselben Aufrufs unter demselben Schlüssel stellt keinen zweiten Lauf in die Warteschlange: Er gibt das ursprüngliche Handle mit `Idempotent-Replayed: true` zurück. Übergeben Sie Ihren eigenen Schlüssel, wenn eine verlorene Antwort Sie den `request_id` kosten könnte. Siehe [Headers](/de/development/comfy-router/headers).
+- **Ergebnisse laufen ab.** Eine abgeschlossene Anfrage wird nach ihrem Abschluss 24 Stunden lang aufbewahrt. Danach antworten der Status- und der Ergebnis-Abruf mit `410`, und das Ergebnis ist nicht mehr vorhanden. Holen Sie die Ergebnisse zeitnah ab und laden Sie alle Asset-URLs herunter, die die Ausgabe enthält.
+- **Auch Polls sind Anfragen.** Status- und Ergebnis-Abrufe zählen zur [Anfrage-Rate pro Aufrufer](/de/development/comfy-router/limitations#requests-are-rate-limited-per-caller). Beachten Sie `Retry-After`, statt in einem festen kurzen Intervall zu pollen.
+
+## Fehlerantworten der Warteschlange
+
+| Status | `X-Comfy-Error-Type` | Bedeutung |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | Der Workspace kann den Lauf nicht finanzieren. Es wird nichts in die Warteschlange gestellt und nichts berechnet, und derselbe `Idempotency-Key` kann erneut gesendet werden, sobald er gedeckt ist. |
+| `403` | `not_enabled` | Dieser Aufrufer kann die Warteschlange nicht nutzen: ein Schlüssel ohne dahinterliegenden Workspace (Legacy-Schlüssel, die älter sind als Workspaces), eine Bring-your-own-Key-Anfrage oder ein Modell, das die Warteschlange nicht ausführen kann. Endgültig für diese Anfrage, nicht erneut versuchen. |
+| `404` | `model_not_found` | Die ID `{provider}/{model}` verweist auf kein Router-Modell. |
+| `404` | `request_not_found` | Für diesen Aufrufer und dieses Modell existiert keine Anfrage mit dieser ID. |
+| `409` | `concurrency_limit_exceeded` | Derselbe `Idempotency-Key` wird noch aufgenommen. Warten Sie `Retry-After` ab und senden Sie denselben Schlüssel erneut, um das ursprüngliche Handle zu erhalten. |
+| `409` | `invalid_input` | Der `Idempotency-Key` ist für eine andere Anfrage belegt. Senden Sie diese unter einem neuen Schlüssel. |
+| `409` | `ALREADY_COMPLETED` im Body | Nur auf der Route zum Abbrechen: Die Anfrage war bereits abgeschlossen, es gab also nichts abzubrechen. |
+| `410` | | Die Anfrage existierte und liegt außerhalb ihres Aufbewahrungsfensters, 24 Stunden nach ihrem Abschluss. Dauerhaft für diese ID. |
+| `422` | `invalid_input` | Das Modell hat die Eingabe abgelehnt. Der Body enthält die Details pro Feld, genau wie auf der synchronen Route. |
+
+Jede Fehlerantwort enthält `X-Comfy-Request-Id`. Geben Sie diese an, wenn Sie den Support kontaktieren.
+
+## Nächstes
+
+- [Fehler und erneute Versuche](/de/development/comfy-router/errors): Fehlerantworten lesen und ohne zweite Abbuchung erneut versuchen.
+- [API-Referenz](/de/development/comfy-router/reference#endpoints): der vollständige Vertrag für jede Route der Warteschlange.
