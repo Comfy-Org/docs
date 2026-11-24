@@ -1,0 +1,298 @@
+---
+title: "FLUX Video Upscale mit Comfy Router verwenden"
+description: "Python-, TypeScript- und cURL-Snippets zum Upscaling eines Videos mit FLUX Video Upscale über Comfy Router, plus Anfragefelder und Form des Ergebnisses"
+sidebarTitle: "FLUX Video Upscale"
+translationSourceHash: 37a8dde1
+translationFrom: development/comfy-router/models/black-forest-labs/flux-video-upscale/code.mdx
+translationBlockHashes:
+  "_intro": cf804f5f
+  "Quick start": b745a238
+  "Schema": c0dca73f
+  "Examples": d1ffa3d6
+---
+{/* GENERATED FILE. Edit code.yaml in this directory and run `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/de/comfy-router/model-code-footer.mdx";
+
+API-Referenz für FLUX Video Upscale. FLUX Video Upscale ist der Video-Upscaler von Black Forest Labs: Sie senden ein Video und erhalten eine Version mit höherer Auflösung zurück.
+
+**Eingabe:** Video · **Ausgabe:** Video
+
+## Schnellstart
+
+Erstellen Sie einen Schlüssel in [Ihrem Comfy Workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) und exportieren Sie ihn als `COMFY_API_KEY`. Die Python- und TypeScript-Snippets verwenden die Comfy SDKs (`pip install comfy-sdk` und `npm install @comfyorg/sdk`); das cURL-Snippet ist derselbe Aufruf über rohes HTTP.
+
+**Model ID:** `bfl/video-upscale-v1`
+
+**Endpoint:** `POST https://api.comfy.org/v2/models/bfl/video-upscale-v1`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Auf das Ergebnis warten">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Das SDK erstellt automatisch einen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "bfl/video-upscale-v1",
+            {
+                "input_video": "https://your-host.example/clip.mp4",
+                "upscale_factor": 2,
+                "creativity": 1,
+            },
+        )
+
+    print("video:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Das SDK erstellt automatisch einen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+type Result = { result: { sample: string } };
+const result = await comfy.models.run<Result>("bfl/video-upscale-v1", {
+  input_video: "https://your-host.example/clip.mp4",
+  upscale_factor: 2,
+  creativity: 1,
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.result.sample);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/bfl/video-upscale-v1 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input_video\": \"https://your-host.example/clip.mp4\", \"upscale_factor\": 2, \"creativity\": 1}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="In Warteschlange stellen und später abholen">
+Derselbe Body, gesendet an `POST https://api.comfy.org/v2/models/bfl/video-upscale-v1/requests`. Router antwortet mit `201` und einer `request_id`, sobald der Lauf angenommen ist, und das Ergebnis wird abgeholt, sobald es bereit ist, aus diesem Prozess oder einem anderen. [Zustellung über die Warteschlange](/de/development/comfy-router/queue) beschreibt Status, Abbruch und Abholung im Detail.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Liest COMFY_API_KEY aus der Umgebung.
+# Jeder submit()-Aufruf erzeugt einen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "bfl/video-upscale-v1",
+            {
+                "input_video": "https://your-host.example/clip.mp4",
+                "upscale_factor": 2,
+                "creativity": 1,
+            },
+        )
+        print("request_id:", handle.request_id)  # zusammen mit der Model ID alles, was ein anderer Prozess benötigt
+
+        # Abfragen, bis die Anfrage abgeschlossen ist, und dabei das vom Server genannte Retry-After abwarten.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Die eigene Payload des Anbieters, derselbe Wert, den models.run() zurückgibt.
+        # Eine fehlgeschlagene oder abgebrochene Anfrage löst hier den typisierten Router-Fehler aus.
+        result = await handle.get()
+
+    print("video:", result["result"]["sample"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Liest COMFY_API_KEY aus der Umgebung.
+// Jeder submit()-Aufruf erzeugt einen eigenen Idempotency-Key und verwendet ihn bei automatischen Wiederholungsversuchen erneut.
+type Result = { result: { sample: string } };
+const handle = await comfy.models.submit<Result>("bfl/video-upscale-v1", {
+  input_video: "https://your-host.example/clip.mp4",
+  upscale_factor: 2,
+  creativity: 1,
+});
+console.log("requestId:", handle.requestId); // zusammen mit der Model ID alles, was ein anderer Prozess benötigt
+
+// Abfragen, bis die Anfrage abgeschlossen ist, und dabei das vom Server genannte Retry-After abwarten.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Dasselbe Ergebnis, das models.run() zurückgibt. Eine fehlgeschlagene oder abgebrochene Anfrage führt hier zu einer Ablehnung.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.result.sample);
+```
+
+```bash cURL
+# 1. Absenden. Router antwortet mit 201 und request_id, status_url, response_url und cancel_url.
+curl https://api.comfy.org/v2/models/bfl/video-upscale-v1/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input_video\": \"https://your-host.example/clip.mp4\", \"upscale_factor\": 2, \"creativity\": 1}"
+
+# 2. Abfragen, bis der Status COMPLETED ist, und dabei die in jeder Antwort genannten Retry-After-Sekunden abwarten.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/bfl/video-upscale-v1/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Abholen. 200 mit der nativen Ausgabe des Modells, 202 mit dem Status-Body, solange es noch läuft.
+curl https://api.comfy.org/v2/models/bfl/video-upscale-v1/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Schema
+
+### Eingaben
+
+<ParamField body="creativity" type="integer" default="1">
+  0 bewahrt die Quelle präzise und schärft sie; 1 erlaubt eine kreative Detailanreicherung, die Gesichter oder Produkte nicht streng erhält.
+
+  Bereich: `0` bis `1`
+</ParamField>
+
+<ParamField body="input_video" type="string" required>
+  Das zu skalierende Video, entweder eine HTTP(S)-URL oder ein base64-kodiertes MP4. Höchstens 20 Sekunden Ausgangsmaterial, 50MB und 2560x1440 (3.7 Megapixel) pro Frame; skalieren Sie eine größere Quelle herunter, bevor Sie sie übermitteln.
+</ParamField>
+
+<ParamField body="prompt" type="string">
+  Optionale Beschreibung des Inhalts des Clips, die die verstärkten Details steuert. Leer lassen für ein neutrales Upscaling.
+</ParamField>
+
+<ParamField body="safety_tolerance" type="integer" default="2">
+  Toleranzstufe für die Moderation von Prompt und Ausgabeframes, wobei 0 am strengsten ist.
+
+  Bereich: `0` bis `4`
+</ParamField>
+
+<ParamField body="upscale_factor" type="number" default="2">
+  Skalierung der Ausgabe relativ zur Auflösung der Quelle. Die Ausgabe behält das Seitenverhältnis der Quelle bei und ist auf etwa 14.4 Megapixel pro Frame begrenzt, daher werden sehr große Quellen um weniger als den angeforderten Faktor skaliert. Es gibt keine Auflösungsoption; um 2K (2560x1440) oder 4K (3840x2160) zu erreichen, dividieren Sie die Zielhöhe durch die Höhe der Quelle. Eine 720p-Quelle erreicht 2K bei 2 und 4K bei 3; eine 1080p-Quelle erreicht 4K bei 2, kann 2K aber nicht erreichen, dafür wäre 1.33 nötig.
+
+  Bereich: `1.5` bis `3`
+
+  Format: `float`
+</ParamField>
+
+<ParamField body="webhook_secret" type="string">
+  Optionales Secret für die Verifizierung der Webhook-Signatur.
+</ParamField>
+
+<ParamField body="webhook_url" type="string (uri)">
+  URL zum Empfang von Webhook-Benachrichtigungen.
+
+  Format: `uri`
+</ParamField>
+
+Generiert aus dem Schema, das Router unter `GET /v2/models/bfl/video-upscale-v1/openapi.json` bereitstellt: dasselbe Dokument, gegen das er einen Aufruf validiert, bevor die Anfrage den Anbieter erreicht.
+
+### Ausgaben
+
+<ResponseField name="cost" type="number">
+  Vom Anbieter gemeldete Kosten in Credits, befüllt sobald die Aufgabe den Status Bereit hat.
+
+  Format: `float`
+</ResponseField>
+
+<ResponseField name="id" type="string" required>
+  BFL-Aufgabenkennung.
+</ResponseField>
+
+<ResponseField name="progress" type="number">
+  Optionaler Generierungsfortschritt, den BFL meldet.
+
+  Bereich: `0` bis `1`
+
+  Format: `float`
+</ResponseField>
+
+<ResponseField name="result" type="object" required>
+  Die abgeschlossene Generierung. Hier nicht nullable: Der `required`-Eintrag dieser Komponente ist das Versprechen, dass ein `200` das Ergebnis enthält, und ein nullable `result` würde das auf eine Prüfung auf Schlüsselpräsenz reduzieren.
+</ResponseField>
+
+<ResponseField name="result.cost" type="number">
+  Vom Anbieter gemeldete Kosten der Generierung. Dies ist BFLs Zahl, nicht die Abbuchung von Comfy.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.duration" type="number">
+  Vom Anbieter gemeldete Dauer der Generierung in Sekunden.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.end_time" type="number">
+  Vom Anbieter gemeldete Fertigstellungszeit der Generierung, in Sekunden seit der Unix-Epoche. `double` aus demselben Grund wie bei `start_time`.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="result.prompt" type="string">
+  Der Prompt, mit dem die Generierung tatsächlich gelaufen ist, nach einem eventuellen Prompt-Upsampling.
+</ResponseField>
+
+<ResponseField name="result.sample" type="string (uri)">
+  Signierte URL für das generierte Asset. Router hostet das Asset auf Comfy-Speicher neu und schreibt dieses Feld um, daher ist es normalerweise eine von Comfy gehostete URL, die bis zu 24 Stunden gültig ist: beim Ausstellen für 24 Stunden signiert und aus einem 23-Stunden-Memo erneut ausgegeben, sodass eine spätere Abfrage eine URL zurückgeben kann, die nur noch eine Stunde gültig ist; ein Leaf, dessen Re-Hosting nicht durchgeführt werden konnte, behält stattdessen BFLs eigene kurzlebige Auslieferungs-URL: etwa zwei Stunden für Video, etwa zehn Minuten für Bilder. So oder so läuft der Link ab, laden Sie das Asset also herunter, statt die URL zu speichern.
+
+  Format: `uri`
+</ResponseField>
+
+<ResponseField name="result.seed" type="integer">
+  Der Seed, den die Generierung verwendet hat, ob bereitgestellt oder vom Anbieter gewählt. Als `int64` deklariert, weil BFL Seeds über 2^31 zurückgibt (z. B. 2784347701), die ein unformatiertes `integer` in vielen SDK-Generatoren als 32-Bit-Feld erzeugt.
+
+  Format: `int64`
+</ResponseField>
+
+<ResponseField name="result.start_time" type="number">
+  Vom Anbieter gemeldete Startzeit der Generierung, in Sekunden seit der Unix-Epoche. `double`, nicht `float`: Der float32-Abstand nahe einem heutigen Epochenwert liegt bei ~128 Sekunden, was die Spanne einer ganzen Generierung auf einen einzigen dekodierten Wert zusammenfallen lässt.
+
+  Format: `double`
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Aufgabenstatus: Pending, Reasoning, Generating, Ready, Request Moderated, Content Moderated, Error oder Task not found.
+</ResponseField>
+
+## Beispiele
+
+### Eingaben
+
+```json
+{
+  "input_video": "https://your-host.example/clip.mp4",
+  "upscale_factor": 2,
+  "creativity": 1
+}
+```
+
+### Ausgaben
+
+```json
+{
+  "id": "0a1b2c3d-...",
+  "status": "Ready",
+  "result": {
+    "sample": "https://.../upscaled.mp4"
+  }
+}
+```
+
+`result.sample` ist normalerweise eine von Comfy gehostete signierte URL, die ab ihrer Erstellung bis zu 24 Stunden gültig ist. Eine erneute Wiedergabe kann eine ältere URL zurückgeben, und ein Asset, das nicht erneut gehostet werden konnte, behält seine Anbieter-URL mit kürzerer Lebensdauer. Laden Sie die MP4-Datei zeitnah herunter, statt den Link zu speichern.
+
+<RouterCodeFooter />
