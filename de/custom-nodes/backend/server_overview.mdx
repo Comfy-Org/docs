@@ -1,0 +1,181 @@
+---
+title: "Eigenschaften von Custom Nodes"
+sidebarTitle: "Node-Eigenschaften"
+description: "Definieren Sie einen ComfyUI Custom Node mit dem V1-Schema: INPUT_TYPES, RETURN_TYPES, CATEGORY, FUNCTION, Ausführungssteuerung und Eingabevalidierung."
+translationSourceHash: 4d53e76a
+translationFrom: custom-nodes/backend/server_overview.mdx
+---
+
+<Info>
+Die Node-Definitionen auf dieser Seite verwenden das ältere V1-Schema (`INPUT_TYPES` / `RETURN_TYPES`), das weiterhin vollständig unterstützt wird. Neue Nodes können auch mit dem modernen V3-Schema geschrieben werden (`io.ComfyNode` mit `define_schema` und einer `comfy_entrypoint`-Funktion); so ist auch die mitgelieferte [`custom_nodes/example_node.py.example`](https://github.com/comfyanonymous/ComfyUI/blob/master/custom_nodes/example_node.py.example) geschrieben. Die Unterschiede und die Migration finden Sie im [V3-Migrationsleitfaden](/de/custom-nodes/v3_migration).
+</Info>
+
+### Einfaches Beispiel
+
+Hier ist der Code für den Invert Image Node, der einen Überblick über die zentralen Konzepte der Entwicklung von Custom Nodes gibt.
+
+```python
+class InvertImageNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "image_in" : ("IMAGE", {}) },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image_out",)
+    CATEGORY = "examples"
+    FUNCTION = "invert"
+
+    def invert(self, image_in):
+        image_out = 1 - image_in
+        return (image_out,)
+```
+
+### Wichtige Eigenschaften
+
+Jeder Custom Node ist eine Python-Klasse mit den folgenden zentralen Eigenschaften:
+
+#### INPUT_TYPES
+
+`INPUT_TYPES` legt, wie der Name schon sagt, die Eingänge des Nodes fest. Die Methode gibt ein `dict` zurück, das den Schlüssel `required` enthalten _muss_ und zusätzlich die Schlüssel `optional` und/oder `hidden` enthalten _kann_. Der einzige Unterschied zwischen `required`- und `optional`-Eingängen besteht darin, dass `optional`-Eingänge unverbunden bleiben können.
+Weitere Informationen zu `hidden`-Eingängen finden Sie unter [Hidden Inputs](./more_on_inputs#ausgeblendete-eingänge).
+
+Jeder Schlüssel hat als Wert ein weiteres `dict`, in dem Schlüssel-Wert-Paare die Namen und Typen der Eingänge festlegen. Die Typen werden durch ein `tuple` definiert, dessen erstes Element den Datentyp angibt und dessen zweites Element ein `dict` mit zusätzlichen Parametern ist.
+
+Hier gibt es nur einen erforderlichen Eingang namens `image_in` vom Typ `IMAGE`, ohne zusätzliche Parameter.
+
+Beachten Sie, dass dieser `INPUT_TYPES` im Gegensatz zu den nächsten Attributen eine `@classmethod` ist. So können die Optionen in Dropdown-Widgets (etwa der Name des zu ladenden Checkpoints) zur Laufzeit von Comfy berechnet werden. Darauf kommen wir später ausführlicher zurück. {/* TODO link when written */}
+
+#### RETURN_TYPES
+
+Ein `tuple` aus `str`, das die vom Node zurückgegebenen Datentypen definiert.
+Wenn der Node keine Ausgänge hat, muss trotzdem `RETURN_TYPES = ()` angegeben werden.
+<Warning>Wenn Sie genau einen Ausgang haben, denken Sie an das abschließende Komma: `RETURN_TYPES = ("IMAGE",)`.
+Python benötigt es, damit der Wert ein `tuple` ist</Warning>
+
+#### RETURN_NAMES
+
+Die Namen, mit denen die Ausgänge beschriftet werden. Dies ist optional; wenn es weggelassen wird, sind die Namen einfach die `RETURN_TYPES` in Kleinbuchstaben.
+
+#### CATEGORY
+
+Wo der Node im ComfyUI-Menü **Add Node** zu finden ist. Untermenüs können als Pfad angegeben werden, z. B. `examples/trivial`.
+
+#### FUNCTION
+
+Der Name der Python-Funktion in der Klasse, die bei der Ausführung des Nodes aufgerufen werden soll.
+
+Die Funktion wird mit benannten Argumenten aufgerufen. Alle `required`- (und `hidden`-) Eingänge werden übergeben;
+`optional`-Eingänge werden nur übergeben, wenn sie verbunden sind. Deshalb sollten Sie in der Funktionsdefinition Standardwerte für sie angeben (oder sie mit `**kwargs` aufnehmen).
+
+Die Funktion gibt ein `tuple` zurück, das den `RETURN_TYPES` entspricht. Das ist auch dann erforderlich, wenn nichts zurückgegeben wird (`return ()`).
+Und auch hier gilt: Wenn Sie nur einen Ausgang haben, denken Sie an das abschließende Komma in `return (image_out,)`!
+
+### Zusätzliche Optionen zur Ausführungssteuerung
+
+Eine großartige Funktion von Comfy ist, dass Ausgänge zwischengespeichert werden und nur Nodes ausgeführt werden, die ein anderes Ergebnis als beim vorherigen Lauf liefern könnten.
+Das kann viele Workflows erheblich beschleunigen.
+
+Im Wesentlichen funktioniert das so: Es wird ermittelt, welche Nodes einen Ausgang erzeugen (diese, insbesondere die Nodes Image Preview und Save Image, werden immer ausgeführt), und anschließend wird rückwärts ermittelt, welche Nodes Daten liefern, die sich seit dem letzten Lauf geändert haben könnten.
+
+Zwei optionale Eigenschaften eines Custom Nodes unterstützen diesen Prozess.
+
+#### OUTPUT_NODE
+
+Standardmäßig wird ein Node nicht als Ausgang betrachtet. Mit `OUTPUT_NODE = True` legen Sie fest, dass er einer ist.
+
+#### IS_CHANGED
+
+Standardmäßig geht Comfy davon aus, dass sich ein Node geändert hat, wenn sich einer seiner Eingänge oder Widgets geändert hat.
+Das ist normalerweise richtig, aber Sie müssen dieses Verhalten möglicherweise überschreiben, wenn der Node zum Beispiel eine Zufallszahl verwendet (und keinen Seed angibt; in diesem Fall ist es bewährte Praxis, einen Seed-Eingang vorzusehen, damit der Benutzer die Reproduzierbarkeit steuern und unnötige Ausführungen vermeiden kann), oder einen Eingang lädt, der sich extern geändert haben kann, oder Eingänge manchmal ignoriert (also nicht nur deshalb ausgeführt werden muss, weil sich diese Eingänge geändert haben).
+
+<Warning>Trotz des Namens sollte IS_CHANGED kein `bool` zurückgeben</Warning>
+
+`IS_CHANGED` erhält dieselben Argumente wie die Hauptfunktion, die durch `FUNCTION` definiert ist, und kann ein beliebiges Python-Objekt zurückgeben. Dieses Objekt wird mit dem Objekt aus dem vorherigen Lauf verglichen (falls vorhanden), und der Node gilt als geändert, wenn `is_changed != is_changed_old` (der Code steht in `execution.py`, falls Sie genauer nachsehen möchten).
+
+Da `True == True` gilt, wird ein Node, der `True` zurückgibt, um anzuzeigen, dass er sich geändert hat, als nicht geändert betrachtet! Ich bin sicher, dass dies im Comfy-Code geändert würde, wäre da nicht die Tatsache, dass es bestehende Nodes brechen könnte.
+
+Wenn Sie festlegen möchten, dass Ihr Node immer als geändert gilt (was Sie nach Möglichkeit vermeiden sollten, da es Comfy daran hindert, die Ausführung zu optimieren), verwenden Sie `return float("NaN")`. Das liefert einen `NaN`-Wert, der mit nichts gleich ist, auch nicht mit einem anderen `NaN`.
+
+Ein gutes Beispiel für eine tatsächliche Prüfung auf Änderungen ist der Code des integrierten LoadImage-Nodes, der das Bild lädt und einen Hash zurückgibt
+```python
+    @classmethod
+    def IS_CHANGED(s, image):
+        image_path = folder_paths.get_annotated_filepath(image)
+        m = hashlib.sha256()
+        with open(image_path, 'rb') as f:
+            m.update(f.read())
+        return m.digest().hex()
+```
+
+#### SEARCH_ALIASES
+
+Optional. Eine Liste alternativer Namen, nach denen Benutzer suchen könnten, wenn sie diesen Node suchen.
+Sie ist in der Antwort der `/object_info`-API als `search_aliases` enthalten.
+
+```python
+SEARCH_ALIASES = ["text concat", "join text", "merge strings"]
+```
+
+### Weitere Attribute
+
+Es gibt drei weitere Attribute, mit denen sich die Standardbehandlung eines Nodes durch Comfy ändern lässt.
+
+#### INPUT_IS_LIST, OUTPUT_IS_LIST
+
+Sie steuern die sequenzielle Verarbeitung von Daten und werden [später](./lists) beschrieben.
+
+### VALIDATE_INPUTS
+
+Wenn eine Klassenmethode `VALIDATE_INPUTS` definiert ist, wird sie aufgerufen, bevor die Ausführung des Workflows beginnt.
+`VALIDATE_INPUTS` sollte `True` zurückgeben, wenn die Eingänge gültig sind, oder eine Meldung (als `str`), die den Fehler beschreibt (dies verhindert die Ausführung).
+
+#### Konstanten validieren
+<Warning>Beachten Sie, dass `VALIDATE_INPUTS` nur Eingänge erhält, die im Workflow als Konstanten definiert sind. Eingänge, die von anderen Nodes empfangen werden, sind in `VALIDATE_INPUTS` *nicht* verfügbar.</Warning>
+
+`VALIDATE_INPUTS` wird nur mit den Eingängen aufgerufen, die ihre Signatur anfordert (also denen, die `inspect.getfullargspec(obj_class.VALIDATE_INPUTS).args` zurückgibt). Alle auf diese Weise empfangenen Eingänge durchlaufen *nicht* die Standard-Validierungsregeln. Im folgenden Beispiel verwendet das Frontend die angegebenen `min`- und `max`-Werte des Eingangs `foo`, das Backend erzwingt sie jedoch nicht.
+
+```python
+class CustomNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": { "foo" : ("INT", {"min": 0, "max": 10}) },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, foo):
+        # YOLO, alles ist erlaubt!
+        return True
+```
+
+Wenn die Funktion außerdem einen `**kwargs`-Eingang entgegennimmt, erhält sie *alle* verfügbaren Eingänge, und für alle wird die Validierung übersprungen, als wären sie explizit angegeben.
+
+#### Typen validieren
+
+Wenn die Methode `VALIDATE_INPUTS` ein Argument namens `input_types` erhält, wird ihr ein Dictionary übergeben, dessen Schlüssel der Name jedes Eingangs ist, der mit einem Ausgang eines anderen Nodes verbunden ist, und dessen Wert der Typ dieses Ausgangs ist.
+
+Wenn dieses Argument vorhanden ist, wird die gesamte Standardvalidierung der Eingangstypen übersprungen. Hier ein Beispiel, das die Tatsache nutzt, dass das Frontend die Angabe mehrerer Typen erlaubt:
+
+```python
+class AddNumbers:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input1" : ("INT,FLOAT", {"min": 0, "max": 1000})
+                "input2" : ("INT,FLOAT", {"min": 0, "max": 1000})
+            },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, input_types):
+        # Die min- und max-Werte von input1 und input2 werden weiterhin validiert,
+        # weil wir `input1` und `input2` nicht als Argumente entgegennehmen
+        if input_types["input1"] not in ("INT", "FLOAT"):
+            return "input1 must be an INT or FLOAT type"
+        if input_types["input2"] not in ("INT", "FLOAT"):
+            return "input2 must be an INT or FLOAT type"
+        return True
+```

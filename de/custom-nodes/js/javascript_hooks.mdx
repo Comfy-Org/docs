@@ -1,0 +1,166 @@
+---
+title: "JavaScript-Hooks in ComfyUI"
+sidebarTitle: "Hooks"
+description: "Referenz zu den JavaScript-Hooks des ComfyUI-Frontends: app.registerExtension, nodeCreated, beforeRegisterNodeDef und die Callbacks zur UI-Anpassung."
+translationSourceHash: 61f4c2af
+translationFrom: custom-nodes/js/javascript_hooks.mdx
+---
+
+## Hooks für Erweiterungen
+
+An verschiedenen Punkten während der Ausführung von Comfy ruft die Anwendung
+`#invokeExtensionsAsync` oder `#invokeExtensions` mit dem Namen eines Hooks auf.
+Diese rufen bei allen registrierten Erweiterungen die entsprechend benannte Methode auf (falls vorhanden), etwa `setup`
+im obigen Beispiel.
+
+Comfy bietet eine Vielzahl von Hooks, die benutzerdefinierter Erweiterungscode nutzen kann, um das Verhalten des Clients zu ändern.
+
+<Tip>Diese Hooks werden beim Erstellen und Ändern der Client-Elemente von Comfy aufgerufen.
+<br/>Ereignisse während der Ausführung eines Workflows werden von den
+`apiUpdateHandlers` behandelt</Tip> {/* TODO link when written */}
+
+Einige der wichtigsten Hooks werden im Folgenden beschrieben.
+Da Comfy aktiv weiterentwickelt wird, kommen von Zeit zu Zeit weitere Hooks hinzu; suchen Sie daher
+in `app.js` nach `#invokeExtensions`, um alle verfügbaren Hooks zu finden.
+
+Siehe auch die [Reihenfolge](#aufrufreihenfolge), in der die Hooks aufgerufen werden.
+
+### Häufig verwendete Hooks
+
+Beginnen Sie mit `beforeRegisterNodeDef`, der von der Mehrheit der Erweiterungen verwendet wird und oft der einzige ist, den Sie benötigen.
+
+#### beforeRegisterNodeDef()
+
+Wird einmal für jeden Node-Typ aufgerufen (die Liste der im Menü `AddNode` verfügbaren Nodes) und dient dazu,
+das Verhalten des Nodes zu ändern.
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) 
+```
+Das im Parameter `nodeType` übergebene Objekt dient im Wesentlichen als Vorlage
+für alle Nodes, die von diesem Typ erstellt werden, sodass Änderungen an `nodeType.prototype` für
+alle Nodes dieses Typs gelten. `nodeData` ist eine Kapselung der im Python-Code definierten Aspekte des Nodes,
+etwa seiner Kategorie, Eingänge und Ausgänge. `app` ist eine Referenz auf das Hauptobjekt der Comfy-App (das Sie
+ohnehin bereits importiert haben!).
+
+<Tip>Diese Methode wird bei jeder registrierten Erweiterung für _jeden_ Node-Typ aufgerufen, nicht nur für die von dieser Erweiterung hinzugefügten.</Tip>
+
+Die übliche Vorgehensweise besteht darin, `nodeType.ComfyClass` zu prüfen, das den Python-Klassennamen des Nodes enthält,
+um festzustellen, ob Sie den Node ändern müssen. Häufig bedeutet das, die Custom Nodes anzupassen, die Sie hinzugefügt haben;
+manchmal müssen Sie jedoch das Verhalten anderer Nodes ändern (oder andere Custom Nodes
+ändern Ihre!), dann sollten Sie sorgfältig auf Interoperabilität achten.
+
+<Tip>Da auch andere Erweiterungen Nodes ändern können, sollten Sie Code schreiben, der so wenige Annahmen wie möglich trifft.
+Und bleiben Sie verträglich: Kapseln Sie Ihre Änderungen, wo immer möglich.</Tip>
+
+Eine sehr verbreitete Vorgehensweise in `beforeRegisterNodeDef` ist es, eine vorhandene Methode zu „kapern“:
+
+<Note>
+**Veraltet:** Das unten gezeigte Muster zum Kapern von Prototypen ist veraltet und kann sich jederzeit in naher Zukunft ändern. Für Kontextmenüs verwenden Sie stattdessen die offizielle [Context Menu API](/de/custom-nodes/js/context-menu-migration). Für andere Anwendungsfälle sollten Sie die offiziellen [Erweiterungs-Hooks](/de/custom-nodes/js/javascript_hooks) verwenden, sofern verfügbar.
+</Note>
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) {
+	if (nodeType.comfyClass=="MyNodeClass") { 
+		const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+		nodeType.prototype.onConnectionsChange = function (side,slot,connect,link_info,output) {     
+			const r = onConnectionsChange?.apply(this, arguments);   
+			console.log("Someone changed my connection!");
+			return r;
+		}
+	}
+}
+```
+Bei dieser Vorgehensweise wird die vorhandene Prototyp-Methode gespeichert und anschließend ersetzt. Der Ersatz ruft die
+ursprüngliche Methode auf (das `?.apply` stellt sicher, dass dies auch dann sicher ist, wenn es keine gab) und
+führt danach zusätzliche Operationen aus. Je nach Ihrer Code-Logik müssen Sie das `apply` möglicherweise an einer anderen Stelle in Ihrem Ersatzcode platzieren
+oder den Aufruf sogar bedingt machen.
+
+Wenn Sie eine Methode auf diese Weise kapern, sollten Sie den Comfy-Core-Code ansehen (Breakpoints sind Ihr Freund), um die
+Signatur der Methode zu prüfen und sich daran zu halten.
+
+<Warning>Dieser Ansatz ist fragil und kann bei zukünftigen ComfyUI-Updates brechen. Verwenden Sie nach Möglichkeit offizielle APIs.</Warning>
+
+#### nodeCreated()
+
+```Javascript
+async nodeCreated(node)
+```
+Wird aufgerufen, wenn eine bestimmte Instanz eines Nodes erstellt wird
+(ganz am Ende der Funktion `ComfyNode()` auf `nodeType`, die als Konstruktor dient).
+In diesem Hook können Sie einzelne Instanzen Ihres Nodes ändern.
+
+<Tip>Änderungen, die für alle Instanzen gelten sollen, sollten Sie besser wie oben beschrieben im Prototyp in `beforeRegisterNodeDef` vornehmen.</Tip>
+
+#### init()
+
+```Javascript
+async init()
+```
+Wird aufgerufen, wenn die Comfy-Webseite geladen (oder neu geladen) wird. Der Aufruf erfolgt, nachdem das Graph-Objekt erstellt wurde, aber bevor
+Nodes registriert oder erstellt werden. Er kann verwendet werden, um das Kernverhalten von Comfy zu ändern, indem Methoden der App oder des
+Graphs (eines `LiteGraph`-Objekts) gekapert werden. Mehr dazu unter [Comfy Objects](./javascript_objects_and_hijacking).
+
+<Warning>Große Macht bringt große Verantwortung. Das Kapern von Kernverhalten erhöht die Wahrscheinlichkeit, dass Ihre Nodes
+mit anderen Custom Nodes oder zukünftigen Comfy-Updates inkompatibel sind</Warning>
+
+#### setup()
+
+```Javascript
+async setup()
+```
+Wird am Ende des Startvorgangs aufgerufen. Ein guter Ort, um Event-Listener hinzuzufügen (entweder für Comfy-Events oder DOM-Events)
+oder um die globalen Menüs zu erweitern, was beides an anderer Stelle beschrieben wird. {/* TODO link when written */}
+
+<Tip>Wenn Sie etwas tun möchten, sobald ein Workflow geladen wurde, verwenden Sie `afterConfigureGraph`, nicht `setup`</Tip>
+
+
+### Aufrufreihenfolge
+
+Diese Sequenzen wurden ermittelt, indem Protokollierungscode in die Datei `app.js` von Comfy eingefügt wurde. Ähnlicher Code kann Ihnen
+helfen, den Ausführungsablauf zu verstehen.
+```Javascript
+/* ungefähr Zeile 220 zum Zeitpunkt des Schreibens: */
+	#invokeExtensions(method, ...args) {
+		console.log(`invokeExtensions      ${method}`) // diese Zeile hinzugefügt
+		// ...
+	}
+/* ungefähr Zeile 250 zum Zeitpunkt des Schreibens: */
+	async #invokeExtensionsAsync(method, ...args) {
+		console.log(`invokeExtensionsAsync ${method}`) // diese Zeile hinzugefügt
+		// ...
+	}
+```
+
+#### Laden der Webseite
+
+```
+invokeExtensionsAsync init
+invokeExtensionsAsync addCustomNodeDefs
+invokeExtensionsAsync getCustomWidgets
+invokeExtensionsAsync beforeRegisterNodeDef    [repeated multiple times]
+invokeExtensionsAsync registerCustomNodes
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync nodeCreated
+invokeExtensions      loadedGraphNode
+invokeExtensionsAsync afterConfigureGraph
+invokeExtensionsAsync setup
+```
+
+#### Workflow laden
+
+```
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync beforeRegisterNodeDef   [zero, one, or multiple times]
+invokeExtensionsAsync nodeCreated             [repeated multiple times]
+invokeExtensions      loadedGraphNode         [repeated multiple times]
+invokeExtensionsAsync afterConfigureGraph
+```
+
+{/* TODO why does beforeRegisterNodeDef get called again? */}
+
+#### Neuen Node hinzufügen
+
+```
+invokeExtensionsAsync nodeCreated
+```
