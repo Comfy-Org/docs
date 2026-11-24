@@ -1,0 +1,92 @@
+---
+title: "Фрагменты кода Python для пользовательских узлов ComfyUI"
+description: "Разобранные примеры кода для пользовательских узлов ComfyUI: загрузка и сохранение изображений, инверсия масок, преобразование формы маски, маски как слой прозрачности и создание шума."
+sidebarTitle: "Фрагменты Python"
+translationSourceHash: 0a092769
+translationFrom: custom-nodes/backend/snippets.mdx
+---
+
+Растущая коллекция фрагментов примера кода...
+
+## Изображения и маски
+
+### Загрузить изображение
+
+Загружает изображение в пакет размером 1 (по исходному коду `LoadImage` в `nodes.py`)
+```python
+i = Image.open(image_path)
+i = ImageOps.exif_transpose(i)
+if i.mode == 'I':
+    i = i.point(lambda i: i * (1 / 255))
+image = i.convert("RGB")
+image = np.array(image).astype(np.float32) / 255.0
+image = torch.from_numpy(image)[None,]
+```
+
+### Сохранить пакет изображений
+
+Сохраняет пакет изображений (по исходному коду `SaveImage` в `nodes.py`)
+```python     
+for (batch_number, image) in enumerate(images):
+    i = 255. * image.cpu().numpy()
+    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+    filepath = # some path that takes the batch number into account
+    img.save(filepath)
+```
+
+### Инвертировать маску
+
+Инвертировать маску несложно. Маски нормализованы к диапазону [0,1]:
+
+```python
+mask = 1.0 - mask
+```
+
+### Преобразовать маску к форме изображения
+
+```Python
+# We want [B,H,W,C] with C = 1
+if len(mask.shape)==2: # we have [H,W], so insert B and C as dimension 1
+    mask = mask[None,:,:,None]
+elif len(mask.shape)==3 and mask.shape[2]==1: # we have [H,W,C]
+    mask = mask[None,:,:,:]
+elif len(mask.shape)==3:                      # we have [B,H,W]
+    mask = mask[:,:,:,None]
+```
+
+### Использование масок как слоёв прозрачности
+
+В задачах вроде inpainting или сегментации значения MASK в итоге округляются до ближайшего целого, то есть становятся бинарными: 0 обозначает области, которые нужно игнорировать, а 1 — области, на которые нужно воздействовать. Однако это происходит только когда MASK передаётся таким узлам. Благодаря этой гибкости MASK можно использовать как слой прозрачности, как в цифровой фотографии:
+
+```python
+# Invert mask back to original transparency layer
+mask = 1.0 - mask
+
+# Unsqueeze the `C` (channels) dimension
+mask = mask.unsqueeze(-1)
+
+# Concatenate ("cat") along the `C` dimension
+rgba_image = torch.cat((rgb_image, mask), dim=-1)
+```
+
+## Шум
+
+### Создание вариаций шума
+
+Вот пример создания объекта шума, который смешивает шум из двух источников. Так можно получать небольшие вариации шума, меняя `weight2`.
+
+```python
+class Noise_MixedNoise:
+    def __init__(self, nosie1, noise2, weight2):
+        self.noise1  = noise1
+        self.noise2  = noise2
+        self.weight2 = weight2
+
+    @property
+    def seed(self): return self.noise1.seed
+
+    def generate_noise(self, input_latent:torch.Tensor) -> torch.Tensor:
+        noise1 = self.noise1.generate_noise(input_latent)
+        noise2 = self.noise2.generate_noise(input_latent)
+        return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+```

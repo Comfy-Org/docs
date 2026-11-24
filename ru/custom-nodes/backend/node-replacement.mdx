@@ -1,0 +1,239 @@
+---
+title: "Замена узлов ComfyUI: миграция устаревших узлов"
+sidebarTitle: "Замена узлов"
+description: "Регистрируйте замены в пользовательском узле: интерфейс предложит обновление устаревших, переименованных или объединённых узлов и переназначит входы и выходы."
+translationSourceHash: 2ac538b1
+translationFrom: custom-nodes/backend/node-replacement.mdx
+translationBlockHashes:
+  "_intro": 0dc318ee
+  "When to use": df3092ae
+  "Where to register replacements": c2c95bb5
+  "Complete example": 6def7f45
+  "Core examples": 77a9e90a
+  "NodeReplace parameters": 22f2bd38
+  "Input mapping": 573af3a3
+  "Output mapping": 9520b317
+  "Widget ID binding": 37e95b97
+  "REST API": e15f8cd2
+  "Frontend behavior": 2fc5a2b5
+---
+API замены узлов позволяет разработчикам пользовательских узлов определять пути миграции от устаревших узлов к их новым аналогам. Когда вы обновляете или переименовываете узлы, пользователи могут автоматически обновлять свои рабочие процессы.
+
+## Когда использовать
+
+- **Изменение имён классов узлов**: вы изменили имя класса узла (для изменения отображаемого имени используйте `DISPLAY_NAME`)
+- **Слияние узлов**: несколько узлов объединены в один (например, `Load3DAnimation` объединён в `Load3D`)
+- **Рефакторинг входов**: имена или типы входов изменились между версиями
+- **Исправление опечаток**: исправление имён узлов без нарушения работы существующих рабочих процессов
+
+## Where to register replacements
+
+Register replacements during your extension's `on_load` lifecycle hook. Create a dedicated file (e.g., `node_replacements.py`) in your custom node package:
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # Register replacements here
+```
+
+## Complete example
+
+Here's a full example showing how to structure node replacements in a custom node package:
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """Register all node replacements for this package."""
+    
+    # Simple rename - no input changes needed
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # Complex replacement with input mapping
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # New input with default
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # No nodes defined here, just replacements
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Основные примеры
+
+Ядро ComfyUI использует замену узлов для миграции встроенных узлов. Вот реальные примеры из [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_replacements.py):
+
+### Простое объединение узлов
+
+Когда `Load3DAnimation` объединили с `Load3D`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### Исправление опечатки
+
+Исправление опечатки в `SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### Переименование входов со значениями по умолчанию
+
+Замена `ImageScaleBy` на `ResizeImageMaskNode`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Сопоставление входов Autogrow
+
+Для узлов с Autogrow (динамические входы) используйте точечную запись:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## Параметры NodeReplace
+
+| Параметр | Тип | Описание |
+|-----------|------|-------------|
+| `new_node_id` | str | Имя класса узла-замены |
+| `old_node_id` | str | Имя класса устаревшего узла |
+| `old_widget_ids` | list[str] \| None | Упорядоченный список, сопоставляющий идентификаторы виджетов с их относительными индексами |
+| `input_mapping` | list \| None | Способ сопоставления входов старого узла с новым |
+| `output_mapping` | list \| None | Способ сопоставления выходов старого узла с новым |
+
+## Сопоставление входов
+
+Каждая запись сопоставления входов определяет, как вход переносится со старого узла на новый.
+
+**Сопоставление со старого входа:**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**Установка фиксированного значения:**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**Сопоставление динамических входов Autogrow (используйте точечную запись):**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## Сопоставление выходов
+
+В сопоставлении выходов используются ссылки по индексу:
+
+```python
+{"new_idx": 0, "old_idx": 0}  # Map first output
+{"new_idx": 1, "old_idx": 0}  # Old output 0 -> new output 1
+```
+
+## Привязка идентификаторов виджетов
+
+Поле `old_widget_ids` сопоставляет идентификаторы виджетов с их позиционными индексами. Это нужно потому, что JSON рабочего процесса хранит значения виджетов по позиции, а не по идентификатору.
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# Widget at index 0 = "steps"
+# Widget at index 1 = "cfg"
+# Widget at index 2 = "sampler"
+```
+
+## REST API
+
+Получить все зарегистрированные замены:
+
+```
+GET /api/node_replacements
+```
+
+**Ответ:**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## Поведение фронтенда
+
+Когда рабочий процесс содержит устаревший узел, фронтенд:
+
+1. Запрашивает замены через `GET /api/node_replacements`
+2. Обнаруживает узлы, соответствующие `old_node_id`
+3. Предлагает пользователю обновить
+4. Автоматически применяет сопоставления входов и выходов
+5. Сохраняет соединения и значения виджетов
+
+См. реализацию во фронтенде:
+- [PR с бизнес-логикой #8364](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [PR с дополнительной логикой #8483](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [PR с представлениями UI #8604](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)
