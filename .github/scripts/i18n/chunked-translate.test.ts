@@ -119,6 +119,8 @@ describe("changelog date localization", () => {
     expect(localizeEnglishChangelogDate("November 4, 2026", "en")).toBe("November 4, 2026");
     expect(formatChangelogDateForLang(2026, 11, 4, "zh")).toBe("2026年11月4日");
     expect(formatChangelogDateForLang(2026, 11, 4, "ko")).toBe("2026년 11월 4일");
+    expect(localizeEnglishChangelogDate("November 4, 2026", "de")).toBe("4. November 2026");
+    expect(formatChangelogDateForLang(2026, 3, 7, "de")).toBe("7. März 2026");
   });
 
   test("treats a Spanish target date as in sync", () => {
