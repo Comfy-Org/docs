@@ -12,6 +12,7 @@ import {
   modelsNav,
   opaqueOutputExample,
   outputContent,
+  catalogSummary,
   outputSchemaFields,
   providerCoverage,
   providerRelationRows,
@@ -841,6 +842,24 @@ describe("renderModelsIndex: modality columns and Find by output", () => {
     const bare = renderModelsIndex([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old" }], false);
     expect(bare).not.toContain("Find by output");
     expect(bare).not.toContain("AccordionGroup");
+  });
+
+  test("the intro states the unique-model total and the per-output counts above the existing intro", () => {
+    const summary =
+      "Comfy Router serves 3 models, all listed on this page. By output: 1 video, 1 image, 1 audio. " +
+      "A model with more than one output, such as video with audio, counts once in the total and once under each of its outputs. " +
+      "1 model publishes no output modality and is not counted by output.";
+    expect(index).toContain(`\n\n${summary}\n\nEvery model below`);
+  });
+
+  test("catalogSummary counts each model ID once, keeps 3D upper case, and drops the overlap note when no model has two outputs", () => {
+    const single = [
+      { model: "a/one", page: "p/a", title: "A", output: ["image"] },
+      { model: "a/one", page: "p/a2", title: "A again", output: ["image"] },
+      { model: "b/two", page: "p/b", title: "B", output: ["3d"] },
+    ];
+    expect(catalogSummary(single)).toBe("Comfy Router serves 2 models, all listed on this page. By output: 1 image, 1 3D.");
+    expect(catalogSummary([{ model: OLD, page: OLD_PAGE, title: "MiniMax Old" }])).toBe("Comfy Router serves 1 model, listed on this page.");
   });
 
   test("the description names the modality columns", () => {

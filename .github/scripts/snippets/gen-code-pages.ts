@@ -1464,6 +1464,34 @@ function findByOutput(pages: IndexPage[]): string {
   return `## Find by output\n\n<AccordionGroup>\n${groups.join("\n")}\n</AccordionGroup>`;
 }
 
+/**
+ * The catalog size line at the top of the index. The total counts unique model
+ * IDs, so an assistant summarising the page reads the real catalog size rather
+ * than adding up accordion headers. The per-output counts match the
+ * `## Find by output` accordions, where a model with several outputs sits under
+ * each, so that sum can exceed the total; the line says so whenever one does.
+ */
+export function catalogSummary(pages: IndexPage[]): string {
+  const total = new Set(pages.map((p) => p.model)).size;
+  const noun = total === 1 ? "model" : "models";
+  const known = new Set(pages.flatMap((p) => p.output ?? []));
+  const order = [...OUTPUT_ORDER, ...[...known].filter((m) => !OUTPUT_ORDER.includes(m)).sort()];
+  const counts = order
+    .map((modality) => ({ modality, n: new Set(pages.filter((p) => p.output?.includes(modality)).map((p) => p.model)).size }))
+    .filter((c) => c.n > 0);
+  let line = `Comfy Router serves ${total} ${noun}, ${total === 1 ? "listed" : "all listed"} on this page.`;
+  if (!counts.length) return line;
+  const label = (m: string) => {
+    const l = modalityLabel(m);
+    return l === l.toUpperCase() ? l : l.toLowerCase();
+  };
+  line += ` By output: ${counts.map((c) => `${c.n} ${label(c.modality)}`).join(", ")}.`;
+  if (pages.some((p) => new Set(p.output ?? []).size > 1)) line += " A model with more than one output, such as video with audio, counts once in the total and once under each of its outputs.";
+  const unknown = new Set(pages.filter((p) => !p.output?.length).map((p) => p.model)).size;
+  if (unknown) line += ` ${unknown} ${unknown === 1 ? "model publishes" : "models publish"} no output modality and ${unknown === 1 ? "is" : "are"} not counted by output.`;
+  return line;
+}
+
 export function renderModelsIndex(pages: IndexPage[], hasProviders: boolean): string {
   const byProvider = new Map<string, IndexPage[]>();
   for (const p of pages) {
@@ -1490,6 +1518,8 @@ description: "Every model available through Comfy Router, grouped by provider, w
 ---
 
 {/* GENERATED FILE. Generated from the Router catalog by \`pnpm code-pages:gen\`. */}
+
+${catalogSummary(pages)}
 
 Every model below is served by the same route, \`POST /v2/models/{provider}/{model}\`, with the model's own JSON body. Each page shows a working request in Python, TypeScript, and cURL. For discovery, schemas, errors, retries, and billing, see [Using the Comfy Router API](/development/comfy-router/api).
 ${hasProviders ? `\nSome of these models can also be served by an aggregator on the same route and the same model ID. [Serving providers](${PROVIDERS_URL}) lists which provider covers which model, and how to select one.\n` : ""}
