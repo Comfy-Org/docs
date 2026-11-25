@@ -220,6 +220,12 @@ The partner model's native JSON input. Without `model_provider` this body is the
   Body: [`RouterModelOutput`](#routermodeloutput) or raw bytes (`*/*`) -- Headers: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
 </ResponseField>
 
+<ResponseField name="202" type="RouterQueueSubmitResponse">
+  Accepted - the run was handed to the queue instead of being run on this connection.
+
+  Body: [`RouterQueueSubmitResponse`](#routerqueuesubmitresponse) -- Headers: `X-Comfy-Request-Id`, `Idempotent-Replayed`, `X-Comfy-Router-Dropped-Params`, `Preference-Applied`
+</ResponseField>
+
 <ResponseField name="400" type="RouterErrorResponse">
   Invalid request. Check the error type and request body.
 
@@ -849,6 +855,7 @@ Raised for a request Router accepted and then could not complete.
 | `provider_error` | The partner provider reported a failure of its own, or returned a response Router could not interpret as a result. |
 | `provider_timeout` | The partner provider did not answer within its deadline. |
 | `insufficient_credits` | The calling workspace does not have enough credits to run the model. |
+| `budget_exceeded` | A hard spend cap has been reached. |
 | `model_not_found` | The `{provider}/{model}` ID names no model Router can run: an unknown provider, an unenrolled id, one the catalog has retired past its sunset date, or a catalogued ID the provider does not currently serve for Comfy. |
 | `byok_credential_rejected` | The provider rejected the key supplied for this call. |
 
@@ -858,6 +865,7 @@ Raised by Router itself, before or around the call to the model.
 
 | `error_type` | Meaning |
 | --- | --- |
+| `budget_check_unavailable` | A hard spend cap could not be checked. |
 | `unauthorized` | The request carried no usable credential. |
 | `forbidden` | The credential is valid but is not entitled to this model or this operation. |
 | `concurrency_limit_exceeded` | The workspace already has as many calls in flight as it is allowed; retry once one of them finishes. |
@@ -1182,17 +1190,29 @@ Error body for authentication, access, model lookup, quota, and provider transpo
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at twenty-one values: the six request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found`, `queue_backlog_full` and `result_expired`, plus the request-level `byok_credential_rejected`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
+  Coarse, machine-readable bucket for a Router failure, mirrored on the `X-Comfy-Error-Type` response header so a caller can branch without parsing the body. The set is closed at twenty-three values: the seven request-level buckets `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits`, `budget_exceeded` and `model_not_found`, plus the transport-level `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `budget_check_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found`, `queue_backlog_full` and `result_expired`, plus the request-level `byok_credential_rejected`. Closed describes the set as documented today, not a bound that holds forever: the set is expected to grow, which is why this is deliberately a plain string and not an `enum`, so a client must treat an unrecognised value as `internal_error` rather than switch exhaustively over the list above and break on the next addition.
 
   Type: [`RouterErrorType`](#routererrortype)
 </ResponseField>
 
 <ResponseField name="upstream_detail" type="string">
-  A bounded, sanitized reason for an `invalid_input` rejection. On the synchronous route it is the reason the model provider gave, present only when `error_type` is `invalid_input` and `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` - i.e. the provider refused the request as malformed and said why. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). There it is absent on every other failure, including provider `5xx`, transport failures, content-policy refusals and any refusal Router raised about itself, and it mirrors the `X-Comfy-Upstream-Detail` header. The queued collect (`GET /v2/models/{provider}/{model}/requests/{request_id}`) of a run that ended `invalid_input` carries the same reason in this field on its first collect, which then deletes it from the request: a later collect normally answers the same `error_type` and `detail` without it, so read it from the first collect. That read sends neither header. The queued collect also uses this field for Router's own reason when Router refused the request before sending it to the provider and can state why in one sentence, which the synchronous route answers in `detail`; a refusal that names individual fields carries none.
+  A bounded, sanitized reason for an `invalid_input` rejection, or the provider's moderation sentence for a `content_policy_violation`. On the synchronous route it is the reason the model provider gave, and it is present only when `X-Comfy-Upstream-Status` is a provider `4xx` or `2xx` and one of two things holds. Either `error_type` is `invalid_input` - i.e. the provider refused the request as malformed and said why - or `error_type` is `content_policy_violation` and the provider's refusal is one of a fixed set of moderation sentences Router recognizes, such as `Azure MAI blocked this request through content moderation.`; Router never forwards a refusal's free-form text. Usually that status is a `4xx`; it is a `2xx` for a provider that reports a rejected generation inside a success envelope (a BytePlus failed-task poll is HTTP `200` with the reason in its body). Router reads the reason of some providers only, so branch on its presence. It is absent on every other failure, including provider `5xx`, transport failures, other content-policy refusals and any refusal Router raised about itself, and it mirrors the `X-Comfy-Upstream-Detail` header. The queued collect (`GET /v2/models/{provider}/{model}/requests/{request_id}`) of a run that ended `invalid_input` or `content_policy_violation` carries the same reason in this field on its first collect, which then deletes it from the request: a later collect normally answers the same `error_type` and `detail` without it, so read it from the first collect. That read sends neither header. The queued collect also uses this field for Router's own reason when Router refused the request before sending it to the provider and can state why in one sentence, which the synchronous route answers in `detail`; a refusal that names individual fields carries none.
 </ResponseField>
 
 <ResponseField name="refusal_subject" type="string">
   Which input or output a content-policy refusal was about, as a Router-level closed vocabulary: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. The bare `input` / `output` values name the side when the provider did not name a modality. Present only when `error_type` is `content_policy_violation` and the provider named the refused subject with a machine-readable code; absent otherwise. Never provider text. Named today for BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI and Wan refusals, and for the MiniMax Router's Nano Banana legs' Gemini refusals; a provider whose refusal does not say which side it was about leaves it absent. It mirrors the `X-Comfy-Refusal-Subject` header.
+</ResponseField>
+
+<ResponseField name="budget" type="RouterSpendBudgetDetail">
+  The exhausted budget. Identifiers, mode and amounts are visible to workspace Owners.
+
+  Type: [`RouterSpendBudgetDetail`](#routerspendbudgetdetail)
+</ResponseField>
+
+<ResponseField name="blocking_budgets" type="array of RouterSpendBudgetDetail">
+  All exhausted hard budgets, visible to the workspace Owner.
+
+  Type: array of [`RouterSpendBudgetDetail`](#routerspendbudgetdetail)
 </ResponseField>
 
 <ResponseField name="denied_reason" type="string">
@@ -1533,6 +1553,47 @@ The three URLs that address the rest of one queued request's lifetime, returned 
   Absolute URL a cancellation is asked for at.
 
   URI
+</ResponseField>
+
+### RouterSpendBudgetDetail
+
+The exhausted budget. Identifiers, mode and amounts are visible to workspace Owners.
+
+**Fields**
+
+<ResponseField name="scope_kind" type="string" required>
+</ResponseField>
+
+<ResponseField name="resets_at" type="string" required>
+  date-time
+</ResponseField>
+
+<ResponseField name="set_by" type="string" required>
+</ResponseField>
+
+<ResponseField name="id" type="string">
+</ResponseField>
+
+<ResponseField name="scope_id" type="string">
+</ResponseField>
+
+<ResponseField name="mode" type="string">
+</ResponseField>
+
+<ResponseField name="limit_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="limit_credits" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_credits" type="integer">
+  int64
 </ResponseField>
 
 ### RouterValidationErrorContext
