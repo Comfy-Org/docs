@@ -18,6 +18,11 @@
  * `development/comfy-router/quickstart.mdx`, `development/comfy-router/limitations.mdx`,
  * `development/comfy-router/higgsfield-byok.mdx`,
  * `development/comfy-router/litellm.mdx`, `development/comfy-router/realtime.mdx`,
+ * `development/comfy-router/api.mdx`, `development/comfy-router/billing.mdx`,
+ * `development/comfy-router/discover-models.mdx`,
+ * `development/comfy-router/errors.mdx`, `development/comfy-router/headers.mdx`,
+ * `development/comfy-router/kling-4-0-elements-voices.mdx`,
+ * `development/comfy-router/queue.mdx`, `development/comfy-router/schemas.mdx`,
  * `router-schemas`,
  * `development/comfy-router/models`, `development/comfy-router/models.mdx`,
  * `development/comfy-router/providers.mdx` and `docs.json`. When the sync gains a
@@ -136,6 +141,54 @@ export const SYNC_OWNED_RULES: SyncOwnedRule[] = [
     test: (p) => p === "development/comfy-router/realtime.mdx",
     guidance:
       "Hand-written upstream and published here verbatim. Edit the upstream realtime.mdx.",
+  },
+  {
+    id: "api",
+    test: (p) => p === "development/comfy-router/api.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream api.mdx.",
+  },
+  {
+    id: "billing",
+    test: (p) => p === "development/comfy-router/billing.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream billing.mdx.",
+  },
+  {
+    id: "discover-models",
+    test: (p) => p === "development/comfy-router/discover-models.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream discover-models.mdx.",
+  },
+  {
+    id: "errors",
+    test: (p) => p === "development/comfy-router/errors.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream errors.mdx.",
+  },
+  {
+    id: "headers",
+    test: (p) => p === "development/comfy-router/headers.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream headers.mdx.",
+  },
+  {
+    id: "kling-4-0-elements-voices",
+    test: (p) => p === "development/comfy-router/kling-4-0-elements-voices.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream kling-4-0-elements-voices.mdx.",
+  },
+  {
+    id: "queue",
+    test: (p) => p === "development/comfy-router/queue.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream queue.mdx.",
+  },
+  {
+    id: "schemas",
+    test: (p) => p === "development/comfy-router/schemas.mdx",
+    guidance:
+      "Hand-written upstream and published here verbatim. Edit the upstream schemas.mdx.",
   },
   {
     id: "router-schemas",

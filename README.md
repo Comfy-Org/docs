@@ -87,6 +87,14 @@ Some files in this repository are written by the Comfy API v2 specification sync
 | `development/comfy-router/higgsfield-byok.mdx` | The upstream `higgsfield-byok.mdx`, which is published here verbatim. |
 | `development/comfy-router/litellm.mdx` | The upstream `litellm.mdx`, which is published here verbatim. |
 | `development/comfy-router/realtime.mdx` | The upstream `realtime.mdx`, which is published here verbatim. |
+| `development/comfy-router/api.mdx` | The upstream `api.mdx`, which is published here verbatim. |
+| `development/comfy-router/billing.mdx` | The upstream `billing.mdx`, which is published here verbatim. |
+| `development/comfy-router/discover-models.mdx` | The upstream `discover-models.mdx`, which is published here verbatim. |
+| `development/comfy-router/errors.mdx` | The upstream `errors.mdx`, which is published here verbatim. |
+| `development/comfy-router/headers.mdx` | The upstream `headers.mdx`, which is published here verbatim. |
+| `development/comfy-router/kling-4-0-elements-voices.mdx` | The upstream `kling-4-0-elements-voices.mdx`, which is published here verbatim. |
+| `development/comfy-router/queue.mdx` | The upstream `queue.mdx`, which is published here verbatim. |
+| `development/comfy-router/schemas.mdx` | The upstream `schemas.mdx`, which is published here verbatim. |
 | `router-schemas/**` | The API contract upstream. The whole directory is re-mirrored on every sync. |
 | `development/comfy-router/models.mdx` | A model's `code.yaml`, or the upstream contract. Regenerate with `bun run code-pages:gen`. |
 | `development/comfy-router/providers.mdx` | The upstream alt-provider contract. Regenerate with `bun run code-pages:gen`. |
