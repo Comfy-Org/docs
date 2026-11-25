@@ -1,0 +1,272 @@
+---
+title: "Comfy Router でビデオリミックスを使用する"
+description: "Comfy Router 経由で viggle/video-remix を呼び出します。エンドポイント、リクエストの形状、Router が返すレスポンスについて説明します。"
+sidebarTitle: "ビデオリミックス"
+translationSourceHash: 11b92221
+translationFrom: development/comfy-router/models/viggle/video-remix/code.mdx
+translationBlockHashes:
+  "_intro": 76645c29
+  "Quick start": b626cb47
+  "Schema": 7c5aecf1
+  "Examples": 8aacf615
+---
+{/* 生成済みファイル。`pnpm code-pages:gen` により router-schemas/viggle/video-remix.json から生成されています。 */}
+
+import RouterCodeFooter from "/snippets/ja/comfy-router/model-code-footer.mdx";
+
+Comfy Router が Viggle から提供する `viggle/video-remix` の API リファレンスです。
+
+**入力:** 画像、ビデオ · **出力:** ビデオ
+
+## クイックスタート
+
+[Comfy ワークスペース](https://platform.comfy.org/profile/api-keys?onboarding=router)でキーを作成し、`COMFY_API_KEY` としてエクスポートします。Python と TypeScript のスニペットは Comfy SDK（`pip install comfy-sdk` と `npm install @comfyorg/sdk`）を使用します。cURL のスニペットは、同じ呼び出しを生の HTTP で行うものです。
+
+**モデル ID:** `viggle/video-remix`
+
+**エンドポイント:** `POST https://api.comfy.org/v2/models/viggle/video-remix`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="結果を待つ">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# SDK は自動的に冪等キーを作成し、自動リトライで再利用します。
+with Comfy() as client:
+    result = client.models.run(
+        "viggle/video-remix",
+        {
+            "background_mode": "original",
+            "image_url": "https://example.invalid/viggle/character.png",
+            "motion_video_url": "https://example.invalid/viggle/dance.mp4",
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// SDK は自動的に冪等キーを作成し、自動リトライで再利用します。
+const { data } = await comfy.models.run("viggle/video-remix", {
+  background_mode: "original",
+  image_url: "https://example.invalid/viggle/character.png",
+  motion_video_url: "https://example.invalid/viggle/dance.mp4",
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/viggle/video-remix \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"background_mode\": \"original\", \"image_url\": \"https://example.invalid/viggle/character.png\", \"motion_video_url\": \"https://example.invalid/viggle/dance.mp4\"}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="キューに送信して後で収集">
+同じボディを `POST https://api.comfy.org/v2/models/viggle/video-remix/requests` に送信します。Router は実行が受け付けられるとすぐに `request_id` を含む `201` を返し、結果は準備ができ次第、このプロセスまたは別のプロセスから収集されます。[キューの配信](/ja/development/comfy-router/queue)では、ステータス、キャンセル、収集の流れを順に説明します。
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# 環境変数から COMFY_API_KEY を読み取ります。
+# 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動リトライで再利用します。
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "viggle/video-remix",
+            {
+                "background_mode": "original",
+                "image_url": "https://example.invalid/viggle/character.png",
+                "motion_video_url": "https://example.invalid/viggle/dance.mp4",
+            },
+        )
+        print("request_id:", handle.request_id)  # モデル ID と合わせて、別プロセスに必要なのはこれだけです
+
+        # リクエストが完了するまでポーリングし、サーバーが指定する Retry-After の間待機します。
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # プロバイダー自身のペイロードで、models.run() が返すのと同じ値です。
+        # 失敗またはキャンセルされたリクエストは、ここで型付きの Router エラーを発生させます。
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// 環境変数から COMFY_API_KEY を読み取ります。
+// 各 submit() 呼び出しは独自の Idempotency-Key を生成し、自動リトライで再利用します。
+const handle = await comfy.models.submit("viggle/video-remix", {
+  background_mode: "original",
+  image_url: "https://example.invalid/viggle/character.png",
+  motion_video_url: "https://example.invalid/viggle/dance.mp4",
+});
+console.log("requestId:", handle.requestId); // モデル ID と合わせて、別プロセスに必要なのはこれだけです
+
+// リクエストが完了するまでポーリングし、サーバーが指定する Retry-After の間待機します。
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// models.run() が返すのと同じ結果です。失敗またはキャンセルされたリクエストはここで reject されます。
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. 送信します。Router は request_id、status_url、response_url、cancel_url を含む 201 を返します。
+curl https://api.comfy.org/v2/models/viggle/video-remix/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"background_mode\": \"original\", \"image_url\": \"https://example.invalid/viggle/character.png\", \"motion_video_url\": \"https://example.invalid/viggle/dance.mp4\"}"
+
+# 2. status が COMPLETED になるまでポーリングし、各レスポンスが指定する Retry-After 秒だけ待機します。
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/viggle/video-remix/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. 収集します。完了時はモデルのネイティブ出力を含む 200、実行中はステータスボディを含む 202 を返します。
+curl https://api.comfy.org/v2/models/viggle/video-remix/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## スキーマ
+
+### 入力
+
+<ParamField body="background_mode" type="string">
+  original（デフォルト）、solid、transparent のいずれかです。`transparent` を指定すると、アルファマットのビデオ `alpha_url` が追加されます。
+</ParamField>
+
+<ParamField body="bg_color" type="string">
+  `R,G,B` 形式の単色背景色です。`background_mode=solid` の場合にのみ使用します。
+</ParamField>
+
+<ParamField body="image_url" type="string" required>
+  キャラクター画像の公開 http(s) URL です。
+</ParamField>
+
+<ParamField body="model" type="string">
+  任意のレンダーモデル: V3 または V4。
+</ParamField>
+
+<ParamField body="motion_video_url" type="string" required>
+  駆動ビデオの公開 http(s) URL です。最大 100 MiB まで。
+</ParamField>
+
+`GET /v2/models/viggle/video-remix/openapi.json` で Router が提供するスキーマから生成されています。これは、リクエストがプロバイダーに到達する前に呼び出しを検証するのと同じドキュメントです。
+
+### 出力
+
+<ResponseField name="alpha_url" type="string">
+  透明レンダーのアルファマットビデオです。準備が整うと設定されます。
+</ResponseField>
+
+<ResponseField name="completed_at" type="string">
+   
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+   
+</ResponseField>
+
+<ResponseField name="credits_used" type="number">
+  ジョブに課金される Viggle クレジットです。準備が整った時点で設定されます。
+
+  形式: `double`
+</ResponseField>
+
+<ResponseField name="duration_seconds" type="number">
+  課金の基準となる長さ（秒）です。ジョブの準備が整った時点で設定されます。
+
+  形式: `double`
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  Viggle のエラーオブジェクトです。ジョブが失敗したときに設定されます。
+</ResponseField>
+
+<ResponseField name="error.code" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.message" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.request_id" type="string">
+   
+</ResponseField>
+
+<ResponseField name="error.retryable" type="boolean">
+   
+</ResponseField>
+
+<ResponseField name="id" type="string">
+  レンダー ID（`render_` プレフィックス）です。videos ルートでポーリングしてください。
+</ResponseField>
+
+<ResponseField name="progress" type="integer">
+  進捗状況（0 から 100）。判明している場合に設定されます。
+</ResponseField>
+
+<ResponseField name="stage" type="string">
+  レンダー実行中の大まかな進捗ステージです。
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  ステータス: queued、processing、ready、failed、cancelled のいずれかです。
+</ResponseField>
+
+<ResponseField name="video_url" type="string">
+  完成したビデオです。準備が整うと設定されます。URL の有効期限は 1 時間です。
+</ResponseField>
+
+## 例
+
+### 入力
+
+```json
+{
+  "background_mode": "original",
+  "image_url": "https://example.invalid/viggle/character.png",
+  "motion_video_url": "https://example.invalid/viggle/dance.mp4"
+}
+```
+
+### 出力
+
+```json
+{
+  "alpha_url": null,
+  "credits_used": 5.04,
+  "duration_seconds": 5.04,
+  "error": null,
+  "id": "render_job_38d67fcfb717e8d4",
+  "progress": 100,
+  "status": "ready",
+  "video_url": "https://example.invalid/viggle/output.mp4"
+}
+```
+
+
+<RouterCodeFooter />

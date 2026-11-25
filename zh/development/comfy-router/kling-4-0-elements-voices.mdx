@@ -1,0 +1,93 @@
+---
+title: "Kling 4.0：Comfy Router 元素与音色"
+sidebarTitle: "Kling 4.0 元素与音色"
+description: "通过 Comfy Router 发送 Kling 4.0 主体（元素）与音色输入：contents 项、数量限制、模式选择以及提示词中的 @id 引用。"
+translationSourceHash: 71008b48
+translationFrom: development/comfy-router/kling-4-0-elements-voices.mdx
+translationBlockHashes:
+  "_intro": 08ec139c
+  "Element and voice items": 86df92b4
+  "Reference elements and voices in the prompt": 003234ab
+  "How Router picks the mode": 19d410a3
+  "Limits": 593d7095
+  "Example request": f76e4b43
+  "Getting element and voice IDs": fc79a402
+---
+
+Kling 4.0 可以用**元素**（已保存的主体，例如一个角色）在整个生成过程中保持主体一致，并用**音色**为其指定特定声音。通过 Comfy Router 调用时，二者都是 `kling/kling-4.0` 请求中 `contents` 数组的项。本页介绍如何发送它们。完整的请求 schema 见 [Kling 4.0 模型页面](/zh/development/comfy-router/models/kling/kling-4-0/code)。
+
+## 元素项与音色项
+
+`contents` 中的每一项都有一个 `type`。元素和音色使用以下字段：
+
+| `type` | 必填字段 | 含义 |
+|--------|----------|------|
+| `element` | `id`、`element_id` | 指向已保存主体的 Kling 元素 ID。 |
+| `voice` | `id`、`voice_id` | Kling 音色 ID：预设音色或自定义音色。 |
+
+`id` 是你为该项自选的引用名称。Kling 要求每个 `element` 和 `voice` 项都带有 `id`，且在同一请求中必须唯一。`element_id` 和 `voice_id` 必须是字符串。
+
+## 在提示词中引用元素和音色
+
+将提示词作为 `prompt` 类型的项放入 `contents`，并用 `@` 加上 `id` 来引用其他输入。若元素的 `id` 为 `hero`、音色的 `id` 为 `narrator`，提示词中即可写 `@hero` 和 `@narrator`。
+
+不要在发送非空 `contents` 数组的同时发送顶层 `prompt` 字段。Router 会拒绝这种组合；提示词应放在 `contents` 内。
+
+## Router 如何选择模式
+
+`kling/kling-4.0` 只有一个模型 ID，但有三种模式。Router 根据请求体选择模式：
+
+- **文生视频**：顶层 `prompt`，且没有 `contents`（或 `contents` 为空）。
+- **图生视频**：`contents` 中只有 `prompt`、`first_frame`、`middle_frame` 和 `last_frame` 项。
+- **全能视频（omni video）**：`contents` 中含有其他任意类型，包括 `refer_image`、`feature_video`、`base_video`、`element` 或 `voice`。
+
+因此，只要包含 `element` 或 `voice` 项，请求就会进入全能视频模式。你无需自行设置模式。
+
+## 限制
+
+全能视频最多接受 15 个输入外加提示词，因此 Router 会拒绝超过 16 项的 `contents` 数组。在此范围内，一个请求最多可包含：
+
+- 10 张图片（`first_frame`、`middle_frame`、`last_frame` 和 `refer_image` 合计）
+- 5 个视频（`feature_video` 和 `base_video` 合计），其中最多一个 `base_video`
+- 7 个元素
+- 3 个音色
+
+Router 会在请求到达 Kling 之前检查这些限制；超出任一限制的请求会收到 `422`，并带有指向 `contents` 的 `detail[]` 条目。参见[验证错误](/zh/development/comfy-router/errors#验证错误)。
+
+包含视频角色元素的请求按视频输入费率计费，含有 `feature_video` 或 `base_video` 的请求也是如此。
+
+## 请求示例
+
+下面的请求将一个包含一个元素和一个音色的全能视频生成加入队列。请将占位 ID 替换为你自己的 ID。
+
+```bash
+curl https://api.comfy.org/v2/models/kling/kling-4.0/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "type": "prompt",
+        "text": "@hero walks down a rainy neon street, turns to the camera and says \"We made it.\" in the voice of @narrator."
+      },
+      { "type": "element", "id": "hero", "element_id": "<your-element-id>" },
+      { "type": "voice", "id": "narrator", "voice_id": "<your-voice-id>" }
+    ],
+    "settings": {
+      "duration": 5,
+      "resolution": "720p",
+      "aspect_ratio": "16:9"
+    }
+  }'
+```
+
+Router 会返回 `201` 和一个 `request_id`。按[排队请求](/zh/development/comfy-router/queue)中的说明轮询并收集结果。若想在一次调用中等待结果，可将相同的请求体发送到 `POST https://api.comfy.org/v2/models/kling/kling-4.0`。
+
+## 获取元素 ID 和音色 ID
+
+Router 不提供创建、上传或列出 Kling 元素或音色的端点。它只会把你发送的 `element_id` 和 `voice_id` 值传给 Kling。
+
+Kling 将元素 ID 和自定义音色 ID 绑定到创建它们的 Kling 账号。Router 使用 Comfy 的凭据而不是你的凭据向 Kling 发送请求，因此在你自己的 Kling 账号中创建的元素或自定义音色可能会被拒绝。
+
+如果不使用元素也想保持主体一致，可以把参考图片作为 `refer_image` 项、把参考视频作为 `feature_video` 项发送，并为每一项设置一个 `id`，以便在提示词中引用。

@@ -1,0 +1,93 @@
+---
+title: "Kling 4.0: Comfy Router의 엘리먼트와 보이스"
+sidebarTitle: "Kling 4.0 엘리먼트와 보이스"
+description: "Comfy Router로 Kling 4.0 피사체(엘리먼트)와 보이스 입력을 보내는 방법: contents 항목, 제한, 모드 선택, 프롬프트의 @id 참조."
+translationSourceHash: 71008b48
+translationFrom: development/comfy-router/kling-4-0-elements-voices.mdx
+translationBlockHashes:
+  "_intro": 08ec139c
+  "Element and voice items": 86df92b4
+  "Reference elements and voices in the prompt": 003234ab
+  "How Router picks the mode": 19d410a3
+  "Limits": 593d7095
+  "Example request": f76e4b43
+  "Getting element and voice IDs": fc79a402
+---
+
+Kling 4.0은 **엘리먼트**(캐릭터처럼 저장된 피사체)로 생성 전체에서 피사체를 일관되게 유지하고, **보이스**로 특정 목소리를 입힐 수 있습니다. Comfy Router에서는 둘 다 `kling/kling-4.0` 요청의 `contents` 배열 항목입니다. 이 페이지에서는 이를 보내는 방법을 설명합니다. 전체 요청 스키마는 [Kling 4.0 모델 페이지](/ko/development/comfy-router/models/kling/kling-4-0/code)에 있습니다.
+
+## 엘리먼트 항목과 보이스 항목
+
+`contents`의 각 항목에는 `type`이 있습니다. 엘리먼트와 보이스는 다음 필드를 사용합니다.
+
+| `type` | 필수 필드 | 의미 |
+|--------|-----------|------|
+| `element` | `id`, `element_id` | 저장된 피사체를 가리키는 Kling 엘리먼트 ID입니다. |
+| `voice` | `id`, `voice_id` | Kling 보이스 ID: 프리셋 보이스 또는 커스텀 보이스입니다. |
+
+`id`는 항목에 직접 붙이는 참조 이름입니다. Kling은 모든 `element`와 `voice` 항목에 `id`를 요구하며, 이 값은 요청 안에서 고유해야 합니다. `element_id`와 `voice_id`는 문자열이어야 합니다.
+
+## 프롬프트에서 엘리먼트와 보이스 참조하기
+
+프롬프트는 `prompt` 타입 항목으로 `contents`에 넣고, 다른 입력은 `@` 뒤에 해당 `id`를 써서 참조합니다. 엘리먼트의 `id`가 `hero`이고 보이스의 `id`가 `narrator`라면 프롬프트에 `@hero`와 `@narrator`를 쓸 수 있습니다.
+
+비어 있지 않은 `contents` 배열과 함께 최상위 `prompt` 필드를 보내지 마세요. Router는 이 조합을 거부합니다. 프롬프트는 `contents` 안에 넣어야 합니다.
+
+## Router가 모드를 고르는 방법
+
+`kling/kling-4.0`은 모델 ID는 하나지만 모드는 세 가지입니다. Router는 요청 본문을 보고 모드를 고릅니다.
+
+- **텍스트-비디오**: 최상위 `prompt`가 있고 `contents`가 없거나 비어 있는 경우.
+- **이미지-비디오**: `contents`에 `prompt`, `first_frame`, `middle_frame`, `last_frame` 항목만 있는 경우.
+- **옴니 비디오**: `contents`에 그 밖의 타입(`refer_image`, `feature_video`, `base_video`, `element`, `voice` 등)이 있는 경우.
+
+따라서 `element`나 `voice` 항목이 하나라도 있으면 요청은 옴니 비디오로 처리됩니다. 모드를 직접 설정할 필요는 없습니다.
+
+## 제한
+
+옴니 비디오는 프롬프트 외에 최대 15개의 입력을 받으므로, Router는 16개 항목을 넘는 `contents` 배열을 거부합니다. 그 범위 안에서 한 요청에 담을 수 있는 최대 개수는 다음과 같습니다.
+
+- 이미지 10개(`first_frame`, `middle_frame`, `last_frame`, `refer_image` 합계)
+- 비디오 5개(`feature_video`와 `base_video` 합계), 그중 `base_video`는 최대 1개
+- 엘리먼트 7개
+- 보이스 3개
+
+Router는 요청이 Kling에 도달하기 전에 이 제한을 확인하며, 하나라도 넘는 요청에는 `contents`를 가리키는 `detail[]` 항목과 함께 `422`로 응답합니다. [검증 오류](/ko/development/comfy-router/errors#검증-오류)를 참고하세요.
+
+비디오 캐릭터 엘리먼트가 포함된 요청은 `feature_video`나 `base_video`가 포함된 요청과 마찬가지로 비디오 입력 요금으로 청구됩니다.
+
+## 요청 예시
+
+다음 요청은 엘리먼트 하나와 보이스 하나를 사용하는 옴니 비디오 생성을 대기열에 넣습니다. 자리표시자 ID를 실제 ID로 바꾸세요.
+
+```bash
+curl https://api.comfy.org/v2/models/kling/kling-4.0/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "type": "prompt",
+        "text": "@hero walks down a rainy neon street, turns to the camera and says \"We made it.\" in the voice of @narrator."
+      },
+      { "type": "element", "id": "hero", "element_id": "<your-element-id>" },
+      { "type": "voice", "id": "narrator", "voice_id": "<your-voice-id>" }
+    ],
+    "settings": {
+      "duration": 5,
+      "resolution": "720p",
+      "aspect_ratio": "16:9"
+    }
+  }'
+```
+
+Router는 `201`과 `request_id`로 응답합니다. [대기열 전달](/ko/development/comfy-router/queue)에 설명된 대로 결과를 폴링하고 수집하세요. 한 번의 호출로 결과를 기다리려면 같은 본문을 `POST https://api.comfy.org/v2/models/kling/kling-4.0`으로 보내세요.
+
+## 엘리먼트 ID와 보이스 ID 얻기
+
+Router는 Kling 엘리먼트나 보이스를 생성, 업로드, 나열하는 엔드포인트를 제공하지 않습니다. 보낸 `element_id`와 `voice_id` 값을 Kling에 그대로 전달할 뿐입니다.
+
+Kling은 엘리먼트 ID와 커스텀 보이스 ID를 이를 만든 Kling 계정에 묶어 둡니다. Router는 사용자의 자격 증명이 아니라 Comfy의 자격 증명으로 Kling에 요청을 보내므로, 사용자 본인의 Kling 계정에서 만든 엘리먼트나 커스텀 보이스는 거부될 수 있습니다.
+
+엘리먼트 없이 피사체를 일관되게 유지하려면 참조 이미지를 `refer_image` 항목으로, 참조 비디오를 `feature_video` 항목으로 보내고, 각 항목에 프롬프트에서 참조할 `id`를 붙이세요.
