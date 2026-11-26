@@ -245,7 +245,7 @@ describe("path helpers", () => {
     const files = changedEnglishFiles(repoRoot, "HEAD~1");
     expect(
       files.every(
-        (f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/") && !f.startsWith("es/"),
+        (f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/") && !f.startsWith("es/") && !f.startsWith("de/"),
       ),
     ).toBe(true);
   });

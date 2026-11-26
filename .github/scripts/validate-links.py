@@ -37,10 +37,15 @@ LOCALES = {
         'doc_dirs': ('ko', 'snippets/ko'),
         'link_prefixes': ('/ko/', '/snippets/ko/'),
     },
+    'de': {
+        'name': 'German',
+        'doc_dirs': ('de', 'snippets/de'),
+        'link_prefixes': ('/de/', '/snippets/de/', '/images/de/'),
+    },
 }
 
 DOC_PATH_PATTERNS = (
-    'zh/', 'ja/', 'ko/',
+    'zh/', 'ja/', 'ko/', 'de/',
     'tutorials/', 'built-in-nodes/', 'interface/', 'installation/',
     'development/', 'custom-nodes/', 'troubleshooting/', 'registry/', 'specs/',
     'get_started/', 'changelog/', 'comfy-cli/', 'snippets/', 'community/',
@@ -211,7 +216,9 @@ def is_english_snippet_import(import_path: str) -> bool:
     if not normalized.startswith('/snippets/'):
         return False
     remainder = normalized[len('/snippets/'):]
-    return not remainder.startswith(('zh/', 'ja/', 'ko/'))
+    if not remainder.endswith('.mdx'):
+        return False  # shared JSX/data snippets are not localized
+    return not remainder.startswith(tuple(f'{code}/' for code in LOCALES))
 
 
 def _extract_links_from_segment(segment: str) -> List[Dict[str, Any]]:
