@@ -249,6 +249,12 @@ Comfy API 密钥也可以作为 Bearer token 发送。当同时提供两个凭�
   正文：[`RouterModelOutput`](#routermodeloutput) 或原始字节（`*/*`） -- 响应头：`X-Comfy-Request-Id`、`X-Content-Type-Options`、`X-Comfy-Router-Fallback-Provider`、`X-Comfy-Router-Provider`、`X-Comfy-Router-Dropped-Params`、`X-Comfy-Credits-Used`、`Idempotent-Replayed`、`X-Committed-Spend-Limit`、`X-Committed-Spend-Current`、`X-Committed-Spend-Remaining`
 </ResponseField>
 
+<ResponseField name="202" type="RouterQueueSubmitResponse">
+  已接受 - 此次运行已交给队列，而不是在此连接上执行。
+
+  正文：[`RouterQueueSubmitResponse`](#routerqueuesubmitresponse) -- 响应头：`X-Comfy-Request-Id`、`Idempotent-Replayed`、`X-Comfy-Router-Dropped-Params`、`X-Comfy-Router-Provider`、`Preference-Applied`
+</ResponseField>
+
 <ResponseField name="400" type="RouterErrorResponse">
   请求无效。请检查错误类型和请求体。
 
@@ -877,8 +883,10 @@ Router 错误的机器可读类别，同时也会在 `X-Comfy-Error-Type` 响应
 | `provider_error` | 合作伙伴提供商报告了其自身的故障，或返回了 Router 无法解释为结果的响应。 |
 | `provider_timeout` | 合作伙伴提供商未在其截止时间内应答。 |
 | `insufficient_credits` | 发起调用的工作区没有足够的积分来运行该模型。 |
+| `budget_exceeded` | 已达到硬性支出上限。 |
 | `model_not_found` | `{provider}/{model}` ID 未指向任何 Router 可运行的模型：提供商未知、ID 未登记、目录已在其停用日期之后将其退役，或提供商当前未为 Comfy 提供某个已编目 ID 的服务。 |
 | `byok_credential_rejected` | 提供商拒绝了为此调用提供的密钥。 |
+| `no_output` | 模型已完成，但没有产出所请求的图像，也未指明任何内容政策，因此该请求可以重试。 |
 
 ### 传输级分类
 
@@ -886,6 +894,7 @@ Router 错误的机器可读类别，同时也会在 `X-Comfy-Error-Type` 响应
 
 | `error_type` | 含义 |
 | --- | --- |
+| `budget_check_unavailable` | 无法检查硬性支出上限。 |
 | `unauthorized` | 请求未携带可用的凭据。 |
 | `forbidden` | 凭据有效，但无权访问此模型或执行此操作。 |
 | `concurrency_limit_exceeded` | 工作区正在进行的调用数量已达到允许的上限；请等待其中一项调用完成后重试。 |
@@ -1210,17 +1219,29 @@ Router 尚无法在运行前定价的模型列在[没有预检估算的模型](/
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Router 失败的粗粒度、机器可读分类，同时镜像到 `X-Comfy-Error-Type` 响应头，使调用方无需解析响应体即可分支处理。该集合封闭于二十一个值：六个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits` 和 `model_not_found`，加上传输级 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found`、`queue_backlog_full` 和 `result_expired`，再加上请求级 `byok_credential_rejected`。封闭描述的是当前文档所载的集合，并非永远成立的界限：该集合预期会增长，正因如此这里刻意使用普通字符串而非 `enum`，客户端必须把无法识别的值视为 `internal_error`，而不是对上面的列表做穷举 switch 并在下次新增时出错。
+  Router 失败的粗粒度、机器可读分类，同时镜像到 `X-Comfy-Error-Type` 响应头，使调用方无需解析响应体即可分支处理。该集合封闭于二十四个值：七个请求级分类 `invalid_input`、`content_policy_violation`、`provider_error`、`provider_timeout`、`insufficient_credits`、`budget_exceeded` 和 `model_not_found`，加上传输级 `unauthorized`、`forbidden`、`concurrency_limit_exceeded`、`client_disconnected`、`internal_error`、`deadline_exceeded`、`not_enabled`、`service_unavailable`、`budget_check_unavailable`、`rate_limited`、`cancelled`、`queue_timeout`、`request_not_found`、`queue_backlog_full` 和 `result_expired`，再加上请求级 `byok_credential_rejected` 和 `no_output`。封闭描述的是当前文档所载的集合，并非永远成立的界限：该集合预期会增长，正因如此这里刻意使用普通字符串而非 `enum`，客户端必须把无法识别的值视为 `internal_error`，而不是对上面的列表做穷举 switch 并在下次新增时出错。
 
   类型：[`RouterErrorType`](#routererrortype)
 </ResponseField>
 
 <ResponseField name="upstream_detail" type="string">
-  `invalid_input` 拒绝的有界、已脱敏原因。在同步路由上，它是模型提供商给出的原因，仅当 `error_type` 为 `invalid_input` 且 `X-Comfy-Upstream-Status` 是提供商的 `4xx` 或 `2xx` 时存在，也就是说，提供商以请求格式错误为由拒绝并说明了原因。通常该状态是 `4xx`；对于在成功信封中报告生成被拒的提供商，它是 `2xx`（BytePlus 的失败任务轮询是 HTTP `200`，原因在其响应体中）。在其他所有失败中它都缺席，包括提供商 `5xx`、传输失败、内容策略拒绝以及 Router 就自身提出的任何拒绝，并且它会镜像 `X-Comfy-Upstream-Detail` 头。以 `invalid_input` 结束的运行，其排队收集（`GET /v2/models/{provider}/{model}/requests/{request_id}`）在第一次收集时会在该字段中带上相同原因，随后会把它从请求中删除：之后的收集通常返回相同的 `error_type` 和 `detail` 但不含该字段，因此请从第一次收集中读取它。该读取不发送上述两个头。当 Router 在把请求发送给提供商之前就拒绝了请求、并能用一句话说明原因时，排队收集也会把 Router 自己的原因放在该字段中，而同步路由会在 `detail` 中返回该原因；若拒绝中指明了具体字段，则该字段不带任何内容。
+  `invalid_input` 拒绝的有界、已脱敏原因。在同步路由上，它是模型提供商给出的原因，仅当 `X-Comfy-Upstream-Status` 是提供商的 `4xx` 或 `2xx` 且满足以下两种情况之一时存在：`error_type` 为 `invalid_input`，即提供商以请求格式错误为由拒绝并说明了原因；或 `error_type` 为 `content_policy_violation`，且提供商的拒绝属于 Router 能识别的固定几种审核语句之一，例如 `Azure MAI blocked this request through content moderation.`；Router 从不转发拒绝中的自由文本。通常该状态是 `4xx`；对于在成功信封中报告生成被拒的提供商，它是 `2xx`（BytePlus 的失败任务轮询是 HTTP `200`，原因在其响应体中）。在其他所有失败中它都缺席，包括提供商 `5xx`、传输失败、其他内容策略拒绝以及 Router 就自身提出的任何拒绝，并且它会镜像 `X-Comfy-Upstream-Detail` 头。以 `invalid_input` 结束的运行，其排队收集（`GET /v2/models/{provider}/{model}/requests/{request_id}`）在第一次收集时会在该字段中带上相同原因，随后会把它从请求中删除：之后的收集通常返回相同的 `error_type` 和 `detail` 但不含该字段，因此请从第一次收集中读取它。该读取不发送上述两个头。当 Router 在把请求发送给提供商之前就拒绝了请求、并能用一句话说明原因时，排队收集也会把 Router 自己的原因放在该字段中，而同步路由会在 `detail` 中返回该原因；若拒绝中指明了具体字段，则该字段不带任何内容。
 </ResponseField>
 
 <ResponseField name="refusal_subject" type="string">
   内容策略拒绝所涉及的是哪个输入或输出，采用 Router 级别的封闭词表：`input`、`output`、`input_text`、`input_image`、`input_video`、`input_audio`、`output_text`、`output_image`、`output_video`、`output_audio`。当提供商未指明模态时，裸 `input` / `output` 值表示是哪一侧。仅当 `error_type` 为 `content_policy_violation` 且提供商以机器可读代码指明了被拒对象时存在；否则缺席。绝不使用提供商文本。目前已为 BytePlus、Runway、BFL、Gemini、Veo、Vertex、xAI 和 Wan 的拒绝命名，也为 MiniMax Router 的 Nano Banana 分支的 Gemini 拒绝命名；若提供商的拒绝未说明涉及哪一侧，则该字段缺席。它会镜像 `X-Comfy-Refusal-Subject` 头。
+</ResponseField>
+
+<ResponseField name="budget" type="RouterSpendBudgetDetail">
+  已耗尽的预算。标识符、模式和金额对工作区所有者可见。
+
+  类型：[`RouterSpendBudgetDetail`](#routerspendbudgetdetail)
+</ResponseField>
+
+<ResponseField name="blocking_budgets" type="array of RouterSpendBudgetDetail">
+  所有已耗尽的硬性预算，对工作区所有者可见。
+
+  类型：由 [`RouterSpendBudgetDetail`](#routerspendbudgetdetail) 组成的数组
 </ResponseField>
 
 <ResponseField name="denied_reason" type="string">
@@ -1560,6 +1581,47 @@ Router 模型目录中的一页。
   发起取消请求时使用的绝对 URL。
 
   URI
+</ResponseField>
+
+### RouterSpendBudgetDetail
+
+已耗尽的预算。标识符、模式和金额对工作区所有者可见。
+
+**字段**
+
+<ResponseField name="scope_kind" type="string" required>
+</ResponseField>
+
+<ResponseField name="resets_at" type="string" required>
+  date-time
+</ResponseField>
+
+<ResponseField name="set_by" type="string" required>
+</ResponseField>
+
+<ResponseField name="id" type="string">
+</ResponseField>
+
+<ResponseField name="scope_id" type="string">
+</ResponseField>
+
+<ResponseField name="mode" type="string">
+</ResponseField>
+
+<ResponseField name="limit_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="limit_credits" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_credits" type="integer">
+  int64
 </ResponseField>
 
 ### RouterValidationErrorContext
