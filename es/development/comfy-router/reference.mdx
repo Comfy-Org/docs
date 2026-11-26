@@ -235,6 +235,12 @@ La entrada JSON nativa del modelo socio. Sin `model_provider`, este cuerpo es el
   Cuerpo: [`RouterModelOutput`](#routermodeloutput) o bytes sin procesar (`*/*`) -- Encabezados: `X-Comfy-Request-Id`, `X-Content-Type-Options`, `X-Comfy-Router-Fallback-Provider`, `X-Comfy-Router-Provider`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Credits-Used`, `Idempotent-Replayed`, `X-Committed-Spend-Limit`, `X-Committed-Spend-Current`, `X-Committed-Spend-Remaining`
 </ResponseField>
 
+<ResponseField name="202" type="RouterQueueSubmitResponse">
+  Aceptada: la ejecución se entregó a la cola en lugar de ejecutarse en esta conexión.
+
+  Cuerpo: [`RouterQueueSubmitResponse`](#routerqueuesubmitresponse) -- Encabezados: `X-Comfy-Request-Id`, `Idempotent-Replayed`, `X-Comfy-Router-Dropped-Params`, `X-Comfy-Router-Provider`, `Preference-Applied`
+</ResponseField>
+
 <ResponseField name="400" type="RouterErrorResponse">
   Solicitud no válida. Revisa el tipo de error y el cuerpo de la solicitud.
 
@@ -863,6 +869,7 @@ Se generan para una solicitud que el Router aceptó y luego no pudo completar.
 | `provider_error` | El proveedor socio informó un fallo propio, o devolvió una respuesta que Router no pudo interpretar como resultado. |
 | `provider_timeout` | El proveedor socio no respondió dentro de su plazo. |
 | `insufficient_credits` | El espacio de trabajo que llama no tiene créditos suficientes para ejecutar el modelo. |
+| `budget_exceeded` | Se ha alcanzado un límite de gasto estricto. |
 | `model_not_found` | El ID `{provider}/{model}` no nombra ningún modelo que Router pueda ejecutar: un proveedor desconocido, un id no enrolado, uno que el catálogo ya retiró después de su fecha de retiro, o un ID catalogado que el proveedor no sirve actualmente para Comfy. |
 | `byok_credential_rejected` | El proveedor rechazó la clave enviada para esta llamada. |
 
@@ -872,6 +879,7 @@ Las genera el propio Router, antes de la llamada al modelo o en torno a ella.
 
 | `error_type` | Significado |
 | --- | --- |
+| `budget_check_unavailable` | No se pudo comprobar un límite de gasto estricto. |
 | `unauthorized` | La solicitud no llevaba ninguna credencial utilizable. |
 | `forbidden` | La credencial es válida, pero no tiene derecho a este modelo ni a esta operación. |
 | `concurrency_limit_exceeded` | El espacio de trabajo ya tiene tantas llamadas en curso como se le permite; reintenta cuando termine una de ellas. |
@@ -1063,6 +1071,7 @@ Un modelo puede devolver URL de recursos, bytes en línea o ambos. Los proveedor
 | --- | --- | --- |
 | `bfl/*` | el recurso finalizado, y el recurso de caché de borrador cuando el resultado lo incluye | 24 horas |
 | modelos de video `byteplus/*` (`seedance`, `dreamina-seedance`) | el video finalizado, y la imagen del último fotograma cuando el resultado la incluye | 24 horas |
+| `fal/h3-max`, `fal/h3-max-turbo` | el video finalizado | 24 horas |
 | `minimax/*` | el video finalizado | 12 horas |
 | `xai/*` | cada imagen generada, y el video finalizado | 24 horas |
 
@@ -1195,7 +1204,7 @@ Cuerpo de error para fallos de autenticación, acceso, búsqueda de modelos, cuo
 </ResponseField>
 
 <ResponseField name="error_type" type="RouterErrorType" required>
-  Categoría gruesa y legible por máquinas para un fallo del Router, replicada en el encabezado de respuesta `X-Comfy-Error-Type` para que quien llama pueda bifurcar sin analizar el cuerpo. El conjunto es cerrado y tiene veintiún valores: las seis categorías de nivel de solicitud `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits` y `model_not_found`, más las de nivel de transporte `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found`, `queue_backlog_full` y `result_expired`, más la de nivel de solicitud `byok_credential_rejected`. «Cerrado» describe el conjunto tal como está documentado hoy, no un límite que se mantenga para siempre: se espera que el conjunto crezca, y por eso esto es deliberadamente una cadena simple y no un `enum`, de modo que un cliente debe tratar cualquier valor no reconocido como `internal_error` en lugar de hacer un switch exhaustivo sobre la lista anterior y romperse con la próxima incorporación.
+  Categoría gruesa y legible por máquinas para un fallo del Router, replicada en el encabezado de respuesta `X-Comfy-Error-Type` para que quien llama pueda bifurcar sin analizar el cuerpo. El conjunto es cerrado y tiene veintitrés valores: las siete categorías de nivel de solicitud `invalid_input`, `content_policy_violation`, `provider_error`, `provider_timeout`, `insufficient_credits`, `budget_exceeded` y `model_not_found`, más las de nivel de transporte `unauthorized`, `forbidden`, `concurrency_limit_exceeded`, `client_disconnected`, `internal_error`, `deadline_exceeded`, `not_enabled`, `service_unavailable`, `budget_check_unavailable`, `rate_limited`, `cancelled`, `queue_timeout`, `request_not_found`, `queue_backlog_full` y `result_expired`, más la de nivel de solicitud `byok_credential_rejected`. «Cerrado» describe el conjunto tal como está documentado hoy, no un límite que se mantenga para siempre: se espera que el conjunto crezca, y por eso esto es deliberadamente una cadena simple y no un `enum`, de modo que un cliente debe tratar cualquier valor no reconocido como `internal_error` en lugar de hacer un switch exhaustivo sobre la lista anterior y romperse con la próxima incorporación.
 
   Tipo: [`RouterErrorType`](#routererrortype)
 </ResponseField>
@@ -1206,6 +1215,18 @@ Cuerpo de error para fallos de autenticación, acceso, búsqueda de modelos, cuo
 
 <ResponseField name="refusal_subject" type="string">
   Sobre qué entrada o salida fue un rechazo por política de contenido, expresado como un vocabulario cerrado a nivel del Router: `input`, `output`, `input_text`, `input_image`, `input_video`, `input_audio`, `output_text`, `output_image`, `output_video`, `output_audio`. Los valores simples `input` / `output` indican el lado cuando el proveedor no nombró una modalidad. Solo está presente cuando `error_type` es `content_policy_violation` y el proveedor nombró el sujeto rechazado con un código legible por máquinas; en caso contrario está ausente. Nunca es texto del proveedor. Hoy se rellena para los rechazos de BytePlus, Runway, BFL, Gemini, Veo, Vertex, xAI y Wan, y para los rechazos de Gemini en las etapas de Nano Banana del Router de MiniMax; un proveedor cuyo rechazo no indica de qué lado se trataba lo deja ausente. Replica el encabezado `X-Comfy-Refusal-Subject`.
+</ResponseField>
+
+<ResponseField name="budget" type="RouterSpendBudgetDetail">
+  El presupuesto agotado. Los identificadores, el modo y los importes son visibles para los propietarios del espacio de trabajo.
+
+  Tipo: [`RouterSpendBudgetDetail`](#routerspendbudgetdetail)
+</ResponseField>
+
+<ResponseField name="blocking_budgets" type="array of RouterSpendBudgetDetail">
+  Todos los presupuestos estrictos agotados, visibles para el propietario del espacio de trabajo.
+
+  Tipo: array de [`RouterSpendBudgetDetail`](#routerspendbudgetdetail)
 </ResponseField>
 
 <ResponseField name="denied_reason" type="string">
@@ -1545,6 +1566,47 @@ Las tres URL que abarcan el resto del ciclo de vida de una solicitud en cola. Se
   URL absoluta en la que se solicita una cancelación.
 
   URI
+</ResponseField>
+
+### RouterSpendBudgetDetail
+
+El presupuesto agotado. Los identificadores, el modo y los importes son visibles para los propietarios del espacio de trabajo.
+
+**Campos**
+
+<ResponseField name="scope_kind" type="string" required>
+</ResponseField>
+
+<ResponseField name="resets_at" type="string" required>
+  date-time
+</ResponseField>
+
+<ResponseField name="set_by" type="string" required>
+</ResponseField>
+
+<ResponseField name="id" type="string">
+</ResponseField>
+
+<ResponseField name="scope_id" type="string">
+</ResponseField>
+
+<ResponseField name="mode" type="string">
+</ResponseField>
+
+<ResponseField name="limit_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_micro_usd" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="limit_credits" type="integer">
+  int64
+</ResponseField>
+
+<ResponseField name="spent_credits" type="integer">
+  int64
 </ResponseField>
 
 ### RouterValidationErrorContext
