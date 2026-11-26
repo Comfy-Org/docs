@@ -313,6 +313,7 @@
   let themeObserver = null;
   let loadingTimeout = null;
   let routeLoadTimer = null;
+  let routeLoadTimerPath = '';
   let intersectionLoadTimer = null;
   // True while loadGiscus is removing or inserting the widget, so a DOM
   // mutation from that work is not treated as a Mintlify re-render.
@@ -658,11 +659,13 @@
   }
 
   function isExcludedCommentsPath(pathname) {
-    const path = (pathname || '').split('?')[0].split('#')[0];
+    // Same normalization as page identity, so /zh and /zh/ are both homepages.
+    const path = docsPagePath(pathname);
+    const raw = (pathname || '').split('?')[0].split('#')[0];
     const excludedPaths = ['/', '/zh', '/ja', '/ko'];
     return excludedPaths.includes(path)
-      || path.includes('/api/')
-      || path.includes('/search');
+      || raw.includes('/api/')
+      || raw.includes('/search');
   }
 
   function giscusContainerMounted() {
@@ -737,12 +740,20 @@
       return;
     }
 
+    // A remount for this path is already waiting. Further DOM mutations must
+    // not push that delay out forever. A different path still replaces it.
+    if (routeLoadTimer && isSameDocsPage(routeLoadTimerPath, scheduledPath)) {
+      return;
+    }
+
     if (routeLoadTimer) {
       clearTimeout(routeLoadTimer);
     }
+    routeLoadTimerPath = scheduledPath;
 
     routeLoadTimer = setTimeout(async () => {
       routeLoadTimer = null;
+      routeLoadTimerPath = '';
 
       if (!isSameDocsPage(window.location.pathname, scheduledPath)) return;
       if (reloadingGiscus && isSameDocsPage(currentPath, window.location.pathname)) return;

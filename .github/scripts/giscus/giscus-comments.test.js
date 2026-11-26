@@ -78,8 +78,13 @@ test('same-page URL updates do not reload, path and locale changes do', () => {
 test('homepage does not keep retrying once the widget is gone', () => {
   assert.equal(policy.shouldReloadGiscus('/', '/', false), false);
   assert.equal(policy.shouldReloadGiscus('/zh', '/zh', false), false);
+  assert.equal(policy.shouldReloadGiscus('/zh/', '/zh/', false), false);
+  assert.equal(policy.shouldReloadGiscus('/ja', '/ja/', false), false);
+  assert.equal(policy.shouldReloadGiscus('/ko/', '/ko', false), false);
   assert.equal(policy.shouldReloadGiscus('/tutorials/partner-nodes/faq', '/', true), true);
+  assert.equal(policy.shouldReloadGiscus('/tutorials/partner-nodes/faq', '/zh/', true), true);
   assert.equal(policy.shouldReloadGiscus('/', '/', true), true);
+  assert.equal(policy.shouldReloadGiscus('/zh/', '/zh/', true), true);
 });
 
 test('listener classifies the giscus payload instead of reading error.type', () => {
@@ -392,4 +397,29 @@ test('removing the content node on the same path mounts the widget again', async
   assert.equal(next.length, 1);
   assert.notEqual(next[0], first);
   assert.equal(next[0].parent, replacement);
+});
+
+test('DOM mutations do not postpone a same-page remount forever', async () => {
+  const page = '/tutorials/partner-nodes/concurrency-limits';
+  const host = loadWidget(page);
+  await host.flush(12000);
+  const first = host.containers()[0];
+  assert.ok(first);
+
+  host.content.remove();
+  const replacement = host.document.createElement('div');
+  replacement.className = 'mdx-content prose';
+  replacement.textContent = 'Partner node concurrency limits. '.repeat(8);
+  host.document.body.appendChild(replacement);
+
+  // Most of the remount delay has elapsed. Another mutation must not start it over.
+  await host.flush(2000);
+  const noise = host.document.createElement('span');
+  host.document.body.appendChild(noise);
+  await host.flush(1800);
+
+  const next = host.containers();
+  assert.equal(next.length, 1);
+  assert.equal(next[0].parent, replacement);
+  assert.notEqual(next[0], first);
 });
