@@ -23,11 +23,27 @@ jobs:
   update-map:
     runs-on: ubuntu-latest
     steps:
+      # A GITHUB_TOKEN this repo generates cannot open pull requests (the
+      # "Allow GitHub Actions to create and approve pull requests" setting is
+      # off), which is why the scheduled run failed at the last step every
+      # week. Mint a token from the Cloud Code Bot App instead: it is already
+      # installed on this repository and its token can push + open PRs.
+      # If the App or its permissions are unavailable, fall back to
+      # GITHUB_TOKEN so the map is still regenerated and pushed.
+      - name: Mint the Cloud Code Bot token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.CLOUD_CODE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # Need a token that can push a branch and open a PR
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -55,10 +71,16 @@ jobs:
       - name: Create or update pull request
         if: steps.diff.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           BRANCH: chore/giscus-path-map-update
         run: |
           set -euo pipefail
+
+          if [ -n "${{ steps.app-token.outputs.token }}" ]; then
+            echo "Opening the PR with the Cloud Code Bot app token."
+          else
+            echo "::warning::App token unavailable; falling back to GITHUB_TOKEN, which this repo may not allow to open PRs."
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
