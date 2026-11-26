@@ -313,7 +313,15 @@
   let themeObserver = null;
   let loadingTimeout = null;
   let routeLoadTimer = null;
+  let routeLoadTimerPath = '';
   let intersectionLoadTimer = null;
+  // True while loadGiscus is removing or inserting the widget, so a DOM
+  // mutation from that work is not treated as a Mintlify re-render.
+  let reloadingGiscus = false;
+  // Path of the widget currently in the document. Empty until the first
+  // successful insert, and cleared when we intentionally remove it.
+  let mountedPagePath = '';
+  let loadGeneration = 0;
 
   const INITIAL_LOAD_DELAY_MS = 3200;
   const SPA_LOAD_DELAY_MS = 2200;
@@ -637,21 +645,128 @@
     });
   }
 
+  // Page identity for "are we still on the same docs page?".
+  // Ignores hash, query, and a trailing slash. Locale lives in the path,
+  // so /zh/page is a different page from /page.
+  function docsPagePath(pathname) {
+    let path = (pathname || '/').split('?')[0].split('#')[0] || '/';
+    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+    return path || '/';
+  }
+
+  function isSameDocsPage(pathnameA, pathnameB) {
+    return docsPagePath(pathnameA) === docsPagePath(pathnameB);
+  }
+
+  function isExcludedCommentsPath(pathname) {
+    // Same normalization as page identity, so /zh and /zh/ are both homepages.
+    const path = docsPagePath(pathname);
+    const raw = (pathname || '').split('?')[0].split('#')[0];
+    const excludedPaths = ['/', '/zh', '/ja', '/ko'];
+    return excludedPaths.includes(path)
+      || raw.includes('/api/')
+      || raw.includes('/search');
+  }
+
+  function giscusContainerMounted() {
+    const container = document.querySelector('.giscus-container');
+    return !!(container && container.isConnected);
+  }
+
+  // Whether a URL or history update should tear the widget down and build it again.
+  // Same-page hash, query, and trailing-slash updates must not. A different path
+  // (including a locale switch) must. A same-page content re-render that dropped
+  // the node must, so the widget can be inserted into the new tree.
+  function shouldReloadGiscus(activePath, nextPath, containerMounted) {
+    const next = docsPagePath(nextPath);
+    const active = activePath ? docsPagePath(activePath) : '';
+
+    if (isExcludedCommentsPath(nextPath)) {
+      // Leave the homepage once it is already clear. Still remove a widget
+      // carried over from the previous page.
+      if (!active || active !== next) return true;
+      return !!containerMounted;
+    }
+
+    if (!active) return true;
+    if (active !== next) return true;
+    return !containerMounted;
+  }
+
+  // Giscus posts { giscus: { error: "Discussion not found" } } when a page has
+  // no thread yet. That string is the normal empty state (the discussion is
+  // created on the first comment). client.ts treats it as non-fatal. The error
+  // is plain text, not { type }, so reading error.type misses both this case
+  // and real rate-limit strings such as "API rate limit exceeded".
+  function classifyGiscusError(error) {
+    const parts = [];
+    if (typeof error === 'string') {
+      parts.push(error);
+    } else if (error && typeof error === 'object') {
+      if (typeof error.type === 'string') parts.push(error.type);
+      if (typeof error.message === 'string') parts.push(error.message);
+      if (typeof error.code === 'string') parts.push(error.code);
+    } else if (error != null) {
+      parts.push(String(error));
+    }
+
+    const text = parts.join(' ').toLowerCase();
+    if (text.includes('discussion not found')) return 'ignore';
+    if (
+      text.includes('rate limit') ||
+      text.includes('rate_limit') ||
+      text.includes('rate-limit')
+    ) {
+      return 'rate_limit';
+    }
+    return 'network';
+  }
+
+  function finishReload(generation) {
+    if (generation === loadGeneration) reloadingGiscus = false;
+  }
+
   function scheduleGiscusLoad(delayMs) {
     const scheduledPath = window.location.pathname;
+
+    // A load for this page is already removing or inserting the widget.
+    // Another same-page URL update (Mintlify's load-time replaceState, a
+    // heading hash) must not start a second teardown.
+    if (reloadingGiscus && isSameDocsPage(currentPath, scheduledPath)) {
+      return;
+    }
+
+    if (!shouldReloadGiscus(currentPath, scheduledPath, giscusContainerMounted())) {
+      return;
+    }
+
+    // A remount for this path is already waiting. Further DOM mutations must
+    // not push that delay out forever. A different path still replaces it.
+    if (routeLoadTimer && isSameDocsPage(routeLoadTimerPath, scheduledPath)) {
+      return;
+    }
 
     if (routeLoadTimer) {
       clearTimeout(routeLoadTimer);
     }
+    routeLoadTimerPath = scheduledPath;
 
     routeLoadTimer = setTimeout(async () => {
       routeLoadTimer = null;
+      routeLoadTimerPath = '';
 
-      if (window.location.pathname !== scheduledPath) return;
+      if (!isSameDocsPage(window.location.pathname, scheduledPath)) return;
+      if (reloadingGiscus && isSameDocsPage(currentPath, window.location.pathname)) return;
+      if (!shouldReloadGiscus(currentPath, window.location.pathname, giscusContainerMounted())) {
+        return;
+      }
 
       await waitForPageContentStability();
 
-      if (window.location.pathname !== scheduledPath) return;
+      if (!isSameDocsPage(window.location.pathname, scheduledPath)) return;
+      if (!shouldReloadGiscus(currentPath, window.location.pathname, giscusContainerMounted())) {
+        return;
+      }
 
       loadGiscus();
     }, delayMs);
@@ -990,15 +1105,18 @@
       
       // Check for various error patterns
       if (message && message.giscus) {
-        // Standard giscus error format
+        // Giscus sends error as a string (see giscus client.ts). An empty
+        // discussion is "Discussion not found" and is not a load failure.
         if (message.giscus.error) {
-          const errorType = message.giscus.error.type;
-          console.warn('Giscus error detected:', errorType, message.giscus.error);
-          
-          if (errorType === 'rate_limit' || errorType === 'rate-limit' || errorType === 'RATE_LIMITED') {
-            showGiscusNotice(container, 'rate_limit');
-          } else {
-            showGiscusNotice(container, 'network');
+          const iframe = container.querySelector('iframe.giscus-frame');
+          const fromCurrentFrame = iframe
+            && (!event.source || event.source === iframe.contentWindow);
+          if (fromCurrentFrame) {
+            const kind = classifyGiscusError(message.giscus.error);
+            if (kind !== 'ignore') {
+              console.warn('Giscus error detected:', message.giscus.error);
+              showGiscusNotice(container, kind === 'rate_limit' ? 'rate_limit' : 'network');
+            }
           }
         }
         
@@ -1022,7 +1140,7 @@
       }
       
       // Also check for direct error messages in the content
-      if (typeof message === 'string' && message.includes('rate limit')) {
+      if (typeof message === 'string' && classifyGiscusError(message) === 'rate_limit') {
         console.warn('Giscus: Rate limit detected in string message');
         showGiscusNotice(container, 'rate_limit');
       }
@@ -1181,20 +1299,36 @@
   // Create and insert giscus container with lazy loading
   async function loadGiscus() {
     const newPath = window.location.pathname;
-    
-    // Exclude paths that should not have comments
-    const excludedPaths = ['/', '/zh', '/ja', '/ko'];
 
-    // Skip if current path is in excluded list or contains API/search paths
-    if (excludedPaths.includes(newPath) || newPath.includes('/api/') || newPath.includes('/search')) {
+    // Already showing this page. Hash and query updates take this path.
+    if (
+      !isExcludedCommentsPath(newPath) &&
+      giscusContainerMounted() &&
+      currentPath &&
+      isSameDocsPage(currentPath, newPath)
+    ) {
+      return;
+    }
+
+    const generation = ++loadGeneration;
+    reloadingGiscus = true;
+    currentPath = newPath;
+    mountedPagePath = '';
+    cleanupGiscus();
+
+    if (isExcludedCommentsPath(newPath)) {
+      finishReload(generation);
       return;
     }
     
-    currentPath = newPath;
-    cleanupGiscus();
-    
     const contentContainer = await findContentContainer();
-    if (!contentContainer) {
+    if (generation !== loadGeneration) return;
+    if (!isSameDocsPage(window.location.pathname, newPath)) {
+      finishReload(generation);
+      return;
+    }
+    if (!contentContainer || !contentContainer.isConnected) {
+      finishReload(generation);
       console.warn('Giscus: Could not find suitable content container');
       return;
     }
@@ -1217,6 +1351,8 @@
     }
     
     // Setup lazy loading
+    mountedPagePath = docsPagePath(newPath);
+    finishReload(generation);
     setupLazyLoading(giscusContainer);
   }
   
@@ -1229,6 +1365,15 @@
       const url = location.href;
       if (url !== lastUrl) {
         lastUrl = url;
+        scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
+        return;
+      }
+
+      // Mintlify swapped the content node and the widget went with it,
+      // without a path change. Our own cleanup sets reloadingGiscus first.
+      if (reloadingGiscus || !mountedPagePath) return;
+      if (!isSameDocsPage(mountedPagePath, location.pathname)) return;
+      if (!giscusContainerMounted()) {
         scheduleGiscusLoad(SPA_LOAD_DELAY_MS);
       }
     }).observe(document, {subtree: true, childList: true});
@@ -1320,6 +1465,18 @@
       scheduleGiscusLoad(INITIAL_LOAD_DELAY_MS);
     }
   }
-  
-  init();
+
+  // Node tests evaluate this file with no document. The browser always has one.
+  if (typeof document === 'undefined' && typeof globalThis !== 'undefined') {
+    globalThis.__COMFY_GISCUS_POLICY__ = {
+      docsPagePath: docsPagePath,
+      isSameDocsPage: isSameDocsPage,
+      shouldReloadGiscus: shouldReloadGiscus,
+      classifyGiscusError: classifyGiscusError
+    };
+  }
+
+  if (typeof document !== 'undefined') {
+    init();
+  }
 })();
