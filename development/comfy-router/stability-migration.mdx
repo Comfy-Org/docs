@@ -1,0 +1,264 @@
+---
+title: "Migrate from the Stability API to Comfy Router"
+sidebarTitle: "Migrate from Stability API"
+description: "Move Stability API calls to Comfy: swap the base URL to stability.comfy.org, or call Stability models natively on Comfy Router by model ID."
+---
+
+Stability API integrations can move to Comfy in one of two ways. Both run the same Stability models and bill the same Comfy credits. They differ in how much of your code changes.
+
+## Choose your path
+
+| | Compatibility service | Native Comfy Router |
+| --- | --- | --- |
+| Base URL | `https://stability.comfy.org` | `https://api.comfy.org` |
+| Paths | Stability's own (`/v1/generation/...`, `/v2beta/...`) | `POST /v2/models/stability/<slug>` |
+| Request body | Stability's multipart form or JSON, unchanged | JSON, with images as Comfy-signed asset URLs |
+| Response | Stability's shapes: raw image bytes or Stability JSON with base64 | JSON with a Comfy-signed image URL |
+| Errors | Stability's error envelope | [Router errors](/development/comfy-router/errors) |
+| Code changes | Base URL and API key only | Request and response handling |
+| Best for | Existing Stability integrations and the ComfyUI Stability nodes | New integrations |
+
+**Use the compatibility service** if you have working Stability API code and want it running on Comfy with no other changes.
+
+**Use native Comfy Router** for new integrations. It is the same API as every other model on Router, with the Comfy SDKs, [queued delivery](/development/comfy-router/queue), idempotent retries and one error format.
+
+Both paths need a Comfy API key. Create one in [your Comfy workspace](https://platform.comfy.org/profile/api-keys?onboarding=router) and export it:
+
+```bash
+export COMFY_API_KEY="comfyui-..."
+```
+
+Keep API keys on your server or in your local environment, not in browser JavaScript.
+
+## Compatibility service
+
+The compatibility service at `https://stability.comfy.org` accepts Stability's own paths and request bodies, runs each call on Comfy Router, and answers in Stability's response and error shapes. To migrate, change two things:
+
+1. The base URL, from `https://api.stability.ai` to `https://stability.comfy.org`.
+2. The key in the `Authorization: Bearer` header, from your Stability key to your Comfy API key.
+
+Everything else stays the same: paths, form fields, the `Accept` header, and how you read the response.
+
+### Before and after
+
+<CodeGroup>
+```bash cURL (before)
+curl -f -sS https://api.stability.ai/v2beta/stable-image/generate/core \
+  -H "Authorization: Bearer $STABILITY_API_KEY" \
+  -H "Accept: image/*" \
+  -F prompt="a lighthouse on a cliff at sunset, oil painting" \
+  -F output_format=png \
+  -o lighthouse.png
+```
+
+```bash cURL (after)
+curl -f -sS https://stability.comfy.org/v2beta/stable-image/generate/core \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Accept: image/*" \
+  -F prompt="a lighthouse on a cliff at sunset, oil painting" \
+  -F output_format=png \
+  -o lighthouse.png
+```
+</CodeGroup>
+
+<CodeGroup>
+```python Python (before)
+import os
+import requests
+
+BASE_URL = "https://api.stability.ai"
+API_KEY = os.environ["STABILITY_API_KEY"]
+
+response = requests.post(
+    f"{BASE_URL}/v2beta/stable-image/generate/core",
+    headers={"Authorization": f"Bearer {API_KEY}", "Accept": "image/*"},
+    files={"none": ""},
+    data={"prompt": "a lighthouse on a cliff at sunset, oil painting", "output_format": "png"},
+)
+response.raise_for_status()
+with open("lighthouse.png", "wb") as f:
+    f.write(response.content)
+```
+
+```python Python (after)
+import os
+import requests
+
+BASE_URL = "https://stability.comfy.org"
+API_KEY = os.environ["COMFY_API_KEY"]
+
+response = requests.post(
+    f"{BASE_URL}/v2beta/stable-image/generate/core",
+    headers={"Authorization": f"Bearer {API_KEY}", "Accept": "image/*"},
+    files={"none": ""},
+    data={"prompt": "a lighthouse on a cliff at sunset, oil painting", "output_format": "png"},
+)
+response.raise_for_status()
+with open("lighthouse.png", "wb") as f:
+    f.write(response.content)
+```
+</CodeGroup>
+
+Image inputs are sent the way Stability expects them, as multipart file parts. The compatibility service uploads each one to Comfy storage before the call runs.
+
+### Authentication
+
+Send your Comfy API key as `Authorization: Bearer <key>`, the same header Stability uses. A request with no Bearer token, or with a key Comfy rejects, answers `401` with `name` set to `unauthorized`.
+
+`GET /v1/engines/list`, `GET /v1/user/account` and `GET /v1/user/balance` answer so that Stability SDKs that call them at startup keep working. They return fixed Stability-shaped JSON: the balance is always `0` and is not your Comfy credit balance. Generation is not gated on it. When your credits run out, a generation answers `402`. Check your balance and usage in [your Comfy workspace](https://platform.comfy.org).
+
+### Response shapes
+
+Responses follow Stability's rules for each API version:
+
+- **`/v2beta/...`** returns the raw image bytes when `Accept` is `image/*` or is not set, and `{"image": "<base64>", "finish_reason": "...", "seed": N}` when `Accept` is `application/json`.
+- **`/v1/generation/...`** returns `{"artifacts": [{"base64": "...", "seed": N, "finishReason": "..."}]}` by default, with one artifact per image, and raw bytes when `Accept` is `image/png`.
+- **`/v2beta/3d/...`** returns the 3D model as a binary glTF (`.glb`) body.
+
+An `Accept` value the path cannot answer is refused with `406`.
+
+### Asynchronous endpoints
+
+Two paths run asynchronously, as they do on Stability: `/v2beta/stable-image/edit/replace-background-and-relight` and `/v2beta/stable-image/upscale/creative`. The submit call answers `200` with a generation `id`. Poll `GET /v2beta/results/{id}` with the same key until it returns the result:
+
+| Status | Meaning |
+| --- | --- |
+| `202` | Still running. Poll again later. |
+| `200` | Done. The body is the image, in the shape your `Accept` header asked for. |
+| `404` | The id is unknown or has expired. |
+| Any other error | The generation failed. The body is a Stability error. |
+
+```bash
+# 1. Submit. The response is {"id": "...", "status": "in-progress"}.
+curl -f -sS https://stability.comfy.org/v2beta/stable-image/upscale/creative \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -F image=@source.png \
+  -F prompt="a detailed photo of a cat" \
+  -F output_format=png
+
+# 2. Poll until the status is 200, then save the image.
+GENERATION_ID="<id from step 1>"
+curl -sS https://stability.comfy.org/v2beta/results/$GENERATION_ID \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Accept: image/*" \
+  -o upscaled.png -w "%{http_code}\n"
+```
+
+### Errors
+
+Errors use Stability's envelope. A `/v1/...` path answers `{"id": "...", "name": "...", "message": "..."}`. A `/v2beta/...` path answers `{"id": "...", "name": "...", "errors": ["..."]}`. The message carries Router's error detail. A validation failure lists one entry per invalid field, as `field: message`.
+
+Router errors map onto Stability statuses and names like this:
+
+| Router error type | Stability status | `name` |
+| --- | --- | --- |
+| `invalid_input` | `400` | `bad_request` |
+| Request validation failure | `422` | `invalid_request` |
+| `unauthorized` | `401` | `unauthorized` |
+| `insufficient_credits` | `402` | `payment_required` |
+| `forbidden`, or `not_enabled` answered as `403` | `403` | `forbidden` |
+| `content_policy_violation` | `403` | `content_moderation` |
+| `model_not_found` | `404` | `not_found` |
+| `rate_limited`, `concurrency_limit_exceeded` | `429` | `rate_limit_exceeded` |
+| `service_unavailable`, `provider_timeout`, `deadline_exceeded`, `queue_timeout`, or `not_enabled` answered with another status | `503` | `service_unavailable` |
+| Request body too large | `413` | `payload_too_large` |
+| Anything else, including `provider_error` | `500` | `internal_error` |
+
+A `429` or `503` carries Router's `Retry-After` header when Router sent one. Wait that long before you retry.
+
+## Endpoint mapping
+
+Every Stability endpoint available on Comfy, with its compatibility path and its native Router model ID. The compatibility path is the Stability path on `https://stability.comfy.org`. The three SD3.5 models and SD3.5 Flash share Stability's `generate/sd3` path and are chosen by the `model` form field, which defaults to `sd3.5-large`.
+
+"Async" means the compatibility path answers with an `id` you poll at `/v2beta/results/{id}`. On native Router, every model answers on the synchronous route, and can also be [queued](/development/comfy-router/queue).
+
+| Endpoint | Compatibility path | Router model ID | Compatibility mode |
+| --- | --- | --- | --- |
+| [SDXL 1.0 text-to-image](/development/comfy-router/models/stability/sdxl-1-0-text-to-image/code) | `/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image` | `stability/sdxl-1.0-text-to-image` | Sync |
+| [SDXL 1.0 image-to-image](/development/comfy-router/models/stability/sdxl-1-0-image-to-image/code) | `/v1/generation/stable-diffusion-xl-1024-v1-0/image-to-image` | `stability/sdxl-1.0-image-to-image` | Sync |
+| [SDXL 1.0 masking](/development/comfy-router/models/stability/sdxl-1-0-masking/code) | `/v1/generation/stable-diffusion-xl-1024-v1-0/image-to-image/masking` | `stability/sdxl-1.0-masking` | Sync |
+| [Stable Image Core](/development/comfy-router/models/stability/generate-core/code) | `/v2beta/stable-image/generate/core` | `stability/generate-core` | Sync |
+| [Stable Image Ultra](/development/comfy-router/models/stability/generate-ultra/code) | `/v2beta/stable-image/generate/ultra` | `stability/generate-ultra` | Sync |
+| [SD3.5 Large](/development/comfy-router/models/stability/sd3-5-large/code) | `/v2beta/stable-image/generate/sd3` with `model=sd3.5-large` | `stability/sd3.5-large` | Sync |
+| [SD3.5 Large Turbo](/development/comfy-router/models/stability/sd3-5-large-turbo/code) | `/v2beta/stable-image/generate/sd3` with `model=sd3.5-large-turbo` | `stability/sd3.5-large-turbo` | Sync |
+| [SD3.5 Medium](/development/comfy-router/models/stability/sd3-5-medium/code) | `/v2beta/stable-image/generate/sd3` with `model=sd3.5-medium` | `stability/sd3.5-medium` | Sync |
+| [SD3.5 Flash](/development/comfy-router/models/stability/sd3-5-flash/code) | `/v2beta/stable-image/generate/sd3` with `model=sd3.5-flash` | `stability/sd3.5-flash` | Sync |
+| [Erase](/development/comfy-router/models/stability/edit-erase/code) | `/v2beta/stable-image/edit/erase` | `stability/edit-erase` | Sync |
+| [Inpaint](/development/comfy-router/models/stability/edit-inpaint/code) | `/v2beta/stable-image/edit/inpaint` | `stability/edit-inpaint` | Sync |
+| [Outpaint](/development/comfy-router/models/stability/edit-outpaint/code) | `/v2beta/stable-image/edit/outpaint` | `stability/edit-outpaint` | Sync |
+| [Search and Replace](/development/comfy-router/models/stability/edit-search-and-replace/code) | `/v2beta/stable-image/edit/search-and-replace` | `stability/edit-search-and-replace` | Sync |
+| [Search and Recolor](/development/comfy-router/models/stability/edit-search-and-recolor/code) | `/v2beta/stable-image/edit/search-and-recolor` | `stability/edit-search-and-recolor` | Sync |
+| [Remove Background](/development/comfy-router/models/stability/edit-remove-background/code) | `/v2beta/stable-image/edit/remove-background` | `stability/edit-remove-background` | Sync |
+| [Replace Background and Relight](/development/comfy-router/models/stability/edit-replace-background-and-relight/code) | `/v2beta/stable-image/edit/replace-background-and-relight` | `stability/edit-replace-background-and-relight` | Async |
+| [Sketch](/development/comfy-router/models/stability/control-sketch/code) | `/v2beta/stable-image/control/sketch` | `stability/control-sketch` | Sync |
+| [Structure](/development/comfy-router/models/stability/control-structure/code) | `/v2beta/stable-image/control/structure` | `stability/control-structure` | Sync |
+| [Style Guide](/development/comfy-router/models/stability/control-style/code) | `/v2beta/stable-image/control/style` | `stability/control-style` | Sync |
+| [Style Transfer](/development/comfy-router/models/stability/control-style-transfer/code) | `/v2beta/stable-image/control/style-transfer` | `stability/control-style-transfer` | Sync |
+| [Fast Upscaler](/development/comfy-router/models/stability/upscale-fast/code) | `/v2beta/stable-image/upscale/fast` | `stability/upscale-fast` | Sync |
+| [Conservative Upscaler](/development/comfy-router/models/stability/upscale-conservative/code) | `/v2beta/stable-image/upscale/conservative` | `stability/upscale-conservative` | Sync |
+| [Creative Upscaler](/development/comfy-router/models/stability/upscale-creative/code) | `/v2beta/stable-image/upscale/creative` | `stability/upscale-creative` | Async |
+| [Stable Fast 3D](/development/comfy-router/models/stability/stable-fast-3d/code) | `/v2beta/3d/stable-fast-3d` | `stability/stable-fast-3d` | Sync |
+| [Stable Point Aware 3D](/development/comfy-router/models/stability/stable-point-aware-3d/code) | `/v2beta/3d/stable-point-aware-3d` | `stability/stable-point-aware-3d` | Sync |
+
+A Stability path that is not in this table is not available on Comfy.
+
+## Native Comfy Router
+
+Native Router calls send a JSON body to `POST https://api.comfy.org/v2/models/stability/<slug>` with your key in `X-API-Key`. The body uses Stability's field names. Image inputs are Comfy-signed asset URLs rather than file uploads, and the response is JSON whose `image` is a Comfy-signed URL valid for up to 24 hours. Download the image before it expires.
+
+Each [model page](#endpoint-mapping) carries the full request schema, Python and TypeScript SDK snippets, and the queued variant for that model.
+
+### Synchronous example
+
+`stability/generate-core`:
+
+```bash
+curl https://api.comfy.org/v2/models/stability/generate-core \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"aspect_ratio": "16:9", "prompt": "a lighthouse on a cliff at sunset, oil painting", "seed": 12345}'
+```
+
+```json Response
+{
+  "finish_reason": "SUCCESS",
+  "image": "https://example.invalid/stability/image.png",
+  "seed": 12345
+}
+```
+
+### Asynchronous example
+
+`stability/upscale-creative` runs asynchronously at Stability. On the synchronous route, Router submits the job and polls it for you, then answers with the finished result in the same shape as above. It is billed once, when the job succeeds. For a long run, or to collect the result from another process, queue it instead:
+
+```bash
+BASE="https://api.comfy.org/v2/models/stability/upscale-creative"
+
+# 1. Submit. Router answers 201 with a request_id.
+curl "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"creativity": 0.3, "image": "https://storage.googleapis.com/example-bucket/source.png", "prompt": "a detailed photo of a cat", "seed": 12345}'
+
+# 2. Poll until status is COMPLETED, waiting the Retry-After seconds each response names.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Collect. 200 with the result, 202 while it is still running.
+curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+```
+
+The collected result has the same shape as the synchronous response. The `image` value in these examples is a placeholder; a real call must pass a Comfy-signed asset URL.
+
+## Pricing
+
+Both paths bill your Comfy workspace credits per generation. See [Comfy Router pricing](/development/comfy-router/pricing) for current per-model prices.
+
+## Next
+
+- [Comfy Router quickstart](/development/comfy-router/quickstart)
+- [Queued requests](/development/comfy-router/queue)
+- [Errors and retries](/development/comfy-router/errors)
+- [All models](/development/comfy-router/models)
