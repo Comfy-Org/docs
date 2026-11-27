@@ -23,6 +23,14 @@ const ALWAYS_GUARDED = [
   "development/comfy-router/higgsfield-byok.mdx",
   "development/comfy-router/litellm.mdx",
   "development/comfy-router/realtime.mdx",
+  "development/comfy-router/api.mdx",
+  "development/comfy-router/billing.mdx",
+  "development/comfy-router/discover-models.mdx",
+  "development/comfy-router/errors.mdx",
+  "development/comfy-router/headers.mdx",
+  "development/comfy-router/kling-4-0-elements-voices.mdx",
+  "development/comfy-router/queue.mdx",
+  "development/comfy-router/schemas.mdx",
   "router-schemas/openai/gpt-image-1.json",
 ];
 
@@ -41,10 +49,10 @@ const GUARDED_TOGETHER = [...ALWAYS_GUARDED, ...GENERATED_GUARDED];
 /** Paths the sync touches partially or not at all, which must stay editable. */
 const EDITABLE = [
   "docs.json",
-  "development/comfy-router/api.mdx",
-  "development/comfy-router/queue.mdx",
-  "development/comfy-router/headers.mdx",
-  "development/comfy-router/billing.mdx",
+  // Localized copies of synced pages are this repository's own translations.
+  "zh/development/comfy-router/api.mdx",
+  "ja/development/comfy-router/queue.mdx",
+  "ko/development/comfy-router/schemas.mdx",
   // The Router pricing page is hand-written in every locale; the sync never writes it.
   "development/comfy-router/pricing.mdx",
   "zh/development/comfy-router/pricing.mdx",
@@ -275,6 +283,14 @@ describe("the guarded paths exist in this repository", () => {
     "development/comfy-router/higgsfield-byok.mdx",
     "development/comfy-router/litellm.mdx",
     "development/comfy-router/realtime.mdx",
+    "development/comfy-router/api.mdx",
+    "development/comfy-router/billing.mdx",
+    "development/comfy-router/discover-models.mdx",
+    "development/comfy-router/errors.mdx",
+    "development/comfy-router/headers.mdx",
+    "development/comfy-router/kling-4-0-elements-voices.mdx",
+    "development/comfy-router/queue.mdx",
+    "development/comfy-router/schemas.mdx",
     "development/comfy-router/models",
     "development/comfy-router/models.mdx",
   ];
