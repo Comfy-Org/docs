@@ -3,18 +3,19 @@ title: "Comfy Cloud のデプロイと Build バージョンの管理"
 sidebarTitle: "デプロイの管理"
 description: "Comfy Cloud のデプロイに Build のバージョンをリリースし、GPU とワーカーを変更し、アプリから呼び出し、ブラウザーまたは comfy-cli で停止または削除します。"
 icon: "cloud-arrow-up"
-translationSourceHash: 612bed6c
+translationSourceHash: 4caddbd0
 translationFrom: development/serverless/overview.mdx
 translationBlockHashes:
-  "_intro": a234e823
+  "_intro": 0f953cda
   "Before you begin": 2c9eddaf
   "Start a Build from Comfy Desktop, a Workflow file, or ComfyUI": b3f82081
   "Find your deployment": 1ca2c01b
-  "Release a version of your Build": beb8e717
+  "Release a version of your Build": d227aec9
   "Change the GPU or region": cd2c97d7
   "Scale the workers": b766f67e
   "Stop and start a deployment": dbcec5d8
   "Call your deployment from your application": da751c87
+  "Add a model to a running deployment": 48fee6a0
   "Use workspace library models in API requests": 78954447
   "Monitor a deployment": 5e55ec73
   "Clean up": 7f33ef62
@@ -23,7 +24,7 @@ translationBlockHashes:
   "Next steps": 0578a22b
 ---
 
-Comfy Cloud 上で Build をデプロイした後は、Build の新しいバージョンをリリースしたり、デプロイの GPU とワーカーを変更したり、アプリケーションからデプロイを固有の URL で呼び出したりできます。デプロイは、ワーカーが稼働している間は GPU 時間のコストがかかり、削除するまではストレージのコストがかかります。作成後も管理を続けられます。このページでは、他のソースから Build を開始する方法、バージョンをリリースする方法、GPU とワーカーを選択する方法、デプロイを呼び出す方法、監視する方法、停止または削除する方法を説明します。
+Comfy Cloud 上で Build をデプロイした後は、Build の新しいバージョンをリリースしたり、デプロイの GPU とワーカーを変更したり、アプリケーションからデプロイを固有の URL で呼び出したりできます。デプロイは、ワーカーが稼働している間は GPU 時間のコストがかかり、削除するまではストレージのコストがかかります。作成後も管理を続けられます。このページでは、他のソースから Build を開始する方法、バージョンをリリースする方法、GPU とワーカーを選択する方法、デプロイを呼び出す方法、モデルを追加する方法、監視する方法、停止または削除する方法を説明します。
 
 最初の Build とデプロイを作成するには、[カスタム Build](/ja/development/deploy/cloud-custom-builds) を参照してください。
 
@@ -118,7 +119,7 @@ Comfy Cloud 上で Build をデプロイした後は、Build の新しいバー�
 
 ## Buildのバージョンをリリースする
 
-公開済みのBuildバージョンは決して変更されません。カスタムノードやモデルを追加するには、バージョンを公開してから、デプロイをそのバージョンに移動します。Developer Platformでは、バージョンを`v1`、`v2`などと呼びます。comfy-cliでは、これをリリースと呼びます。
+公開済みのBuildバージョンは決して変更されません。カスタムノードを追加するには、バージョンを公開してから、デプロイをそのバージョンに移動します。新しいバージョンを作成せずに1つのデプロイメントへモデルやLoRAを追加するには、[実行中のデプロイにモデルを追加する](#add-a-model-to-a-running-deployment)を参照してください。Developer Platformでは、バージョンを`v1`、`v2`などと呼びます。comfy-cliでは、これをリリースと呼びます。
 
 <Warning>
   デプロイを別のバージョンに移動したり、ロールバックしたりすると、古いバージョンと新しいバージョンの両方が実行されている間、GPU時間がかかります。Developer Platformでは、**Change version**ダイアログにその量が表示されます。
@@ -337,6 +338,261 @@ GPU はワークフローが利用できる VRAM の量と、ワーカー 1 台�
 </Tabs>
 
 自分のコードからは、[Comfy SDK](/ja/development/api-development/sdks) を使用します。`COMFY_BASE_URL` に **Deployment URL** を設定してください。詳しくは [ベースURLの選択](/ja/development/api-development/sdks#ベースurlの選択) を参照してください。
+
+## 実行中のデプロイにモデルを追加する {#add-a-model-to-a-running-deployment}
+
+Buildの新しいバージョンを公開しなくても、1つのデプロイメントにモデルやLoRAを追加できます。ファイルはBuildのモデルと同じストレージに置かれるため、すべてのワーカーがダウンロードなしでディスクから読み取ります。デプロイメントはURLを維持します。Buildと他のデプロイメントは変更されません。
+
+<Warning>
+  追加したモデルはデプロイメントのモデルストレージとしてカウントされ、[デプロイの課金](/ja/development/deploy/cloud-usage#デプロイメントの課金)で説明されている方法で課金されます。また、追加するたびにデプロイメントの実行中のワーカーがそのファイルを持つ新しいワーカーに置き換わり、新しいワーカーには通常どおりGPU時間が課金されます。
+</Warning>
+
+### 始める前に {#before-you-begin}
+
+次のものを用意してください。
+
+- **ステータスがReadyまたはStoppedのデプロイメント**：起動中、停止中、または更新中は追加が拒否されます。
+- **お使いのコンピューター上のモデルファイル**：ファイル名は英数字、`.`、`_`、`-` で構成します（[ルールとエラー](#rules-and-errors)を参照）。
+
+### ファイルを追加する {#add-the-file}
+
+<Tabs>
+  <Tab title="Developer Platform">
+    1. [デプロイメントを見つける](#デプロイメントを見つける)で示すように、デプロイメントのページを開きます。
+    2. **Overview** タブの **Added models** で、**Add model to this deployment** をクリックします。
+
+       ![Runtime configurationセクションと、その下にAdd model to this deploymentボタンとNo models added to this deployment yetの行があるAdded modelsセクションを表示するデプロイメントのOverviewタブ](/images/development/serverless/deployment-added-models-empty.png)
+
+    3. モデルファイルをボックスにドラッグするか、ボックスをクリックしてファイルを選択します。
+
+       ![Drag a model file here, or click to browseと表示されたボックス、lorasに設定されたModel folder、CancelとAddボタンを備えたAdded modelsセクション](/images/development/serverless/deployment-added-models-add-form.png)
+
+    4. **Model folder** で、ファイルを置くフォルダー（`loras` や `diffusion_models` など）を選択します。ボックスにファイルの名前とサイズが表示されます。
+    5. **Add** をクリックします。
+
+       ![ボックスにflux-2-klein-9b-int8-convrot.safetensors (8.79 GB)が表示され、Model folderがdiffusion_modelsに設定され、Addボタンが有効になっているAdded modelsセクション](/images/development/serverless/deployment-added-models-file-selected.png)
+
+    ファイルはフォルダー、サイズ、ステータスとともに **Added models** に表示されます。デプロイメントがファイルを配置している間は **Adding** と表示されます。
+
+    ![flux-2-klein-9b-int8-convrot.safetensors、diffusion\_models · 8.79 GB、Addingの黄色いドット、Removeボタンを表示するAdded modelsセクション](/images/development/serverless/deployment-added-models-adding.png)
+
+    ジョブがファイルを使用できるようになると、**Ready** と表示されます。
+
+    ![flux-2-klein-9b-int8-convrot.safetensors、diffusion\_models · 8.79 GB、Readyの緑色のドット、Removeボタンを表示するAdded modelsセクション](/images/development/serverless/deployment-added-models-ready.png)
+  </Tab>
+  <Tab title="comfy-cli">
+    1. comfy-cliが1.29.0以降であることを確認します。
+
+       ```bash
+       comfy --version
+       ```
+
+    2. [デプロイメントを見つける](#デプロイメントを見つける)で示すように、デプロイメントのIDを確認します。
+
+       ```bash
+       comfy deploy ls --workspace
+       ```
+
+    3. ファイルをアップロードしてデプロイメントに追加します。モデルのフォルダーは `--type` で指定します（`loras` や `diffusion_models` など）。
+
+       ```bash
+       comfy deploy models add <deployment> my_style.safetensors --type loras
+       ```
+
+       `<deployment>` はデプロイメントのID、または `<build>/<name>` です。名前だけの指定はBuildのフォルダーでのみ機能します。このコマンドはファイルをアップロードし、デプロイメントがそれを使用できるようになるまで待機します。追加を送信したらすぐに戻るには、`--no-wait` を追加します。
+
+    4. ファイルがreadyと表示されることを確認します。
+
+       ```bash
+       comfy deploy models ls <deployment>
+       ```
+
+       各行に、追加されたファイルのフォルダー、名前、サイズ、ステータスが表示されます。
+  </Tab>
+</Tabs>
+
+ファイルがaddingと表示されている間、デプロイメントはファイルを自身のストレージにコピーし、そのファイルを持つ新しいワーカーを起動して、古いワーカーを停止します。すでに実行中のジョブは古いワーカーで完了します。私たちのテストでは、130 MBのLoRAは追加後40秒から約3分でreadyと表示されました。停止中のデプロイメントでは、ファイルはアップロードが完了するとreadyと表示され、次回の起動時に配置されます。
+
+failedと表示されたファイルは追加されていません。削除してから、もう一度追加してください。
+
+<Accordion title="デプロイメントAPIでファイルを追加する">
+  自分のコードからファイルを追加するには、ワークスペースのAPIキーを使ってデプロイメントAPIを使用します。必要なものは次のとおりです。
+
+  - **デプロイメントのID**：**Deployment URL** の最初の部分です。たとえば `https://dep-2bf42665-0a61-4702-962f-0774c6391e96.run.comfy.app` の `dep-2bf42665-0a61-4702-962f-0774c6391e96` です。
+  - **ワークスペースのAPIキー**：[APIキーの取得](/ja/development/api-development/getting-an-api-key)を参照してください。以下のコマンドは `COMFY_API_KEY` 環境変数からキーを読み取り、`X-API-Key` ヘッダーで送信します。
+
+  アップロードする前に、最後のステップで示すようにデプロイメントのモデルを一覧表示し、`addEnabled` が `true` であることを確認してください。`false` の場合、追加は `404` を返します。
+
+  <Steps>
+    <Step title="アップロードリンクを要求する">
+      ファイルの名前、サイズ、SHA-256ハッシュを送信します。`kind` は常に `model` です。
+
+      ```bash
+      FILE=my_style.safetensors
+      SIZE=$(wc -c < "$FILE" | tr -d ' ')
+      SHA256=$(shasum -a 256 "$FILE" | cut -d ' ' -f 1)
+
+      curl -sS https://platformapi.comfy.org/builder/v1/blobs \
+        -H "X-API-Key: $COMFY_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"kind\": \"model\", \"filename\": \"$FILE\", \"sizeBytes\": $SIZE, \"sha256\": \"$SHA256\"}"
+      ```
+
+      応答にはアップロードの `blobId`、`uploadUrl`、そしてリンクが無効になる時刻 `expiresAt` が含まれます。
+
+      ```json
+      {
+        "blobId": "b1f0c2d4-...",
+        "deduplicated": false,
+        "uploadUrl": "https://storage.googleapis.com/...",
+        "expiresAt": "2026-11-23T20:15:00Z"
+      }
+      ```
+    </Step>
+    <Step title="ファイルをアップロードする">
+      `expiresAt` より前に、ファイルを `uploadUrl` にPUTします。このリンクは宣言したサイズの本文のみを受け付け、`x-goog-if-generation-match: 0` ヘッダーが必要です。
+
+      ```bash
+      curl -sS -X PUT "<uploadUrl>" \
+        -H "x-goog-if-generation-match: 0" \
+        --upload-file "$FILE"
+      ```
+    </Step>
+    <Step title="アップロードをデプロイメントに追加する">
+      `blobId` と、ファイルを置くモデルのフォルダー（`loras` や `checkpoints` など）を送信します。
+
+      ```bash
+      curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+        -H "X-API-Key: $COMFY_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{"blobId": "<blobId>", "type": "loras"}'
+      ```
+
+      応答は `202` で、デプロイメントのそのファイルのエントリが含まれ、ステータスは `adding` です。
+
+      ```json
+      {
+        "id": "655fa851-...",
+        "type": "loras",
+        "filename": "my_style.safetensors",
+        "status": "adding",
+        "sizeBytes": 134621556
+      }
+      ```
+
+      フォルダー内でファイルに別の名前を付けるには、リクエストに `"filename"` を追加します。追加しない場合、ファイルはアップロード時の名前を維持します。
+    </Step>
+    <Step title="ファイルがreadyと表示されるまで待つ">
+      デプロイメントのモデルを一覧表示します。
+
+      ```bash
+      curl -sS https://platformapi.comfy.org/deploy/v1/deployments/<deployment-id>/models \
+        -H "X-API-Key: $COMFY_API_KEY"
+      ```
+
+      ```json
+      {
+        "addEnabled": true,
+        "models": [
+          { "id": "655fa851-...", "type": "loras", "filename": "my_style.safetensors", "status": "ready", "sizeBytes": 134621556 }
+        ]
+      }
+      ```
+    </Step>
+  </Steps>
+
+  追加の応答が得られなかった場合は、同じ追加をもう一度送信してください。ファイルが `adding` と表示されている間は、同じアップロード、フォルダー、名前に対して同じエントリが返ります。
+
+  **大きなファイルを分割してアップロードする。** 大きなファイルの場合は、リンクの期限切れや接続切断でファイル全体をやり直さないよう、分割してアップロードを要求します。アップロード要求に `"parts": true` を追加します。すると応答には1つの `uploadUrl` の代わりに `parts` リストが含まれます。ファイルは最大32個のパートに分割され、各パートは最低64 MiB、ファイルは最大128 GiBまで可能です。
+
+  1. 各パートのバイト（ファイルの `offsetBytes` から `sizeBytes` バイト）を、同じ `x-goog-if-generation-match: 0` ヘッダーを付けてそのパートの `uploadUrl` にPUTします。
+  2. すべてのパートが揃う前にリンクが期限切れになった場合は、`POST https://platformapi.comfy.org/builder/v1/blobs/<blobId>/parts` を送信して、まだ保存されていないパートの新しいリンクを取得します。
+  3. すべてのパートが揃ったら、`POST https://platformapi.comfy.org/builder/v1/blobs/<blobId>/complete` を送信します。パートが1つのファイルに結合されます。
+
+  パートを使用する場合、パートが揃う前にアップロードをデプロイメントに追加できます。デプロイメントは到着したパートからコピーするため、アップロード終了後により早くファイルが `ready` と表示されます。
+</Accordion>
+
+### 追加したモデルを使用する {#use-the-added-model}
+
+Build内のモデルと同じように、ワークフローでファイル名を指定します。LoRAの場合は、ローダーの `lora_name` 入力にファイル名を設定し（[ワークフローでlora\_nameを設定する](#apiリクエストでワークスペースライブラリのモデルを使用する)を参照）、ジョブをデプロイメントに送信します。
+
+追加中のファイルを指定したジョブは、ワーカーに届く前に拒否されます。APIは `422` を返します。
+
+```json
+{
+  "error": {
+    "code": "model_not_ready",
+    "message": "my_style.safetensors is still being added to this deployment. Try again when it shows Ready."
+  }
+}
+```
+
+失敗したファイルを指定したジョブは、コード `model_failed` とメッセージ `my_style.safetensors was not added to this deployment. Remove it and add it again.` で拒否されます。Comfy Cloudエディターからの実行も同じメッセージで拒否されます。
+
+<Tip>
+  ファイルを使用するジョブは、ファイルがreadyと表示されてから送信してください。カスタムノードパックのローダーノードは、デプロイメントが数秒前に一覧表示した内容に対してのみ検証されるため、追加直後に送信したジョブはファイルを持たないワーカーに届き、`Value not in list` エラーで失敗することがあります。
+</Tip>
+
+Comfy Cloudエディターでは、**Run on** でデプロイメントを選択し、ファイルがreadyと表示されたらページを再読み込みするか `R` キーを押します。エディターはデプロイメントのモデルを自動では更新しません。するとファイルはローダーノードの一覧（`Load LoRA (Model and CLIP)` ノードの `lora_name` 一覧など）と、**Left sidebar** の **Model Library** に表示されます。
+
+デプロイメントは、別のバージョンへの移動、ロールバック、停止、起動を行っても、追加したモデルを保持します。移動先のバージョンに同じフォルダーと名前のファイルがある場合、デプロイメントはそのバージョンのファイルを使用します。
+
+### 追加したモデルを削除する {#remove-an-added-model}
+
+<Warning>
+  モデルを削除すると、デプロイメントのストレージからファイルが削除されます。そのファイルを指定したジョブは失敗します。すでに実行中のジョブは完了する場合があります。ファイルをすでに読み込んだワーカーは数分間そのファイルを使い続けることがあり、実行中のワーカーは、すでに実行したジョブと同一のジョブに対して保存済みの結果を返すことがあります。
+</Warning>
+
+<Tabs>
+  <Tab title="Developer Platform">
+    1. デプロイメントのページを開きます。
+    2. **Added models** で、ファイルの行の **Remove** をクリックします。
+  </Tab>
+  <Tab title="comfy-cli">
+    ファイルを `<folder>/<name>` として指定します。フォルダーと名前は `comfy deploy models ls` に表示されるものです。
+
+    ```bash
+    comfy deploy models rm <deployment> loras/my_style.safetensors
+    ```
+
+    このコマンドは削除前に確認を求めます。確認を省略するには `--yes` を追加します。
+
+    `<folder>/<name>` の代わりにファイルのIDを指定することもできます。`comfy deploy models ls` はIDを表示しません。表示するには `comfy --json deploy models ls <deployment>` を実行します。
+  </Tab>
+</Tabs>
+
+ファイルはremovingと表示され、削除が終わると一覧から消えます。ファイルを削除できなかった場合も同様です。デプロイメントが実行しているバージョンに同じフォルダーと名前のファイルがある場合は、エントリのみが削除され、バージョンのファイルは残ります。
+
+### ルールとエラー {#rules-and-errors}
+
+追加は次のルールに従います。
+
+- **ファイル名**：英数字、`.`、`_`、`-` で構成される1つの名前で、英数字で始まります。
+- **フォルダー**（`type`）：`loras`、`checkpoints`、`vae` などのモデルのフォルダー、または `models` 内の別のフォルダーです。`custom_nodes` や `configs`、あるいは既知のフォルダーの別の大文字小文字表記（`LoRAs` など）は使用できません。
+- **フォルダーと名前ごとに1ファイル**：Buildのバージョンまたはデプロイメントがそのフォルダーにすでに持っている名前は拒否されます。
+- **Buildのモデル設定が適用される**：**Choose which models** に設定されたBuildは追加されるすべてのモデルを拒否し、特定のファイル名をブロックするBuildはその名前を拒否します。
+
+拒否時には何も追加されず、表示できる `error` コードと `message` が返ります。
+
+```json
+{
+  "error": "MODEL_NAME_TAKEN",
+  "message": "This deployment already has loras/my_style.safetensors. Remove it first, or add the file under another name."
+}
+```
+
+| ステータス | `error` | 発生する状況 |
+|--------|---------|------|
+| `400` | `INVALID_REQUEST` | `blobId` がない、`type` がモデルのフォルダーでない、またはファイル名が上記のルールに違反している。 |
+| `404` | `UPLOAD_NOT_FOUND` | アップロードがこのワークスペースのものでない、モデルでない、またはそのファイルがまだ存在しない。パート単位でアップロードする場合を除き、追加する前にファイルをアップロードしてください。 |
+| `404` | `NOT_FOUND` | デプロイメント、または削除するエントリがこのワークスペースに存在しない。 |
+| `409` | `DEPLOYMENT_BUSY` | デプロイメントが起動中、停止中、または更新中。ReadyまたはStoppedと表示されてからモデルを追加または削除してください。 |
+| `409` | `MODEL_POLICY` | Buildのモデル設定がそのファイルを許可していない。 |
+| `409` | `MODEL_NAME_TAKEN` | Buildのバージョンまたはデプロイメントが、そのフォルダーと名前のファイルをすでに持っている。 |
+| `409` | `MODEL_STORAGE_EXCEEDED` | Buildのモデルと追加したモデルに、デプロイメントが持てる以上のストレージが必要になる。 |
+| `409` | `MODEL_LIST_TOO_LARGE` | デプロイメントのモデルが多すぎて、これ以上追加できない。メッセージには、追加したモデルを削除するか、モデルの少ないバージョンを使用するかが示されます。 |
+| `409` | `VOLUME_SHARED` | デプロイメントが別のデプロイメントとストレージを共有しているため、モデルを追加できない。 |
+| `503` | `SERVICE_UNAVAILABLE` | サービスが時間内に追加を確認できなかった。同じ追加をもう一度送信してください。 |
 
 ## APIリクエストでワークスペースライブラリのモデルを使用する
 
