@@ -1,0 +1,129 @@
+---
+title: "Миграция обратных вызовов подключений для расширений фронтенда"
+sidebarTitle: "Обратные вызовы подключений"
+description: "Порядок обратных вызовов onConnectionsChange и удаления узлов, SubgraphIO на границах подграфов и graph.events в расширениях ComfyUI."
+translationSourceHash: 06a9ae24
+translationFrom: custom-nodes/js/connection-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": cd84d91b
+  "Check for SubgraphIO at subgraph boundaries": c049a9fe
+  "Subscribe to node lifecycle events with graph.events": 1100692e
+  "Node removal fires callbacks in this order (partially tested)": 720324f8
+  "Workflow load resolves peer nodes before onConnectionsChange runs": 2b775215
+  "API prompt import does not reconnect resolved inputs": 619d6b69
+  "Reject connections before they are made": b9b94a8e
+  "Removing a link inside the output callback skips the input callback": 3317def4
+  "Replace removed slot events": 5c3ec663
+  "Read connection state from callback arguments or node methods": 9da17ab0
+---
+Сигнатуры колбэков не изменились. `onConnectionsChange`, `onConnectInput`, `onConnectOutput` и `onBeforeConnectInput` сохраняют прежние аргументы и момент вызова. Об изменениях в регистрации связей и API `LinkNetwork` см. в разделе [Миграция регистрации связей](/ru/custom-nodes/js/link-registration-migration).
+
+## Проверка SubgraphIO на границах подграфа
+
+На границе подграфа (это `SubgraphInput` или `SubgraphOutput`),
+`onConnectionsChange` всё ещё срабатывает, но его пятый аргумент это `SubgraphIO`,
+а не обычный `INodeInputSlot`/`INodeOutputSlot`. Проверьте это прежде чем
+рассматривать аргумент как обычный слот. Собственные проверки фронтенда `isSubgraphInput`
+и `isSubgraphOutput` не доступны расширениям, поэтому проверьте
+массив `linkIds` и узел `parent`, которые есть у каждого `SubgraphIO` и которых нет у слотов
+узлов:
+
+```js
+function isSubgraphIO(slot) {
+  return slot != null && Array.isArray(slot.linkIds) && 'parent' in slot
+}
+
+nodeType.prototype.onConnectionsChange = function (
+  type,
+  index,
+  isConnected,
+  link,
+  slotOrIO
+) {
+  if (isSubgraphIO(slotOrIO)) return
+  // slotOrIO is INodeInputSlot | INodeOutputSlot
+}
+```
+
+## Подписаться на события жизненного цикла узлов с помощью graph.events
+
+`graph.events` отправляет события `node:added`, `node:before-removed` и `node:removed`. Используйте их, когда нескольким частям вашего расширения нужно отслеживать добавление или удаление узла:
+
+```ts
+graph.events.addEventListener('node:added', (e) => {
+  console.log('added', e.detail.node.id)
+})
+```
+
+`node.onAdded`, `node.onRemoved` и `graph.onNodeAdded`/`graph.onNodeRemoved` с одним слотом по-прежнему работают, но присваивание `graph.onNodeAdded` заменяет любой существующий обработчик: второй подписчик незаметно вытесняет первый. Предпочитайте `graph.events`, если только вам не нужно отклонять или изменять что-либо во время добавления/удаления. Для подключения/отключения нет эквивалента с несколькими подписчиками; `onConnectionsChange` по-прежнему остаётся единственным хуком для каждого соединения.
+
+## При удалении узла обратные вызовы срабатывают в таком порядке (частично проверено)
+
+При удалении узла по порядку срабатывают:
+
+1. `node:before-removed`: узел всё ещё полностью прикреплён.
+2. `onConnectionsChange(..., false, ...)` на удаляемом узле и на каждом
+   соединённом с ним узле, пока удаляемый узел ещё находится в графе.
+3. `node.onRemoved()`: `node.graph` всё ещё задан.
+4. Узел отключается от индексов графа и хранилищ; `node.graph` становится
+   `null`.
+5. `onNodeRemoved(node)`, затем `node:removed`, и оба видят уже отсоединённый
+   узел.
+
+Тесты покрывают `node:before-removed → node.onRemoved() → onNodeRemoved(node)` и
+отдельно проверяют, что `node:removed` видит отсоединённый узел. Полная
+последовательность, включая шаг 2, наблюдается в исходном коде, а не
+гарантируется одним сквозным тестом.
+
+Чтобы получить удалённый узел из обработчика `onConnectionsChange` соседнего
+узла, сделайте это на шаге 2 через `graph.getNodeById()`. К моменту
+`node:removed` узел уже исчез.
+
+## Загрузка рабочего процесса создаёт соседние узлы до вызова onConnectionsChange
+
+`graph.configure()` создаёт все узлы рабочего процесса до того, как запустится собственный `configure()` любого узла, и вызывает `onConnectionsChange` для восстановленных соединений. Поэтому, когда ваш колбэк `onConnectionsChange` срабатывает во время загрузки, каждый соседний узел уже существует, а его соединение уже зарегистрировано, так что `graph.getNodeById()` и поиск соединений изнутри этого колбэка работают корректно.
+
+## Импорт промпта API не переподключает разрешённые входы
+
+`app.loadApiJson()` подключает каждый разрешимый вход, не выполняя второй проход отключения и повторного подключения. Расширениям не следует полагаться на дублирующиеся уведомления `onConnectionsChange` во время импорта промпта API. Сделайте так, чтобы каждый обработчик соединений выполнял свою работу при первом уведомлении; перенесите работу, которой требуется полный импортированный граф, в `afterConfigureGraph` или `afterLoadGraph`.
+
+Для входов, для которых ещё не существует выход источника или слот назначения, повторная попытка выполняется, пока проход продвигается вперёд. Это сохраняет поведение динамических входов: успешное подключение может создать слот, необходимый для последующего ожидающего подключения. Уже разрешённые подключения не повторяются, а подключение, отклонённое расширением, не повторяется после того, как его конечные точки становятся доступны.
+
+Это меняет только импорт промпта API. Обычная загрузка рабочего процесса по-прежнему использует `graph.configure()`, как описано выше, а сигнатуры обратных вызовов подключений не изменяются.
+
+## Отклонять соединения до их создания
+
+Чтобы отклонить соединение, верните `false` из `onConnectOutput` на узле-источнике или `onConnectInput` на целевом узле. Оба метода выполняются до того, как граф что-либо изменит, поэтому существующее соединение на входе целевого узла остаётся на месте:
+
+```js
+nodeType.prototype.onConnectOutput = function (
+  slot,
+  type,
+  input,
+  targetNode,
+  targetSlot
+) {
+  return !shouldReject(type, targetNode)
+}
+```
+
+Не отклоняйте соединение в `onConnectionsChange`. К моменту его вызова новое соединение уже заменило любое соединение, которое было на входе целевого узла, поэтому удаление нового соединения оставит вход отключённым.
+
+## Удаление ссылки внутри колбэка выхода пропускает колбэк входа
+
+При подключении ссылки сначала вызывается `onConnectionsChange` на стороне выхода, затем на стороне входа. Если обработчик на стороне выхода удаляет эту же ссылку до возврата, сторона входа получает колбэк `isConnected === false` из-за удаления, а её колбэк `isConnected === true` для новой ссылки пропускается. Не предполагайте, что обе стороны всегда видят подключение; если ваш обработчик повторно входит в граф, проверьте, что переданная вам ссылка всё ещё прикреплена. Это наблюдаемое поведение, а не проверенный контракт: сейчас ни один тест не задействует путь пропуска.
+
+## Заменить удалённые события слотов
+
+События `node:slot-links:changed` и `node:slot-errors:changed` были удалены, и событие с тем же именем на замену не появилось. Мигрируйте на:
+
+- `node.isInputConnected()`, `node.isOutputConnected()` или
+  `node.getOutputNodes()` для реактивного чтения состояния подключения, или
+- `onConnectionsChange`, если нужно выполнить код в момент, когда слот
+  подключается или отключается.
+
+## Читать состояние соединения из аргументов колбэка или методов узла
+
+`input.link` и `output.links` устарели, и при чтении данные могут расходиться с текущим графом. Запись только удаляет соединения: присваивание `null` для `input.link` отключает вход, а присваивание или изменение `output.links` отключает каждое соединение, отсутствующее в новом массиве. Запись никогда не создаёт соединения; используйте `node.connect()`, `node.disconnectInput()` или `node.disconnectOutput()`. Используйте аргумент `link_info`, который уже получает ваш колбэк, или методы экземпляра `LGraphNode`, которые читают хранилище соединений напрямую: `node.isInputConnected()`, `node.getInputLink()`, `node.isOutputConnected()` и `node.getOutputNodes()`. Не читайте `input.link` или `output.links`.
+
+Функции хранилища, лежащие в основе этих методов, являются внутренними и не входят в API расширения. Используйте методы узла.

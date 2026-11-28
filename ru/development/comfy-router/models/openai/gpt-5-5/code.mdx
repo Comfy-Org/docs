@@ -1,0 +1,627 @@
+---
+title: "Использовать GPT 5.5 через Comfy Router"
+description: "Вызов openai/gpt-5.5 через Comfy Router: эндпоинт, форма запроса и ответ, который возвращает Router."
+sidebarTitle: "GPT 5.5"
+translationSourceHash: b6f75b15
+translationFrom: development/comfy-router/models/openai/gpt-5-5/code.mdx
+translationBlockHashes:
+  "_intro": 40d43e07
+  "Quick start": 1c6f8445
+  "Schema": 7cb284e6
+  "Examples": 67e6c8f1
+---
+{/* GENERATED FILE. Generated from router-schemas/openai/gpt-5.5.json by `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/ru/comfy-router/model-code-footer.mdx";
+
+Справочник по API для модели `openai/gpt-5.5`, которая предоставляется через Comfy Router от OpenAI.
+
+**Вход:** текст, изображение · **Выход:** текст
+
+## Быстрый старт
+
+Создайте ключ в [вашем рабочем пространстве Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) и экспортируйте его как `COMFY_API_KEY`. Фрагменты на Python и TypeScript используют Comfy SDK (`pip install comfy-sdk` и `npm install @comfyorg/sdk`); фрагмент cURL это тот же вызов по обычному HTTP.
+
+**ID модели:** `openai/gpt-5.5`
+
+**Эндпоинт:** `POST https://api.comfy.org/v2/models/openai/gpt-5.5`
+
+<Tabs defaultTabIndex={1}>
+  <Tab title="Дождаться результата">
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# SDK автоматически создаёт ключ идемпотентности и переиспользует его при автоматических повторах.
+with Comfy() as client:
+    result = client.models.run(
+        "openai/gpt-5.5",
+        {
+            "input": "Reply with the single word: ok",
+            "max_output_tokens": 1024,
+        },
+    )
+
+print(result)
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из переменной окружения.
+// SDK автоматически создаёт ключ идемпотентности и переиспользует его при автоматических повторах.
+const { data } = await comfy.models.run("openai/gpt-5.5", {
+  input: "Reply with the single word: ok",
+  max_output_tokens: 1024,
+});
+
+console.log(data);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/openai/gpt-5.5 \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"Reply with the single word: ok\", \"max_output_tokens\": 1024}"
+```
+</CodeGroup>
+  </Tab>
+  <Tab title="Поставить в очередь и забрать позже">
+То же тело запроса, отправленное на `POST https://api.comfy.org/v2/models/openai/gpt-5.5/requests`. Router отвечает `201` с `request_id`, как только запуск принят, а результат забирается, когда он готов, из этого или другого процесса. Страница [Доставка через очередь](/ru/development/comfy-router/queue) описывает статус, отмену и получение результата.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# Каждый вызов submit() создаёт свой Idempotency-Key и переиспользует его при автоматических повторах.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "openai/gpt-5.5",
+            {
+                "input": "Reply with the single word: ok",
+                "max_output_tokens": 1024,
+            },
+        )
+        print("request_id:", handle.request_id)  # вместе с ID модели это всё, что нужно другому процессу
+
+        # Опрашивайте, пока запрос не завершится, выжидая Retry-After, указанный сервером.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Собственный ответ провайдера, то же значение, что возвращает models.run().
+        # Запрос, который завершился ошибкой или был отменён, вызовет здесь типизированную ошибку Router.
+        result = await handle.get()
+
+    print(result)
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из переменной окружения.
+// Каждый вызов submit() создаёт свой Idempotency-Key и переиспользует его при автоматических повторах.
+const handle = await comfy.models.submit("openai/gpt-5.5", {
+  input: "Reply with the single word: ok",
+  max_output_tokens: 1024,
+});
+console.log("requestId:", handle.requestId); // вместе с ID модели это всё, что нужно другому процессу
+
+// Опрашивайте, пока запрос не завершится, выжидая Retry-After, указанный сервером.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// Тот же результат, что возвращает models.run(). Запрос, который завершился ошибкой или был отменён, отклонится здесь.
+const result = await handle.get();
+
+console.log(result.data);
+```
+
+```bash cURL
+# 1. Отправка. Router отвечает 201 с request_id, status_url, response_url и cancel_url.
+curl https://api.comfy.org/v2/models/openai/gpt-5.5/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"Reply with the single word: ok\", \"max_output_tokens\": 1024}"
+
+# 2. Опрашивайте, пока статус не станет COMPLETED, выжидая Retry-After секунд, указанные в каждом ответе.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/openai/gpt-5.5/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Получение. 200 с собственным выходом модели, 202 с телом статуса, пока запрос ещё выполняется.
+curl https://api.comfy.org/v2/models/openai/gpt-5.5/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Схема
+
+### Входы
+
+<ParamField body="include" type="string[]">
+  Дополнительные данные вывода, которые нужно включить в ответ модели.
+</ParamField>
+
+<ParamField body="input" type="string | object[]" required>
+  Текстовые, графические или файловые входы для модели, используемые для генерации ответа. Единственное поле этого контракта, которое Router не может подставить, и единственная запись в `required` ниже.
+</ParamField>
+
+<ParamField body="instructions" type="string">
+  Вставляет системное сообщение (или сообщение разработчика) первым элементом в контекст модели.
+</ParamField>
+
+<ParamField body="max_output_tokens" type="integer">
+  Верхняя граница числа токенов, генерируемых для ответа, включая видимые токены вывода и токены рассуждения. Для reasoning-идентификатора этот потолок делится со скрытыми токенами рассуждения, поэтому небольшое значение может израсходовать весь бюджет ещё до появления любого видимого текста. Именно поэтому smoke-случаи рассуждения отправляют 1024, тогда как чат-случаи: 16.
+
+  Диапазон: `1` до `…`
+</ParamField>
+
+<ParamField body="model" type="string">
+  Идентификатор модели OpenAI. В Comfy Router это поле НЕОБЯЗАТЕЛЬНО, и Router заполняет его из сегмента пути `{model}`; явный `null` заменяется тем же способом. Отправка значения, которое не совпадает с путём, отклоняется.
+</ParamField>
+
+<ParamField body="parallel_tool_calls" type="boolean">
+  Разрешать ли модели выполнять вызовы инструментов параллельно.
+</ParamField>
+
+<ParamField body="previous_response_id" type="string">
+  ID предыдущего ответа для многоходовых диалогов.
+</ParamField>
+
+<ParamField body="reasoning" type="object">
+  ТОЛЬКО REASONING-УРОВЕНЬ. Конфигурация для моделей рассуждения, например `{"effort": "medium"}`. Передаётся без изменений; допустимые ключи см. в руководстве OpenAI по рассуждениям. Идентификатор чат-уровня её игнорирует.
+</ParamField>
+
+<ParamField body="store" type="boolean">
+  Сохраняет ли OpenAI сгенерированный ответ для последующего извлечения.
+</ParamField>
+
+<ParamField body="stream" type="boolean">
+  Объявлено, чтобы вызывающая сторона, отправившая его, не получила отказ, но на этой поверхности поле БЕЗ ДЕЙСТВИЯ: Router ПРИВОДИТ его к `false` перед отправкой, поскольку он захватывает ответ провайдера, а не ретранслирует `text/event-stream`, который не может декодировать, поэтому потоковая генерация была бы оплачена OpenAI, но никем не учтена. Ни одна поверхность Comfy не обслуживает поток: вход `POST /proxy/openai/v1/responses` версии v1 отклоняет `stream: true` с кодом 400 и никогда не пересылает запрос провайдеру, поэтому опустите поле или отправьте `false` на любой из поверхностей и читайте завершённый ответ как одно тело JSON.
+</ParamField>
+
+<ParamField body="temperature" type="number">
+  Температура выборки. ТОЛЬКО ЧАТ-УРОВЕНЬ: reasoning-идентификаторы серии o (`o1`, `o1-pro`, `o3`, `o4-mini`) отклоняют этот параметр в OpenAI. Router не отклоняет его для них, см. примечание этого компонента о том, почему два уровня используют одну схему, поэтому вызов рассуждения, отправивший его, получает в ответ собственную ошибку OpenAI.
+
+  Диапазон: `0` до `2`
+</ParamField>
+
+<ParamField body="text" type="object">
+  Конфигурация формата вывода, например `{"format": {"type": "json_schema", ...}}` для Structured Outputs. Передаётся без изменений.
+</ParamField>
+
+<ParamField body="tool_choice" type="string | object">
+  Как модель должна выбирать, какой инструмент использовать. Либо строковый режим, либо объект, называющий инструмент.
+</ParamField>
+
+<ParamField body="tools" type="object[]">
+  Определения инструментов, которые модель может вызвать. Router не сужает таксономию инструментов; допустимые формы см. в справочнике OpenAI по Responses API.
+</ParamField>
+
+<ParamField body="top_p" type="number">
+  Порог нуклеус-выборки. ТОЛЬКО ЧАТ-УРОВЕНЬ, на тех же условиях, что и `temperature`.
+
+  Диапазон: `0` до `1`
+</ParamField>
+
+<ParamField body="truncation" type="string">
+  Стратегия усечения, когда контекст превышает окно модели. Перечисление здесь ДЕЙСТВИТЕЛЬНО проверяется, в отличие от трёх словарей выше, поскольку эти два значения составляют полный набор, документированный OpenAI, и он не расширялся. Явный `null` по-прежнему принимается на тех же условиях, что и поля выше.
+
+  Возможные значения: `auto`, `disabled`
+</ParamField>
+
+<ParamField body="usage" type="object">
+  Конверт использования токенов. Присутствует в этом контракте, поскольку операция v1 объявляет его в теле запроса; OpenAI заполняет его в ОТВЕТЕ, поэтому у вызывающей стороны нет причин его отправлять.
+</ParamField>
+
+Сгенерировано из схемы, которую Router предоставляет по адресу `GET /v2/models/openai/gpt-5.5/openapi.json`, того же документа, по которому он проверяет вызов, прежде чем запрос достигает провайдера.
+
+### Выходы
+
+<ResponseField name="instructions" type="string">
+  Вставляет системное (или developer) сообщение первым элементом в контекст модели.
+
+При использовании вместе с `previous_response_id` инструкции из предыдущего ответа не переносятся в следующий ответ. Это упрощает замену системных (или developer) сообщений в новых ответах.
+</ResponseField>
+
+<ResponseField name="max_output_tokens" type="integer">
+  Верхняя граница числа токенов, которые можно сгенерировать для ответа, включая видимые выходные токены и [токены рассуждения](https://platform.openai.com/docs/guides/reasoning).
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  Модель, используемая для генерации ответа
+</ResponseField>
+
+<ResponseField name="temperature" type="number" default="1">
+  Управляет степенью случайности в ответе
+
+  Диапазон: `0` до `2`
+</ResponseField>
+
+<ResponseField name="top_p" type="number" default="1">
+  Управляет разнообразием ответа с помощью ядерной выборки
+
+  Диапазон: `0` до `1`
+</ResponseField>
+
+<ResponseField name="truncation" type="string" default="&quot;disabled&quot;">
+  Стратегия усечения, используемая для ответа модели.
+- `auto`: Если контекст этого ответа и предыдущих превышает
+  размер контекстного окна модели, модель усечёт
+  ответ, чтобы уложиться в контекстное окно, отбрасывая входные элементы в
+  середине разговора.
+- `disabled` (по умолчанию): Если ответ модели превысит размер контекстного окна
+  для модели, запрос завершится ошибкой 400.
+
+  Возможные значения: `auto`, `disabled`
+</ResponseField>
+
+<ResponseField name="previous_response_id" type="string">
+  Уникальный ID предыдущего ответа модели. Используйте это для
+создания многоходовых разговоров. Узнайте больше о
+[состоянии разговора](https://platform.openai.com/docs/guides/conversation-state).
+</ResponseField>
+
+<ResponseField name="reasoning" type="object">
+  **Только для моделей серии o**
+
+Параметры конфигурации для
+[моделей рассуждения](https://platform.openai.com/docs/guides/reasoning).
+</ResponseField>
+
+<ResponseField name="reasoning.context" type="string">
+  Управляет тем, какие элементы рассуждения возвращаются модели в последующих ходах, например `auto`, `current_turn` или `all_turns`.
+</ResponseField>
+
+<ResponseField name="reasoning.effort" type="string" default="&quot;medium&quot;">
+  **Только для моделей серии o**
+
+Ограничивает усилия, затрачиваемые на рассуждение, для
+[моделей рассуждения](https://platform.openai.com/docs/guides/reasoning).
+Сейчас поддерживаются значения `low`, `medium` и `high`. Снижение
+усилий, затрачиваемых на рассуждение, может привести к более быстрым ответам и меньшему числу токенов, используемых
+на рассуждение в ответе.
+
+  Возможные значения: `low`, `medium`, `high`
+</ResponseField>
+
+<ResponseField name="reasoning.generate_summary" type="string">
+  **Устарело:** используйте вместо этого `summary`.
+
+Сводка рассуждения, выполненного моделью. Это может быть
+полезно для отладки и понимания процесса рассуждения модели.
+Одно из значений: `auto`, `concise` или `detailed`.
+
+  Возможные значения: `auto`, `concise`, `detailed`
+</ResponseField>
+
+<ResponseField name="reasoning.mode" type="string">
+  Режим рассуждения, используемый для ответа.
+</ResponseField>
+
+<ResponseField name="reasoning.summary" type="string">
+  Сводка рассуждения, выполненного моделью. Это может быть
+полезно для отладки и понимания процесса рассуждения модели.
+Одно из значений: `auto`, `concise` или `detailed`.
+
+  Возможные значения: `auto`, `concise`, `detailed`
+</ResponseField>
+
+<ResponseField name="text" type="object">
+   
+</ResponseField>
+
+<ResponseField name="text.format" type="object">
+  Объект, задающий формат, который должна выводить модель.
+
+Настройка `{ "type": "json_schema" }` включает Structured Outputs,
+что гарантирует соответствие модели предоставленной вами JSON-схеме. Узнайте больше в
+[руководстве по Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs).
+
+Формат по умолчанию: `{ "type": "text" }` без дополнительных параметров.
+
+**Не рекомендуется для gpt-4o и более новых моделей:**
+
+Установка `{ "type": "json_object" }` включает более старый режим JSON, который
+гарантирует, что сообщение, созданное моделью, будет корректным JSON. Для моделей, которые это поддерживают, предпочтительно использовать `json_schema`.
+</ResponseField>
+
+<ResponseField name="text.verbosity" type="string">
+  Ограничивает подробность ответа модели. Одно из значений: `low`, `medium` или `high`.
+</ResponseField>
+
+<ResponseField name="tool_choice" type="`none`, `auto`, `required` | object">
+  Как модель должна выбирать, какой инструмент (или инструменты) использовать при генерации
+ответа. См. параметр `tools`, чтобы узнать, как указать, какие инструменты
+может вызывать модель.
+</ResponseField>
+
+<ResponseField name="tools" type="object[]">
+   
+</ResponseField>
+
+<ResponseField name="background" type="boolean">
+  Выполняется ли ответ модели в фоне.
+</ResponseField>
+
+<ResponseField name="billing" type="object">
+  Информация о выставлении счетов за ответ.
+</ResponseField>
+
+<ResponseField name="billing.payer" type="string">
+  Сторона, ответственная за оплату ответа.
+</ResponseField>
+
+<ResponseField name="completed_at" type="number">
+  Временная метка Unix (в секундах) завершения этого ответа. Присутствует только при статусе `completed`.
+</ResponseField>
+
+<ResponseField name="created_at" type="number">
+  Временная метка Unix (в секундах) создания этого ответа.
+</ResponseField>
+
+<ResponseField name="error" type="object">
+  Объект ошибки, возвращаемый, когда модели не удаётся сгенерировать ответ.
+</ResponseField>
+
+<ResponseField name="error.code" type="string" required>
+  Код ошибки для ответа.Возможные значения: `server_error`, `rate_limit_exceeded`, `invalid_prompt`, `vector_store_timeout`, `invalid_image`, `invalid_image_format`, `invalid_base64_image`, `invalid_image_url`, `image_too_large`, `image_too_small`, `image_parse_error`, `image_content_policy_violation`, `invalid_image_mode`, `image_file_too_large`, `unsupported_image_media_type`, `empty_image_file`, `failed_to_download_image`, `image_file_not_found`
+</ResponseField>
+
+<ResponseField name="error.message" type="string" required>
+  Понятное человеку описание ошибки.
+</ResponseField>
+
+<ResponseField name="frequency_penalty" type="number">
+  Штрафует новые токены на основе их текущей частоты в уже сгенерированном тексте.
+</ResponseField>
+
+<ResponseField name="id" type="string">
+  Уникальный идентификатор этого ответа.
+</ResponseField>
+
+<ResponseField name="incomplete_details" type="object">
+  Детали о том, почему ответ неполный.
+</ResponseField>
+
+<ResponseField name="incomplete_details.reason" type="string">
+  Причина, по которой ответ неполный.
+
+  Возможные значения: `max_output_tokens`, `content_filter`
+</ResponseField>
+
+<ResponseField name="max_tool_calls" type="integer">
+  Максимальное общее количество вызовов встроенных инструментов, которые можно обработать в одном ответе.
+</ResponseField>
+
+<ResponseField name="metadata" type="object">
+  Набор пар ключ-значение, которые можно прикрепить к ответу.
+</ResponseField>
+
+<ResponseField name="moderation" type="object">
+  Результаты модерации для входа и выхода ответа, если запрашивались модерируемые завершения.
+</ResponseField>
+
+<ResponseField name="object" type="string">
+  Тип объекта этого ресурса: всегда установлен в `response`.
+
+  Возможные значения: `response`
+</ResponseField>
+
+<ResponseField name="output" type="object[]">
+  Массив элементов содержимого, сгенерированных моделью.
+
+- Длина и порядок элементов в массиве `output` зависят от ответа модели.
+- Вместо того чтобы обращаться к первому элементу массива `output` и предполагать, что это сообщение `assistant` с содержимым, сгенерированным моделью, можно рассмотреть использование свойства `output_text`, если оно поддерживается в SDK.
+</ResponseField>
+
+<ResponseField name="output_text" type="string">
+  Удобное свойство только для SDK, которое содержит агрегированный текстовый вывод из всех элементов `output_text` в массиве `output`, если они присутствуют. Поддерживается в Python и JavaScript SDK.
+</ResponseField>
+
+<ResponseField name="parallel_tool_calls" type="boolean" default="true">
+  Разрешать ли модели выполнять вызовы инструментов параллельно.
+</ResponseField>
+
+<ResponseField name="presence_penalty" type="number">
+  Штрафует новые токены в зависимости от того, появляются ли они в тексте на данный момент.
+</ResponseField>
+
+<ResponseField name="prompt_cache_key" type="string">
+  Используется OpenAI для кэширования ответов на похожие запросы, чтобы оптимизировать процент попаданий в кэш. Заменяет поле `user`.
+</ResponseField>
+
+<ResponseField name="prompt_cache_retention" type="string">
+  Политика хранения кэша промптов, например `in_memory` или `24h`.
+</ResponseField>
+
+<ResponseField name="safety_identifier" type="string">
+  Стабильный идентификатор, используемый для выявления пользователей вашего приложения, которые могут нарушать политики использования OpenAI.
+</ResponseField>
+
+<ResponseField name="service_tier" type="string">
+  Уровень обработки, используемый для обслуживания запроса, например `auto`, `default`, `flex`, `scale` или `priority`.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Статус генерации ответа. Одно из значений: `completed`, `failed`, `in_progress`, `cancelled`, `queued` или `incomplete`.
+
+  Возможные значения: `completed`, `failed`, `in_progress`, `cancelled`, `queued`, `incomplete`
+</ResponseField>
+
+<ResponseField name="store" type="boolean">
+  Сохраняется ли ответ для последующего получения через API.
+</ResponseField>
+
+<ResponseField name="tool_usage" type="object">
+  Использование токенов и запросов с разбивкой по встроенным инструментам.
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen" type="object">
+  Использование токенов инструментом генерации изображений.
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.input_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.input_tokens_details" type="object">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.input_tokens_details.image_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.input_tokens_details.text_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.output_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.output_tokens_details" type="object">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.output_tokens_details.image_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.output_tokens_details.text_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.image_gen.total_tokens" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="tool_usage.web_search" type="object">
+  Использование инструмента веб-поиска.
+</ResponseField>
+
+<ResponseField name="tool_usage.web_search.num_requests" type="integer">
+   
+</ResponseField>
+
+<ResponseField name="top_logprobs" type="integer">
+  Максимальное количество наиболее вероятных токенов, возвращаемых в каждой позиции токена, каждый с соответствующей логарифмической вероятностью.
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Представляет детали использования токенов, включая входные токены, выходные токены, разбивку выходных токенов и общее количество использованных токенов.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens" type="integer" required>
+  Количество входных токенов.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details" type="object" required>
+  Подробная разбивка входных токенов.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details.cache_write_tokens" type="integer">
+  Количество входных токенов, записанных в кэш.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details.cache_write_tokens_details" type="object">
+  Записи в кэш в разбивке по времени жизни кэша. Сумма двух значений равна `cache_write_tokens`.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details.cache_write_tokens_details.ttl_12h_tokens" type="integer">
+  Количество входных токенов, записанных в кэш со временем жизни 12 часов.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details.cache_write_tokens_details.ttl_30m_tokens" type="integer">
+  Количество входных токенов, записанных в кэш со временем жизни 30 минут.
+</ResponseField>
+
+<ResponseField name="usage.input_tokens_details.cached_tokens" type="integer" required>
+  Количество токенов, полученных из кэша.
+[Подробнее о кэшировании промптов](https://platform.openai.com/docs/guides/prompt-caching).
+</ResponseField>
+
+<ResponseField name="usage.output_tokens" type="integer" required>
+  Количество выходных токенов.
+</ResponseField>
+
+<ResponseField name="usage.output_tokens_details" type="object" required>
+  Подробная разбивка выходных токенов.
+</ResponseField>
+
+<ResponseField name="usage.output_tokens_details.reasoning_tokens" type="integer" required>
+  Количество токенов рассуждения.
+</ResponseField>
+
+<ResponseField name="usage.total_tokens" type="integer" required>
+  Общее количество использованных токенов.
+</ResponseField>
+
+<ResponseField name="user" type="string">
+  Устаревший идентификатор конечного пользователя. Заменено на `safety_identifier` и `prompt_cache_key`.
+</ResponseField>
+
+## Примеры
+
+### Вход
+
+```json
+{
+  "input": "Reply with the single word: ok",
+  "max_output_tokens": 1024
+}
+```
+
+### Выход
+
+```json
+{
+  "completed_at": 1767225601,
+  "created_at": 1767225600,
+  "id": "resp_0a1b2c3d4e5f6a7b8c9d0e1f",
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "annotations": [],
+          "text": "ok",
+          "type": "output_text"
+        }
+      ],
+      "id": "msg_0a1b2c3d4e5f6a7b8c9d0e1f",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+    }
+  ],
+  "output_text": "ok",
+  "status": "completed",
+  "usage": {
+    "input_tokens": 14,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 2,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 16
+  }
+}
+```
+
+
+<RouterCodeFooter />

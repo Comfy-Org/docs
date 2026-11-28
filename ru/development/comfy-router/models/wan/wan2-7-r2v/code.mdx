@@ -1,0 +1,620 @@
+---
+title: "Использовать Wan 2.7 R2V с Comfy Router"
+description: "Сниппеты Python, TypeScript и cURL для вызова wan/wan2.7-r2v по HTTP через Comfy Router, поля запроса и форма результата"
+sidebarTitle: "Wan 2.7 R2V"
+translationSourceHash: fc3b1068
+translationFrom: development/comfy-router/models/wan/wan2-7-r2v/code.mdx
+translationBlockHashes:
+  "_intro": 5428b08c
+  "Quick start": 204ef296
+  "Schema": 7d82934a
+  "Examples": a91cb6b1
+---
+{/* GENERATED FILE. Edit code.yaml in this directory and run `pnpm code-pages:gen`. */}
+
+import RouterCodeFooter from "/snippets/ru/comfy-router/model-code-footer.mdx";
+
+Справочник по API для Wan 2.7 R2V. Wan 2.7 reference-to-video переносит объекты с референсных изображений и референсных видео в новую сцену; в промпте к ним обращаются как character1, character2 и так далее.
+
+**Вход:** Изображение, Видео, Текст · **Выход:** Видео
+
+## Быстрый старт
+
+Создайте ключ в [вашем рабочем пространстве Comfy](https://platform.comfy.org/profile/api-keys?onboarding=router) и экспортируйте его как `COMFY_API_KEY`. Фрагменты кода Python и TypeScript используют Comfy SDK (`pip install comfy-sdk` и `npm install @comfyorg/sdk`); фрагмент cURL представляет собой тот же вызов через обычный HTTP.
+
+**ID модели:** `wan/wan2.7-r2v`
+
+**Эндпоинт:** `POST https://api.comfy.org/v2/models/wan/wan2.7-r2v`
+
+<Tabs defaultTabIndex={1}><Tab title="Дождитесь результата">
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# SDK автоматически создаёт ключ идемпотентности и переиспользует его при автоматических повторных попытках.
+async def main():
+    async with AsyncComfy() as client:
+        result = await client.models.run(
+            "wan/wan2.7-r2v",
+            {
+                "input": {
+                    "prompt": "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+                    "media": [
+                        {
+                            "type": "reference_image",
+                            "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png",
+                        },
+                    ],
+                },
+                "parameters": {
+                    "resolution": "720P",
+                    "duration": 5,
+                },
+            },
+        )
+
+    print("video:", result["output"]["video_url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из переменной окружения.
+// SDK автоматически создаёт ключ идемпотентности и переиспользует его при автоматических повторных попытках.
+type Result = { output: { video_url: string } };
+const result = await comfy.models.run<Result>("wan/wan2.7-r2v", {
+  input: {
+    prompt: "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+    media: [
+      {
+        type: "reference_image",
+        url: "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png",
+      },
+    ],
+  },
+  parameters: {
+    resolution: "720P",
+    duration: 5,
+  },
+});
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.output.video_url);
+```
+
+```bash cURL
+curl https://api.comfy.org/v2/models/wan/wan2.7-r2v \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": {\"prompt\":\"character1 walks in from the left, turns to the camera and waves, plain orange backdrop\",\"media\":[{\"type\":\"reference_image\",\"url\":\"https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png\"}]}, \"parameters\": {\"resolution\":\"720P\",\"duration\":5}}"
+```
+</CodeGroup>
+  </Tab><Tab title="В очередь и забрать позже">
+То же тело запроса, отправленное на `POST https://api.comfy.org/v2/models/wan/wan2.7-r2v/requests`. Router отвечает `201` с `request_id`, как только запуск принят, а результат забирается, когда он готов, из этого или другого процесса. [Доставка через очередь](/ru/development/comfy-router/queue) описывает статус, отмену и получение результата.
+
+<CodeGroup>
+```python Python
+import asyncio
+from comfy_sdk import AsyncComfy
+
+# Читает COMFY_API_KEY из окружения.
+# Каждый вызов submit() создаёт собственный Idempotency-Key и переиспользует его при автоматических повторах.
+async def main():
+    async with AsyncComfy() as client:
+        handle = await client.models.submit(
+            "wan/wan2.7-r2v",
+            {
+                "input": {
+                    "prompt": "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+                    "media": [
+                        {
+                            "type": "reference_image",
+                            "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png",
+                        },
+                    ],
+                },
+                "parameters": {
+                    "resolution": "720P",
+                    "duration": 5,
+                },
+            },
+        )
+        print("request_id:", handle.request_id)  # вместе с model ID этого достаточно любому другому процессу
+
+        # Опрашивать, пока запрос не завершится, выжидая Retry-After, который указывает сервер.
+        async for update in handle.iter_events():
+            print(update.status, update.queue_position)
+
+        # Собственный payload провайдера, то же значение, что возвращает models.run().
+        # Запрос, завершившийся с ошибкой или отменённый, вызывает здесь типизированную ошибку Router.
+        result = await handle.get()
+
+    print("video:", result["output"]["video_url"])
+
+asyncio.run(main())
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Читает COMFY_API_KEY из окружения.
+// Каждый вызов submit() создаёт собственный Idempotency-Key и переиспользует его при автоматических повторах.
+type Result = { output: { video_url: string } };
+const handle = await comfy.models.submit<Result>("wan/wan2.7-r2v", {
+  input: {
+    prompt: "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+    media: [
+      {
+        type: "reference_image",
+        url: "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png",
+      },
+    ],
+  },
+  parameters: {
+    resolution: "720P",
+    duration: 5,
+  },
+});
+console.log("requestId:", handle.requestId); // вместе с model ID этого достаточно любому другому процессу
+
+// Опрашивать, пока запрос не завершится, выжидая Retry-After, который указывает сервер.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// То же результат, что возвращает models.run(). Запрос, завершившийся с ошибкой или отменённый, отклоняется здесь.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("video:", result.data.output.video_url);
+```
+
+```bash cURL
+# 1. Отправка. Router отвечает 201 с request_id, status_url, response_url и cancel_url.
+curl https://api.comfy.org/v2/models/wan/wan2.7-r2v/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": {\"prompt\":\"character1 walks in from the left, turns to the camera and waves, plain orange backdrop\",\"media\":[{\"type\":\"reference_image\",\"url\":\"https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png\"}]}, \"parameters\": {\"resolution\":\"720P\",\"duration\":5}}"
+
+# 2. Опрашивайте, пока статус не станет COMPLETED, выжидая Retry-After секунд, указанные в каждом ответе.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i https://api.comfy.org/v2/models/wan/wan2.7-r2v/requests/$REQUEST_ID/status \
+  -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Получение. 200 с нативным выводом модели, 202 с телом статуса, пока запрос ещё выполняется.
+curl https://api.comfy.org/v2/models/wan/wan2.7-r2v/requests/$REQUEST_ID \
+  -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+  </Tab>
+</Tabs>
+
+## Схема
+
+### Входы
+
+<ParamField body="input" type="object" required>
+  Введите базовую информацию: промпт и т. п.
+</ParamField>
+
+<ParamField body="input.audio_url" type="string">
+  URL для скачивания аудиофайла. Поддерживаемые форматы: mp3 и wav. Нельзя использовать вместе с reference_video_urls.
+</ParamField>
+
+<ParamField body="input.img_url" type="string">
+  URL изображения первого кадра или данные в кодировке Base64. Обязательно для моделей wan2.5-i2v-preview и
+wan2.6-i2v. Варианты happyhorse-1.x i2v НЕ принимают здесь свой первый кадр:
+они принимают его как медиаэлемент типа first_frame (см. media ниже), а
+тело запроса с img_url, которое проходит на wan2.6-i2v, отклоняется провайдером на
+happyhorse-1.0-i2v и happyhorse-1.1-i2v. Варианты wan2.7/wan3.0 также передают свои
+референсные ассеты в media. Форматы изображений: JPEG, JPG, PNG, BMP, WEBP.
+Разрешение: 360-2000 пикселей. Размер файла: макс. 10MB.
+</ParamField>
+
+<ParamField body="input.media" type="object[]">
+  Список медиаассетов. Задаёт референсные материалы (изображение, аудио, видео) для
+генерации видео. Каждый элемент содержит поля type и url. Это поле общее для всех
+моделей, обслуживаемых этим компонентом, а то, какие значения type принимает конкретная
+модель и передаёт ли она вообще свой ввод изображения или видео здесь, а не в img_url или
+reference_video_urls, зависит от модели. Поддерживаемые значения type по моделям:
+- wan2.7-i2v: first_frame, last_frame, driving_audio, first_clip. first_frame и
+  last_frame: JPEG/JPG/PNG/BMP/WEBP, 240-8000 пикселей по стороне, соотношение сторон от 1:8
+  до 8:1, не более 20MB, публичный URL или URL вида data:\{MIME_type};base64,... .
+  driving_audio (WAV/MP3, 2-30 секунд, не более 15MB) и first_clip (MP4/MOV, 2-10
+  секунд, 240-4096 пикселей по стороне, не более 100MB): публичный URL HTTP/HTTPS; встроенный
+  data: URL не принимается.
+- wan2.7-r2v: first_frame (необязательно, макс. 1), reference_image, reference_video. Требуется
+  хотя бы один reference_image или reference_video, а суммарно референсных изображений и
+  референсных видео не более 5. first_frame и reference_image: JPEG/JPG/PNG/BMP/WEBP
+  (без альфа-канала), 240-8000 пикселей по стороне, соотношение сторон от 1:8 до 8:1, не более
+  20MB, публичный URL или URL вида data:\{MIME_type};base64,... . reference_video: публичный
+  URL HTTP/HTTPS; встроенный data: URL не принимается.
+- wan2.7-videoedit: video (ровно 1, редактируемый клип: MP4/MOV, 2-10 секунд,
+  240-4096 пикселей по стороне, не более 100MB, публичный URL HTTP/HTTPS; встроенный data: URL
+  не принимается) плюс необязательный 0 до 4 reference_image (JPEG/JPG/PNG/BMP/WEBP,
+  240-8000 пикселей по стороне, соотношение сторон от 1:8 до 8:1, не более 20MB, публичный URL
+  или URL вида data:\{MIME_type};base64,... ).
+- wan3.0-video, wan3.0-video-prime: first_frame (макс. 1), last_frame (макс. 1),
+  reference_image (макс. 10), reference_video (макс. 5 клипов, суммарная длительность \<= 15s),
+  reference_audio (макс. 5 клипов, суммарная длительность \<= 15s), file (макс. 1, нельзя использовать
+  с link), link (макс. 1, нельзя использовать с file). Типы reference_*/file/link
+  и типы first_frame/last_frame взаимоисключающие в пределах одного запроса. Порядок
+  в массиве задаёт порядок референсов ассетов в промпте (Image 1, Video 1,
+  Audio 1, ...). first_frame, last_frame и reference_image: JPEG/JPG/PNG/BMP/WEBP,
+  240-8000 пикселей по стороне, соотношение сторон не более 8:1, не более 20MB, публичный URL или
+  URL вида data:\{MIME_type};base64,... . reference_video, reference_audio, file и link: публичный
+  URL HTTP/HTTPS; встроенный data: URL не принимается.
+- happyhorse-1.0-i2v, happyhorse-1.1-i2v: только first_frame, ровно 1. Эти варианты
+  принимают свой первый кадр ЗДЕСЬ, а не в img_url. Не менее 300x300 пикселей, соотношение сторон
+  от 1:2.5 до 2.5:1, JPEG/JPG/PNG/WEBP, не более 20MB, публичный URL или
+  URL вида data:\{MIME_type};base64,... .
+- happyhorse-1.0-r2v, happyhorse-1.1-r2v: только reference_image, от 1 до 9 штук. Это
+  единственный референсный ввод модели. Наименьшая сторона не менее 400 пикселей, JPEG/JPG/PNG/WEBP,
+  не более 20MB, публичный URL или URL вида data:\{MIME_type};base64,... . reference_video
+  не является типом ввода для этой операции.
+- happyhorse-1.0-video-edit: video (ровно 1, редактируемый клип: MP4/MOV, 3-60
+  секунд, длинная сторона не более 4096 пикселей, короткая сторона не менее 360 пикселей, соотношение
+  сторон от 1:2.5 до 2.5:1, не более 100MB, публичный URL HTTP/HTTPS; встроенный data:
+  URL не принимается) плюс необязательный 0 до 5 reference_image (JPEG/JPG/PNG/WEBP, не
+  менее 300x300 пикселей, соотношение сторон от 1:2.5 до 2.5:1, не более 20MB, публичный URL
+  или URL вида data:\{MIME_type};base64,... ).
+- happyhorse-1.0-t2v, happyhorse-1.1-t2v, wan2.7-t2v, wan2.6-t2v, wan2.5-t2v-preview:
+  операции текст в видео. В документации партнёра для них не описан ввод media, поэтому оставьте
+  это поле незаданным.
+- wan2.5-i2v-preview, wan2.6-i2v, wan2.6-r2v: для этих вариантов компонент не перечисляет
+  никакого словаря media. wan2.5-i2v-preview и wan2.6-i2v принимают свой первый
+  кадр в img_url; wan2.6-r2v принимает свои референсные клипы в reference_video_urls.
+Приведённые выше значения по моделям это ограничения партнёра, а не этой схемы: для
+media не объявлены minItems/maxItems, потому что допустимые типы и их пределы
+различаются по моделям. Принятие схемой не означает принятия провайдером. И в
+обратную сторону: указанные выше значения «не более 20MB» на каждый ассет (предел для
+входов изображений, единственных входов, которые можно передавать встроенно) это предел партнёра
+для ассета, который он в итоге получает, и они действуют как написано, когда ассет это
+публичный URL, потому что эти байты никогда не проходят через Comfy. Встроенный
+URL вида data:\{MIME_type};base64,... проходит через Comfy и тоже сталкивается с пределом
+транспорта: тело POST-запроса Comfy Router ограничено 100 MiB в сумме, и при превышении возвращается
+ответ 413, а base64 увеличивает полезную нагрузку примерно в 4/3 раза, поэтому один встроенный
+ассет размером более примерно 75 MB отклоняется ещё до того, как сработает какое-либо
+из правил партнёра. При таком размере один ассет при собственном пределе партнёра20MB потолок спокойно укладывается в inline-режим, поэтому для одного ассета ограничивающим становится правило партнёра, а при нескольких ассетах начинает действовать транспортный потолок: лимит Router в 100 MiB ограничивает ВЕСЬ запрос, а не каждый элемент. Всё, что близко к этим потолкам, отправляйте публичным URL.
+</ParamField>
+
+<ParamField body="input.media[].type" type="string" required>
+  Тип медиафайла
+
+  Возможные значения: `first_frame`, `last_frame`, `driving_audio`, `first_clip`, `reference_image`, `reference_video`, `reference_audio`, `video`, `file`, `link`
+</ParamField>
+
+<ParamField body="input.media[].url" type="string" required>
+  URL медиафайла: публичный HTTP/HTTPS URL или, строго для тех входов типа IMAGE, которые перечислены выше в описании `media` для каждой модели (first_frame и last_frame в wan2.7-i2v; first_frame и reference_image в wan2.7-r2v; reference_image в wan2.7-videoedit; first_frame, last_frame и reference_image в wan3.0-video и wan3.0-video-prime; first_frame в happyhorse-1.0-i2v и happyhorse-1.1-i2v; reference_image в happyhorse-1.0-r2v и happyhorse-1.1-r2v; и reference_image в happyhorse-1.0-video-edit), inline-URL `data:{MIME_type};base64,...`. Ни один вход video, audio, file или link ни в одной из этих моделей не принимает inline data: URL. Временный oss://dashscope-instant URL из собственного сервиса загрузки партнёра или (в wan2.7-videoedit) asset_id из Asset Center разрешаются только в той учётной записи Alibaba Cloud, которая его загрузила; Comfy вызывает модель своим ключом и не предоставляет маршрута для загрузки, поэтому собственный oss:// URL или asset_id вызывающей стороны не является поддерживаемым входом. Это поле не проверяет схему URL, поэтому такое значение передаётся партнёру как есть, а не отклоняется здесь. См. описание `media` для лимитов размера и пикселей по каждой модели и для лимита тела запроса Router в 100 MiB, который ограничивает inline-полезную нагрузку в совокупности.
+</ParamField>
+
+<ParamField body="input.negative_prompt" type="string">
+  Слова обратного промпта описывают содержимое, которое вы не хотите видеть в кадре видео. После 500 символов wan-модель усекает его, а не отклоняет запрос. Оно учитывается в том же бюджете входа, что и промпт.
+</ParamField>
+
+<ParamField body="input.prompt" type="string">
+  Текст промпта. Поддерживается китайский и английский. После собственной документированной длины модель wan2.x усекает промпт, а не отклоняет его: 1,500 символов для wan2.5 и wan2.6 и 5,000 для wan2.7. wan3.0-video и wan3.0-video-prime принимают не более 20,000 символов. Провайдер отклоняет запрос, в котором промпт и negative_prompt вместе длиннее примерно 60,850 байт текста UTF-8 (примерно 20,000 китайских иероглифов), отвечая InvalidParameter `Range of input length should be [1, 61440]`.
+Для wan2.6-r2v с несколькими референсными видео используйте 'character1', 'character2' и т. д., чтобы ссылаться на субъекты в порядке референсных видео. Пример: "Character1 sings on the roadside, Character2 dances beside it"
+Для режима референса wan3.0-video используйте 'Image 1', 'Video 1', 'Audio 1' и т. д., чтобы ссылаться на медиафайлы в соответствующем порядке внутри массива media.
+</ParamField>
+
+<ParamField body="input.reference_video_urls" type="string[]">
+  URL референсных видео только для модели wan2.6-r2v. Массив из 1-3 URL видео.
+Ограничения входа:
+- Формат: mp4, mov
+- Количество: 1-3 видео
+- Длительность одного видео: 2-30 секунд
+- Размер одного файла: не более 30MB
+- Нельзя использовать вместе с audio_url
+Длительность референса: одно видео не более 5s, два видео не более 2.5s каждое, три видео пропорционально меньше.
+Выставление счетов: на основе фактически использованной длительности референса.
+</ParamField>
+
+<ParamField body="input.template" type="string">
+  Имя шаблона видеоэффекта. Необязательно. Сейчас поддерживаются: squish, flying, carousel. При использовании параметр prompt игнорируется.
+</ParamField>
+
+<ParamField body="model" type="string">
+  ID вызываемой модели. НЕ ограничен на этом компоненте: Comfy Router заполняет его из сегмента пути `{model}` в `POST /v2/models/wan/{model}`, поэтому вызывающая сторона Router его опускает. Прямой вызов v1 к `POST /proxy/wan/api/v1/services/aigc/video-generation/video-synthesis` ОБЯЗАН его передавать, а перечень допустимых написаний находится в собственном компоненте этой операции, `WanVideoGenerationRequest`.
+</ParamField>
+
+<ParamField body="parameters" type="object">
+  Параметры обработки видео
+</ParamField>
+
+<ParamField body="parameters.audio" type="boolean" default="true">
+  Добавлять ли аудио к видео. Поддерживается только для wan3.0-video и wan3.0-video-prime; для остальных wan-моделей провайдер не документирует такого переключателя.
+</ParamField>
+
+<ParamField body="parameters.audio_setting" type="string" default="&quot;auto&quot;">
+  Настройка аудио видео для модели wan2.7-videoedit.
+- auto (по умолчанию): модель разумно определяет её на основе содержимого промпта
+- origin: принудительно сохранить оригинальное аудио из входного видео
+
+  Возможные значения: `auto`, `origin`
+</ParamField>
+
+<ParamField body="parameters.duration" type="integer" default="5">
+  Длительность сгенерированного видео в секундах:
+- модели wan2.5: 5 или 10 секунд
+- wan2.6-t2v, wan2.6-i2v: 5, 10 или 15 секунд
+- wan2.6-r2v: только 5 или 10 секунд (без поддержки 15s)
+- wan2.7-i2v, wan2.7-t2v: целое число в [2, 15]
+- wan2.7-r2v, wan2.7-videoedit: целое число в [2, 10]
+- wan3.0-video: целое число в [2, 30] без видео на входе; с видео на входе суммарная
+  длительность входного видео + длительность выходного видео не должна превышать 30 секунд; -1 включает
+  режим умной длительности, где модель выбирает подходящую длительность
+Этот прокси возвращает 400 для длительности вне [-1, 30].
+
+  Диапазон: `-1` до `30`
+</ParamField>
+
+<ParamField body="parameters.prompt_extend" type="boolean" default="true">
+  Включено ли интеллектуальное переписывание промпта. По умолчанию true
+</ParamField>
+
+<ParamField body="parameters.ratio" type="string">
+  Соотношение сторон сгенерированного видео. Только для моделей wan2.7 и wan3.0.
+Для моделей wan2.7 по умолчанию зависит от уровня разрешения, если не указано.
+Для wan3.0-video adaptive (по умолчанию) автоматически рекомендует подходящеепропорции на основе пропорций входного медиафайла и замысла.
+
+  Возможные значения: `adaptive`, `16:9`, `9:16`, `1:1`, `4:3`, `3:4`
+</ParamField>
+
+<ParamField body="parameters.resolution" type="string">
+  Уровень разрешения. Поддерживаемые значения зависят от модели:
+- wan2.5-i2v-preview: 480P, 720P, 1080P
+- модели wan2.6 (t2v, i2v, r2v): только 720P, 1080P (без поддержки 480P)
+- модели wan2.7 (i2v, t2v, r2v, videoedit): 720P, 1080P (по умолчанию 1080P)
+- wan3.0-video, wan3.0-video-prime: 480P, 720P, 1080P (по умолчанию у провайдера 1080P)
+- happyhorse-1.0-* (t2v, i2v, r2v, video-edit): 720P, 1080P
+- happyhorse-1.1-* (t2v, i2v, r2v): 480P, 720P, 1080P
+Этот прокси отклоняет запросы на генерацию видео, в которых не указаны ни
+resolution, ни size, поскольку уровень разрешения определяет тариф
+выставления счетов. Перед проверкой он переводит resolution в верхний регистр
+и передаёт значение в верхнем регистре, возвращает 400 для значения вне этого
+перечисления и возвращает 400 для 480P (независимо от того, передан ли он как
+resolution или как size 480P) для моделей wan2.6, wan2.7 и happyhorse-1.0,
+перечисленных выше как не поддерживающие 480P.
+
+  Возможные значения: `480P`, `720P`, `1080P`
+</ParamField>
+
+<ParamField body="parameters.seed" type="integer">
+  Зерно генератора случайных чисел, используется для управления случайностью содержимого, сгенерированного моделью
+
+  Диапазон: от `0` до `2147483647`
+</ParamField>
+
+<ParamField body="parameters.shot_type" type="string" default="&quot;single&quot;">
+  Интеллектуальное управление несколькими планами. Активно только при включённом prompt_extend.
+Для моделей wan2.6 и wan2.7-r2v.
+- single: видео с одним планом (по умолчанию)
+- multi: видео с несколькими планами
+
+  Возможные значения: `multi`, `single`
+</ParamField>
+
+<ParamField body="parameters.size" type="string">
+  Разрешение видео в формате ширина*высота. Поддерживаемые разрешения зависят от модели:
+Для wan2.5 T2V: размеры 480P (480*832, 832*480, 624*624), 720P, 1080P
+Для wan2.6 T2V/R2V (без 480P):
+  720P: 1280*720, 720*1280, 960*960, 1088*832, 832*1088
+  1080P: 1920*1080, 1080*1920, 1440*1440, 1632*1248, 1248*1632
+Если переданы и size, и resolution, тариф выставления счетов выбирает size,
+а resolution всё равно должен быть значением, которое этот прокси принимает
+для модели. Значение size уровня 480P возвращает 400 для каждой модели, которая
+в описании resolution указана как не поддерживающая 480P.
+</ParamField>
+
+<ParamField body="parameters.watermark" type="boolean" default="false">
+  Добавлять ли логотип-водяной знак; водяной знак располагается в правом нижнем углу
+</ParamField>
+
+Сгенерировано из схемы, которую Router отдаёт по адресу `GET /v2/models/wan/wan2.7-r2v/openapi.json`, того же документа, по которому он проверяет вызов, прежде чем запрос дойдёт до провайдера.
+
+### Выходы
+
+<ResponseField name="output" type="object" required>
+   
+</ResponseField>
+
+<ResponseField name="output.actual_prompt" type="string">
+  Фактический промпт после интеллектуального переписывания (для задач с видео)
+</ResponseField>
+
+<ResponseField name="output.check_audio" type="string">
+  URL аудио для задач I2V с генерацией аудио
+</ResponseField>
+
+<ResponseField name="output.code" type="string">
+  Код ошибки для неудачного запроса (не возвращается, если запрос выполнен успешно)
+</ResponseField>
+
+<ResponseField name="output.end_time" type="string">
+  Время завершения задачи
+</ResponseField>
+
+<ResponseField name="output.message" type="string">
+  Подробная информация о неудачном запросе (не возвращается, если запрос выполнен успешно)
+</ResponseField>
+
+<ResponseField name="output.orig_prompt" type="string">
+  Оригинальный входной промпт (для задач с видео)
+</ResponseField>
+
+<ResponseField name="output.results" type="object[]">
+  Список результатов задач для задач генерации изображений
+</ResponseField>
+
+<ResponseField name="output.results[].actual_prompt" type="string">
+  Фактический промпт после интеллектуального переписывания (если включено)
+</ResponseField>
+
+<ResponseField name="output.results[].code" type="string">
+  Код ошибки изображения (возвращается, когда часть задач завершилась с ошибкой)
+</ResponseField>
+
+<ResponseField name="output.results[].message" type="string">
+  Информация об ошибке изображения (возвращается, когда часть задач завершилась с ошибкой)
+</ResponseField>
+
+<ResponseField name="output.results[].orig_prompt" type="string">
+  Оригинальный входной промпт
+</ResponseField>
+
+<ResponseField name="output.results[].url" type="string">
+  URL-адрес сгенерированного изображения
+</ResponseField>
+
+<ResponseField name="output.scheduled_time" type="string">
+  Время выполнения задачи
+</ResponseField>
+
+<ResponseField name="output.submit_time" type="string">
+  Время отправки задачи
+</ResponseField>
+
+<ResponseField name="output.task_id" type="string" required>
+  ID задачи
+</ResponseField>
+
+<ResponseField name="output.task_metrics" type="object">
+  Статистика результатов задач для задач генерации изображений
+</ResponseField>
+
+<ResponseField name="output.task_metrics.FAILED" type="integer">
+  Количество задач с ошибкой
+</ResponseField>
+
+<ResponseField name="output.task_metrics.SUCCEEDED" type="integer">
+  Количество успешных задач
+</ResponseField>
+
+<ResponseField name="output.task_metrics.TOTAL" type="integer">
+  Общее количество задач
+</ResponseField>
+
+<ResponseField name="output.task_status" type="string" required>
+  Статус задачи
+
+  Возможные значения: `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELED`, `UNKNOWN`
+</ResponseField>
+
+<ResponseField name="output.video_url" type="string">
+  URL видео для завершённых задач генерации видео. Срок действия ссылки 24 часа
+</ResponseField>
+
+<ResponseField name="request_id" type="string" required>
+  Уникальный идентификатор запроса
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Статистика выходных данных. Учитываются только успешные результаты
+</ResponseField>
+
+<ResponseField name="usage.SR" type="integer">
+  Уровень разрешения видео (задачи I2V и wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.duration" type="number">
+  Длительность сгенерированного видео в секундах (задачи I2V и wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.fps" type="integer">
+  Частота кадров сгенерированного видео (задачи wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.image_count" type="integer">
+  Количество сгенерированных изображений (задачи T2I и I2I)
+</ResponseField>
+
+<ResponseField name="usage.input_video_duration" type="number">
+  Длительность входного видео в секундах, 0.0 при отсутствии входного видео (задачи wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.output_video_duration" type="number">
+  Длительность выходного видео в секундах (задачи wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.ratio" type="string">
+  Соотношение сторон сгенерированного видео, например 16:9 (задачи wan3.0-video)
+</ResponseField>
+
+<ResponseField name="usage.size" type="string">
+  Разрешение изображения (задачи T2I и I2I)
+</ResponseField>
+
+<ResponseField name="usage.video_count" type="integer">
+  Количество сгенерированных видео (задачи T2V)
+</ResponseField>
+
+<ResponseField name="usage.video_duration" type="number">
+  Длительность сгенерированного видео в секундах (задачи T2V)
+</ResponseField>
+
+<ResponseField name="usage.video_ratio" type="string">
+  Соотношение разрешений видео (задачи T2V)
+</ResponseField>
+
+<ResponseField name="code" type="string">
+  Код ошибки для неудачного запроса, возвращается на КОРНЕВОМ уровне обёртки, а не внутри `output` (не возвращается, если запрос выполнен успешно).
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Подробная информация о неудачном запросе, возвращается на КОРНЕВОМ уровне обёртки, а не внутри `output` (не возвращается, если запрос выполнен успешно). Проверяйте это перед тем, как обращаться к `output.message`.
+</ResponseField>
+
+## Примеры
+
+### Входы
+
+```json
+{
+  "input": {
+    "prompt": "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+    "media": [
+      {
+        "type": "reference_image",
+        "url": "https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/input/pink_robot_front.png"
+      }
+    ]
+  },
+  "parameters": {
+    "resolution": "720P",
+    "duration": 5
+  }
+}
+```
+
+### Выходы
+
+```json
+{
+  "output": {
+    "task_id": "0385dc79-5ff8-4d82-bcb6-7c1a9f2e4d60",
+    "task_status": "SUCCEEDED",
+    "submit_time": "2027-01-01T00:00:00.000Z",
+    "scheduled_time": "2027-01-01T00:00:01.000Z",
+    "end_time": "2027-01-01T00:01:04.000Z",
+    "orig_prompt": "character1 walks in from the left, turns to the camera and waves, plain orange backdrop",
+    "actual_prompt": "character1 walks in from the left, turns to the camera and waves, plain orange backdrop, even studio lighting, steady medium shot",
+    "video_url": "https://.../generated.mp4"
+  },
+  "request_id": "7574ee8f-38a3-4b1e-9280-11c33ab46e51",
+  "usage": {
+    "SR": 720,
+    "duration": 5
+  }
+}
+```
+
+Ссылка на видео действительна в течение 24 часов. Скачайте видео вовремя, если вам нужно его сохранить.
+
+<RouterCodeFooter />

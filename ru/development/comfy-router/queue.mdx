@@ -1,0 +1,294 @@
+---
+title: "Ставить запросы Comfy Router в очередь"
+sidebarTitle: "Запросы в очереди"
+description: "Отправьте запуск Comfy Router, опрашивайте статус и позже получите или отмените его через маршруты очереди или SDK для Python и TypeScript."
+translationSourceHash: 2d60a78d
+translationFrom: development/comfy-router/queue.mdx
+translationBlockHashes:
+  "_intro": bb9adff0
+  "Choose a delivery mode": 04a18c01
+  "Queue routes": e666df87
+  "Submit and collect a request": 8e776a91
+  "Queue response shapes": 5d24692b
+  "Idempotency and billing": b03b4156
+  "Queue error responses": 01118a93
+  "Next": af716b3d
+---
+
+`POST /v2/models/{provider}/{model}` удерживает соединение, пока модель не завершит работу. Доставка через очередь принимает тот же ID модели и то же нативное тело запроса, но возвращает ответ, как только Router принял запуск. Вы сразу получаете `request_id`, а результат забираете, когда он будет готов, из того же или другого процесса.
+
+**Синхронный маршрут ограничен 10 минутами.** Дедлайн Router по умолчанию настраивается для каждого развёртывания. Синхронный вызов, достигший этого дедлайна, прерывается с `504` / `deadline_exceeded`, независимо от того, продолжает ли провайдер работу. Отправляйте запуск в очередь, если он может превысить дедлайн или ваша вызывающая сторона не может удерживать соединение открытым так долго. О том, что дедлайн сообщает о выставлении счетов, а что нет, см. в разделе [Вызовы прерываются по серверному дедлайну](/ru/development/comfy-router/limitations#вызовы-обрываются-по-дедлайну-сервера).
+
+Используйте очередь, когда генерация может продлиться дольше, чем вы способны удерживать соединение, когда веб-запрос должен вернуть ответ прямо сейчас, когда вы отправляете запрос в одном процессе, а забираете результат в другом, или когда нужно запустить много генераций одновременно. Порядок, допуск, повторные попытки, тайм-ауты, выставление счетов и срок действия определяются на сервере. SDK добавляют сверху лишь опрос и удобство, ничего больше.
+
+## Выбрать режим доставки
+
+| | Синхронно | В очереди |
+| --- | --- | --- |
+| Маршрут | `POST /v2/models/{provider}/{model}` | `POST /v2/models/{provider}/{model}/requests` |
+| Ответ | `200` с нативным выводом модели | `201` с `request_id` и тремя URL |
+| Результат | В ответе | Собирается позже, вывод байт в байт тот же |
+| Ограничение по времени | [10-минутный дедлайн](/ru/development/comfy-router/limitations#вызовы-обрываются-по-дедлайну-сервера) Router, после чего `504` / `deadline_exceeded` | На выполнение не распространяется. Завершённый результат [хранится 24 часа](#идемпотентность-и-выставление-счетов) |
+
+SDK (`comfy-sdk` и `@comfyorg/sdk`, версии 0.3.0 или новее) предоставляют очередь в виде трёх методов рядом с `run`:
+
+- **`submit(model, body)`** отправляет запрос и сразу возвращает дескриптор. Дескриптор предоставляет `status()`, `get()`, `cancel()` и итератор событий (`iter_events()` в Python, `events()` в TypeScript).
+- **`subscribe(model, body, ...)`** объединяет отправку, опрос и сбор в одном вызове, с колбэком прогресса.
+- **`handle(model, request_id)`** восстанавливает дескриптор в другом процессе по двум идентификаторам, не выполняя никаких вызовов.
+
+Оба идентификатора нужны везде, потому что оба адресуют запрос: маршрут имеет вид `/v2/models/{provider}/{model}/requests/{request_id}`.
+
+<Note>
+  Метод `events()` здесь **не** является `job.events()` клиента Comfy Cloud. Этот метод опрашивает маршрут статуса и выдаёт наблюдения за очередью (статус и позиция в очереди) для запроса Router. Метод Cloud представляет собой живой SSE-поток задачи рабочего процесса ComfyUI, передающий прогресс, превью и выходы. А `subscribe()` это третье: вовсе не итератор, а отправка, опрос и сбор, объединённые в один вызов. См. [`events()` это не `subscribe()`](/ru/development/api-development/sdks#events-это-не-subscribe).
+</Note>
+
+## Маршруты очереди
+
+| Маршрут | Ответ |
+| --- | --- |
+| `POST /v2/models/{provider}/{model}/requests` | `201` с `request_id`, `status`, `queue_position`, `status_url`, `response_url`, `cancel_url` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}/status` | `200` с текущими `status` и `queue_position`, а также с подсказкой `Retry-After` |
+| `GET /v2/models/{provider}/{model}/requests/{request_id}` | `200` с выводом модели в её исходном формате после завершения, `202` с телом статуса, пока запрос не завершён |
+| `PUT /v2/models/{provider}/{model}/requests/{request_id}/cancel` | `202` `CANCELLATION_REQUESTED` или `409` `ALREADY_COMPLETED` |
+
+`status` принимает одно из значений `IN_QUEUE`, `IN_PROGRESS` или `COMPLETED`. Отдельного статуса ошибки или отмены нет: запрос, который не завершился успешно, получает `COMPLETED` с полем `error_type`, поэтому проверяйте наличие этого поля, а не четвёртое значение статуса. SDK делают это за вас: `get()` выбрасывает исключение или отклоняет промис с типизированной ошибкой Router, вместо того чтобы возвращать сбой как результат.
+
+Событий прогресса, вебхуков и уровней приоритета нет: следить за запросом позволяет маршрут статуса. [Ссылка на API](/ru/development/comfy-router/reference#эндпоинты) содержит полный контракт для каждого маршрута.
+
+## Отправить запрос и забрать результат
+
+Этот запрос ставит в очередь тот же запрос, который отправляет [быстрый старт](/ru/development/comfy-router/quickstart), и забирает изображение. Сначала экспортируйте свой ключ как `COMFY_API_KEY`.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Читает COMFY_API_KEY из переменной окружения.
+# Каждый вызов submit() создаёт свой Idempotency-Key и переиспользует его при автоматических повторах.
+with Comfy() as client:
+    handle = client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    print("request_id:", handle.request_id)  # вместе с ID модели этого достаточно другому процессу
+
+    # Опрашивайте, пока запрос не завершится, выдерживая Retry-After, который называет сервер.
+    for update in handle.iter_events():
+        print(update.status, update.queue_position)
+
+    # Собственный ответ провайдера, то же значение, которое возвращает models.run().
+    # Запрос, который завершился ошибкой или был отменён, выбрасывает здесь типизированную ошибку Router.
+    result = handle.get()
+
+print("image:", result["result"]["sample"])
+```
+
+```typescript TypeScript
+import { comfy } from "@comfyorg/sdk";
+
+// Reads COMFY_API_KEY from the environment.
+// Each submit() call mints its own Idempotency-Key and reuses it for automatic retries.
+type FluxResult = { result: { sample: string } };
+const handle = await comfy.models.submit<FluxResult>("bfl/flux-2-pro", {
+  prompt: "a red teapot on a windowsill, morning light",
+});
+console.log("requestId:", handle.requestId); // with the model ID, all another process needs
+
+// Poll until the request completes, waiting the Retry-After the server names.
+for await (const update of handle.events()) {
+  console.log(update.status, update.queuePosition);
+}
+
+// The same result models.run() returns. A request that failed or was cancelled rejects here.
+const result = await handle.get();
+if (result.kind !== "json") throw new Error("expected a JSON result");
+
+console.log("image:", result.data.result.sample);
+```
+
+```bash cURL
+BASE="https://api.comfy.org/v2/models/bfl/flux-2-pro"
+
+# 1. Отправка. Router отвечает 201 с request_id, status_url, response_url и cancel_url.
+curl "$BASE/requests" \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "a red teapot on a windowsill, morning light"}'
+
+# 2. Опрашивайте, пока статус не станет COMPLETED, выдерживая Retry-After из каждого ответа.
+REQUEST_ID="<request_id from the 201 body>"
+curl -i "$BASE/requests/$REQUEST_ID/status" -H "X-API-Key: $COMFY_API_KEY"
+
+# 3. Получение. 200 с нативным выводом модели, 202 с телом статуса, пока запрос ещё выполняется.
+curl "$BASE/requests/$REQUEST_ID" -H "X-API-Key: $COMFY_API_KEY"
+
+# 4. Отмена незавершённого запроса. Это просьба, а не гарантия.
+curl -X PUT "$BASE/requests/$REQUEST_ID/cancel" -H "X-API-Key: $COMFY_API_KEY"
+```
+</CodeGroup>
+
+Каждая [страница модели](/ru/development/comfy-router/models) содержит эту же схему для своей модели в разделе **Очередь и сбор результата позже**, рядом с синхронным примером.
+
+### Отслеживать прогресс и забрать результат одним вызовом
+
+Когда нужно и подождать, и показывать прогресс, `subscribe` объединяет отправку, опрос и сбор результата в один вызов:
+
+<CodeGroup>
+```python Python
+def on_update(update):
+    print(update.status, update.queue_position)
+
+result = client.models.subscribe(
+    "bfl/flux-2-pro",
+    {"prompt": "a red teapot on a windowsill, morning light"},
+    on_queue_update=on_update,
+    timeout=300,
+)
+```
+
+```typescript TypeScript
+const result = await comfy.models.subscribe<FluxResult>(
+  "bfl/flux-2-pro",
+  { prompt: "a red teapot on a windowsill, morning light" },
+  {
+    onQueueUpdate: (update) => console.log(update.status, update.queuePosition),
+    timeoutMs: 300_000,
+  },
+);
+```
+</CodeGroup>
+
+Тайм-аут ограничен только на стороне клиента и ничего не значит на стороне сервера. Когда он истекает, `subscribe` перед выбросом исключения делает одну попытку отмены. Отмена действует только на запрос, который ещё не начал выполняться: генерация, уже запущенная у партнёра, завершится и будет списана независимо от того, заберёт ли кто-нибудь результат. Используйте `submit`, если запрос должен пережить вызывающий процесс.
+
+### Забрать результат из другого процесса
+
+Храните `request_id` вместе с идентификатором модели. Оба значения нужны, чтобы восстановить дескриптор, и до его использования никаких вызовов не делается.
+
+<CodeGroup>
+```python Python
+handle = client.models.handle("bfl/flux-2-pro", request_id)
+result = handle.get()
+```
+
+```typescript TypeScript
+const handle = comfy.models.handle<FluxResult>("bfl/flux-2-pro", requestId);
+const result = await handle.get();
+```
+</CodeGroup>
+
+### Проверить статус или отменить
+
+`status()` это один опрос, который возвращает текущее состояние. `cancel()` просит сервер остановить незавершённый запрос. Это просьба, а не гарантия: запущенная у партнёра генерация может всё равно завершиться, и истинным будет то, что покажет следующий `status()`.
+
+<CodeGroup>
+```python Python
+update = handle.status()
+print(update.status, update.queue_position, update.error_type)
+
+handle.cancel()
+```
+
+```typescript TypeScript
+const update = await handle.status();
+console.log(update.status, update.queuePosition, update.errorType);
+
+await handle.cancel();
+```
+</CodeGroup>
+
+### Асинхронный Python
+
+`AsyncComfy` повторяет каждое имя, аргумент и порядок аргументов. Метода `submit_async` нет по той же причине, по которой нет `run_async`.
+
+```python
+from comfy_sdk import AsyncComfy
+
+async with AsyncComfy() as client:
+    handle = await client.models.submit(
+        "bfl/flux-2-pro",
+        {"prompt": "a red teapot on a windowsill, morning light"},
+    )
+    async for update in handle.iter_events():
+        print(update.status, update.queue_position)
+    result = await handle.get()
+```
+
+### Ошибки, которые выбрасывают SDK
+
+Запрос, который завершился без успеха, возвращается как `COMPLETED` с полем `error_type`. `get()` и `subscribe()` превращают его в типизированную ошибку Router для соответствующей категории: классы из `comfy_sdk.router_exceptions` в Python и `routerErrors.*` в TypeScript. Итератор событий в этом случае не выбрасывает исключение, потому что он отражает ход выполнения очереди: завершение с `error_type` выдаётся как последнее наблюдение, а забирает результат `get()`. Ответ `403` `not_enabled` при отправке приходит как `NotEnabled` и является терминальной ошибкой, поэтому SDK её не повторяют.
+
+## Формы ответов очереди
+
+**Отправка, `201`.** Здесь `status` всегда равен `IN_QUEUE`. Все три URL абсолютные и аутентифицируются тем же ключом, что и отправка.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_QUEUE",
+  "queue_position": 3,
+  "status_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/status",
+  "response_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "cancel_url": "https://api.comfy.org/v2/models/bfl/flux-2-pro/requests/6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21/cancel"
+}
+```
+
+`request_id` также является значением заголовка `X-Comfy-Request-Id` ответа на отправку. Храните ID модели рядом с ним: запрос адресуется обоими.
+
+**Статус, `200`.** Та же форма, но с текущим состоянием. `queue_position` считает запросы, стоящие впереди вашего, и достигает `0`, когда запуск оказывается в начале очереди. `Retry-After` в этом ответе: оценка Router того, когда повторный опрос окупит затраченный круг. Это подсказка, а не жёсткая граница, и запросу в конце очереди назначают более долгое ожидание, чем тому, что уже выполняется. Более частый опрос не сообщает ничего раньше и расходует ваш собственный лимит запросов.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "IN_PROGRESS",
+  "queue_position": 0,
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+Запрос, который завершился без успеха, получает статус `COMPLETED` с `error_type`, несущим ту же укрупнённую категорию, которую чтение результата помещает в `X-Comfy-Error-Type`. При успехе поле отсутствует, а не равно `null`.
+
+```json
+{
+  "request_id": "6f1a1a6e-6a53-4a5f-9d3a-2b3b0a1f9c21",
+  "status": "COMPLETED",
+  "error_type": "content_policy_violation",
+  "status_url": "...",
+  "response_url": "...",
+  "cancel_url": "..."
+}
+```
+
+**Результат.** `200` несёт собственный нативный вывод модели: побайтово то же, что возвращает синхронный маршрут для той же модели и того же входа, под собственным `Content-Type` провайдера. Пока запрос не завершён, чтение отвечает `202` с телом статуса, приведённым выше, поэтому клиент, который опрашивает только URL результата, разбирает один тип. Запрос, который завершился с ошибкой, возвращается как ответ с ошибкой и установленным `X-Comfy-Error-Type`: те же категории, что и у синхронного маршрута.
+
+**Отмена.** `202` с `CANCELLATION_REQUESTED` означает, что запрос принят, а не что выполнение остановлено. Запуск, который уже находится в работе у партнёра, может всё равно завершиться, а завершённая генерация партнёра оплачивается независимо от того, заберёт ли её кто-либо. После этого прочитайте статус: отмена, которая вступила в силу, отображается как `COMPLETED` с `error_type: cancelled`. Запрос, который устарел, не успев запуститься, точно так же показывает `queue_timeout`. Запрос, который уже завершился, отвечает `409` с `ALREADY_COMPLETED`.
+
+## Идемпотентность и выставление счетов
+
+- **Та же плата, что и при синхронном маршруте.** Средства списываются, когда провайдер выставляет счёт Comfy. Время ожидания в очереди не оплачивается.
+- **Один `Idempotency-Key` на одну отправку.** SDK генерирует новый ключ для каждого вызова `submit`, поэтому две намеренные отправки одного и того же входа считаются двумя запросами. Повтор того же вызова с тем же ключом не ставит в очередь второй запуск: он возвращает исходный handle с `Idempotent-Replayed: true`. Передайте собственный ключ, если потерянный ответ мог стоить вам `request_id`. См. [Headers](/ru/development/comfy-router/headers).
+- **Результаты истекают.** Завершённый запрос хранится 24 часа после завершения. После этого чтение статуса и результата отвечает `410`, а результат исчезает. Забирайте результаты оперативно и скачивайте все URL-адреса ресурсов, которые содержит вывод.
+- **Опросы также считаются запросами.** Чтение статуса и результата учитывается в [лимите запросов на вызывающего](/ru/development/comfy-router/limitations#частота-запросов-ограничена-для-каждого-вызывающего). Соблюдайте `Retry-After` вместо опроса с фиксированным коротким интервалом.
+
+## Ответы об ошибках очереди
+
+| Статус | `X-Comfy-Error-Type` | Значение |
+| --- | --- | --- |
+| `402` | `insufficient_credits` | Рабочее пространство не может оплатить запуск. Ничего не ставится в очередь и не списывается, а тот же `Idempotency-Key` можно отправить повторно после пополнения. |
+| `403` | `not_enabled` | Этот вызывающий не может использовать очередь: ключ без рабочего пространства (классические ключи, появившиеся до рабочих пространств), запрос со своим ключом или модель, которую очередь не может запустить. Для этого запроса ошибка терминальная, не повторяйте. |
+| `404` | `model_not_found` | Идентификатор `{provider}/{model}` не соответствует ни одной модели Router. |
+| `404` | `request_not_found` | Запроса с таким ID не существует для этого вызывающего и модели. |
+| `409` | `concurrency_limit_exceeded` | Тот же `Idempotency-Key` всё ещё принимается. Дождитесь `Retry-After` и отправьте тот же ключ повторно, чтобы получить исходный дескриптор. |
+| `409` | `invalid_input` | `Idempotency-Key` занят другим запросом. Отправьте этот запрос под новым ключом. |
+| `409` | `ALREADY_COMPLETED` в теле | Только на маршруте отмены: запрос уже завершился, поэтому отменять было нечего. |
+| `410` | | Запрос существовал и вышел за пределы окна хранения, 24 часа после завершения. Для этого ID ошибка постоянна. |
+| `422` | `invalid_input` | Модель отклонила вход. Тело содержит детализацию по каждому полю, точно как в синхронном маршруте. |
+
+Каждый ответ с ошибкой содержит `X-Comfy-Request-Id`. Указывайте его при обращении в поддержку.
+
+## Далее
+
+- [Ошибки и повторные попытки](/ru/development/comfy-router/errors): как читать ответы с ошибками и повторять запрос без повторного списания средств.
+- [Ссылка на API](/ru/development/comfy-router/reference#эндпоинты): полный контракт для каждого маршрута очереди.

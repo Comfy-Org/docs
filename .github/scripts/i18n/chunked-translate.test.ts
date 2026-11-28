@@ -115,6 +115,16 @@ describe("changelog date localization", () => {
     expect(formatChangelogDateForLang(2026, 3, 7, "es")).toBe("7 de marzo de 2026");
   });
 
+  test("formats Russian dates the way the ru changelog writes them", () => {
+    expect(localizeEnglishChangelogDate("November 4, 2026", "ru")).toBe(
+      "4 ноября 2026"
+    );
+    expect(localizeEnglishChangelogDate("September 30, 2025", "ru")).toBe(
+      "30 сентября 2025"
+    );
+    expect(formatChangelogDateForLang(2026, 3, 7, "ru")).toBe("7 марта 2026");
+  });
+
   test("keeps English dates for en and other locales unchanged", () => {
     expect(localizeEnglishChangelogDate("November 4, 2026", "en")).toBe("November 4, 2026");
     expect(formatChangelogDateForLang(2026, 11, 4, "zh")).toBe("2026年11月4日");

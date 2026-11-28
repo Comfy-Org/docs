@@ -478,6 +478,18 @@ function buildTranslationInstructions(lang: LangConfig): string {
     lang.code === "es"
       ? "Spanish runs 20 to 30 percent longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact."
       : "",
+    lang.code === "ru"
+      ? "For Russian, use the formal second person (вы/ваш, lowercase in prose), matching the ComfyUI frontend's ru locale. Follow the UI terminology: `рабочий процесс` for workflow, `узел`/`узлы` for node, `пользовательские узлы` for custom nodes, `очередь` for queue, `шаблон` for template, `холст` for canvas, `боковая панель` for sidebar, `рабочее пространство` for workspace, `режим приложения` for app mode, `подграф` for subgraph, `чекпойнт`, `сэмплер`, `промпт`, `латент`, `модель`. Localize the section headings as `## Схема`, `### Входы` and `### Выходы`, matching the Russian node documentation."
+      : "",
+    lang.code === "ru"
+      ? "Russian headings use sentence case; never copy English Title Case. Start task headings with the infinitive (`Установить ComfyUI`, `Обновить ComfyUI`), not a noun phrase, when a verb reads naturally. Keep the grammatical case of a heading consistent with how it is linked to in the same page."
+      : "",
+    lang.code === "ru"
+      ? "Keep node names, model names and on-screen option labels in their displayed English form (`Load Checkpoint`, `Save Image`, `Preview Image`, `Load Image`, `Reroute`, `Run`, `Run (On Change)`, `Run (Instant)`, `Unsupported Node Packs`, `Install All`, `Apply Changes`, `View in Manager`, `Download`, `Download all`, `Give Feedback`, `Docs`, `Help & Support`, `Stable`, `Latest on GitHub`, `Comfy Cloud ... Text to Video`); translate only the text around them. Never invent a Russian rendering for a control whose UI text is English."
+      : "",
+    lang.code === "ru"
+      ? "Russian runs longer than English: condense the frontmatter `description` until it is at most 160 characters instead of translating it word for word, and keep the page scope intact. Use «ёлочки» for quoted prose, keep CLI paths, file names, flags and JSON values untouched, and do not transliterate file names or model ids."
+      : "",
     lang.code === "zh"
       ? "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for a term everywhere within the file. Never invent words (for example `fixed` is 固定, not 顶固). Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a 链接 (hyperlinks), while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a 连线."
       : "Keep terminology consistent: follow the glossary below when it covers a term, and use the same rendering for that term everywhere within the file. Never invent words for a term the glossary already covers. Keep the senses of a word apart instead of translating it the same way everywhere: an English `link` that points to a URL or a document is a hyperlink, while a link between nodes in a graph (`LLink`, node connections, canvas wiring) is a connection between nodes. Use the target language's own established wording for both senses and never collapse them into one word.",

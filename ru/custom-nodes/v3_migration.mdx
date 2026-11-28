@@ -1,0 +1,981 @@
+---
+title: "Миграция пользовательских узлов ComfyUI на V3: переход со схемы V1 на V3"
+description: "Миграция пользовательских узлов V1 на схему V3: функция comfy_entrypoint, ComfyExtension, входы и выходы на основе объектов и classmethod execute."
+translationSourceHash: ef191ae4
+translationFrom: custom-nodes/v3_migration.mdx
+translationBlockHashes:
+  "Overview": 109e87b3
+  "Core Concepts": 85282582
+  "Migration Steps": 7840c755
+---
+
+## Обзор
+
+Схема ComfyUI V3 вводит более организованный способ определения узлов, а будущие расширения возможностей узлов будут добавляться только в схему V3. Это руководство поможет вам мигрировать существующие узлы V1 на новую схему V3.
+
+## Ключевые концепции
+
+Схема V3 поддерживается в новой версионированной схеме Comfy API: будущие ревизии схемы будут обратно совместимы. ```comfy_api.latest``` указывает на последнюю нумерованную версию API, которая всё ещё находится в разработке; версию перед latest можно считать «стабильной». Текущая (и первая) версия API — ```v0_0_2```, поэтому в ней будут появляться изменения без предупреждения. Как только она станет стабильной, для ```latest``` создадут новую версию ```v0_0_3```.
+
+```python
+# use latest ComfyUI API
+from comfy_api.latest import ComfyExtension, io, ui
+
+# use a specific version of ComfyUI API
+from comfy_api.v0_0_2 import ComfyExtension, io, ui
+```
+
+### Архитектура V1 и V3
+
+Главные изменения в схеме V3:
+- Входы и выходы задаются объектами, а не словарём.
+- Метод выполнения зафиксирован под именем 'execute' и является методом класса.
+- Узлы, которые предоставляются наружу, определяет функция ```def comfy_entrypoint()```, возвращающая объект ComfyExtension, вместо NODE_CLASS_MAPPINGS/NODE_DISPLAY_NAME_MAPPINGS
+- Объекты узлов не раскрывают 'state': ```def __init__(self)``` не повлияет на то, что раскрывают функции узла, поскольку все они являются методами класса. Кроме того, класс узла очищается перед выполнением.
+
+#### V1 (устаревший)
+```python
+class MyNode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {...}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "my_category"
+
+    def execute(self, ...):
+        return (result,)
+
+NODE_CLASS_MAPPINGS = {"MyNode": MyNode}
+```
+
+#### V3 (современный)
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyNode(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="MyNode",
+            display_name="My Node",
+            category="my_category",
+            inputs=[...],
+            outputs=[...]
+        )
+
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput:
+        return io.NodeOutput(result)
+
+class MyExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNode]
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return MyExtension()
+```
+
+## Шаги миграции
+
+Переход с V1 на V3 в большинстве случаев прост и представляет собой только изменение синтаксиса.
+
+### Шаг 1: изменить базовый класс
+
+Все узлы схемы V3 должны наследоваться от ```ComfyNode```. Несколько уровней наследования допустимы, если в начале цепочки есть родитель ```ComfyNode```.
+
+**V1:**
+```python
+class Example:
+    def __init__(self):
+        pass
+```
+
+**V3:**
+```python
+from comfy_api.latest import io
+
+class Example(io.ComfyNode):
+    # No __init__ needed
+```
+
+### Шаг 2: преобразовать INPUT_TYPES в define_schema
+
+Свойства узла (идентификатор, отображаемое имя, категория и т. д.), которые раньше задавались в разных местах кода, например в словарях и свойствах класса, теперь собраны вместе в классе ```Schema```.
+
+Функция ```define_schema(cls)``` должна возвращать объект ```Schema``` примерно так же, как INPUT_TYPES(s) работала в V1.
+
+Поддерживаемые базовые типы входов и выходов хранятся и описаны в ```_io.py``` внутри ```comfy_api/{version}```, который по умолчанию доступен как пространство имён ```io```. Поскольку входы и выходы теперь задаются классами, а не словарями или строками, пользовательские типы поддерживаются либо определением собственного класса, либо вспомогательной функцией ```Custom``` из ```io```.
+
+Пользовательские типы подробнее описаны в разделе ниже.
+
+Класс типа имеет следующие свойства:
+- ```class Input``` для входов (например, ```Model.Input(...)```)
+- ```class Output``` для выходов (например, ```Model.Output(...)```). Учтите, что не все типы можно использовать как выход.
+- ```Type``` для получения подсказки типа (например, ```Model.Type```). Некоторые подсказки типов — просто ```any```, они могут измениться в будущем. Эти подсказки не проверяются и служат только документацией.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "int_field": ("INT", {
+                "default": 0,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "display": "number"
+            }),
+            "string_field": ("STRING", {
+                "multiline": False,
+                "default": "Hello"
+            }),
+            # V1 handling of arbitrary types
+            "custom_field": ("MY_CUSTOM_TYPE",),
+        },
+        "optional": {
+            "mask": ("MASK",)
+        }
+    }
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="Example",
+        display_name="Example Node",
+        category="examples",
+        description="Node description here",
+        inputs=[
+            io.Image.Input("image"),
+            io.Int.Input("int_field",
+                default=0,
+                min=0,
+                max=4096,
+                step=64,
+                display_mode=io.NumberDisplay.number
+            ),
+            io.String.Input("string_field",
+                default="Hello",
+                multiline=False
+            ),
+            # V3 handling of arbitrary types
+            io.Custom("my_custom_type").Input("custom_input"),
+            io.Mask.Input("mask", optional=True)
+        ],
+        outputs=[
+            io.Image.Output()
+        ]
+    )
+```
+
+### Шаг 3: обновить метод выполнения
+
+Все функции выполнения в V3 называются ```execute``` и являются методами класса.
+
+**V1:**
+```python
+def test(self, image, string_field, int_field):
+    # Process
+    image = 1.0 - image
+    return (image,)
+```
+
+**V3:**
+```python
+@classmethod
+def execute(cls, image, string_field, int_field) -> io.NodeOutput:
+    # Process
+    image = 1.0 - image
+
+    # Return with optional UI preview
+    return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+```
+
+### Шаг 4: преобразовать свойства узла
+
+Ниже приведены примеры названий свойств; подробности смотрите в исходном коде ```comfy_api.latest._io```.
+
+| Свойство V1 | Поле схемы V3 | Примечания |
+|------------|-----------------|-------|
+| `RETURN_TYPES` | `outputs` в Schema | Список объектов Output |
+| `RETURN_NAMES` | `display_name` в Output | Отображаемые имена выходов |
+| `FUNCTION` | Всегда `execute` | Имя метода стандартизировано |
+| `CATEGORY` | `category` в Schema | Строковое значение |
+| `OUTPUT_NODE` | `is_output_node` в Schema | Логический флаг |
+| `DEPRECATED` | `is_deprecated` в Schema | Логический флаг |
+| `EXPERIMENTAL` | `is_experimental` в Schema | Логический флаг |
+
+### Шаг 5: обработать специальные методы
+
+Поддерживаются те же специальные методы, что и в V1, но часть из них переведена в нижний регистр или полностью переименована для ясности. Их использование не изменилось.
+
+#### Валидация (V1 → V3)
+
+Функция проверки входов переименована в ```validate_inputs```.
+
+**V1:**
+```python
+@classmethod
+def VALIDATE_INPUTS(s, **kwargs):
+    # Validation logic
+    return True
+```
+
+**V3:**
+```python
+@classmethod
+def validate_inputs(cls, **kwargs) -> bool | str:
+    # Return True if valid, error string if not
+    if error_condition:
+        return "Error message"
+    return True
+```
+
+#### Ленивое вычисление (V1 → V3) {#lazy-evaluation-v1-v3}
+
+Функция ```check_lazy_status``` стала методом класса, в остальном всё так же.
+
+**V1:**
+```python
+def check_lazy_status(self, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+**V3:**
+```python
+@classmethod
+def check_lazy_status(cls, image, string_field, ...):
+    if condition:
+        return ["string_field"]
+    return []
+```
+
+#### Управление кешем (V1 → V3)
+
+Функциональность управления кешем не изменилась по сравнению с V1, но прежнее имя вводило в заблуждение относительно того, как он работает.
+
+Функция ```IS_CHANGED``` в V1 сообщает выполнению, что узел не нужно запускать повторно, если возвращаемое значение совпадает с прошлым запуском.
+
+Поэтому функция ```IS_CHANGED``` переименована в ```fingerprint_inputs```. Одна из самых частых ошибок разработчиков — мысль, что при возврате ```True``` узел будет всегда запускаться заново. Поскольку ```True``` возвращалось бы всегда, эффект был обратным: узел выполнялся один раз, а дальше использовались кешированные значения.
+
+Пример использования этой функции — узел LoadImage. Он возвращает хеш выбранного файла, поэтому при изменении файла узел принудительно запустится снова.
+
+**V1:**
+```python
+@classmethod
+def IS_CHANGED(s, **kwargs):
+    return "unique_value"
+```
+
+**V3:**
+```python
+@classmethod
+def fingerprint_inputs(cls, **kwargs):
+    return "unique_value"
+```
+
+### Шаг 6: создать расширение и точку входа
+
+Вместо словарей, связывающих идентификатор узла с классом и отображаемым именем, теперь есть класс ```ComfyExtension``` и ожидаемая функция ```comfy_entrypoint```.
+
+В будущем в ComfyExtension могут появиться другие функции, чтобы регистрировать не только узлы через ```get_node_list```.
+
+```comfy_entrypoint``` может быть асинхронной или нет, но ```get_node_list``` должна быть объявлена как асинхронная.
+
+**V1:**
+```python
+NODE_CLASS_MAPPINGS = {
+    "Example": Example
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Example": "Example Node"
+}
+```
+
+**V3:**
+```python
+from comfy_api.latest import ComfyExtension
+
+class MyExtension(ComfyExtension):
+    # must be declared as async
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            Example,
+            # Add more nodes here
+        ]
+
+# can be declared async or not, both will work
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+## Справочник типов входов
+
+Уже объяснено на шаге 2, но вот несколько сравнений объявлений типов в V1 и V3. Полные объявления типов см. в ```comfy_api.latest._io```.
+
+### Базовые типы
+
+| Тип V1 | Тип V3 | Пример |
+|---------|---------|---------|
+| `"INT"` | `io.Int.Input()` | `io.Int.Input("count", default=1, min=0, max=100)` |
+| `"FLOAT"` | `io.Float.Input()` | `io.Float.Input("strength", default=1.0, min=0.0, max=10.0)` |
+| `"STRING"` | `io.String.Input()` | `io.String.Input("text", multiline=True)` |
+| `"BOOLEAN"` | `io.Boolean.Input()` | `io.Boolean.Input("enabled", default=True)` |
+
+#### control_after_generate
+
+Входы Int и Combo поддерживают параметр `control_after_generate`, который добавляет виджет управления для автоматического изменения значения после каждой генерации. В V1 это был обычный `bool`; в V3 можно использовать перечисление `io.ControlAfterGenerate` для явного управления. Передача `True` эквивалентна `io.ControlAfterGenerate.randomize`.
+
+| Значение | Поведение |
+|-------|----------|
+| `io.ControlAfterGenerate.fixed` | Значение не меняется после каждой генерации. |
+| `io.ControlAfterGenerate.increment` | Значение увеличивается на шаг после каждой генерации. |
+| `io.ControlAfterGenerate.decrement` | Значение уменьшается на шаг после каждой генерации. |
+| `io.ControlAfterGenerate.randomize` | Значение рандомизируется после каждой генерации. |
+
+```python
+# Enable the control widget (user picks the mode in the UI)
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF, control_after_generate=True)
+
+# Set a specific default mode
+io.Int.Input("seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
+    control_after_generate=io.ControlAfterGenerate.randomize)
+```
+
+### ComfyUI Types
+
+| Тип V1 | Тип V3 | Пример |
+|---------|---------|---------|
+| `"IMAGE"` | `io.Image.Input()` | `io.Image.Input("image", tooltip="Input image")` |
+| `"MASK"` | `io.Mask.Input()` | `io.Mask.Input("mask", optional=True)` |
+| `"LATENT"` | `io.Latent.Input()` | `io.Latent.Input("latent")` |
+| `"CONDITIONING"` | `io.Conditioning.Input()` | `io.Conditioning.Input("positive")` |
+| `"MODEL"` | `io.Model.Input()` | `io.Model.Input("model")` |
+| `"VAE"` | `io.VAE.Input()` | `io.VAE.Input("vae")` |
+| `"CLIP"` | `io.CLIP.Input()` | `io.CLIP.Input("clip")` |
+
+### Combo (выпадающие списки/списки выбора)
+
+Типы Combo в V3 требуют явного определения класса.
+
+**V1:**
+```python
+"mode": (["option1", "option2", "option3"],)
+```
+
+**V3:**
+```python
+io.Combo.Input("mode", options=["option1", "option2", "option3"])
+```
+
+## Справочник по схеме
+
+Dataclass ```Schema``` определяет все свойства узла V3. Ниже приведён полный справочник по всем доступным полям:
+
+| Поле | Тип | По умолчанию | Описание |
+|-------|------|---------|-------------|
+| `node_id` | `str` | *required* | Глобально уникальный ID узла. Пользовательским узлам стоит добавить префикс или постфикс, чтобы избежать конфликтов. |
+| `display_name` | `str` | `None` | Отображаемое имя в интерфейсе. Если не задано, используется `node_id`. |
+| `category` | `str` | `"sd"` | Категория в меню «Add Node» (например, `"image/transform"`). |
+| `description` | `str` | `""` | Подсказка при наведении на узел. |
+| `inputs` | `list[Input]` | `[]` | Список определений входов. |
+| `outputs` | `list[Output]` | `[]` | Список определений выходов. |
+| `hidden` | `list[Hidden]` | `[]` | List of hidden inputs to request (see [Hidden Inputs](#скрытые-входы)). |
+| `search_aliases` | `list[str]` | `[]` | Альтернативные имена для поиска. Полезны для синонимов или старых имён после переименования. |
+| `is_output_node` | `bool` | `False` | Помечает узел как выходной: он и его зависимости выполняются при запуске. |
+| `is_input_list` | `bool` | `False` | Если True, все входы становятся `list[type]`, сколько бы элементов ни было передано. |
+| `is_deprecated` | `bool` | `False` | Помечает узел как устаревший и подсказывает пользователям искать замену. |
+| `is_experimental` | `bool` | `False` | Помечает узел как экспериментальный и предупреждает, что он может измениться. |
+| `is_dev_only` | `bool` | `False` | Скрывает узел из поиска и меню, если не включён режим разработчика. |
+| `is_api_node` | `bool` | `False` | Помечает узел как API-узел для сервисов Comfy API. |
+| `not_idempotent` | `bool` | `False` | Если True, узел всегда выполняется заново и не переиспользует кэшированные выходы другого такого же узла в графе. |
+| `enable_expand` | `bool` | `False` | Позволяет `NodeOutput` содержать свойство `expand` для раскрытия узла. |
+| `accept_all_inputs` | `bool` | `False` | Если True, все входы из промпта передаются как kwargs, даже если они не описаны в схеме. |
+
+### Общие параметры входов
+
+Все типы входных данных используют эти базовые параметры:
+
+| Параметр | Тип | По умолчанию | Описание |
+|-----------|------|---------|-------------|
+| `id` | `str` | *required* | Уникальный идентификатор входа, используется как имя kwarg в `execute`. |
+| `display_name` | `str` | `None` | Подпись в интерфейсе. По умолчанию совпадает с `id`. |
+| `optional` | `bool` | `False` | Является ли вход необязательным. |
+| `tooltip` | `str` | `None` | Текст подсказки при наведении. |
+| `lazy` | `bool` | `None` | Помечает вход для ленивого вычисления (см. [Ленивое вычисление](#lazy-evaluation-v1-v3)). |
+| `raw_link` | `bool` | `None` | Если True, передаётся сырая информация о связи вместо вычисленного значения. |
+| `advanced` | `bool` | `None` | Если True, вход скрыт за переключателем «Advanced» в интерфейсе. |
+
+Входы виджетов (Int, Float, String, Boolean, Combo) дополнительно поддерживают:
+
+| Параметр | Тип | По умолчанию | Описание |
+|-----------|------|---------|-------------|
+| `default` | varies | `None` | Значение по умолчанию для виджета. |
+| `socketless` | `bool` | `None` | Если True, скрывает сокет входа: остаётся только виджет без входящих связей. |
+| `force_input` | `bool` | `None` | Если True, виджет принудительно отображается как входной сокет. |
+
+## Расширенные возможности
+
+### Скрытые входы
+
+Скрытые входы предоставляют доступ к контексту выполнения, такому как метаданные промпта, ID узла и другим внутренним значениям. Они не отображаются в пользовательском интерфейсе.
+
+В V1 скрытые входы объявлялись как ключ `"hidden"` в `INPUT_TYPES`. В V3 они объявляются через параметр `hidden` в Schema, а их значения доступны через `cls.hidden`.
+
+**V1:**
+```python
+@classmethod
+def INPUT_TYPES(s):
+    return {
+        "required": {...},
+        "hidden": {
+            "unique_id": "UNIQUE_ID",
+            "prompt": "PROMPT",
+            "extra_pnginfo": "EXTRA_PNGINFO",
+        }
+    }
+
+def execute(self, unique_id, prompt, extra_pnginfo, ...):
+    # hidden values passed as regular arguments
+    print(unique_id)
+```
+
+**V3:**
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="MyNode",
+        inputs=[...],
+        hidden=[io.Hidden.unique_id, io.Hidden.prompt, io.Hidden.extra_pnginfo],
+    )
+
+@classmethod
+def execute(cls, ...) -> io.NodeOutput:
+    # hidden values accessed via cls.hidden
+    print(cls.hidden.unique_id)
+    print(cls.hidden.prompt)
+    print(cls.hidden.extra_pnginfo)
+```
+
+Available hidden values:
+
+| Скрытый enum | Описание |
+|-------------|-------------|
+| `io.Hidden.unique_id` | Уникальный идентификатор узла, совпадающий с id на стороне клиента. |
+| `io.Hidden.prompt` | Полный промпт, отправленный клиентом. |
+| `io.Hidden.extra_pnginfo` | Словарь, копируемый в метаданные сохранённых файлов `.png`. |
+| `io.Hidden.dynprompt` | Экземпляр `DynamicPrompt`, который может изменяться во время выполнения. |
+| `io.Hidden.auth_token_comfy_org` | Токен, полученный при входе в аккаунт ComfyOrg во фронтенде. |
+| `io.Hidden.api_key_comfy_org` | API-ключ, созданный ComfyOrg; позволяет пропустить вход во фронтенде. |
+
+<Note>
+Некоторые скрытые значения добавляются автоматически на основе флагов Schema. Выходные узлы (`is_output_node=True`) автоматически получают `prompt` и `extra_pnginfo`. API-узлы (`is_api_node=True`) автоматически получают токены авторизации.
+</Note>
+
+### Помощники интерфейса
+
+V3 предоставляет встроенные вспомогательные средства UI в модуле `ui` для обработки типичных сценариев, таких как предварительный просмотр и сохранение файлов. Передайте их в `io.NodeOutput` через параметр `ui`.
+
+#### Помощники предпросмотра
+
+Вспомогательные средства предпросмотра сохраняют временные файлы и возвращают данные интерфейса для отображения внутри узла.
+
+```python
+from comfy_api.latest import ui
+
+# Preview an image in the node
+return io.NodeOutput(images, ui=ui.PreviewImage(images, cls=cls))
+
+# Preview a mask (automatically converts to 3-channel for display)
+return io.NodeOutput(mask, ui=ui.PreviewMask(mask, cls=cls))
+
+# Preview audio
+return io.NodeOutput(audio, ui=ui.PreviewAudio(audio, cls=cls))
+
+# Preview text
+return io.NodeOutput(ui=ui.PreviewText("Some text value"))
+
+# Preview 3D model
+return io.NodeOutput(ui=ui.PreviewUI3D(model_file, camera_info))
+```
+
+#### Помощники сохранения
+
+Хелперы сохранения предоставляют методы для сохранения файлов в каталог вывода с корректным встраиванием метаданных. Обычно они используются в узлах вывода.
+
+```python
+from comfy_api.latest import ui, io
+
+# Save images and return UI data (most common pattern)
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_images_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,  # passes hidden prompt/extra_pnginfo for metadata
+    )
+)
+
+# Save animated PNG
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_png_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        compress_level=4,
+    )
+)
+
+# Save animated WebP
+return io.NodeOutput(
+    ui=ui.ImageSaveHelper.get_save_animated_webp_ui(
+        images=images,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        fps=6.0,
+        lossless=True,
+        quality=80,
+        method=4,
+    )
+)
+
+# Save audio (supports flac, mp3, opus)
+return io.NodeOutput(
+    ui=ui.AudioSaveHelper.get_save_audio_ui(
+        audio=audio,
+        filename_prefix=filename_prefix,
+        cls=cls,
+        format="flac",
+    )
+)
+```
+
+<Tip>
+Передача `cls=cls` во вспомогательные функции сохранения/предпросмотра позволяет им автоматически встраивать метаданные рабочего процесса (prompt, extra_pnginfo) в сохраняемые файлы. Обязательно включите `io.Hidden.prompt` и `io.Hidden.extra_pnginfo` в список скрытых параметров вашей схемы или установите `is_output_node=True`, который добавит их автоматически.
+</Tip>
+
+#### Возврат сырых словарей UI
+
+Если вам нужно вернуть данные UI, для которых нет вспомогательной функции, вы можете передать dict напрямую:
+
+```python
+return io.NodeOutput(ui={"images": results})
+```
+
+### Выходные узлы
+
+Для узлов, создающих побочные эффекты (например, сохранение файлов). Как и в V1, пометка узла как output отобразит кнопку воспроизведения `run` в контекстном окне узла, что позволяет выполнить граф частично.
+
+```python
+@classmethod
+def define_schema(cls) -> io.Schema:
+    return io.Schema(
+        node_id="SaveNode",
+        inputs=[...],
+        outputs=[],  # Does not need to be empty.
+        is_output_node=True  # Mark as output node
+    )
+```
+
+### Пользовательские типы
+
+Создавайте пользовательские типы ввода/вывода либо через определение класса, либо с помощью вспомогательной функции ```Custom```.
+
+```python
+from comfy_api.latest import io
+
+# Method 1: Using decorator with class
+@io.comfytype(io_type="MY_CUSTOM_TYPE")
+class MyCustomType:
+    Type = torch.Tensor  # Python type hint
+
+    class Input(io.Input):
+        def __init__(self, id: str, **kwargs):
+            super().__init__(id, **kwargs)
+
+    class Output(io.Output):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+# Method 2: Using Custom helper
+# The helper can be used directly without saving to a variable first for convenience as well
+MyCustomType = io.Custom("MY_CUSTOM_TYPE")
+```
+
+### Входы MultiType
+
+`MultiType` позволяет входу принимать более одного типа. Это полезно, когда узел может работать с разными типами данных через один и тот же входной слот.
+
+Если первый аргумент (`id`) является экземпляром класса `Input`, а не строкой, этот вход будет использоваться для создания виджета с его переопределёнными значениями. В противном случае вход доступен только как сокет.
+
+```python
+# Socket-only multi-type input (no widget)
+io.MultiType.Input("input", types=[io.Image, io.Mask])
+
+# Multi-type input with a widget fallback (String widget shown when nothing is connected)
+io.MultiType.Input(
+    io.String.Input("model_file", default="", multiline=False),
+    types=[io.File3DGLB, io.File3DGLTF, io.File3DOBJ],
+    tooltip="3D model file or path string",
+)
+```
+
+### MatchType (обобщённое сопоставление типов)
+
+`MatchType` создаёт входы и выходы, связанные по типу. Когда пользователь подключает конкретный тип ко входу MatchType, все остальные входы и выходы с тем же шаблоном автоматически ограничиваются этим типом. Именно так узлы вроде Switch и Create List работают с любым типом.
+
+```python
+@classmethod
+def define_schema(cls):
+    # Create a template - all inputs/outputs sharing the same template will match types
+    template = io.MatchType.Template("switch")
+    return io.Schema(
+        node_id="SwitchNode",
+        display_name="Switch",
+        category="logic",
+        inputs=[
+            io.Boolean.Input("switch"),
+            io.MatchType.Input("on_false", template=template, lazy=True),
+            io.MatchType.Input("on_true", template=template, lazy=True),
+        ],
+        outputs=[
+            io.MatchType.Output(template=template, display_name="output"),
+        ],
+    )
+```
+
+Вы также можете ограничить, какие типы разрешены:
+
+```python
+# Only allow Image, Mask, or Latent types
+template = io.MatchType.Template("input_type", allowed_types=[io.Image, io.Mask, io.Latent])
+```
+
+### Динамические входы
+
+V3 представляет динамические типы входов, которые изменяют доступные входы в зависимости от взаимодействия пользователя. Для этих возможностей нет эквивалента в V1.
+
+#### Autogrow
+
+`Autogrow` создаёт переменное число входов, которое автоматически увеличивается по мере того, как пользователь подключает новые. Существует два типа шаблонов:
+
+**TemplatePrefix** создаёт входы с нумерованным префиксом (например, `image0`, `image1`, `image2`...):
+
+```python
+@classmethod
+def define_schema(cls):
+    autogrow_template = io.Autogrow.TemplatePrefix(
+        input=io.Image.Input("image"),  # template for each input
+        prefix="image",                  # prefix for generated input names
+        min=2,                           # minimum number of inputs shown
+        max=50,                          # maximum number of inputs allowed
+    )
+    return io.Schema(
+        node_id="BatchImagesNode",
+        display_name="Batch Images",
+        category="image",
+        inputs=[io.Autogrow.Input("images", template=autogrow_template)],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, images: io.Autogrow.Type) -> io.NodeOutput:
+    # 'images' is a dict mapping input names to their values
+    image_list = list(images.values())
+    return io.NodeOutput(batch(image_list))
+```
+
+**TemplateNames** создаёт входы с заданными именами:
+
+```python
+template = io.Autogrow.TemplateNames(
+    input=io.Float.Input("float"),
+    names=["x", "y", "z"],  # explicit names for each input
+    min=1,                    # minimum number of inputs shown
+)
+```
+
+Autogrow можно комбинировать с MatchType, чтобы создавать списки входов, совпадающих по типу:
+
+```python
+@classmethod
+def define_schema(cls):
+    template_matchtype = io.MatchType.Template("type")
+    template_autogrow = io.Autogrow.TemplatePrefix(
+        input=io.MatchType.Input("input", template=template_matchtype),
+        prefix="input",
+    )
+    return io.Schema(
+        node_id="CreateList",
+        display_name="Create List",
+        category="logic",
+        is_input_list=True,
+        inputs=[io.Autogrow.Input("inputs", template=template_autogrow)],
+        outputs=[
+            io.MatchType.Output(
+                template=template_matchtype,
+                is_output_list=True,
+                display_name="list",
+            ),
+        ],
+    )
+```
+
+#### DynamicCombo
+
+`DynamicCombo` создаёт выпадающий список, который показывает или скрывает разные входы в зависимости от выбранного варианта. Это полезно для узлов, где разные режимы требуют разных параметров.
+
+```python
+@classmethod
+def define_schema(cls):
+    return io.Schema(
+        node_id="ResizeNode",
+        display_name="Resize",
+        category="transform",
+        inputs=[
+            io.Image.Input("image"),
+            io.DynamicCombo.Input("resize_type", options=[
+                io.DynamicCombo.Option("scale by dimensions", [
+                    io.Int.Input("width", default=512, min=0, max=8192),
+                    io.Int.Input("height", default=512, min=0, max=8192),
+                ]),
+                io.DynamicCombo.Option("scale by multiplier", [
+                    io.Float.Input("multiplier", default=1.0, min=0.01, max=8.0),
+                ]),
+                io.DynamicCombo.Option("scale to megapixels", [
+                    io.Float.Input("megapixels", default=1.0, min=0.01, max=16.0),
+                ]),
+            ]),
+        ],
+        outputs=[io.Image.Output()],
+    )
+
+@classmethod
+def execute(cls, image, resize_type: dict) -> io.NodeOutput:
+    # resize_type is a dict containing the selected option key and its inputs
+    selected = resize_type["resize_type"]
+    if selected == "scale by dimensions":
+        width = resize_type["width"]
+        height = resize_type["height"]
+        # ...
+    elif selected == "scale by multiplier":
+        multiplier = resize_type["multiplier"]
+        # ...
+```
+
+Параметры DynamicCombo также могут быть вложенными:
+
+```python
+io.DynamicCombo.Input("combo", options=[
+    io.DynamicCombo.Option("option1", [io.String.Input("string")]),
+    io.DynamicCombo.Option("option2", [
+        io.DynamicCombo.Input("subcombo", options=[
+            io.DynamicCombo.Option("sub_opt1", [io.Float.Input("x"), io.Float.Input("y")]),
+            io.DynamicCombo.Option("sub_opt2", [io.Mask.Input("mask", optional=True)]),
+        ])
+    ]),
+])
+```
+
+### Асинхронное выполнение
+
+V3 поддерживает асинхронные методы `execute`. Это полезно для узлов, которые выполняют операции ввода-вывода, вызовы API или другую асинхронную работу. Просто объявите `execute` как `async`:
+
+```python
+@classmethod
+async def execute(cls, prompt, **kwargs) -> io.NodeOutput:
+    result = await some_async_operation(prompt)
+    return io.NodeOutput(result)
+```
+
+### Сервисы среды выполнения Comfy API {#comfyapi}
+
+Класс `ComfyAPI` предоставляет доступ к runtime-сервисам ComfyUI, таким как отчёты о прогрессе и регистрация замены узлов. Импортируйте его и создайте экземпляр:
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+```
+
+#### Отчёт о прогрессе
+
+Сообщайте о ходе выполнения из метода `execute` узла. Индикатор выполнения отображается в интерфейсе ComfyUI. Это заменяет подход V1 с использованием `comfy.utils.PROGRESS_BAR_HOOK`.
+
+```python
+from comfy_api.latest import ComfyAPI
+
+api = ComfyAPI()
+
+@classmethod
+async def execute(cls, images, **kwargs) -> io.NodeOutput:
+    total = len(images)
+    for i, image in enumerate(images):
+        process(image)
+        await api.execution.set_progress(
+            value=i + 1,
+            max_value=total,
+            preview_image=image,  # optional: show preview during progress
+        )
+    return io.NodeOutput(result)
+```
+
+<Note>
+`set_progress` может принимать PIL Image, тензор `ImageInput` или `None` для параметра `preview_image`. При вызове из `execute` параметр `node_id` определяется автоматически из контекста выполнения.
+</Note>
+
+#### Замена узлов
+
+Замена узлов позволяет сопоставлять старые/устаревшие узлы с новыми, чтобы существующие рабочие процессы автоматически обновлялись. Регистрируйте замены с помощью `ComfyAPI` в методе `on_load` вашего расширения.
+
+```python
+from comfy_api.latest import ComfyAPI, ComfyExtension, io
+
+api = ComfyAPI()
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await api.node_replacement.register(io.NodeReplace(
+            new_node_id="MyNewNode",
+            old_node_id="MyOldNode",
+            old_widget_ids=["param1", "param2"],  # ordered widget IDs for positional mapping
+            input_mapping=[
+                {"new_id": "image", "old_id": "input_image"},       # rename input
+                {"new_id": "method", "set_value": "lanczos"},       # set a fixed value
+            ],
+            output_mapping=[
+                {"new_idx": 0, "old_idx": 0},  # map output by index
+            ],
+        ))
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [MyNewNode]
+```
+
+Параметр `old_widget_ids` важен: JSON рабочего процесса хранит значения виджетов по индексу позиции, а не по имени. Этот список сопоставляет эти позиционные индексы с ID входов, чтобы система замены могла корректно определять значения виджетов при миграции.
+
+Для узлов с динамическими входами (например, Autogrow) используйте пути через точку в сопоставлении:
+
+```python
+input_mapping=[
+    {"new_id": "images.image0", "old_id": "image1"},
+    {"new_id": "images.image1", "old_id": "image2"},
+]
+```
+
+### Жизненный цикл расширения
+
+Класс `ComfyExtension` поддерживает хуки жизненного цикла, а не только `get_node_list`:
+
+```python
+from comfy_api.latest import ComfyExtension, io
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        """Called when the extension is loaded.
+        Use for one-time initialization: registering node replacements,
+        setting up global resources, etc.
+        """
+        pass
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        """Return the list of node classes this extension provides."""
+        return [MyNode]
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+### NodeOutput
+
+Класс `NodeOutput` представляет собой стандартизированное возвращаемое значение `execute`. Он поддерживает несколько паттернов:
+
+```python
+# Return a single output value
+return io.NodeOutput(image)
+
+# Return multiple output values (order matches outputs list in schema)
+return io.NodeOutput(width, height, batch_size)
+
+# Return only UI data (no output values)
+return io.NodeOutput(ui=ui.PreviewImage(images, cls=cls))
+
+# Return both output values and UI data
+return io.NodeOutput(image, ui=ui.PreviewImage(image, cls=cls))
+
+# Return None/empty (for nodes with no outputs)
+return io.NodeOutput()
+```
+
+## Полный пример
+
+Вот полный пример файла расширения V3 с несколькими узлами:
+
+```python
+from comfy_api.latest import ComfyExtension, io, ui
+
+class InvertImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_InvertImage",  # prefixed to avoid clashes
+            display_name="Invert Image",
+            category="my_pack/image",
+            description="Inverts the colors of an image.",
+            inputs=[
+                io.Image.Input("image"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="inverted"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, image) -> io.NodeOutput:
+        inverted = 1.0 - image
+        return io.NodeOutput(inverted, ui=ui.PreviewImage(inverted, cls=cls))
+
+
+class SaveImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MyPack_SaveImage",
+            display_name="Save Image",
+            category="my_pack/image",
+            is_output_node=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.String.Input("filename_prefix", default="ComfyUI"),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls, images, filename_prefix) -> io.NodeOutput:
+        return io.NodeOutput(
+            ui=ui.ImageSaveHelper.get_save_images_ui(
+                images=images,
+                filename_prefix=filename_prefix,
+                cls=cls,
+            )
+        )
+
+
+class MyPackExtension(ComfyExtension):
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [InvertImage, SaveImage]
+
+async def comfy_entrypoint() -> MyPackExtension:
+    return MyPackExtension()
+```

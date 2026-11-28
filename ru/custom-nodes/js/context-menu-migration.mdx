@@ -1,0 +1,329 @@
+---
+title: "Миграция на API контекстного меню ComfyUI: меню холста и узлов"
+sidebarTitle: "Миграция контекстного меню"
+description: "Мигрируйте расширения ComfyUI с устаревшего monkey-patching на API контекстного меню: меню холста и узлов, условные пункты, подменю и советы по отладке."
+translationSourceHash: 85f8bc2d
+translationFrom: custom-nodes/js/context-menu-migration.mdx
+translationBlockHashes:
+  "_intro": 490e9066
+  "Migrating Canvas Menus": e50eec10
+  "Migrating Node Menus": e70e5cae
+  "Common Patterns": 25c1531e
+  "Troubleshooting": cb75f0ed
+  "Additional Resources": cd3bcadb
+---
+Это руководство поможет вам мигрировать с устаревшего подхода с monkey-patching на новый API расширений контекстного меню.
+
+Старый подход с monkey-patching `LGraphCanvas.prototype.getCanvasMenuOptions` и `nodeType.prototype.getExtraMenuOptions` устарел:
+
+<Tip>Если вы видите в консоли браузера предупреждения об устаревании, ваше расширение использует старый API и его следует мигрировать.</Tip>
+
+## Перенос меню холста
+
+### Старый подход (устаревший)
+
+Старый подход изменял прототип во время настройки расширения:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    // ❌ СТАРЫЙ ПОДХОД: монки-патчинг прототипа
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+
+      options.push(null) // разделитель
+      options.push({
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      })
+
+      return options
+    }
+  }
+})
+```
+
+### Новый подход (рекомендуется)
+
+Новый подход использует отдельный хук расширения:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ НОВЫЙ ПОДХОД: используйте хук getCanvasMenuItems
+  getCanvasMenuItems(canvas) {
+    return [
+      null, // разделитель
+      {
+        content: "My Custom Action",
+        callback: () => {
+          console.log("Action triggered")
+        }
+      }
+    ]
+  }
+})
+```
+
+### Ключевые различия
+
+| Старый подход | Новый подход |
+|--------------|-------------|
+| Изменялся в `setup()` | Использует хук `getCanvasMenuItems()` |
+| Оборачивает существующую функцию | Возвращает пункты меню напрямую |
+| Изменяет массив `options` | Возвращает новый массив |
+| Доступ к холсту через `this` | Холст передаётся параметром |
+
+## Мигрировать меню узлов
+
+### Старый подход (устаревший)
+
+Старый подход изменял прототип типа узла:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    if (nodeType.comfyClass === "KSampler") {
+      // ❌ СТАРЫЙ ПОДХОД: Монки-патчинг прототипа узла
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
+        original?.apply(this, arguments)
+
+        options.push({
+          content: "Randomize Seed",
+          callback: () => {
+            const seedWidget = this.widgets.find(w => w.name === "seed")
+            if (seedWidget) {
+              seedWidget.value = Math.floor(Math.random() * 1000000)
+            }
+          }
+        })
+      }
+    }
+  }
+})
+```
+
+### Новый подход (рекомендуется)
+
+Новый подход использует отдельный хук расширения:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension",
+  // ✅ НОВЫЙ ПОДХОД: Используйте хук getNodeMenuItems
+  getNodeMenuItems(node) {
+    const items = []
+
+    // Добавляйте пункты только для определённых типов узлов
+    if (node.comfyClass === "KSampler") {
+      items.push({
+        content: "Randomize Seed",
+        callback: () => {
+          const seedWidget = node.widgets.find(w => w.name === "seed")
+          if (seedWidget) {
+            seedWidget.value = Math.floor(Math.random() * 1000000)
+          }
+        }
+      })
+    }
+
+    return items
+  }
+})
+```
+
+### Ключевые различия
+
+| Старый подход | Новый подход |
+|--------------|-------------|
+| Изменялся в `beforeRegisterNodeDef()` | Использует хук `getNodeMenuItems()` |
+| Зависит от типа через проверку `if` | Зависит от типа через проверку `if` в хуке |
+| Изменяет массив `options` | Возвращает новый массив |
+| Узел доступен через `this` | Узел передаётся как параметр |
+
+## Общие шаблоны
+
+### Условные пункты меню
+
+Оба подхода поддерживают условные элементы, но новый API чище:
+
+```javascript
+// ✅ NEW: Clean conditional logic
+getCanvasMenuItems(canvas) {
+  const items = []
+
+  if (canvas.selectedItems.size > 0) {
+    items.push({
+      content: `Process ${canvas.selectedItems.size} Selected Nodes`,
+      callback: () => {
+        // Process nodes
+      }
+    })
+  }
+
+  return items
+}
+```
+
+### Добавление разделителей
+
+Разделители добавляются одинаковым способом в обоих подходах:
+
+```javascript
+getCanvasMenuItems(canvas) {
+  return [
+    null, // Separator (horizontal line)
+    {
+      content: "My Action",
+      callback: () => {}
+    }
+  ]
+}
+```
+
+### Создание подменю
+
+Рекомендуемый способ создания подменю: использовать декларативное свойство `submenu`:
+
+```javascript
+getNodeMenuItems(node) {
+  return [
+    {
+      content: "Advanced Options",
+      submenu: {
+        options: [
+          { content: "Option 1", callback: () => {} },
+          { content: "Option 2", callback: () => {} }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Такой декларативный подход чище и соответствует шаблонам, используемым во всей кодовой базе ComfyUI.
+
+<Tip>While a callback-based approach with `has_submenu: true` and `new LiteGraph.ContextMenu()` is also supported, the declarative `submenu` property is preferred for better maintainability.</Tip>
+
+### Доступ к состоянию
+
+```javascript
+// ✅ NEW: State access is clearer
+getCanvasMenuItems(canvas) {
+  // Access canvas properties
+  const selectedCount = canvas.selectedItems.size
+  const graphMousePos = canvas.graph_mouse
+
+  return [/* menu items */]
+}
+
+getNodeMenuItems(node) {
+  // Access node properties
+  const nodeType = node.comfyClass
+  const isDisabled = node.mode === 2
+  const widgets = node.widgets
+
+  return [/* menu items */]
+}
+```
+
+## Устранение неполадок
+
+### Как определить использование устаревшего API
+
+Ищите эти шаблоны в своём коде:
+
+```javascript
+// ❌ Signs of old API:
+LGraphCanvas.prototype.getCanvasMenuOptions = function() { /* ... */ }
+nodeType.prototype.getExtraMenuOptions = function() { /* ... */ }
+```
+
+### Понимание предупреждений об устаревании
+
+Если вы видите это предупреждение в консоли:
+
+```
+[DEPRECATED] Monkey-patching getCanvasMenuOptions is deprecated. (Extension: "MyExtension")
+Please use the new context menu API instead.
+See: https://docs.comfy.org/custom-nodes/js/context-menu-migration
+```
+
+Ваше расширение использует устаревший подход, и его следует мигрировать.
+
+### Проверка успешности миграции
+
+After migration:
+
+1. Удалите все модификации прототипа из `setup()` и `beforeRegisterNodeDef()`
+2. Добавьте хуки `getCanvasMenuItems()` и/или `getNodeMenuItems()`
+3. Проверьте, что пункты вашего меню по-прежнему отображаются корректно
+4. Убедитесь, что в консоли не появляются предупреждения об устаревании
+
+### Полный пример миграции
+
+**Before:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  async setup() {
+    const original = LGraphCanvas.prototype.getCanvasMenuOptions
+    LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+      const options = original.apply(this, arguments)
+      options.push({ content: "Action", callback: () => {} })
+      return options
+    }
+  },
+  async beforeRegisterNodeDef(nodeType) {
+    if (nodeType.comfyClass === "KSampler") {
+      const original = nodeType.prototype.getExtraMenuOptions
+      nodeType.prototype.getExtraMenuOptions = function(_, options) {
+        original?.apply(this, arguments)
+        options.push({ content: "Node Action", callback: () => {} })
+      }
+    }
+  }
+})
+```
+
+**After:**
+
+```javascript
+app.registerExtension({
+  name: "MyExtension",
+  getCanvasMenuItems(canvas) {
+    return [
+      { content: "Action", callback: () => {} }
+    ]
+  },
+  getNodeMenuItems(node) {
+    if (node.comfyClass === "KSampler") {
+      return [
+        { content: "Node Action", callback: () => {} }
+      ]
+    }
+    return []
+  }
+})
+```
+
+## Дополнительные ресурсы
+
+- [Примеры с комментариями](./javascript_examples) — больше примеров использования нового API
+- [Хуки расширений](./javascript_hooks) — полный список доступных хуков расширений
+- [Команды и горячие клавиши](./javascript_commands_keybindings) — добавьте горячие клавиши для действий меню

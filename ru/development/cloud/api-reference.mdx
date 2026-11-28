@@ -1,0 +1,953 @@
+---
+title: "Справочник по Cloud API"
+sidebarTitle: "Примеры кода"
+description: "Полный справочник по API с примерами кода для Comfy Cloud"
+icon: "book-open"
+translationSourceHash: e15f0e0e
+translationFrom: development/cloud/api-reference.mdx
+translationBlockHashes:
+  "_intro": 1729f5d3
+  "Setup": 311034bb
+  "Object Info": 7b62a397
+  "Uploading Inputs": 92df17f8
+  "Running Workflows": 2c6519c7
+  "Checking Job Status": d74b4922
+  "WebSocket for Real-Time Progress": 02c49b4a
+  "Downloading Outputs": 5e1d63d3
+  "Complete End-to-End Example": 2c800815
+  "Queue Management": 857edaaf
+  "Error Handling": b2513ee9
+---
+import PollJobCompletion from "/snippets/ru/cloud/poll-job-completion.mdx"
+import WebSocketProgress from "/snippets/ru/cloud/websocket-progress.mdx"
+import DownloadOutputs from "/snippets/ru/cloud/download-outputs.mdx"
+
+<Warning>
+  **Устаревший:** Cloud API версии v1 устарел в пользу [Comfy API v2](/ru/api-reference/v2/overview). Конечные точки, форматы запросов и ответов, а также поведение могут изменяться без предупреждения. Некоторые конечные точки поддерживаются для совместимости с локальным ComfyUI, но могут иметь другую семантику (например, игнорируемые поля).
+</Warning>
+
+На этой странице приведены полные примеры для типовых операций Comfy Cloud API.
+
+<Note>
+  **Требуется подписка:** Для запуска рабочих процессов через API требуется активная подписка Comfy Cloud. Подробности см. в разделе [тарифные планы](https://www.comfy.org/cloud/pricing?utm_source=docs&utm_campaign=cloud-api).
+</Note>
+
+## Настройка
+
+Во всех примерах используются следующие общие импорты и конфигурация:
+
+<CodeGroup>
+```bash curl
+export COMFY_CLOUD_API_KEY="your-api-key"
+export BASE_URL="https://cloud.comfy.org"
+```
+
+```typescript TypeScript
+import { readFile, writeFile } from "fs/promises";
+
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+function getHeaders(): HeadersInit {
+  return {
+    "X-API-Key": API_KEY,
+    "Content-Type": "application/json",
+  };
+}
+```
+
+```python Python
+import os
+import requests
+import json
+import time
+import asyncio
+import aiohttp
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json"
+    }
+```
+</CodeGroup>
+
+---
+
+## Информация об объектах
+
+Получить доступные определения узлов. Это полезно, чтобы понять, какие узлы доступны и каковы спецификации их входов и выходов.
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/object_info" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getObjectInfo(): Promise<Record<string, any>> {
+  const response = await fetch(`${BASE_URL}/api/object_info`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const objectInfo = await getObjectInfo();
+console.log(`Available nodes: ${Object.keys(objectInfo).length}`);
+
+const ksampler = objectInfo["KSampler"] ?? {};
+console.log(`KSampler inputs: ${Object.keys(ksampler.input?.required ?? {})}`);
+```
+
+```python Python
+def get_object_info():
+    """Получить все доступные определения узлов из облака."""
+    response = requests.get(
+        f"{BASE_URL}/api/object_info",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+
+# Получить все узлы
+object_info = get_object_info()
+print(f"Available nodes: {len(object_info)}")
+
+# Получить определение конкретного узла
+ksampler = object_info.get("KSampler", {})
+inputs = list(ksampler.get('input', {}).get('required', {}).keys())
+print(f"KSampler inputs: {inputs}")
+```
+</CodeGroup>
+
+---
+
+## Загрузка входов
+
+Загружайте изображения, маски и другие файлы для использования в рабочих процессах.
+
+### Прямая загрузка (multipart)
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/upload/image" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "image=@my_image.png" \
+  -F "type=input" \
+  -F "overwrite=true"
+```
+
+```typescript TypeScript
+async function uploadInput(
+  filePath: string,
+  inputType: string = "input"
+): Promise<{ name: string; subfolder: string }> {
+  const file = await readFile(filePath);
+  const formData = new FormData();
+  formData.append("image", new Blob([file]), filePath.split("/").pop());
+  formData.append("type", inputType);
+  formData.append("overwrite", "true");
+
+  const response = await fetch(`${BASE_URL}/api/upload/image`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const result = await uploadInput("my_image.png");
+console.log(`Uploaded: ${result.name} to ${result.subfolder}`);
+```
+
+```python Python
+def upload_input(file_path: str, input_type: str = "input") -> dict:
+    """Загрузить файл напрямую в облако.
+    
+    Аргументы:
+        file_path: Путь к загружаемому файлу
+        input_type: "input" для изображений, "temp" для временных файлов
+        
+    Возвращает:
+        Ответ на загрузку с именем файла и подпапкой
+    """
+    with open(file_path, "rb") as f:
+        files = {"image": f}
+        data = {"type": input_type, "overwrite": "true"}
+        
+        response = requests.post(
+            f"{BASE_URL}/api/upload/image",
+            headers={"X-API-Key": API_KEY},  # Без Content-Type для multipart
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+
+# Загрузить изображение
+result = upload_input("my_image.png")
+print(f"Uploaded: {result['name']} to {result['subfolder']}")
+```
+</CodeGroup>
+
+### Загрузить маску
+
+<Note>
+  Параметр `subfolder` принимается для совместимости с API, но игнорируется в облачном хранилище. Все файлы хранятся в плоском пространстве имён с адресацией по содержимому.
+</Note>
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/upload/mask" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -F "image=@mask.png" \
+  -F "type=input" \
+  -F "subfolder=clipspace" \
+  -F 'original_ref={"filename":"my_image.png","subfolder":"","type":"input"}'
+```
+
+```typescript TypeScript
+async function uploadMask(
+  filePath: string,
+  originalRef: { filename: string; subfolder: string; type: string }
+): Promise<{ name: string; subfolder: string }> {
+  const file = await readFile(filePath);
+  const formData = new FormData();
+  formData.append("image", new Blob([file]), filePath.split("/").pop());
+  formData.append("type", "input");
+  formData.append("subfolder", "clipspace");
+  formData.append("original_ref", JSON.stringify(originalRef));
+
+  const response = await fetch(`${BASE_URL}/api/upload/mask`, {
+    method: "POST",
+    headers: { "X-API-Key": API_KEY },
+    body: formData,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const maskResult = await uploadMask("mask.png", {
+  filename: "my_image.png",
+  subfolder: "",
+  type: "input",
+});
+console.log(`Uploaded mask: ${maskResult.name}`);
+```
+
+```python Python
+def upload_mask(file_path: str, original_ref: dict) -> dict:
+    """Загрузить маску, связанную с оригинальным изображением.
+    
+    Аргументы:
+        file_path: Путь к файлу маски
+        original_ref: Ссылка на оригинальное изображение {"filename": "...", "subfolder": "...", "type": "..."}
+    """
+    with open(file_path, "rb") as f:
+        files = {"image": f}
+        data = {
+            "type": "input",
+            "subfolder": "clipspace",
+            "original_ref": json.dumps(original_ref)
+        }
+        
+        response = requests.post(
+            f"{BASE_URL}/api/upload/mask",
+            headers={"X-API-Key": API_KEY},
+            files=files,
+            data=data
+        )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+---
+
+## Запуск рабочих процессов
+
+Отправьте рабочий процесс на выполнение.
+
+<Info>
+  **Поддерживаются параллельные отправки:** в зависимости от уровня подписки вы можете отправлять несколько рабочих процессов, не дожидаясь завершения предыдущих задач. Задачи выполняются параллельно до предела, установленного вашим уровнем подписки. Дополнительные задачи автоматически ставятся в очередь. Подробнее см. в разделе [Ограничения параллелизма](/ru/development/deploy/cloud-usage#ограничения-параллельных-запусков).
+</Info>
+
+### Отправить рабочий процесс
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": '"$(cat workflow_api.json)"'}'
+```
+
+```typescript TypeScript
+async function submitWorkflow(workflow: Record<string, any>): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const result = await response.json();
+
+  if (result.error) {
+    throw new Error(`Workflow error: ${result.error}`);
+  }
+  return result.prompt_id;
+}
+
+const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+const promptId = await submitWorkflow(workflow);
+console.log(`Submitted job: ${promptId}`);
+```
+
+```python Python
+def submit_workflow(workflow: dict) -> str:
+    """Отправляет рабочий процесс и возвращает prompt_id (ID задачи).
+    
+    Аргументы:
+        workflow: рабочий процесс ComfyUI в формате API
+        
+    Возвращает:
+        prompt_id для отслеживания задачи
+    """
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={"prompt": workflow}
+    )
+    response.raise_for_status()
+    result = response.json()
+    
+    if "error" in result:
+        raise ValueError(f"Workflow error: {result['error']}")
+    
+    return result["prompt_id"]
+
+# Загрузить и отправить рабочий процесс
+with open("workflow_api.json") as f:
+    workflow = json.load(f)
+
+prompt_id = submit_workflow(workflow)
+print(f"Submitted job: {prompt_id}")
+```
+</CodeGroup>
+
+### Использование партнёрских узлов
+
+Если ваш рабочий процесс содержит [партнёрские узлы](/ru/tutorials/partner-nodes/overview) (узлы, которые вызывают внешние AI-сервисы, например Flux Pro, Ideogram и т.д.), необходимо указать ваш [Comfy API-ключ](/ru/development/api-development/getting-an-api-key) в поле `extra_data` тела запроса.
+
+<Note>
+  Фронтенд ComfyUI автоматически помещает ваш API-ключ в `extra_data` при запуске рабочих процессов в браузере. Этот раздел актуален только при прямом вызове API.
+</Note>
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/prompt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": '"$(cat workflow_api.json)"',
+    "extra_data": {
+      "api_key_comfy_org": "your-comfy-api-key"
+    }
+  }'
+```
+
+```typescript TypeScript
+async function submitWorkflowWithPartnerNodes(
+  workflow: Record<string, any>,
+  apiKey: string
+): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({
+      prompt: workflow,
+      extra_data: {
+        api_key_comfy_org: apiKey,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const result = await response.json();
+  return result.prompt_id;
+}
+
+// Используйте, когда рабочий процесс содержит партнёрские узлы (например, Flux Pro, Ideogram и т.д.)
+const promptId = await submitWorkflowWithPartnerNodes(workflow, API_KEY);
+```
+
+```python Python
+def submit_workflow_with_partner_nodes(workflow: dict, api_key: str) -> str:
+    """Отправляет рабочий процесс, использующий партнёрские узлы.
+    
+    Аргументы:
+        workflow: рабочий процесс ComfyUI в формате API
+        api_key: ваш API-ключ с platform.comfy.org
+        
+    Возвращает:
+        prompt_id для отслеживания задачи
+    """
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={
+            "prompt": workflow,
+            "extra_data": {
+                "api_key_comfy_org": api_key
+            }
+        }
+    )
+    response.raise_for_status()
+    return response.json()["prompt_id"]
+
+# Используйте, когда рабочий процесс содержит партнёрские узлы
+prompt_id = submit_workflow_with_partner_nodes(workflow, API_KEY)
+```
+</CodeGroup>
+
+<Info>
+  Сгенерируйте API-ключ на [platform.comfy.org](https://platform.comfy.org/login). Это тот же ключ, который используется для аутентификации в Cloud API (заголовок `X-API-Key`). Пошаговые инструкции см. в разделе [Getting an API Key](/ru/development/api-development/getting-an-api-key).
+</Info>
+
+### Изменить входы рабочего процесса
+
+<CodeGroup>
+```typescript TypeScript
+function setWorkflowInput(
+  workflow: Record<string, any>,
+  nodeId: string,
+  inputName: string,
+  value: any
+): Record<string, any> {
+  if (workflow[nodeId]) {
+    workflow[nodeId].inputs[inputName] = value;
+  }
+  return workflow;
+}
+
+// Пример: задать seed и промпт
+let workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+workflow = setWorkflowInput(workflow, "3", "seed", 12345);
+workflow = setWorkflowInput(workflow, "6", "text", "a beautiful landscape");
+```
+
+```python Python
+def set_workflow_input(workflow: dict, node_id: str, input_name: str, value) -> dict:
+    """Изменяет значение входа рабочего процесса.
+    
+    Аргументы:
+        workflow: словарь рабочего процесса
+        node_id: ID узла, который нужно изменить
+        input_name: имя поля входа
+        value: новое значение
+        
+    Возвращает:
+        изменённый рабочий процесс
+    """
+    if node_id in workflow:
+        workflow[node_id]["inputs"][input_name] = value
+    return workflow
+
+# Пример: задать seed и промпт
+workflow = set_workflow_input(workflow, "3", "seed", 12345)
+workflow = set_workflow_input(workflow, "6", "text", "a beautiful landscape")
+```
+</CodeGroup>
+
+---
+
+## Проверка статуса задачи
+
+Опрашивайте статус до завершения задачи.
+
+<PollJobCompletion />
+
+---
+
+## WebSocket для прогресса в реальном времени
+
+Подключитесь к WebSocket, чтобы получать обновления выполнения в реальном времени.
+
+<Note>
+  В настоящее время параметр `clientId` игнорируется: все подключения одного пользователя получают одни и те же сообщения. Передавайте уникальный `clientId` для совместимости с будущими версиями.
+</Note>
+
+<WebSocketProgress />
+
+### Типы сообщений WebSocket
+
+Сообщения отправляются в виде текстовых фреймов JSON, если не указано иное.
+
+| Тип | Описание |
+|------|-------------|
+| `status` | Обновление статуса очереди со счётчиком `queue_remaining` |
+| `notification` | Понятное пользователю сообщение о статусе (поле `value` содержит текст вроде «Executing workflow...») |
+| `execution_start` | Выполнение рабочего процесса началось |
+| `executing` | Сейчас выполняется конкретный узел (ID узла в поле `node`) |
+| `progress` | Прогресс шагов внутри узла (`value`/`max` для шагов выборки) |
+| `progress_state` | Расширенное состояние прогресса с метаданными узлов (вложенный объект `nodes`) |
+| `executed` | Узел завершён с выходами (изображения, видео и т. д. в поле `output`) |
+| `execution_cached` | Узлы пропущены, так как выходы взяты из кэша (массив `nodes`) |
+| `execution_success` | Весь рабочий процесс успешно завершён |
+| `execution_error` | Ошибка рабочего процесса (включает `exception_type`, `exception_message`, `traceback`) |
+| `execution_interrupted` | Рабочий процесс отменён пользователем |
+
+#### Бинарные сообщения (изображения предпросмотра)
+
+Во время генерации изображений ComfyUI отправляет **бинарные фреймы WebSocket**, содержащие изображения предпросмотра. Это необработанные бинарные данные (не JSON):
+
+| Бинарный тип | Значение | Описание |
+|-------------|-------|-------------|
+| `PREVIEW_IMAGE` | `1` | Промежуточный предпросмотр во время выборки diffusion |
+| `TEXT` | `3` | Текстовый вывод узлов (текст прогресса) |
+| `PREVIEW_IMAGE_WITH_METADATA` | `4` | Изображение предпросмотра с метаданными контекста узла |
+
+**Форматы бинарных фреймов** (все целые числа в порядке big-endian):
+
+<Tabs>
+  <Tab title="PREVIEW_IMAGE (1)">
+    | Смещение | Размер | Поле | Описание |
+    |--------|------|-------|-------------|
+    | 0 | 4 bytes | `type` | `0x00000001` |
+    | 4 | 4 bytes | `image_type` | Код формата (1=JPEG, 2=PNG) |
+    | 8 | variable | `image_data` | Необработанные байты изображения |
+  </Tab>
+  
+  <Tab title="TEXT (3)">
+    | Смещение | Размер | Поле | Описание |
+    |--------|------|-------|-------------|
+    | 0 | 4 bytes | `type` | `0x00000003` |
+    | 4 | 4 bytes | `node_id_len` | Длина строки node_id |
+    | 8 | N bytes | `node_id` | ID узла в кодировке UTF-8 |
+    | 8+N | variable | `text` | Текст прогресса в кодировке UTF-8 |
+  </Tab>
+  
+  <Tab title="PREVIEW_WITH_METADATA (4)">
+    | Смещение | Размер | Поле | Описание |
+    |--------|------|-------|-------------|
+    | 0 | 4 bytes | `type` | `0x00000004` |
+    | 4 | 4 bytes | `metadata_len` | Длина JSON метаданных |
+    | 8 | N bytes | `metadata` | JSON в кодировке UTF-8 (см. ниже) |
+    | 8+N | variable | `image_data` | Необработанные байты JPEG/PNG |
+
+    **Структура JSON метаданных:**
+    ```json
+    {
+      "node_id": "3",
+      "display_node_id": "3",
+      "real_node_id": "3",
+      "prompt_id": "abc-123",
+      "parent_node_id": null
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Полные определения схем для каждого типа JSON-сообщений см. в [спецификации OpenAPI](/ru/development/cloud/openapi).
+</Note>
+
+---
+
+## Загрузка выходов
+
+Получите сгенерированные файлы после завершения задачи.
+
+<DownloadOutputs />
+
+---
+
+## Полный сквозной пример
+
+Вот полный пример, который объединяет всё вместе:
+
+<CodeGroup>
+```typescript TypeScript
+import { mkdir, readFile, writeFile } from "fs/promises";
+
+const BASE_URL = "https://cloud.comfy.org";
+const API_KEY = process.env.COMFY_CLOUD_API_KEY!;
+
+function getHeaders(): HeadersInit {
+  return { "X-API-Key": API_KEY, "Content-Type": "application/json" };
+}
+
+async function submitWorkflow(workflow: Record<string, any>): Promise<string> {
+  const response = await fetch(`${BASE_URL}/api/prompt`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ prompt: workflow }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).prompt_id;
+}
+
+async function waitForCompletion(
+  promptId: string,
+  timeout: number = 300000
+): Promise<Record<string, any>> {
+  const wsUrl = `wss://cloud.comfy.org/ws?clientId=${crypto.randomUUID()}&token=${API_KEY}`;
+  const outputs: Record<string, any> = {};
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error("Job timed out"));
+    }, timeout);
+
+    ws.onmessage = (event) => {
+      // Binary frames carry preview images, not JSON.
+      if (typeof event.data !== "string") return;
+
+      const data = JSON.parse(event.data);
+      if (data.data?.prompt_id !== promptId) return;
+
+      const msgType = data.type;
+      const msgData = data.data ?? {};
+
+      if (msgType === "progress") {
+        console.log(`Progress: ${msgData.value}/${msgData.max}`);
+      } else if (msgType === "executed" && msgData.output) {
+        outputs[msgData.node] = msgData.output;
+      } else if (msgType === "execution_success") {
+        clearTimeout(timer);
+        ws.close();
+        resolve(outputs);
+      } else if (msgType === "execution_error") {
+        clearTimeout(timer);
+        ws.close();
+        reject(new Error(msgData.exception_message ?? "Unknown error"));
+      }
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+  });
+}
+
+async function downloadOutputs(
+  outputs: Record<string, any>,
+  outputDir: string
+): Promise<void> {
+  await mkdir(outputDir, { recursive: true });
+  for (const nodeOutputs of Object.values(outputs)) {
+    for (const key of ["images", "video", "audio"]) {
+      for (const fileInfo of (nodeOutputs as any)[key] ?? []) {
+        const params = new URLSearchParams({
+          filename: fileInfo.filename,
+          subfolder: fileInfo.subfolder ?? "",
+          type: fileInfo.type ?? "output",
+        });
+        // Get redirect URL (don't follow to avoid sending auth to storage)
+        const response = await fetch(`${BASE_URL}/api/view?${params}`, {
+          headers: { "X-API-Key": API_KEY },
+          redirect: "manual",
+        });
+        if (response.status !== 302) throw new Error(`HTTP ${response.status}`);
+        const signedUrl = response.headers.get("location")!;
+        // Fetch from signed URL without auth headers
+        const fileResponse = await fetch(signedUrl);
+        if (!fileResponse.ok) throw new Error(`HTTP ${fileResponse.status}`);
+
+        const path = `${outputDir}/${fileInfo.filename}`;
+        await writeFile(path, Buffer.from(await fileResponse.arrayBuffer()));
+        console.log(`Downloaded: ${path}`);
+      }
+    }
+  }
+}
+
+async function main() {
+  // 1. Load workflow
+  const workflow = JSON.parse(await readFile("workflow_api.json", "utf-8"));
+
+  // 2. Modify workflow parameters
+  workflow["3"].inputs.seed = 42;
+  workflow["6"].inputs.text = "a beautiful sunset over mountains";
+
+  // 3. Submit workflow
+  const promptId = await submitWorkflow(workflow);
+  console.log(`Job submitted: ${promptId}`);
+
+  // 4. Wait for completion with progress
+  const outputs = await waitForCompletion(promptId);
+  console.log(`Job completed! Found ${Object.keys(outputs).length} output nodes`);
+
+  // 5. Download outputs
+  await downloadOutputs(outputs, "./outputs");
+  console.log("Done!");
+}
+
+main();
+```
+
+```python Python
+import os
+import requests
+import json
+import asyncio
+import aiohttp
+import uuid
+
+BASE_URL = "https://cloud.comfy.org"
+API_KEY = os.environ["COMFY_CLOUD_API_KEY"]
+
+def get_headers():
+    return {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+
+def upload_image(file_path: str) -> dict:
+    """Upload an image and return the reference for use in workflows."""
+    with open(file_path, "rb") as f:
+        response = requests.post(
+            f"{BASE_URL}/api/upload/image",
+            headers={"X-API-Key": API_KEY},
+            files={"image": f},
+            data={"type": "input", "overwrite": "true"}
+        )
+    response.raise_for_status()
+    return response.json()
+
+def submit_workflow(workflow: dict) -> str:
+    """Submit workflow and return prompt_id."""
+    response = requests.post(
+        f"{BASE_URL}/api/prompt",
+        headers=get_headers(),
+        json={"prompt": workflow}
+    )
+    response.raise_for_status()
+    return response.json()["prompt_id"]
+
+async def wait_for_completion(prompt_id: str, timeout: float = 300.0) -> dict:
+    """Wait for job completion via WebSocket."""
+    ws_url = BASE_URL.replace("https://", "wss://") + f"/ws?clientId={uuid.uuid4()}&token={API_KEY}"
+    outputs = {}
+    
+    async with aiohttp.ClientSession() as session:
+        # receive_timeout bounds each wait for a frame, so a silent
+        # connection cannot hang past the deadline
+        async with session.ws_connect(ws_url, receive_timeout=timeout) as ws:
+            start = asyncio.get_event_loop().time()
+            async for msg in ws:
+                if asyncio.get_event_loop().time() - start > timeout:
+                    raise TimeoutError("Job timed out")
+                
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                    
+                data = json.loads(msg.data)
+                if data.get("data", {}).get("prompt_id") != prompt_id:
+                    continue
+                
+                msg_type = data.get("type")
+                msg_data = data.get("data", {})
+                
+                if msg_type == "progress":
+                    print(f"Progress: {msg_data.get('value')}/{msg_data.get('max')}")
+                elif msg_type == "executed":
+                    if output := msg_data.get("output"):
+                        outputs[msg_data["node"]] = output
+                elif msg_type == "execution_success":
+                    return outputs
+                elif msg_type == "execution_error":
+                    raise RuntimeError(msg_data.get("exception_message", "Unknown error"))
+    
+    return outputs
+
+def download_outputs(outputs: dict, output_dir: str):
+    """Download all output files."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for node_outputs in outputs.values():
+        for key in ["images", "video", "audio"]:
+            for file_info in node_outputs.get(key, []):
+                params = {
+                    "filename": file_info["filename"],
+                    "subfolder": file_info.get("subfolder", ""),
+                    "type": file_info.get("type", "output")
+                }
+                response = requests.get(f"{BASE_URL}/api/view", headers=get_headers(), params=params)
+                response.raise_for_status()
+                
+                path = os.path.join(output_dir, file_info["filename"])
+                with open(path, "wb") as f:
+                    f.write(response.content)
+                print(f"Downloaded: {path}")
+
+async def main():
+    # 1. Load workflow
+    with open("workflow_api.json") as f:
+        workflow = json.load(f)
+    
+    # 2. Optionally upload input images
+    # image_ref = upload_image("input.png")
+    # workflow["1"]["inputs"]["image"] = image_ref["name"]
+    
+    # 3. Modify workflow parameters
+    workflow["3"]["inputs"]["seed"] = 42
+    workflow["6"]["inputs"]["text"] = "a beautiful sunset over mountains"
+    
+    # 4. Submit workflow
+    prompt_id = submit_workflow(workflow)
+    print(f"Job submitted: {prompt_id}")
+    
+    # 5. Wait for completion with progress
+    outputs = await wait_for_completion(prompt_id)
+    print(f"Job completed! Found {len(outputs)} output nodes")
+    
+    # 6. Download outputs
+    download_outputs(outputs, "./outputs")
+    print("Done!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+</CodeGroup>
+
+---
+
+## Управление очередью
+
+### Получить статус очереди
+
+<CodeGroup>
+```bash curl
+curl -X GET "$BASE_URL/api/queue" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function getQueue(): Promise<{
+  queue_running: any[];
+  queue_pending: any[];
+}> {
+  const response = await fetch(`${BASE_URL}/api/queue`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+const queue = await getQueue();
+console.log(`Running: ${queue.queue_running.length}`);
+console.log(`Pending: ${queue.queue_pending.length}`);
+```
+
+```python Python
+def get_queue():
+    """Получить текущий статус очереди."""
+    response = requests.get(
+        f"{BASE_URL}/api/queue",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+    return response.json()
+
+queue = get_queue()
+print(f"Running: {len(queue.get('queue_running', []))}")
+print(f"Pending: {len(queue.get('queue_pending', []))}")
+```
+</CodeGroup>
+
+### Отменить задачу
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/queue" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"delete": ["PROMPT_ID_HERE"]}'
+```
+
+```typescript TypeScript
+async function cancelJob(promptId: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/queue`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ delete: [promptId] }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def cancel_job(prompt_id: str):
+    """Отменить задачу в очереди или выполняющуюся задачу."""
+    response = requests.post(
+        f"{BASE_URL}/api/queue",
+        headers=get_headers(),
+        json={"delete": [prompt_id]}
+    )
+    response.raise_for_status()
+    return response.json()
+```
+</CodeGroup>
+
+### Прервать текущее выполнение
+
+<CodeGroup>
+```bash curl
+curl -X POST "$BASE_URL/api/interrupt" \
+  -H "X-API-Key: $COMFY_CLOUD_API_KEY"
+```
+
+```typescript TypeScript
+async function interrupt(): Promise<void> {
+  const response = await fetch(`${BASE_URL}/api/interrupt`, {
+    method: "POST",
+    headers: getHeaders(),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+```
+
+```python Python
+def interrupt():
+    """Прервать текущую выполняющуюся задачу."""
+    response = requests.post(
+        f"{BASE_URL}/api/interrupt",
+        headers=get_headers()
+    )
+    response.raise_for_status()
+```
+</CodeGroup>
+
+---
+
+## Обработка ошибок
+
+### Ошибки HTTP
+
+Конечные точки REST API возвращают стандартные коды состояния HTTP:
+
+| Статус | Описание |
+|--------|-------------|
+| `400` | Недопустимый запрос (неверный рабочий процесс, отсутствуют поля) |
+| `401` | Не авторизован (неверный или отсутствующий API-ключ) |
+| `402` | Недостаточно кредитов |
+| `429` | Подписка неактивна |
+| `500` | Внутренняя ошибка сервера |
+
+### Ошибки выполнения
+
+Во время выполнения рабочего процесса ошибки доставляются через сообщение WebSocket `execution_error`. Поле `exception_type` определяет категорию ошибки:
+
+| Тип исключения | Описание |
+|----------------|-------------|
+| `ValidationError` | Недопустимый рабочий процесс или входы |
+| `ModelDownloadError` | Требуемая модель недоступна или не удалось скачать |
+| `ImageDownloadError` | Не удалось скачать входное изображение по URL |
+| `OOMError` | Недостаточно памяти GPU |
+| `InsufficientFundsError` | Недостаточно средств на балансе аккаунта (для партнёрских узлов) |
+| `InactiveSubscriptionError` | Подписка неактивна |

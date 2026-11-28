@@ -1,0 +1,160 @@
+---
+title: "Хуки JavaScript в ComfyUI"
+sidebarTitle: "Хуки"
+description: "Справочник по хукам JavaScript во фронтенде ComfyUI: app.registerExtension, nodeCreated, beforeRegisterNodeDef и колбэки настройки интерфейса."
+translationSourceHash: 61f4c2af
+translationFrom: custom-nodes/js/javascript_hooks.mdx
+---
+## Хуки расширений
+
+В различных точках во время выполнения Comfy приложение вызывает
+`#invokeExtensionsAsync` или `#invokeExtensions` с именем хука. 
+Они вызывают у всех зарегистрированных расширений соответствующим образом названный метод (если он есть), например `setup`
+в примере выше.
+
+Comfy предоставляет множество хуков, которые код пользовательских расширений может использовать для изменения поведения клиента.
+
+<Tip>Эти хуки вызываются во время создания и изменения клиентских элементов Comfy.
+<br/>События во время выполнения рабочего процесса обрабатываются 
+`apiUpdateHandlers`</Tip> {/* TODO link when written */}
+
+Ниже описаны несколько наиболее значимых хуков. 
+Поскольку Comfy активно развивается, время от времени добавляются дополнительные хуки, поэтому 
+ищите `#invokeExtensions` в `app.js`, чтобы найти все доступные хуки.
+
+См. также [последовательность](#последовательности-вызовов), в которой вызываются хуки.
+
+### Часто используемые хуки
+
+Начните с `beforeRegisterNodeDef`, который используется большинством расширений и часто является единственным необходимым.
+
+#### beforeRegisterNodeDef()
+
+Вызывается один раз для каждого типа узла (список узлов, доступных в меню `AddNode`), и используется для
+изменения поведения узла. 
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) 
+```
+Объект, передаваемый в параметре `nodeType`, по сути служит шаблоном 
+для всех узлов, которые будут созданы этого типа, поэтому изменения, внесённые в `nodeType.prototype`, будут применяться
+ко всем узлам этого типа. `nodeData` представляет собой инкапсуляцию аспектов узла, определённых в коде Python,
+таких как его категория, входы и выходы. `app` является ссылкой на основной объект приложения Comfy (который вы 
+уже импортировали в любом случае!)
+<Tip>Этот метод вызывается для каждого зарегистрированного расширения для _каждого_ типа узла, а не только для тех, которые добавлены этим расширением.</Tip>
+
+Обычной идиомой является проверка `nodeType.ComfyClass`, который хранит имя Python-класса, соответствующего этому узлу,
+чтобы понять, нужно ли изменять узел. Часто это означает изменение пользовательских узлов, которые вы добавили,
+хотя иногда может потребоваться изменить поведение других узлов (или другие пользовательские узлы
+могут изменить ваши!), и в этом случае следует позаботиться о совместимости.
+
+<Tip>Поскольку другие расширения тоже могут изменять узлы, старайтесь писать код, который делает как можно меньше предположений.
+И будьте аккуратны: изолируйте свои изменения везде, где это возможно.</Tip>
+
+Очень распространённая идиома в `beforeRegisterNodeDef`: «перехват» существующего метода:
+
+<Note>
+**Устарело:** Показанный ниже шаблон перехвата прототипа устарел и может быть изменён в любой момент в ближайшем будущем. Для контекстных меню используйте официальный [Context Menu API](/ru/custom-nodes/js/context-menu-migration). Для других случаев предпочитайте официальные [хуки расширений](/ru/custom-nodes/js/javascript_hooks), где они доступны.
+</Note>
+
+```Javascript
+async beforeRegisterNodeDef(nodeType, nodeData, app) {
+	if (nodeType.comfyClass=="MyNodeClass") { 
+		const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+		nodeType.prototype.onConnectionsChange = function (side,slot,connect,link_info,output) {     
+			const r = onConnectionsChange?.apply(this, arguments);   
+			console.log("Someone changed my connection!");
+			return r;
+		}
+	}
+}
+```
+В этой идиоме существующий метод прототипа сохраняется, а затем заменяется. Замена вызывает
+исходный метод (`?.apply` гарантирует, что если его не было, вызов всё равно безопасен), а затем
+выполняет дополнительные операции. В зависимости от логики вашего кода вам может потребоваться разместить `apply` в другом месте кода замены
+или даже сделать его вызов условным.
+При перехвате метода таким образом вам стоит заглянуть в основной код Comfy (точки останова вам в помощь), чтобы проверить
+и соблюсти сигнатуру метода.
+
+<Warning>Этот подход хрупок и может сломаться при будущих обновлениях ComfyUI. По возможности используйте официальные API.</Warning>
+
+#### nodeCreated()
+
+```Javascript
+async nodeCreated(node)
+```
+Вызывается, когда создаётся конкретный экземпляр узла 
+(в самом конце функции `ComfyNode()` для `nodeType`, которая служит конструктором). 
+В этом хуке вы можете вносить изменения в отдельные экземпляры вашего узла. 
+
+<Tip>Изменения, которые применяются ко всем экземплярам, лучше добавлять в прототип в `beforeRegisterNodeDef`, как описано выше.</Tip>
+
+#### init()
+
+```Javascript
+async init()
+```
+Вызывается при загрузке (или перезагрузке) веб-страницы Comfy. Вызов выполняется после создания объекта графа, но до того, как
+регистрируются или создаются какие-либо узлы. Его можно использовать для изменения основного поведения Comfy путём перехвата методов приложения или
+графа (объекта `LiteGraph`). Это дополнительно обсуждается в [Comfy Objects](./javascript_objects_and_hijacking).
+
+<Warning>С большой силой приходит большая ответственность. Перехват основного поведения повышает вероятность того, что ваши узлы
+будут несовместимы с другими пользовательскими узлами или будущими обновлениями Comfy</Warning>
+
+#### setup()
+
+```Javascript
+async setup()
+```
+Вызывается в конце процесса запуска. Хорошее место для добавления обработчиков событий (событий Comfy или событий DOM)
+или добавления в глобальные меню, и то и другое обсуждается в другом месте. {/* TODO link when written */}
+
+<Tip>Чтобы что-то сделать после загрузки рабочего процесса, используйте `afterConfigureGraph`, а не `setup`</Tip>
+### Последовательности вызовов
+
+Эти последовательности были получены путём вставки кода логирования в файл `app.js` Comfy. Похожий код может помочь вам понять поток выполнения.
+```Javascript
+/* approx line 220 at time of writing: */
+	#invokeExtensions(method, ...args) {
+		console.log(`invokeExtensions      ${method}`) // эта строка добавлена
+		// ...
+	}
+/* approx line 250 at time of writing: */
+	async #invokeExtensionsAsync(method, ...args) {
+		console.log(`invokeExtensionsAsync ${method}`) // эта строка добавлена
+		// ...
+	}
+```
+
+#### Загрузка веб-страницы
+
+```
+invokeExtensionsAsync init
+invokeExtensionsAsync addCustomNodeDefs
+invokeExtensionsAsync getCustomWidgets
+invokeExtensionsAsync beforeRegisterNodeDef    [repeated multiple times]
+invokeExtensionsAsync registerCustomNodes
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync nodeCreated
+invokeExtensions      loadedGraphNode
+invokeExtensionsAsync afterConfigureGraph
+invokeExtensionsAsync setup
+```
+
+#### Загрузка рабочего процесса
+
+```
+invokeExtensionsAsync beforeConfigureGraph
+invokeExtensionsAsync beforeRegisterNodeDef   [zero, one, or multiple times]
+invokeExtensionsAsync nodeCreated             [repeated multiple times]
+invokeExtensions      loadedGraphNode         [repeated multiple times]
+invokeExtensionsAsync afterConfigureGraph
+```
+
+{/* TODO почему beforeRegisterNodeDef вызывается снова? */}
+
+#### Добавление нового узла
+
+```
+invokeExtensionsAsync nodeCreated
+```

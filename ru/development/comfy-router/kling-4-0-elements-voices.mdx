@@ -1,0 +1,92 @@
+---
+title: "Элементы и голоса Kling 4.0 в Comfy Router"
+sidebarTitle: "Элементы и голоса Kling 4.0"
+description: "Передача subject (элемента) и голосовых входов Kling 4.0 через Comfy Router: элементы contents, лимиты, выбор режима и ссылки @id в промпте."
+translationSourceHash: 71008b48
+translationFrom: development/comfy-router/kling-4-0-elements-voices.mdx
+translationBlockHashes:
+  "_intro": 08ec139c
+  "Element and voice items": 86df92b4
+  "Reference elements and voices in the prompt": 003234ab
+  "How Router picks the mode": 19d410a3
+  "Limits": 593d7095
+  "Example request": f76e4b43
+  "Getting element and voice IDs": fc79a402
+---
+Kling 4.0 позволяет сохранять согласованность субъекта в рамках генерации с помощью **элемента** (сохранённого субъекта, например персонажа) и задавать ему определённый **голос**. В Comfy Router оба являются элементами массива `contents` запроса `kling/kling-4.0`. На этой странице описано, как их отправить. Полная схема запроса приведена на [странице модели Kling 4.0](/ru/development/comfy-router/models/kling/kling-4-0/code).
+
+## Элементы и голоса
+
+Каждый элемент в `contents` имеет `type`. Элементы и голоса используют следующие поля:
+
+| `type` | Обязательные поля | Что это |
+|--------|-----------------|------------|
+| `element` | `id`, `element_id` | ID элемента Kling, который обозначает сохранённый субъект. |
+| `voice` | `id`, `voice_id` | ID голоса Kling: предустановленный или пользовательский голос. |
+
+`id`: это имя ссылки, которое вы выбираете для элемента. Kling требует его для каждого элемента `element` и `voice`, и оно должно быть уникальным в пределах запроса. `element_id` и `voice_id` должны быть строками.
+
+## Ссылка на элементы и голоса в промпте
+
+Поместите промпт в `contents` как элемент типа `prompt` и ссылайтесь на другие входы, записывая `@`, за которым следует их `id`. Если у элемента `id` равен `hero`, а у голоса `id` равен `narrator`, в промпте можно указать `@hero` и `@narrator`.
+
+Не отправляйте поле `prompt` верхнего уровня вместе с непустым массивом `contents`. Router отклоняет такую комбинацию; промпт должен находиться внутри `contents`.
+
+## Как Router выбирает режим
+
+У `kling/kling-4.0` один ID модели и три режима. Router выбирает режим по телу запроса:
+
+- **Текст в видео**: `prompt` верхнего уровня и отсутствие `contents` (или пустой `contents`).
+- **Изображение в видео**: `contents` содержит только элементы `prompt`, `first_frame`, `middle_frame` и `last_frame`.
+- **Omni video**: `contents` содержит элементы любого другого типа, включая `refer_image`, `feature_video`, `base_video`, `element` или `voice`.
+
+Поэтому любой элемент `element` или `voice` отправляет запрос в Omni video. Режим вы не задаёте сами.
+
+## Ограничения
+
+Omni video принимает до 15 входов плюс промпт, поэтому Router отклоняет массив `contents`, если в нём больше 16 элементов. В этих пределах запрос может содержать не более:
+
+- 10 изображений (`first_frame`, `middle_frame`, `last_frame` и `refer_image` в сумме)
+- 5 видео (`feature_video` и `base_video` в сумме), при этом допускается не более одного `base_video`
+- 7 элементов
+- 3 голосов
+
+Router проверяет эти ограничения до того, как запрос достигнет Kling, и отвечает на запрос, превышающий одно из них, кодом `422` и записью `detail[]`, указывающей на `contents`. См. [ошибки валидации](/ru/development/comfy-router/errors#ошибки-валидации).
+
+Запрос с видеоэлементом персонажа тарифицируется по ставке для видеовхода, как и запросы с `feature_video` или `base_video`.
+
+## Пример запроса
+
+Это ставит в очередь генерацию видео Omni с одним элементом и одним голосом. Замените идентификаторы-заполнители на свои.
+
+```bash
+curl https://api.comfy.org/v2/models/kling/kling-4.0/requests \
+  -H "X-API-Key: $COMFY_API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "type": "prompt",
+        "text": "@hero walks down a rainy neon street, turns to the camera and says \"We made it.\" in the voice of @narrator."
+      },
+      { "type": "element", "id": "hero", "element_id": "<your-element-id>" },
+      { "type": "voice", "id": "narrator", "voice_id": "<your-voice-id>" }
+    ],
+    "settings": {
+      "duration": 5,
+      "resolution": "720p",
+      "aspect_ratio": "16:9"
+    }
+  }'
+```
+
+Маршрутизатор отвечает `201` и возвращает `request_id`. Опрашивайте статус и забирайте результат, как описано в разделе [Доставка через очередь](/ru/development/comfy-router/queue). Если нужно дождаться результата за один вызов, отправьте то же тело запроса на `POST https://api.comfy.org/v2/models/kling/kling-4.0`.
+
+## Получение идентификаторов элементов и голосов
+
+Router не предоставляет эндпоинты для создания, загрузки или получения списка элементов и голосов Kling. Он только передаёт значения `element_id` и `voice_id`, которые вы отправляете в Kling.
+
+Kling привязывает идентификаторы элементов и пользовательских голосов к аккаунту Kling, в котором они были созданы. Router отправляет запросы в Kling с учётными данными Comfy, а не с вашими, поэтому элемент или пользовательский голос, созданный в вашем аккаунте Kling, может быть отклонён.
+
+Чтобы обеспечить согласованность субъекта без использования элемента, отправьте референсные изображения как элементы `refer_image` или референсное видео как элемент `feature_video` и задайте каждому `id`, на который можно ссылаться в промпте.

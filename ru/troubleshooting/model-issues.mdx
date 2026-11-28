@@ -1,0 +1,153 @@
+---
+title: "Как устранять неполадки и решать проблемы с моделями в ComfyUI"
+description: "Устранение проблем с моделями: несовпадения архитектур, отсутствующие модели и ошибки загрузки"
+icon: "cube"
+sidebarTitle: "Проблемы с моделями"
+translationSourceHash: 4ece7de6
+translationFrom: troubleshooting/model-issues.mdx
+translationBlockHashes:
+  "Model Architecture Mismatch": 23e5abcf
+  "Missing Models Error": ec98bd75
+  "Model Loading Errors": dd723562
+  "Model Performance Issues": f8467439
+---
+## Несовпадение архитектуры модели
+
+**Симптомы:** Ошибки размерности тензоров во время генерации, особенно на этапе декодирования VAE
+
+**Распространённые сообщения об ошибках:**
+- `Given groups=1, weight of size [64, 4, 3, 3], expected input[1, 16, 128, 128] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [4, 4, 1, 1], expected input[1, 16, 144, 112] to have 4 channels, but got 16 channels instead`
+- `Given groups=1, weight of size [320, 4, 3, 3], expected input[2, 16, 192, 128] to have 4 channels, but got 16 channels instead`
+- `The size of tensor a (49) must match the size of tensor b (16) at non-singleton dimension 1`
+`Tensors must have same number of dimensions: got 2 and 3`
+- `mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)`
+
+**Основная причина:** совместное использование моделей из разных семейств архитектур
+
+### Решения
+
+1. **Проверьте совместимость семейства моделей:**
+   - **Модели Flux** используют латентное пространство с 16 каналами и двойное обусловливание от текстовых энкодеров (CLIP-L + T5-XXL)
+   - **Модели SD1.5** используют 4-канальное латентное пространство с единственным текстовым энкодером CLIP ViT-L/14
+   - **Модели SDXL** используют 4-канальное латентное пространство с двумя текстовыми энкодерами (CLIP ViT-L/14 + OpenCLIP ViT-bigG/14)
+- **Модели SD3** используют 16-канальное латентное пространство с обусловливанием от трёх текстовых энкодеров (CLIP-L + OpenCLIP bigG + T5-XXL)
+   - **Модели ControlNet** должны соответствовать архитектуре базового чекпойнта (ControlNet для SD1.5 работают только с чекпойнтами SD1.5, ControlNet для SDXL работают только с чекпойнтами SDXL и т. д.)
+
+2. **Типичные сценарии несовпадения и способы их устранения:**
+
+   **Flux + неправильный VAE:**
+   ```
+   Problem: Using taesd or sdxl_vae.safetensors with Flux checkpoint
+   Fix: Use ae.safetensors (Flux VAE) from Hugging Face Flux releases
+   ```
+
+   **Flux + неправильная конфигурация CLIP:**
+   ```
+   Problem: Using t5xxl_fp8_e4m3fn.safetensors in both CLIP slots of DualClipLoader
+   Fix: Use t5xxl_fp8_e4m3fn.safetensors in one slot and clip_l.safetensors in the other
+   ```
+
+   **Несоответствие архитектуры ControlNet:**
+   ```
+   Problem: SD1.5 ControlNet with SDXL checkpoint (or vice versa)
+   Error: "mat1 and mat2 shapes cannot be multiplied (154x2048 and 768x320)"
+   Fix: Use ControlNet models designed for your checkpoint architecture
+        - SD1.5 checkpoints require SD1.5 ControlNets
+        - SDXL checkpoints require SDXL ControlNets
+   ```
+
+3. **Быстрая диагностика:**
+   ```bash
+   # Проверьте, не возникает ли ошибка на этапе декодирования VAE
+   # Ищите "expected input[X, Y, Z] to have N channels, but got M channels"
+   # Значение Y указывает число каналов: 4 = модели SD, 16 = модели Flux
+   ```
+
+4. **Стратегии предотвращения:**
+   - Держите все модели рабочего процесса в рамках одной архитектурной семьи
+   - Скачивайте полные пакеты моделей из одного источника или релиза (часто всё в одном репозитории Hugging Face)
+   - При пробе новых моделей начинайте с шаблонных рабочих процессов или официальных примеров рабочих процессов ComfyUI, прежде чем вносить изменения
+
+## Ошибка отсутствующих моделей
+
+**Пример сообщения об ошибке:** 
+```
+Prompt execution failed
+Prompt outputs failed validation:
+CheckpointLoaderSimple:
+- Value not in list: ckpt_name: 'model-name.safetensors' not in []
+```
+
+### Решения
+
+1. **Скачайте обязательные модели:**
+   - Используйте ComfyUI Manager для автоматического скачивания моделей
+   - Убедитесь, что модели находятся в правильных подпапках
+
+2. **Проверьте пути к моделям:**
+   - **Чекпойнты**: `models/checkpoints/`
+   - **VAE**: `models/vae/`
+   - **LoRA**: `models/loras/`
+   - **ControlNet**: `models/controlnet/`
+   - **Embeddings**: `models/embeddings/`
+
+3. **Делитесь моделями между интерфейсами или используйте пользовательские пути:**
+   - Подробные инструкции смотрите в разделе [Совместное использование моделей ComfyUI и настройка пользовательских каталогов моделей](/ru/installation/comfyui_portable_windows#добавление-дополнительных-путей-к-моделям)
+   - Отредактируйте файл `extra_model_paths.yaml`, чтобы добавить пользовательские каталоги моделей
+
+### Настройка путей поиска моделей
+
+Если ваши модели находятся в пользовательских расположениях, обратитесь к подробному руководству [Совместное использование моделей ComfyUI и настройка пользовательских каталогов моделей](/ru/installation/comfyui_portable_windows#добавление-дополнительных-путей-к-моделям), чтобы настроить ComfyUI для их поиска.
+
+## Ошибки загрузки модели
+
+**Сообщение об ошибке:** "Error while deserializing header"
+
+### Решения
+
+1. **Скачайте модель заново**: файл мог повредиться при загрузке.
+2. **Проверьте доступное место на диске**: убедитесь, что его хватает для загрузки модели (модели могут занимать 2-15GB+).
+3. **Проверьте разрешения на файлы**: убедитесь, что ComfyUI может читать файлы модели.
+4. **Проверьте с другой моделью**: определите, проблема связана с конкретной моделью или со всей системой.
+
+## Проблемы с производительностью моделей
+
+### Медленная загрузка моделей
+
+**Симптомы:** длительные задержки при переключении моделей или запуске генерации
+
+**Решения:**
+1. **Используйте более быстрое хранилище:**
+   - Переместите модели на SSD, если используете HDD
+   - Для максимальной производительности используйте NVMe SSD
+
+2. **Измените настройки кэширования:**
+   ```bash
+   python main.py --cache-classic       # Использовать старый (агрессивный) стиль кэширования.
+   python main.py --cache-lru 10         # Увеличить размер LRU-кэша
+   ```
+
+### Проблемы с памятью при больших моделях
+
+**«RuntimeError: CUDA out of memory»:**
+
+```bash
+# Постепенное снижение потребления памяти
+python main.py --lowvram          # Первая попытка
+python main.py --novram           # Если lowvram недостаточно
+python main.py --cpu              # Крайний вариант
+```
+
+**Оптимизация памяти для конкретных моделей:**
+```bash
+# Принудительно использовать пониженную точность
+python main.py --force-fp16
+
+# Уменьшить расход памяти на механизм внимания
+python main.py --use-pytorch-cross-attention
+```
+
+<Note>
+Дополнительные сведения о конфигурации и настройке моделей см. в [документации по моделям](/ru/basic-concepts/models).
+</Note>
