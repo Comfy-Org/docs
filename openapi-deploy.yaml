@@ -1,0 +1,2424 @@
+# Comfy Deploy API: public specification.
+#
+# Copied from the service's own spec with project_spec.py.
+# Change the service's spec, then copy it again.
+
+openapi: 3.0.3
+info:
+  title: Comfy Deploy API
+  version: 0.1.0
+  description: 'Deploy takes an immutable release cut by Builder and runs it as a live autoscaling serverless endpoint.
+
+    '
+servers:
+- url: https://platformapi.comfy.org/deploy
+  description: Comfy Developer Platform
+security:
+- BearerAuth: []
+- ApiKeyAuth: []
+paths:
+  /v1/deployments:
+    get:
+      operationId: listDeployments
+      summary: List the caller's deployments
+      description: 'Paginated, newest first. Scoped to the caller''s workspace.
+
+        Deleted deployments are included, carrying deletedAt and deletedBy. A deployment is never removed from this list, which is the point: one that vanished left nobody a record of what had been there or who took it away. A deleted deployment keeps the status its release settled it at, so it reads as stopped alongside the rest.
+
+        '
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/DeploymentStatus'
+      - name: after
+        in: query
+        required: false
+        description: Opaque pagination cursor from a previous response's nextCursor.
+        schema:
+          type: string
+      - name: buildId
+        in: query
+        required: false
+        description: Only the deployments of this build, deleted ones included as on the whole list.
+        schema:
+          type: string
+      - name: name
+        in: query
+        required: false
+        description: Only the live deployment holding this name within buildId, which a name requires; a deleted deployment never matches. This is how a caller turns a build and a name into the id every other route takes.
+        schema:
+          type: string
+      - name: projectId
+        in: query
+        required: false
+        description: 'Only the deployments that belong to this project: a project id, or `default` for the workspace''s default project, which holds every deployment created without one. The default project is named only by `default`: its own id, like any id no deployment records, matches nothing. It narrows the list and grants nothing: every workspace member can list every project''s deployments.'
+        schema:
+          type: string
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+    post:
+      operationId: createDeployment
+      summary: Create a deployment
+      description: 'Starts a deployment of a cut release in the caller''s workspace and returns its id. Async: poll statusUrl until the status is ready or failed. An optional Idempotency-Key header dedupes retries; a retry naming a name other than the one the deployment holds is a 409.
+
+        An optional name labels the deployment within its build. Without one, the deployment is named production where its build has no live deployment, and otherwise deployment-N at the lowest N its build has free. A name a live deployment of the same build already holds is a 409 NAME_TAKEN, and a malformed one a 400 INVALID_NAME. A create with no name that concurrent creates in its build keep beating to the default is a 409 NAME_RACE, to send again.
+
+        '
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeploymentRequest'
+      responses:
+        '202':
+          description: Accepted; poll statusUrl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateDeploymentResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/ConcurrencyLimit'
+  /v1/deployments/{id}:
+    get:
+      operationId: getDeployment
+      summary: Get a deployment's status
+      description: 'Returns the deployment''s status, its endpoint URL once ready, and a sentence for the customer saying what went wrong if it failed. The UI polls this and stops once the status is final.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: picked
+        in: query
+        required: false
+        description: Set by the Cloud editor's backend when a person picks this deployment or makes it the workspace default; comfy-deploy remembers the pick only when the request comes on the token the editor's backend mints for that pick, and ignores it from any other caller. Has no effect on the answer.
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateDeployment
+      summary: Update a deployment's compute config, or move it to another release
+      description: 'Adjusts the serverless shape (GPU class, region, min/max workers) of an existing deployment, or, with baseRevision, moves it to another release of its build without changing its id or address.
+
+        A body with baseRevision moves the deployment to releaseId, or to the release fromDeploymentId currently runs, once that release is running for it. The deployment must still be at baseRevision, or the request is a 409 STALE_REVISION; one update waits at a time, so a second is a 409 PENDING_UPDATE_EXISTS. A release already current answers 200 with nothing changed, and a release the deployment still runs from an earlier revision answers 200 at the next revision at once. Otherwise a new running copy starts under the same credit and plan checks a create takes, the active-deployment limit aside, which a running deployment already fits, and the 202 carries the pendingUpdate it waits as; the deployment moves once that copy is ready, and a repeat of the same update answers the same 202. A release of another build is a 400 RELEASE_NOT_IN_BUILD, naming both a release and a source deployment is a 400 RELEASE_AND_SOURCE_BOTH, and a move with no baseRevision, or with computeConfig beside it, is a 400 INVALID_REQUEST.
+
+        A body with only name renames the deployment: the 200 body is the deployment under its new name, and nothing else about it changes. A name a live deployment of the same build already holds is a 409 NAME_TAKEN, a malformed one a 400 INVALID_NAME, and name beside any other field a 400 INVALID_REQUEST. A deployment with no build cannot take a name, a 409 CONFLICT.
+
+        A body with computeConfig and no baseRevision edits the copy the deployment currently runs, as follows.
+
+        A ready deployment applies min/max worker changes in place and returns 200. Changing GPU class or region provisions a separate target copy, selected by the compute catalog, and returns 202 with pendingUpdate. The original id and URL stay unchanged. computeConfig stays on the source until cutover; requestedComputeConfig shows the target. Identical pending requests return the same target, conflicting requests return 409, and a repeat after success applies the bounds in place and returns 200. Unsupported pairs return 400; target spend and capacity limits return 402. Failure keeps the source serving.
+
+        A stopped/failed placement edit stores requestedComputeConfig without provisioning or changing retained provider ownership. Its computeConfig also reports these next-start settings so later edits preserve them. Explicit start creates a separate target and moves the same id/URL once it is ready. An edit matching the serving GPU and region cancels an unstarted or failed compute request and applies its settings in place. A release change or rollback with an unstarted compute request returns 409 COMPUTE_INTENT_EXISTS; complete it or edit back to the serving placement first. A ready source whose compute target failed can change release or roll back; that admission cancels the failed request atomically. Editing an in-flight deployment is a 409. Raising either worker bound is subject to two independent 402s, told apart by the body''s reason: on a ready deployment it commits paid compute immediately, so the spend gate applies (reason spend_blocked); on any status it is also subject to the same plan-limits gate a create and a start apply (reason no_credit_balance) -- on a stopped/failed deployment this only stores a bound a later start would separately refuse for the same reason, so the edit 402s here rather than commit dead weight.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDeploymentRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '202':
+          description: 'A new running copy of the release is starting, and the deployment moves to it once it is ready; pendingUpdate says what waits.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deployment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/UpdateUnavailable'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/ConcurrencyLimit'
+    delete:
+      operationId: deleteDeployment
+      summary: Delete a deployment
+      description: 'Releases the deployment''s compute and removes its record and status timeline. Accepted from any status: a deployment still coming up has its deploy cancelled first, and one already serving is released in place, so there is no need to stop it first. A stopped deployment is paused rather than released, so it still holds its endpoint and staged models: delete is what frees them, and it returns 202 because releasing them is asynchronous. The record is removed once the release is confirmed, so a release that fails still has somewhere to report the leak.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '202':
+          description: 'Release accepted. The record is removed once the compute is confirmed gone.
+
+            '
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/events:
+    get:
+      operationId: getDeploymentEvents
+      summary: Get a deployment's status timeline
+      description: 'The structured lifecycle timeline for one deployment (its status transitions, oldest first). State-transition events, not raw runtime logs; poll alongside the status endpoint.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/revisions:
+    get:
+      operationId: getDeploymentRevisions
+      summary: Get a deployment's revision history
+      description: 'Every revision of one deployment, oldest first: which release was current from each revision on, what made it and who. Revision 1 is the deployment''s create, or the backfill for a deployment created before revisions existed. Answers 404 for a deployment outside the caller''s workspace.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRevisionList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/rollback:
+    post:
+      operationId: rollbackDeployment
+      summary: Roll a deployment back to an earlier revision's release
+      description: 'Moves the deployment back to the release an earlier revision ran, the revision before the current one unless toRevision names another, so a second rollback undoes the first. The deployment keeps its id and address, and the new revision records kind rollback and the revision it restored in fromRevision. baseRevision is the revision the caller last read: once another change has moved the deployment past it the answer is a 409 STALE_REVISION, and while an update waits it is a 409 PENDING_UPDATE_EXISTS. A stored next-start compute request returns 409 COMPUTE_INTENT_EXISTS; finish it or edit back to the serving placement. A ready source with a failed compute target can roll back, canceling that failed request. A deployment at revision 1 has nothing to return to, a 409 NO_EARLIER_REVISION; a toRevision that is not an earlier revision is a 400; and a target whose release was deleted is a 409 RELEASE_DELETED. A target whose release is already current answers 200 at the current revision with nothing written. A ready copy of the release becomes current at once, a 200. A stopped or failed copy starts again, and a release whose copy is gone gets a new one, under the same credit and plan checks an update takes (402, 429); the 202 carries the pendingUpdate, of kind rollback, and the deployment moves once that copy is ready. A rollback sent again at the same base answers as the first did.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackDeploymentRequest'
+      responses:
+        '200':
+          description: The deployment runs the earlier revision's release now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRollback'
+        '202':
+          description: 'The release''s copy is starting, or a new one is, and the deployment moves to it once it is ready. Nothing has moved yet, so revision, releaseId and kind describe the current revision, and pendingUpdate, of kind rollback, says what waits.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRollback'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/ConcurrencyLimit'
+  /v1/deployments/{id}/releases/{releaseId}:
+    parameters:
+    - $ref: '#/components/parameters/PathID'
+    - name: releaseId
+      in: path
+      required: true
+      description: A release the deployment keeps from an earlier update.
+      schema:
+        type: string
+    patch:
+      operationId: stopKeptRelease
+      summary: Stop a release a deployment keeps
+      description: 'Pauses the running copy of one release the deployment keeps from an earlier update, while the release the deployment serves keeps serving. Its storage stays, so an update or rollback to it starts it again. Stopping the release an update waits on ends that update and cancels its compute request, if any. The pending target takes precedence even when it shares the serving release id. If cancellation dispatch fails, retries keep that exact copy until its stop finishes. New copy moves wait for that cancellation. Once the target applies, the call answers 409 CURRENT_RELEASE for the release the deployment serves, which stops only with the deployment, and 404 for a release the deployment keeps no copy of. Async and idempotent.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeptReleaseChange'
+      responses:
+        '202':
+          description: Accepted; the release's copy is stopping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeptReleaseResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      operationId: deleteKeptRelease
+      summary: Delete a release a deployment keeps
+      description: 'Releases the running copy of one release the deployment keeps from an earlier update, its storage included, while the release the deployment serves keeps serving and the deployment''s history keeps every revision. Deleting the release an update waits on ends that update and clears its compute request. A pending target sharing the serving release id takes precedence. After cancellation, retries keep that exact copy until deletion finishes, including retained storage. New copy moves wait for that cancellation; after deletion or cutover that id returns CURRENT_RELEASE. Other retained releases answer 202 until their copy is gone, then 404. Answers 409 CURRENT_RELEASE for the release the deployment serves, which goes only with the deployment. Async.
+
+        '
+      responses:
+        '202':
+          description: Accepted; the release's copy is being released.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeptReleaseResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/deployments/{id}/models:
+    parameters:
+    - $ref: '#/components/parameters/PathID'
+    get:
+      operationId: listDeploymentModels
+      summary: List the model files added to a deployment
+      description: 'Every model file added straight to the deployment, oldest first, each with where it stands, and whether this caller may add one. Answered whether or not adding models is on, so a file added earlier can still be seen and removed.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentModelList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: addDeploymentModel
+      summary: Add a model file to a deployment
+      description: 'Adds a model file the workspace uploaded (an upload of kind model) to the deployment, with no new release, and answers 202 with its entry. The entry reads adding until the deployment''s workers can use the file, then ready, or failed. On a stopped deployment it reads ready once the upload is whole and matches its declared size and sha256, and the next start places the file. An upload sent in pieces may be added before its pieces land.
+
+        Where adding models is not on, the route answers 404 as an unknown route does. 404 UPLOAD_NOT_FOUND is an upload that is not the deployment''s workspace''s, is not a model, is gone, or was sent in one piece whose file is not there at its declared size. Each 409 names why: MODEL_POLICY where the release''s model policy is an allow list or blocks the file''s name, MODEL_NAME_TAKEN where the release or the deployment already has a file at that folder and name, DEPLOYMENT_BUSY while the deployment is neither running nor stopped, MODEL_STORAGE_EXCEEDED where the release''s models and the added files would need more storage than the deployment can be given, MODEL_LIST_TOO_LARGE where the deployment''s model list would be longer than its workers can be given, and VOLUME_SHARED where the deployment''s disk is mounted by another deployment. 503 SERVICE_UNAVAILABLE is also where another deployment of the same build''s storage could not be read and none plainly mounts this deployment''s disk; the same add may succeed if retried. A refusal adds nothing. The same add again (the same upload, folder and name) while its entry still reads adding is not MODEL_NAME_TAKEN: it starts that entry''s work again and answers 202 with it, so a client may retry an add whose answer it did not get. An add that fails after writing its entry leaves it adding; the same add again starts it, or removing the entry frees the name.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddDeploymentModelRequest'
+      responses:
+        '202':
+          description: Accepted; the entry reads adding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentModel'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/deployments/{id}/models/{modelId}:
+    parameters:
+    - $ref: '#/components/parameters/PathID'
+    - name: modelId
+      in: path
+      required: true
+      description: The id of an entry in the deployment's added models.
+      schema:
+        type: string
+    delete:
+      operationId: removeDeploymentModel
+      summary: Remove a model file added to a deployment
+      description: 'Sets the entry removing and answers 202 with it; the file is then deleted from the deployment''s disk and the entry leaves the list. Where the release the deployment serves has its own file at the same folder and name, only the entry is dropped and the release''s file stays. 404 for an id the deployment has no entry for, and 409 DEPLOYMENT_BUSY while the deployment is neither running nor stopped. Answered whether or not adding models is on.
+
+        Every surface asks before removing with one wording: "Remove <file>? It is deleted from this deployment''s disk, and jobs that name it will fail. A job already running may still finish, and a worker that already loaded it may keep using it for a few minutes."
+
+        '
+      responses:
+        '202':
+          description: 'Accepted; the entry reads removing. Remove <file>? It is deleted from this deployment''s disk, and jobs that name it will fail. A job already running may still finish, and a worker that already loaded it may keep using it for a few minutes.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentModel'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/deployments/{id}/logs:
+    get:
+      operationId: getDeploymentLogs
+      summary: Get a deployment's captured ComfyUI log
+      description: 'The ComfyUI log tail of one release''s copy, captured at its last health probe and persisted on the copy so it survives the teardown a failed deploy or update triggers. Without releaseId it is the copy the deployment serves; with releaseId it is the newest copy of that release the deployment ran, a stopped, failed or deleted one included, which is how a failed update''s own log is read. Answers 404 for a release the deployment never ran. Empty until a probe has run.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: releaseId
+        in: query
+        required: false
+        description: A release the deployment ran, by its id. Absent reads the release the deployment serves.
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentLogs'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/status:
+    get:
+      operationId: getDeploymentStatus
+      summary: Read whether a deployment serves, and its last worker sample
+      description: 'Beta. For the workspace''s own Metrics tab: the state of the copy the deployment serves, the release version it runs, the most workers its compute config allows and the last stored worker sample. Reads stored state only; it sends no request to a GPU provider or to a metrics store. Never cached: the response says `Cache-Control: private, no-store`.
+
+
+        Refuses an API key with 401, so only a signed-in workspace member reads it. Another workspace''s deployment, a running copy''s own id and an id that does not exist all answer 404.
+
+
+        Can be switched off per workspace (the same switch turns off the deployment metrics route). Switched off, this is still a 200, with enabled false and no other field, and it is answered ahead of the API key and ownership checks.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentStatusAnswer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/metrics:
+    get:
+      operationId: getDeploymentMetrics
+      summary: Read a deployment's named metrics over a window
+      description: 'Beta. For the workspace''s own Metrics tab: job outcomes, failure categories, submissions and timing over a window of up to 7 days, ending no later than now. A call with no parameters reads the last 24 hours at a 3,600-second step, every metric, summaries and series, and the previous total. Never cached: the response says `Cache-Control: private, no-store`.
+
+
+        The window comes from `range`, or from `start` and `end` together in UTC, and is aligned to the step: a range ends at now rounded up to the step, and an explicit start rounds down and end up. The answer echoes the window it used and lists each bucket''s start once in `timestamps`; every series has one value per timestamp, null where nothing was counted or observed. Send each parameter once. Names and values are lowercase, a name repeated inside a list counts once, and unknown parameter names are ignored. Each of these answers 400 INVALID_REQUEST with a message naming the parameter: an unknown or empty value, a repeated parameter, `range` with `start` or `end`, one of `start` and `end` alone, a time not in UTC, `start` not before `end` (an `end` after now is cut to now first), a `step` longer than the window, a window under 60 seconds with no `step`, a window that starts over 14 days before now, spans over 7 days or holds over 1,440 buckets.
+
+
+        A metric that could not be read is left out of `metrics` and listed in `unavailable`, `partial` is true, and the status stays 200.
+
+
+        Refuses an API key with 401, so only a signed-in workspace member reads it. Another workspace''s deployment, a running copy''s own id and an id that does not exist all answer 404, before anything is read.
+
+
+        Can be switched off per workspace with the same flag as the status route. Switched off, this is still a 200 with enabled false and no other field, answered ahead of the API key, ownership and parameter checks.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: range
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: '`1h`, `24h` or `7d`. The default, `24h`, applies when `start` and `end` are absent. Never sent with `start` or `end`.'
+        schema:
+          type: array
+          items:
+            type: string
+      - name: start
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: Window start, RFC 3339 in UTC, such as `2026-11-15T16:00:00Z`. Sent with `end`, never with `range`.
+        schema:
+          type: array
+          items:
+            type: string
+      - name: end
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: Window end, RFC 3339 in UTC. Sent with `start`, never with `range`; an `end` after now is cut to now.
+        schema:
+          type: array
+          items:
+            type: string
+      - name: step
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: 'Bucket width in seconds: `60`, `300`, `900`, `3600` or `21600`. Absent, the smallest step that gives at most 60 buckets over the window as sent.'
+        schema:
+          type: array
+          items:
+            type: string
+      - name: metrics
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: 'A comma-separated list from `jobs`, `failure_categories`, `expired_at_worker_maximum`, `submissions`, `job_duration`, `worker_maximum_waits` and `job_time_split`. Absent, those seven; a metric added later comes back only when named.
+
+
+          `cold_start` is also accepted, outside those seven and only on its own: named with another metric it answers 400. It answers the cold start row alone, in seconds, as one summary item equal to the `cold_start` item of `job_duration`, and with `include=series` alone only its unit. It waits up to 10 seconds for the metrics store, where every other metric waits 1.8 seconds, and is listed `unavailable` as `datadog_slow` if the store has not answered by then. The call spends one request of the workspace''s allowance, and `compare` does not apply to it.'
+        schema:
+          type: array
+          items:
+            type: string
+      - name: include
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: A comma-separated list from `summary` and `series`. Absent, both.
+        schema:
+          type: array
+          items:
+            type: string
+      - name: compare
+        in: query
+        required: false
+        style: form
+        explode: true
+        description: '`previous` adds each count metric''s previous total, over the window of the same length just before; `none` leaves it out. Absent, `previous`.'
+        schema:
+          type: array
+          items:
+            type: string
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentMetricsAnswer'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/deployments/{id}/start:
+    post:
+      operationId: startDeployment
+      summary: Start a stopped deployment
+      description: 'Re-runs a stopped or failed deployment on the same id (resets it to queued and re-provisions). Async: poll the status endpoint. A deployment that is already active is returned unchanged unless a compute move is pending, in which case the pending copy is returned. With a stored compute request, start provisions a separate target copy and keeps the source''s resources until that target becomes ready.
+
+        The stored compute config is re-checked before anything is enqueued: a gpuClass the platform cannot schedule is a 400, because a deployment stored with one would otherwise fail its provision on every start. Edit it onto a schedulable gpuClass and start it again.
+
+        Where waiting for builds is turned on for the workspace, a start on a release still building sets the deployment queued with waitingForBuild and starts nothing until the image is ready. A release with no deployable image that is not building is then a 409 CONFLICT.
+
+        A deleted deployment is a 409. It is kept and still readable as the record of what was deleted, and starting it would put compute back behind that record.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '202':
+          description: Accepted; the deployment is queued again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartDeploymentResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/ConcurrencyLimit'
+  /v1/limits:
+    get:
+      operationId: getWorkspaceLimits
+      summary: The deploy ceilings this workspace is held to
+      description: 'The caps the caller''s workspace is actually held to right now, resolved through the same gate a create and a start run, so a number reported here is the number those refuse at. Every cap is raisable per workspace, so a client must read them rather than hold its own copy. Beside them, used carries the active-deployment count those same checks compare against maxActiveDeployments.
+
+
+        A cap that does not apply is absent from the response. That is the normal answer for the worker ceiling on a workspace the enforcement rollout has not reached, which is held to no worker cap at all while its deployment count is still capped at the unenforced number rather than the configured one. An absent cap is a statement about enforcement as it stands right now, including while a billing check is failing open; a request the client could not complete is not, and a client that got no response shows nothing rather than inferring an absent cap.
+
+
+        A workspace with no credit balance is refused here exactly as a create and a start refuse it, because no count is what stops it and reporting one would name a ceiling that governs nothing.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceLimits'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+  /v1/deploy-estimate:
+    get:
+      operationId: getDeployEstimate
+      summary: How long a deployment of a release would take to come up
+      description: 'Answers, before anything is created, how many bytes of models a deployment of this release on this GPU and location would have to put on its disk, how many of them are already held, and a range of seconds until it reads ready. The same pair a create sends picks the provider, so the rates are those of the provider the create would run on.
+
+
+        A range, not a promise: the long end is meant to be rarely beaten. It covers model staging (stagingSecondsLow/High) and starting the endpoint (startupSecondsLow/High), and nothing after ready: a first request can still wait for a worker to start, and running a workflow is not counted. atLeast is true when some models had no size to add, or the release was never measured, so the bytes and the time are a floor.
+
+
+        bytesHeld is the release''s whole total where this workspace already ran the release to ready on the same provider and that provider keeps what it staged, and 0 otherwise.
+
+
+        The estimate can be switched off per workspace. Switched off, this is still a 200, with enabled false and no other field: a client shows no estimate and says nothing about it, exactly as for a service too old to have this route.
+
+        '
+      parameters:
+      - name: releaseId
+        in: query
+        required: true
+        schema:
+          type: string
+        description: The cut release the deployment would run.
+      - name: gpuClass
+        in: query
+        required: true
+        schema:
+          type: string
+        description: GPU class, as a create's computeConfig.gpuClass.
+      - name: region
+        in: query
+        required: true
+        schema:
+          type: string
+        description: Location, as a create's computeConfig.region.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployEstimate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/compute-catalog:
+    get:
+      operationId: getComputeCatalog
+      summary: Locations a deployment can run in, the GPUs sold there, and storage pricing
+      description: 'Our own list of locations and the GPU classes sold in each. Locations form a tree -- today anywhere, then a continent, a country, a region and a datacenter, and the set of levels is open -- and a deployment may name ANY node of it, at any level. By default only the datacenters are listed, and levels=all returns the whole tree. A continent or a region row carries what is sold anywhere inside it, priced as pricePerHourUsd describes and with no stock hint, since a stock hint belongs to one provider in one datacenter. A location nothing is sold in, anywhere beneath it, is absent. The compute provider decides none of this: it is asked only what stock it currently has, so a failed provider read costs the availability hints and nothing else. Briefly cached.
+
+
+        The answer varies by workspace. A GPU class closed to new deployments in the caller''s workspace keeps its rows but carries status at_capacity on each row no other provider serves it at (GpuInfo.status), so one workspace''s answer must not be reused for another.
+
+
+        Also carries the storage display rates, so a picker can price a deployment''s storage from the same call it prices its GPU from.
+
+        '
+      parameters:
+      - name: levels
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 'Which levels of the location tree to list. "all", in any case, returns every level, each row carrying its level and its parent. Absent returns the datacenters alone with neither field, which is what a client written before the tree existed expects. Any other value is a 400: silently answering it with the flat shape reads to a client as a service too old to have the tree at all.'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeCatalog'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+  /v1/rate-card:
+    get:
+      operationId: getRateCard
+      security: []
+      summary: Public GPU and storage list prices
+      description: 'Every GPU class the compute catalog still sells at one or more locations, one row each at its list price, in catalog order, plus the storage rates getComputeCatalog serves. A class whose every catalog entry has been closed to new deployments is left off. Needs no authentication, and the answer is the same for every caller: it ignores the caller''s workspace and current stock, so a class can appear here that a given workspace''s getComputeCatalog does not offer right now. A display price, not a billing guarantee, with the same caveat as GpuInfo.pricePerHourUsd.
+
+        '
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateCard'
+  /v1/usage/serverless:
+    get:
+      operationId: getServerlessUsage
+      summary: Serverless spend, grouped and bucketed
+      description: 'Aggregates the workspace''s serverless usage into per-group totals and, unless granularity=none, a time series per group. Sorting and paging operate on groups, not buckets: the chosen page of groups determines which buckets come back, and totalChargedMicroUsd/totalCredits/truncated describe the whole filtered set rather than the returned page, so share stays honest against the real denominator.
+
+
+        GPU time, network-volume storage and container disk are all counted. Use groupBy=resource or the resource filter to tell them apart; without either they are summed into one figure per group. Buckets stored before the meter split container disk out of the endpoint charge carry it inside their compute figure, so a window spanning that change reports less container_disk than the hardware actually used.
+
+
+        Only what the workspace is billed is reported, and only usage actually billed is counted. Workspace scope always comes from the caller''s identity, never from a parameter.
+
+        '
+      parameters:
+      - name: groupBy
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UsageGroupBy'
+      - name: granularity
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UsageGranularity'
+      - name: timezone
+        in: query
+        required: false
+        description: 'IANA zone name (e.g. America/Los_Angeles), not a fixed offset. Default UTC. Applies to day/week/month bucketing; irrelevant for hour/none. An unrecognized name is a 400.
+
+          '
+        schema:
+          type: string
+      - name: startingOn
+        in: query
+        required: false
+        description: 'Inclusive. Default: 30 days before endingBefore (which itself defaults to the request time), truncated down to the granularity boundary in the requested timezone.
+
+          '
+        schema:
+          type: string
+          format: date-time
+      - name: endingBefore
+        in: query
+        required: false
+        description: Exclusive. Default the request time.
+        schema:
+          type: string
+          format: date-time
+      - name: deploymentId
+        in: query
+        required: false
+        description: Repeatable. OR within the field. At most 100 values.
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: userId
+        in: query
+        required: false
+        description: 'Repeatable. Required by scope=user (identifies whose spend); usable as a plain narrowing filter under scope=workspace. Rejected under scope=self, which is already the caller. At most 100 values.
+
+          '
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: buildId
+        in: query
+        required: false
+        description: Repeatable. OR within the field. At most 100 values. Narrows to deployments cut from these builds; a deployment records the release it came from, and the release records its build.
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: resource
+        in: query
+        required: false
+        description: Repeatable. OR within the field. Omitted (or naming both kinds) returns compute and storage together, which is what this endpoint has always done.
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/UsageResource'
+      - name: gpuClass
+        in: query
+        required: false
+        description: Repeatable. OR within the field. At most 100 values.
+        schema:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+      - name: scope
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UsageScope'
+      - name: sort
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/UsageSort'
+      - $ref: '#/components/parameters/Limit'
+      - name: offset
+        in: query
+        required: false
+        description: Pages groups (not buckets). Default 0.
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageServerlessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+  /v1/deployments/{id}/stop:
+    post:
+      operationId: stopDeployment
+      summary: Stop a deployment
+      description: 'Pauses the deployment: its endpoint and model volume stay, so a start brings it back without re-staging. Jobs still waiting to run may be dropped; do not rely on a stop to keep them. Async: the deployment moves to stopping and then stopped. Idempotent.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '202':
+          description: Accepted; the deployment is stopping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopDeploymentResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/KeyUnverified'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A workspace-scoped Cloud JWT.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 'A workspace API key, sent alone. The service checks it on every request and acts as the key''s user in the key''s workspace. A request carrying a key and a Bearer token is 400, and a value that is not a key''s shape is 401. A refused key answers 401, 403, 404 or 429 with its message and Retry-After; a 503 means the key could not be checked right now, so retry.
+
+        '
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    KeyUnverified:
+      description: 'The request could not be served now (SERVICE_UNAVAILABLE), and the same request may succeed if retried. Either a workspace API key could not be verified, because the key check gave no answer, or because the service was already checking as many keys as it will at once, overall or from the caller''s address, which carries Retry-After; or the request ran past the service''s request deadline, 30 seconds by default and 120 for a model add, and was cut off. The body''s message says which.
+
+        '
+      headers:
+        Retry-After:
+          description: 'Seconds to wait before retrying; sent when the service refused the key check because too many were in flight.
+
+            '
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UpdateUnavailable:
+      description: 'The edit could not be carried out now, and the same request may succeed later. The body''s error names why: SERVICE_UNAVAILABLE when a workspace API key could not be verified or the request ran past its deadline, as on every route, or CAPACITY_UNAVAILABLE when GPU capacity is full and the deployment''s new worker limits were not applied.
+
+        '
+      headers:
+        Retry-After:
+          description: 'Seconds to wait before retrying; always sent with CAPACITY_UNAVAILABLE, and with SERVICE_UNAVAILABLE when too many key checks were in flight.
+
+            '
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: 'Invalid request (INVALID_REQUEST), or RELEASE_AND_SOURCE_BOTH when an update names both a release and a source deployment.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid token (UNAUTHORIZED)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Caller's workspace does not own the resource (FORBIDDEN)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Unknown id, or not in the caller's workspace (NOT_FOUND)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: 'The resource''s current state forbids this request. The body''s error names which state: CONFLICT, MODEL_STORAGE_EXCEEDED when the release''s models need more storage than the deployment can be given, RELEASE_DELETED when the release the request names has been deleted, STALE_REVISION when another change moved the deployment past the revision an update was asked against, PENDING_UPDATE_EXISTS while another update waits, NO_EARLIER_REVISION when a deployment at revision 1 is rolled back, CURRENT_RELEASE when a request to stop or delete one kept release names the release the deployment serves, or one of the models route''s codes (MODEL_POLICY, MODEL_NAME_TAKEN, DEPLOYMENT_BUSY, MODEL_LIST_TOO_LARGE, VOLUME_SHARED).
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ConcurrencyLimit:
+      description: Workspace concurrency cap reached (CONCURRENCY_LIMIT)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PaymentRequired:
+      description: 'The request was refused on billing grounds (PAYMENT_REQUIRED). Two different gates answer with this status, so the body carries a reason naming which one.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaymentRequiredError'
+  schemas:
+    WorkspaceLimits:
+      type: object
+      description: 'The deploy ceilings a workspace is held to. An absent optional field means no ceiling of that kind applies rather than that the value is unknown: a client that could not reach this route knows nothing and shows nothing, while one that read an absent field knows the cap is off.
+
+        '
+      required:
+      - maxActiveDeployments
+      - maxModelStorageGb
+      - used
+      properties:
+        used:
+          $ref: '#/components/schemas/WorkspaceLimitsUsed'
+        maxActiveDeployments:
+          type: integer
+          description: 'How many non-terminal deployments the workspace may hold. Always present, because a create is capped on every path. A workspace an operator gave its own number reports that number on every path; without one, the number is higher before the enforcement rollout reaches the workspace than after it. A deployment holds one slot however many copies an update leaves it running, so an update of a deployment whose serving copy runs is admitted at the limit, and one of a stopped deployment counts as a start of it. Stopping a deployment frees a slot, as does deleting one -- a stopped deployment keeps its endpoint and its staged models but holds no slot.
+
+            '
+          example: 3
+        maxConcurrentWorkers:
+          type: integer
+          description: 'How many workers a single deployment may commit at once (its computeConfig.max), independent of what the workspace''s other deployments commit. A workspace an operator gave its own number reports that number on every path, and may then go past the 20 workers every other deployment is bounded by. Without one, absent while the enforcement rollout has not reached this workspace, which is when a create and a start apply no worker cap at all.
+
+            '
+          example: 10
+        maxModelStorageGb:
+          type: integer
+          description: 'The largest release a deployment that gets its own network volume accepts, in gigabytes. A create, start, release update or rollback of such a deployment compares a release''s own measured model total (plus a 5% margin) against it and refuses before anything is provisioned when it is over. A deployment that runs where its models are not copied onto a volume of its own is judged against a higher limit instead, which this field does not report, so a release over this number may still deploy. It is not the size of a deployment''s storage: each volume is sized when the deployment is created to its release''s measured models plus that margin and 1 GB, never under the storage provider''s 10 GB minimum and never over this number. A release with no measured total, or with some models unmeasured, is not refused here and gets a smaller fixed-size volume, or its measured total plus that margin and 1 GB where that is larger, since a measured total is a floor, not a guarantee.
+
+            '
+          example: 3999
+    WorkspaceLimitsUsed:
+      type: object
+      description: 'What the workspace holds now of the caps beside it, each named for its cap without the max. Only the deployment count is reported; nothing is counted against the worker ceiling or the model storage limit here.
+
+        '
+      required:
+      - activeDeployments
+      properties:
+        activeDeployments:
+          type: integer
+          minimum: 0
+          description: 'The count maxActiveDeployments is checked against at a create and a start, read by the same function those run, so a client shows this rather than counting the deployment list. A deployment counts once however many copies it has, and a stopped deployment whose replacement copy is still queued counts, which a count of stopped and running rows in the list misses. Reading N of N means the next create is refused; a start or an update of a deployment whose serving copy runs is still admitted at the limit. Like the cap check itself, it is read without a lock, so concurrent creates can move it between this read and the next write.
+
+            '
+          example: 1
+    DeployEstimate:
+      type: object
+      description: 'How long a deployment of a release would take to read ready. Every time is a range of whole seconds, the short end first; etaSecondsLow/High is staging and startup added. With enabled false the estimate is switched off and every other field is absent; with enabled true every field but unsizedModelCount is present.
+
+        '
+      required:
+      - enabled
+      properties:
+        enabled:
+          type: boolean
+          description: 'False when the estimate is switched off for this workspace. Not an error: show no estimate and say nothing about it.
+
+            '
+        bytesTotal:
+          type: integer
+          format: int64
+          description: The release's measured model bytes; 0 when measured is false.
+        bytesHeld:
+          type: integer
+          format: int64
+          description: Of those, the bytes already held, which are copied rather than downloaded.
+        bytesToFetch:
+          type: integer
+          format: int64
+          description: bytesTotal less bytesHeld, the bytes to download.
+        measured:
+          type: boolean
+          description: False for a release cut before its models were measured, which has no total.
+        unsizedModelCount:
+          type: integer
+          description: 'How many of the release''s models nothing could size, so their bytes are missing from bytesTotal. Absent when measured is false.
+
+            '
+        atLeast:
+          type: boolean
+          description: 'The bytes and the time are a floor: some models had no size, or the release was never measured.
+
+            '
+        stagingSecondsLow:
+          type: integer
+          format: int64
+        stagingSecondsHigh:
+          type: integer
+          format: int64
+        startupSecondsLow:
+          type: integer
+          format: int64
+          description: From the models landing to ready.
+        startupSecondsHigh:
+          type: integer
+          format: int64
+        etaSecondsLow:
+          type: integer
+          format: int64
+        etaSecondsHigh:
+          type: integer
+          format: int64
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+        message:
+          type: string
+          description: Human-readable detail.
+    PaymentRequiredError:
+      type: object
+      description: 'A 402 body. error is always PAYMENT_REQUIRED; reason says which gate refused, because the two are acted on differently and a status alone cannot tell them apart.
+
+        '
+      required:
+      - error
+      - reason
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code. Always PAYMENT_REQUIRED.
+        message:
+          type: string
+          description: Human-readable detail.
+        reason:
+          type: string
+          description: 'no_credit_balance: the workspace has neither an active subscription nor a positive credit balance, so subscribing or topping up clears it. spend_blocked: the spend gate refused this workspace -- a manual block or an exhausted workspace/project/user spend cap -- which topping up alone may not clear. capacity_limit: a compute move would exceed the workspace deployment or worker limit.
+
+            '
+          enum:
+          - no_credit_balance
+          - spend_blocked
+          - capacity_limit
+    DeploymentStatus:
+      type: string
+      description: 'Lifecycle state. unhealthy is a recoverable post-ready state: the deployment was serving but its endpoint degraded or vanished, and the control plane will move it back to ready if it recovers. stop_failed means a stop ran but could not release the compute, so the deployment may still be holding (and billing for) its endpoint; it is not terminal, and stopping it again retries the release. stopped and failed are terminal.'
+      enum:
+      - queued
+      - provisioning
+      - starting
+      - ready
+      - unhealthy
+      - stopping
+      - stop_failed
+      - stopped
+      - failed
+    GpuInfo:
+      type: object
+      required:
+      - gpuClass
+      - label
+      - vramGb
+      properties:
+        gpuClass:
+          type: string
+          description: Value to pass as computeConfig.gpuClass.
+        label:
+          type: string
+        vramGb:
+          type: integer
+        availability:
+          type: string
+          description: 'Relative availability hint (High / Medium / Low), passed through as the provider words it and datacenter-specific. Absent when no read supplied one for this pair, either before the first provider read lands or for a reserved pair the provider is not currently listing. Absent means unknown, not none: the pair is still deployable. Never present on a requestable entry, nor on a continent or a region, a stock level being one provider''s statement about one datacenter, nor on an entry whose status is at_capacity.'
+        status:
+          type: string
+          enum:
+          - at_capacity
+          x-enum-varnames:
+          - GpuStatusAtCapacity
+          description: 'Whether a new deployment can start on this class at this location right now. Absent means it can. at_capacity means it cannot, at this location or anywhere beneath it: a create, a deploy estimate, or an edit or move onto the class here is refused with 400 "is not available right now; choose a different GPU". The entry keeps its row and its price so a picker can show the class as at capacity rather than losing it, and the class is not listed under requestable for this reason. A deployment already on the class keeps running, starts and edits. Per location: read a class as at capacity only when every row that lists it says at_capacity, since one row without it can take the deployment. Never present on a requestable entry. A client reads a value it does not know as available.'
+        pricePerHourUsd:
+          type: number
+          format: double
+          description: 'Display price shown in the picker. This is not a billing guarantee: usage is billed separately from this table, and the two can diverge. Present on every row inside regions[], where the price is what makes the card sellable at all, and absent on every requestable entry, nothing being on sale there to quote. On a continent or a region row it is that location''s own price where a provider sells the class at the location itself, and otherwise the cheapest price among the datacenters beneath it that sell the class, that being the figure we can honour wherever inside it the deployment lands.'
+        creditsPerHour:
+          type: number
+          format: double
+          description: pricePerHourUsd converted at catalog.CreditsPerDollar (211). Absent under the same condition as pricePerHourUsd.
+    StorageRate:
+      type: object
+      required:
+      - storageType
+      - label
+      - pricePerGbMonthUsd
+      - creditsPerGbMonth
+      properties:
+        storageType:
+          type: string
+          description: Stable id for this row (e.g. network_standard). Not a request parameter -- nothing selects storage by type today; it is here so a client can key on a row without matching on its label.
+        label:
+          type: string
+          description: Human-readable tier name, as the published pricing table words it.
+        pricePerGbMonthUsd:
+          type: number
+          format: double
+          description: 'Display price shown in the picker, per GB per month. Carries the same caveat as GpuInfo.pricePerHourUsd: this is not a billing guarantee.'
+        creditsPerGbMonth:
+          type: number
+          format: double
+          description: pricePerGbMonthUsd converted at catalog.CreditsPerDollar (211). Exact quotient -- the published table renders it to two decimals.
+    CatalogRegion:
+      type: object
+      required:
+      - region
+      - label
+      - gpus
+      properties:
+        region:
+          type: string
+          description: The location's own name, at whatever level of the tree it sits (e.g. north-america, us-central). Pass it as computeConfig.region.
+        label:
+          type: string
+          description: Display name for the location, equal to region unless the catalog gives the location a name of its own.
+        level:
+          type: string
+          description: 'What this location is: global, continent, country, region or datacenter today. Present only when the request asked for all levels. It is a LABEL TO SHOW AND AN OPEN SET, never a closed enum to switch on: a level can be added between two that exist, and two branches of the tree need not be the same depth. Rank locations by walking parent, which is the nesting itself, rather than by the level''s name.'
+        parent:
+          type: string
+          description: The region value of the location containing this one, absent at the top of the tree. Always names a location present in the same response, so the chain can be walked without a lookup that comes up empty. Present only when the request asked for all levels.
+        gpus:
+          type: array
+          description: 'GPU classes sold in this location or anywhere beneath it, so a continent offers what any provider sells at some datacenter inside it. A class we hold reserved capacity for is listed whatever the provider''s stock says, so availability is a hint on the row and not a filter over it; one we do not is listed only where the provider currently reports stock. Never empty: a location selling nothing anywhere beneath it is absent from the response.'
+          items:
+            $ref: '#/components/schemas/GpuInfo'
+    ComputeCatalog:
+      type: object
+      required:
+      - regions
+      properties:
+        regions:
+          type: array
+          description: 'Locations a deployment can be created in, and the GPUs sold in each, in tree order. Datacenters alone unless the request asked for all levels, in which case a continent and a region come before the datacenters under them. A location that sells nothing anywhere beneath it is absent, so every parent names a row that is here.
+
+            '
+          items:
+            $ref: '#/components/schemas/CatalogRegion'
+        requestable:
+          type: array
+          description: 'GPU classes the catalog names that no location is serving right now, listed without a location so a client can record interest in them. A deployment naming one is refused, and they carry no price, nothing being on sale to quote. Always present, an empty array included: read the field''s presence, not its length, since it is the statement that the menu was narrowed deliberately rather than arriving short by accident.
+
+            '
+          items:
+            $ref: '#/components/schemas/GpuInfo'
+        storage:
+          type: array
+          description: 'Display pricing for storage, in published-table order. Provider independent and served even when the GPU catalog is empty, since the rates are static. Absent only if the embedded rate table fails to load, the same degrade-to-unpriced path GpuInfo prices take.
+
+            '
+          items:
+            $ref: '#/components/schemas/StorageRate'
+    RateCard:
+      type: object
+      required:
+      - gpus
+      - storage
+      properties:
+        gpus:
+          type: array
+          description: GPU classes the catalog still sells, in catalog order.
+          items:
+            $ref: '#/components/schemas/RateCardGpu'
+        storage:
+          type: array
+          description: Storage display rates, in published-table order. Empty only if the embedded rate table fails to load.
+          items:
+            $ref: '#/components/schemas/StorageRate'
+    RateCardGpu:
+      type: object
+      required:
+      - gpuClass
+      - label
+      - vramGb
+      - pricePerHourUsd
+      - creditsPerHour
+      properties:
+        gpuClass:
+          type: string
+          description: The class id computeConfig.gpuClass takes.
+        label:
+          type: string
+        vramGb:
+          type: integer
+        pricePerHourUsd:
+          type: number
+          format: double
+          description: List price per GPU-hour, in USD.
+        creditsPerHour:
+          type: number
+          format: double
+          description: pricePerHourUsd converted at catalog.CreditsPerDollar (211).
+    ComputeConfig:
+      type: object
+      description: 'The requested serverless shape. The endpoint autoscales between min and max workers on demand (min 0 scales to zero when idle). region names where the deployment runs, at any level the catalog lists: the endpoint and its network volume stay bound to that placement. Changing GPU class or region creates a separate copy while preserving the deployment id and URL. Deployment reads report serving settings while ready; stopped/failed reads report accepted next-start settings when a compute request is stored.
+
+        '
+      required:
+      - gpuClass
+      - region
+      properties:
+        gpuClass:
+          type: string
+          description: 'GPU class the deployment runs on, as the catalog publishes it (e.g. rtx-pro-6000-server). Creating a deployment accepts a provider''s own card id too and records the class covering it. Editing one does not translate either value: it compares what you send against what the deployment stores, so send back the class that deployment reports.
+
+            '
+        region:
+          type: string
+          description: 'Location the deployment runs in, at any level the catalog lists (e.g. north-america, us-central). It is recorded exactly as sent and fixes where each copy''s models volume is created and staged. Changing it prepares a separate copy while preserving the deployment id and URL.
+
+            '
+        min:
+          type: integer
+          minimum: 0
+          description: Minimum warm workers; 0 scales to zero when idle.
+        max:
+          type: integer
+          minimum: 1
+          description: Maximum workers the endpoint scales up to.
+        keepWarmSeconds:
+          type: integer
+          minimum: 30
+          maximum: 1200
+          description: 'Seconds a worker stays up after its last job before it is released, so a job arriving inside the window meets a warm worker instead of a cold start. That idle time is billed. Defaults to 180 when omitted, and a read reports 180 for a deployment that never set it. A value outside 30 to 1200 is refused with a 400; twenty minutes is the longest window every GPU provider can hold. Applied when compute is provisioned, so changing it on a ready deployment is refused: edit while stopped, or stop and start. On an update, omitting the field keeps the stored value.
+
+            '
+        startupArgs:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            maxLength: 64
+          description: 'Extra ComfyUI command-line flags the worker adds to its main.py launch, one token per item (e.g. ["--highvram"] or ["--reserve-vram", "2"]). Only the service''s allowlist is accepted: the VRAM strategy (--gpu-only, --highvram, --lowvram, --novram, --reserve-vram N, --vram-headroom N, --disable-smart-memory, --async-offload [N], --disable-async-offload, --enable-dynamic-vram, --disable-dynamic-vram, --disable-pinned-memory, --fast-disk, --mmap-torch-files, --disable-mmap), precision (--force-fp32, --force-fp16, --fp32-unet, --fp64-unet, --bf16-unet, --fp16-unet, --fp8_e4m3fn-unet, --fp8_e5m2-unet, --fp8_e8m0fnu-unet, --fp16-vae, --fp32-vae, --bf16-vae, --cpu-vae, --fp16-text-enc, --fp32-text-enc, --bf16-text-enc, --fp8_e4m3fn-text-enc, --fp8_e5m2-text-enc, --fp16-intermediates, --force-channels-last), the attention backend (--use-pytorch-cross-attention, --use-sage-attention, --use-flash-attention, --use-split-cross-attention, --use-quad-cross-attention, --disable-xformers, --force-upcast-attention, --dont-upcast-attention), the node cache (--cache-classic, --cache-none, --cache-lru N, --cache-ram [GB [GB]]) and performance (--fast [features], --deterministic, --cuda-malloc, --disable-cuda-malloc, --disable-cuda-graphs). Anything else, including a flag that changes where ComfyUI listens or reads files, is refused with a 400 naming the token. Values are checked too: gigabyte amounts (--reserve-vram, --vram-headroom, --cache-ram) are decimal numbers, counts (--cache-lru, --async-offload) are whole numbers, and --fast takes ComfyUI''s feature names. The field is accepted only where the environment has enabled it, once the worker that reads it is live. The flag must exist in the build''s own ComfyUI version, or the worker fails to boot and the deployment fails; ComfyUI''s own error is then readable from GET /v1/deployments/{id}/logs. Applied when compute is provisioned, so changing it on a ready deployment is refused: edit while stopped, or stop and start. On an update, omitting the field keeps the stored flags and an empty array clears them.
+
+            '
+    CreateDeploymentRequest:
+      type: object
+      required:
+      - computeConfig
+      - releaseId
+      properties:
+        releaseId:
+          type: string
+          description: The cut release to run.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$
+          description: 'The deployment''s name, unique among its build''s live deployments: 1 to 40 of a-z, 0-9 and -, starting and ending with a letter or a digit and never with dep-, so no name reads as an id. Omitted, production where the build has no live deployment, else deployment-N at the lowest free N.'
+        editor:
+          type: boolean
+          description: Whether the deployment keeps a CPU server answering its custom nodes' own routes while it is edited in the editor. Omitted, true.
+    UpdateDeploymentRequest:
+      type: object
+      description: Either computeConfig alone, which edits worker bounds in place (200), moves ready GPU/location to a separate copy (202), or stores stopped/failed target intent until explicit start (200), baseRevision with releaseId or fromDeploymentId, which moves the deployment to another release of its build, name alone, which renames it, or editor alone or with a move, which turns the deployment's editor CPU server on or off.
+      properties:
+        editor:
+          type: boolean
+          description: Turns the deployment's editor CPU server on (true) or off (false). Alone it answers 200 and touches no compute; with a move the value carries to the deployment the new copy serves.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$
+          description: 'The deployment''s name, unique among its build''s live deployments: 1 to 40 of a-z, 0-9 and -, starting and ending with a letter or a digit and never with dep-, so no name reads as an id.'
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        baseRevision:
+          type: integer
+          description: The revision the caller last read. The update is refused once another change has moved the deployment past it.
+        releaseId:
+          type: string
+          description: A release of the deployment's build to move to.
+        fromDeploymentId:
+          type: string
+          description: Another deployment of the same build in the workspace, whose current release this deployment moves to, on a running copy of its own.
+    RollbackDeploymentRequest:
+      type: object
+      required:
+      - baseRevision
+      properties:
+        baseRevision:
+          type: integer
+          description: The revision the caller last read. The rollback is refused once another change has moved the deployment past it.
+        toRevision:
+          type: integer
+          description: The earlier revision whose release to return to; the revision before the current one when omitted.
+    DeploymentRollback:
+      type: object
+      description: Where a rollback left the deployment.
+      required:
+      - id
+      - revision
+      - releaseId
+      - kind
+      properties:
+        id:
+          type: string
+          description: The deployment's id, which a rollback never changes.
+        revision:
+          type: integer
+          description: The deployment's current revision.
+        releaseId:
+          type: string
+          description: The release the deployment runs at that revision.
+        kind:
+          type: string
+          description: 'What made that revision: rollback, or, where the target release was already current, that revision''s own kind. Open: clients tolerate values they do not know.'
+        fromRevision:
+          type: integer
+          description: The revision a rollback restored; absent on any other kind.
+        pendingUpdate:
+          $ref: '#/components/schemas/PendingUpdate'
+    CreateDeploymentResult:
+      type: object
+      required:
+      - id
+      - status
+      - statusUrl
+      properties:
+        id:
+          type: string
+          description: Deployment id (dep-...).
+        name:
+          type: string
+          nullable: true
+          description: The deployment's name, unique among its build's live deployments; null on a deployment created before names until it is given one.
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        statusUrl:
+          type: string
+    StopDeploymentResult:
+      type: object
+      required:
+      - id
+      - status
+      properties:
+        id:
+          type: string
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+    KeptReleaseChange:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          enum:
+          - stopped
+          x-enum-varnames:
+          - KeptReleaseStopped
+          description: The state the release's copy moves to; stopped is the only one.
+    KeptReleaseResult:
+      type: object
+      required:
+      - releaseId
+      - status
+      properties:
+        releaseId:
+          type: string
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+    AddDeploymentModelRequest:
+      type: object
+      required:
+      - blobId
+      - type
+      properties:
+        blobId:
+          type: string
+          description: The id of the workspace's upload holding the file.
+        type:
+          type: string
+          description: The model folder the file goes in, such as loras or checkpoints.
+        filename:
+          type: string
+          description: The file's name in that folder; the upload's own name where absent.
+    DeploymentModel:
+      type: object
+      required:
+      - id
+      - type
+      - filename
+      - status
+      - sizeBytes
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: The model folder the file is in.
+        filename:
+          type: string
+        status:
+          type: string
+          enum:
+          - adding
+          - ready
+          - failed
+          - removing
+          x-enum-varnames:
+          - DeploymentModelAdding
+          - DeploymentModelReady
+          - DeploymentModelFailed
+          - DeploymentModelRemoving
+          description: adding until the deployment's workers can use the file, ready once they can, failed where it could not be added, and removing once a removal was asked.
+        failure:
+          type: string
+          description: 'Why a failed file was not added, for the log; absent otherwise. Not for display: a surface says "<file> was not added to this deployment. Remove it and add it again."'
+        sizeBytes:
+          type: integer
+          format: int64
+          description: The file's size as its upload declared it.
+    DeploymentModelList:
+      type: object
+      required:
+      - models
+      - addEnabled
+      properties:
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentModel'
+        addEnabled:
+          type: boolean
+          description: 'Always true: adding a model file is on for every caller, so a surface shows its Add button. Not whether this deployment can take the file now: the add still answers its own refusal.'
+    StartDeploymentResult:
+      type: object
+      required:
+      - id
+      - status
+      properties:
+        id:
+          type: string
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+    Deployment:
+      type: object
+      required:
+      - id
+      - status
+      - releaseId
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+          description: The project the deployment belongs to, set when it is created and never changed. Absent for a deployment in the workspace's default project. It says where the deployment's runs and spend are counted, not what the caller may do to it.
+        name:
+          type: string
+          nullable: true
+          description: The deployment's name, unique among its build's live deployments; null on a deployment created before names until it is given one.
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        releaseId:
+          type: string
+          description: The cut release this deployment runs.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        requestedComputeConfig:
+          allOf:
+          - $ref: '#/components/schemas/ComputeConfig'
+          description: Target compute requested by a pending move or stored for the next start. Absent after cutover or cancellation. While the source is ready, computeConfig remains its serving settings until cutover. A stopped or failed deployment also exposes its next-start settings in computeConfig.
+        editor:
+          type: boolean
+          description: Whether the deployment keeps a CPU server answering its custom nodes' own routes in the editor. Answered on a read, a rename and an editor change; absent on the answer to a create or a compute edit.
+        endpointUrl:
+          type: string
+          nullable: true
+          description: The live endpoint once the deployment is ready; null otherwise.
+        error:
+          type: string
+          nullable: true
+          description: 'A sentence for the customer saying what went wrong and what to do: why the deployment failed when the status is failed, or that the last stop did not finish and should be retried when the status is stop_failed; null otherwise. It never carries the GPU provider''s own error, and is not meant to be parsed.'
+        stopReason:
+          type: string
+          nullable: true
+          enum:
+          - user
+          - credits
+          - policy
+          description: 'Why the deployment was stopped, set when the status is stopped: user (explicit stop), credits (out of funds), or policy (spend gate). Lets the UI show an involuntary credit stop differently from a user stop. Null when the deployment was never stopped or was started again.'
+        serving:
+          $ref: '#/components/schemas/ServingState'
+        progress:
+          $ref: '#/components/schemas/DeployProgress'
+        waitingForBuild:
+          type: string
+          description: The release whose build this deployment waits for before it starts. Present only while the status is queued for that build; absent otherwise. Answered on a read and a move.
+        revision:
+          type: integer
+          nullable: true
+          description: The deployment's current revision, 1 at its create and one more per update. Answered on a read and a move; absent on the answer to a compute edit, and for a deployment with no record or whose serving copy is gone.
+        pendingUpdate:
+          $ref: '#/components/schemas/PendingUpdate'
+        releases:
+          type: array
+          description: Every release the deployment runs a copy of, the one it serves, each it keeps from an earlier update and one an update waits on, with what each costs. Answered on a read of one deployment.
+          items:
+            $ref: '#/components/schemas/DeploymentRelease'
+        addedModels:
+          type: array
+          description: The model files added straight to the deployment, as the models route lists them. Answered on a read of one deployment that has any, and absent where it has none.
+          items:
+            $ref: '#/components/schemas/DeploymentModel'
+        modelsAddEnabled:
+          type: boolean
+          description: Always true on a read of one deployment, as the models route's addEnabled. Not whether this deployment can take the file now, and not whether a file can be removed.
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this deployment was deleted, stamped once its compute was released; null while it is live. A deleted deployment is kept rather than removed, so it stays listed and fetchable as the record of what was deleted, keeping the status its release settled it at (normally stopped). It cannot be started again.
+        deletedBy:
+          type: string
+          nullable: true
+          description: The user who deleted it, so a deleted deployment carries who and not only when. Null while it is live, and null when the delete had no acting user behind it.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DeploymentRelease:
+      type: object
+      required:
+      - releaseId
+      - status
+      - current
+      properties:
+        releaseId:
+          type: string
+        instanceGroupId:
+          type: string
+          description: The particular copy; one release may have several during a compute move.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        current:
+          type: boolean
+          description: Whether the deployment serves this release; the others are kept.
+        storageMonthlyCents:
+          type: integer
+          format: int64
+          nullable: true
+          description: 'What the release''s model storage costs a month while it is kept, in US cents, at the rate card''s network storage price for the size its disk last billed at. Before its first storage charge, the size a create gives it: the volume a create sizes, the fixed fallback size where any of its models is unmeasured, or where its provider bills the bytes a disk holds, the bytes its models hold. Null where the release is gone, where a byte-billed release has a model unmeasured, or where the hourly teardown stopped the release and deleted its disk, and no hour that began after its stop has billed one.'
+        warmHourlyCents:
+          type: integer
+          format: int64
+          nullable: true
+          description: What one warm worker of the release's GPU class costs an hour, in US cents, the list price the catalog gives the class. A release with a minimum of zero workers bills this only while a job runs. Still present once the class is closed to new deployments and gone from the rate card; null where no catalog entry prices the class.
+    DeployProgress:
+      type: object
+      nullable: true
+      description: 'Where a deployment that is coming up has got to, as of updatedAt. Present while the status is provisioning or starting and null otherwise: a ready deployment has none, and neither has a stopped or failed one. Descriptive only: status is the lifecycle signal, and the events timeline is the history of what finished, where this is the one object that says what is happening now. It is rewritten every few seconds in every step, the two that count nothing included, so poll the deployment to follow it. The writes are best-effort and never hold a deploy up, so a sample can be missed; read updatedAt and treat an old one as stale rather than as a deploy that stopped. The byte counts, the rate and the time left are present only while step is staging_models. Staging that is retried starts a new attempt and counts again from what is already in place, so bytesDone can fall between two reads that straddle a retry.'
+      required:
+      - step
+      - attempt
+      - startedAt
+      - updatedAt
+      properties:
+        step:
+          type: string
+          enum:
+          - staging_models
+          - creating_endpoint
+          - waiting_for_worker
+          description: staging_models while the release's models are copied onto the deployment's storage, creating_endpoint while the GPU provider is asked for the endpoint, waiting_for_worker while the first worker pulls the image, loads the models and starts ComfyUI.
+        modelsDone:
+          type: integer
+          description: Models in place, the ones already there before this deploy included.
+        modelsTotal:
+          type: integer
+          description: Models in the release.
+        bytesDone:
+          type: integer
+          format: int64
+          description: Bytes this attempt has brought onto the deployment's storage.
+        bytesTotal:
+          type: integer
+          format: int64
+          description: 'Bytes this attempt has to bring: the release''s measured model size less what it found already in place, so a redeploy onto storage that holds every model reads 0. Absent for a release whose models were never measured.'
+        bytesTotalIsFloor:
+          type: boolean
+          description: 'True when bytesTotal is a lower bound rather than the total: the release holds a model nothing could size, or this attempt has already moved more than the release''s recorded size, which is a floor by construction. It then rises with bytesDone, and no time left is given.'
+        currentModel:
+          type: string
+          description: The model being staged now, as its path on the deployment's storage.
+        bytesPerSecond:
+          type: integer
+          format: int64
+          description: Average rate since this attempt's first byte moved, the read-back that verifies each model included; the time a provider spends booting before the copy begins is not in it. Absent until bytes have been moving for a few seconds, and once every byte is in while the models are put in place, since nothing is moving then.
+        etaSeconds:
+          type: integer
+          format: int64
+          description: 'Seconds of staging left: the bytes still to move at the copy''s rate, plus the time the provider is known to take putting the models in place after the last byte lands, which counts down once every byte is in. The rate is measured over the last minute of the time the copy spent counting bytes (all of it, before there is a minute), up to the last byte counted rather than updatedAt, and leaves out the part of a pause in the copy past its first ten seconds that the bytes after it do not account for, so a pause holds the time left rather than raising it. It is not bytesPerSecond. Where staging also waits on something built beside the copy, such as the release image, it is at least the time until that is expected to end, with bytesTotal 0 too. Staging only: creating the endpoint and the first worker''s cold start come after it. Absent while bytes move until the rate has ten seconds of the copy to measure, whenever bytesTotal is absent or a floor, and once every byte is in, or with none to move, unless one of those times has not run out.'
+        placingModels:
+          type: boolean
+          description: 'Present and true once every byte of the models has landed and the step is finishing: the models are being put in place, and a release image built beside the upload may still be building. The step stays staging_models, and etaSeconds, where given, counts down the longer of the two. Absent before the last byte, while bytesTotal is absent or a floor, and with no byte to move.'
+        attempt:
+          type: integer
+          description: Which try of this step is running, from 1. Above 1 means it was retried.
+        startedAt:
+          type: string
+          format: date-time
+          description: When this attempt of the step began.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When this object was last written. Advances every few seconds in every step while the deploy is alive, so one that has stopped advancing is a stale sample.
+    ServingState:
+      type: object
+      nullable: true
+      description: 'What the deployment''s compute is actually doing right now, as of the last control-plane sample. Descriptive only: status is the lifecycle signal and is never derived from these counts, so a sample that looks healthy beside an unhealthy status is the two answering different questions rather than a disagreement. Present once the control plane has sampled this deployment''s current compute, which usually happens within a sampling interval of that compute appearing, so a booting deployment can show workers coming up. A stopped deployment keeps its last sample rather than clearing it, and so does a deleted one. Null before that first sample, and for the whole life of a deployment on a GPU provider that is not sampled where it runs. Null again once a deployment fails, or once it is started again, which discards the sample taken before it. The counts are a snapshot, not a time series, and can be stale: a deployment whose endpoint stopped answering keeps its last sample, so read sampledAt and age it out rather than trusting counts of unknown vintage.'
+      required:
+      - workers
+      - capacity
+      - jobsInQueue
+      - sampledAt
+      properties:
+        workers:
+          $ref: '#/components/schemas/WorkerCounts'
+        capacity:
+          $ref: '#/components/schemas/WorkerCapacity'
+        jobsInQueue:
+          type: integer
+          description: Jobs accepted by the endpoint and not yet picked up by a worker.
+        sampledAt:
+          type: string
+          format: date-time
+          description: When the control plane took this sample.
+    DeploymentStatusAnswer:
+      description: 'The status of a deployment, as one of two bodies told apart by enabled: the whole status when it is true, and enabled false alone when the workspace''s kill switch is on.
+
+        '
+      oneOf:
+      - $ref: '#/components/schemas/DeploymentStatusOff'
+      - $ref: '#/components/schemas/DeploymentStatusOn'
+    DeploymentStatusOff:
+      type: object
+      description: 'Deployment metrics are turned off for the workspace. A client shows no status and says nothing about it.
+
+        '
+      required:
+      - enabled
+      properties:
+        enabled:
+          type: boolean
+          enum:
+          - false
+    DeploymentStatusOn:
+      type: object
+      required:
+      - enabled
+      - status
+      - releaseVersion
+      - maxWorkers
+      - serving
+      properties:
+        enabled:
+          type: boolean
+          enum:
+          - true
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        releaseVersion:
+          type: integer
+          nullable: true
+          description: The release's number (v1, v2, ...) in its build, for the release the serving copy runs; null when that release cannot be read.
+        maxWorkers:
+          type: integer
+          description: The most workers the serving copy's compute config allows; 1 when it stores none.
+        serving:
+          allOf:
+          - $ref: '#/components/schemas/DeploymentStatusServing'
+          nullable: true
+          description: 'The last stored worker sample, as the deployment read''s serving field holds it, with no age bound: a stopping, stop_failed or stopped deployment keeps its last one. Null before the first sample, while the deployment holds no compute, on a GPU provider whose workers are not sampled, and after a start discards the sample taken before it.'
+    DeploymentStatusServing:
+      type: object
+      required:
+      - capacity
+      - jobsInQueue
+      - sampledAt
+      properties:
+        capacity:
+          $ref: '#/components/schemas/WorkerCapacity'
+        jobsInQueue:
+          type: integer
+          description: Jobs accepted by the endpoint and not yet picked up by a worker.
+        sampledAt:
+          type: string
+          format: date-time
+          description: When the control plane took this sample.
+    DeploymentMetricsAnswer:
+      description: 'The metrics of a deployment, as one of two bodies told apart by enabled: the whole answer when it is true, and enabled false alone when the workspace''s kill switch is on.
+
+        '
+      oneOf:
+      - $ref: '#/components/schemas/DeploymentMetricsOff'
+      - $ref: '#/components/schemas/DeploymentMetricsOn'
+    DeploymentMetricsOff:
+      type: object
+      description: 'Deployment metrics are turned off for the workspace. A client shows no metrics and says nothing about it.
+
+        '
+      required:
+      - enabled
+      properties:
+        enabled:
+          type: boolean
+          enum:
+          - false
+    DeploymentMetricsOn:
+      type: object
+      required:
+      - enabled
+      - window
+      - readAt
+      - timestamps
+      - metrics
+      - partial
+      - unavailable
+      - retryAfterSeconds
+      properties:
+        enabled:
+          type: boolean
+          enum:
+          - true
+        window:
+          $ref: '#/components/schemas/DeploymentMetricsWindow'
+        readAt:
+          type: string
+          format: date-time
+          description: When the request was taken, to the second. Nothing after it is read, so the last bucket of a window ending in the future is partial.
+        timestamps:
+          type: array
+          description: The start of each bucket of the window, once, oldest first. Every series holds one value for each.
+          items:
+            type: string
+            format: date-time
+        metrics:
+          type: object
+          description: Each metric that was read, by name. A metric listed in `unavailable` is absent.
+          additionalProperties:
+            $ref: '#/components/schemas/DeploymentMetric'
+        partial:
+          type: boolean
+          description: True whenever `unavailable` is not empty.
+        unavailable:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentMetricUnavailable'
+        retryAfterSeconds:
+          type: integer
+          nullable: true
+          description: Seconds to wait before asking again, set when a metric is unavailable for `rate_limited` or `datadog_refused`; null otherwise.
+    DeploymentMetricsWindow:
+      type: object
+      description: The window the answer covers, aligned to its step.
+      required:
+      - start
+      - end
+      - step
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+          description: The aligned end, which can lie after `readAt`.
+        step:
+          type: integer
+          description: Seconds in each bucket.
+    DeploymentMetricUnavailable:
+      type: object
+      required:
+      - metric
+      - reason
+      properties:
+        metric:
+          type: string
+        reason:
+          type: string
+          description: 'Why it was not read: `rate_limited`, `busy`, `datadog_refused`, `datadog_error` or `datadog_slow`. The list is open; a client tolerates a value it does not know.'
+    DeploymentMetric:
+      type: object
+      required:
+      - unit
+      properties:
+        unit:
+          type: string
+          description: The unit of the values, totals, previous total, p50, p95 and means. `count`, `coldCount` and `excluded` are numbers of timings or jobs, and a field ending in `Share` is a fraction from 0 to 1.
+        previousTotal:
+          type: number
+          format: double
+          description: Absent with `compare=none` and without the summary.
+        summary:
+          type: array
+          description: Absent without the summary. A `job_duration` summary leaves out its `cold_start` item when that item's read, which waits 1.8 seconds, was slow, refused or failed, and lists its other items; the metric is then not unavailable. The `cold_start` metric read on its own holds that item alone, and is unavailable when its read, which waits 10 seconds, was slow, refused or failed.
+          items:
+            $ref: '#/components/schemas/DeploymentMetricSummary'
+        series:
+          type: array
+          description: Absent without the series.
+          items:
+            $ref: '#/components/schemas/DeploymentMetricSeries'
+    DeploymentMetricSummary:
+      type: object
+      required:
+      - labels
+      properties:
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        total:
+          type: number
+          format: double
+        p50:
+          type: number
+          format: double
+        p95:
+          type: number
+          format: double
+          description: Over fewer than 20 timings, the slowest timing.
+        count:
+          type: integer
+        coldCount:
+          type: integer
+          description: Only on the item labeled phase `cold_start`, in `job_duration` or in the `cold_start` metric, whose `count`, `p50` and `p95` read over every job whose cold start was decided, a job that started warm counting 0 seconds. The jobs among them whose cold wait was recorded. A cold job whose cold wait was never recorded, such as one its customer canceled before its worker came up, counts in `count` at 0 seconds and not here. Over fewer than 20 jobs, `p95` is the slowest of their timings.
+        queueTimeShare:
+          type: number
+          format: double
+        excluded:
+          type: integer
+    DeploymentMetricSeries:
+      type: object
+      required:
+      - labels
+      - values
+      properties:
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        values:
+          type: array
+          description: One value per timestamp, null where nothing was counted or observed.
+          items:
+            type: number
+            format: double
+            nullable: true
+    WorkerCapacity:
+      type: object
+      description: 'Workers by what they were doing when sampled, in the same words on every GPU provider. ready could take a job, busy was running one, starting was coming up. A provider that cannot tell a worker still booting from a warm one counts it as ready, so ready is an upper bound. These describe the sample, not whether the deployment takes jobs: a stopped deployment keeps its last sample, and status says whether it serves. A scale-to-zero deployment sitting at all-zero is idle, not broken.'
+      required:
+      - ready
+      - busy
+      - starting
+      properties:
+        ready:
+          type: integer
+        busy:
+          type: integer
+        starting:
+          type: integer
+    WorkerCounts:
+      type: object
+      description: 'Deprecated: read capacity instead. This is the GPU provider''s own accounting and is removed in a later release. Workers by state, as one GPU provider counts them. idle, ready and running are workers the provider is holding for this deployment; initializing is coming up; throttled means the provider has no capacity to place the worker and unhealthy means it is placed but failing. Read them as what the fleet is doing, never as why status says what it says: status comes from the provider''s own answer about whether the deployment can serve, so a deployment can read unhealthy with every count at zero, or carry a non-zero idle count while unhealthy. A provider that does not measure a state reports zero for it, so a zero is not evidence that no such worker exists. A provider that cannot tell a worker still booting from a warm one counts it under idle rather than initializing, so idle is an upper bound on what can take a job this second. A scale-to-zero deployment sitting at all-zero is idle, not broken.'
+      required:
+      - idle
+      - initializing
+      - ready
+      - running
+      - throttled
+      - unhealthy
+      properties:
+        idle:
+          type: integer
+        initializing:
+          type: integer
+        ready:
+          type: integer
+        running:
+          type: integer
+        throttled:
+          type: integer
+        unhealthy:
+          type: integer
+    DeploymentSummary:
+      type: object
+      required:
+      - id
+      - status
+      - releaseId
+      - createdBy
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+          description: The project the deployment belongs to, set when it is created and never changed. Absent for a deployment in the workspace's default project. It says where the deployment's runs and spend are counted, not what the caller may do to it.
+        name:
+          type: string
+          nullable: true
+          description: The deployment's name, unique among its build's live deployments; null on a deployment created before names until it is given one.
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        releaseId:
+          type: string
+          description: The cut release this deployment runs.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        endpointUrl:
+          type: string
+          nullable: true
+        progress:
+          $ref: '#/components/schemas/DeployProgress'
+        waitingForBuild:
+          type: string
+          description: The release whose build this deployment waits for before it starts. Present only while the status is queued for that build; absent otherwise.
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this deployment was deleted; null while it is live. Deleted deployments stay in the list rather than disappearing from it.
+        deletedBy:
+          type: string
+          nullable: true
+          description: The user who deleted it; null while it is live.
+        createdBy:
+          type: string
+          description: The user who created the deployment (who deployed it). Later changes do not move it; each one's author is on the deployment's revisions.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DeploymentList:
+      type: object
+      required:
+      - deployments
+      - total
+      - hasMore
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentSummary'
+        total:
+          type: integer
+          description: Total deployments matching the query.
+        hasMore:
+          type: boolean
+          description: True when more results follow the returned page.
+        nextCursor:
+          type: string
+          description: Present when hasMore is true; pass as after to fetch the next page.
+    DeploymentEvent:
+      type: object
+      description: One status transition in a deployment's timeline.
+      required:
+      - status
+      - at
+      properties:
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        message:
+          type: string
+          description: Short human-readable detail for this transition.
+        at:
+          type: string
+          format: date-time
+          description: When the transition was recorded; the ordering key.
+        releaseId:
+          type: string
+          description: The release whose running copy made this transition. A deployment that moved to another release carries every copy's transitions, so this says which.
+    DeploymentEventList:
+      type: object
+      required:
+      - deploymentId
+      - events
+      properties:
+        deploymentId:
+          type: string
+        events:
+          type: array
+          description: Status transitions, oldest first.
+          items:
+            $ref: '#/components/schemas/DeploymentEvent'
+    PendingUpdate:
+      type: object
+      nullable: true
+      description: An update that waits for its release's running copy to be ready, or an unfinished cancellation of that copy. Cancellation keeps the original baseRevision and since so existing clients can retry stop/delete after dispatch failure. An unfinished cancellation reads failed, keeping its dismissal available even while the copy is stopping. Null after the move or cancellation finishes.
+      required:
+      - releaseId
+      - baseRevision
+      - status
+      - since
+      properties:
+        releaseId:
+          type: string
+          description: The release the deployment moves to once it is ready.
+        baseRevision:
+          type: integer
+          description: The revision the update was asked against.
+        status:
+          $ref: '#/components/schemas/DeploymentStatus'
+        since:
+          type: string
+          format: date-time
+          description: When the update was asked for.
+        instanceGroupId:
+          type: string
+          description: The particular copy, distinguishing copies of the same release.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        kind:
+          type: string
+          description: 'update, compute for a placement move, or rollback for a rollback waiting on its release''s copy. Open: clients tolerate values they do not know.'
+        fromRevision:
+          type: integer
+          description: The revision a waiting rollback restores; absent on an update.
+        waitingForBuild:
+          type: string
+          description: The release whose build the update's copy waits for before it starts. Present only while that copy is queued for the build; absent otherwise, and on an unfinished cancellation.
+    DeploymentRevisionList:
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          description: Revisions, oldest first; the last is current.
+          items:
+            $ref: '#/components/schemas/DeploymentRevision'
+    DeploymentRevision:
+      type: object
+      required:
+      - revision
+      - releaseId
+      - kind
+      - createdBy
+      - createdAt
+      properties:
+        revision:
+          type: integer
+          description: 1 for the deployment's first revision, then one more per change.
+        releaseId:
+          type: string
+          description: The release that was current from this revision on.
+        instanceGroupId:
+          type: string
+          description: The particular copy, distinguishing copies of the same release.
+        computeConfig:
+          $ref: '#/components/schemas/ComputeConfig'
+        kind:
+          type: string
+          description: 'What made this revision: create, backfill, update or rollback. Open: clients tolerate values they do not know.'
+        createdBy:
+          type: string
+          description: The user who made the change, or comfy-deploy for a backfill.
+        fromRevision:
+          type: integer
+          description: The revision a rollback restored; absent on any other kind.
+        createdAt:
+          type: string
+          format: date-time
+    DeploymentLogs:
+      type: object
+      description: 'A deployment''s captured ComfyUI log tail: what the deployed environment printed while starting, which is what explains a failed deploy. The worker''s own boot log is captured too but is deliberately not served: it carries only runner/image internals (a directory listing, the interpreter version, the compute provider''s volume path), none of which describe the caller''s environment.'
+      required:
+      - deploymentId
+      - releaseId
+      - comfyuiLog
+      properties:
+        deploymentId:
+          type: string
+        releaseId:
+          type: string
+          description: The release whose copy captured this log.
+        comfyuiLog:
+          type: string
+          description: Worker ComfyUI log tail; empty until a health probe has run.
+        capturedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the logs were captured; null until a health probe has run.
+    UsageGroupBy:
+      type: string
+      description: Aggregation key. none collapses every row into a single group. resource splits compute from storage. deployment answers one group per deployment, with every release it ran; release answers each release a deployment ran apart.
+      enum:
+      - deployment
+      - user
+      - gpuClass
+      - resource
+      - none
+      - release
+      default: deployment
+    UsageResource:
+      type: string
+      description: 'What a charge is for. compute is GPU time; storage is the deployment''s network volume, which bills continuously whether or not anything runs; container_disk is the worker''s own local disk, itemised inside the endpoint''s bucket by the provider. It is not charged: its rows are recorded at zero charge, though buckets stored before that change carry a charge for it.'
+      enum:
+      - compute
+      - storage
+      - container_disk
+      x-enum-varnames:
+      - UsageResourceCompute
+      - UsageResourceStorage
+      - UsageResourceContainerDisk
+    UsageGranularity:
+      type: string
+      description: Time-bucket size. none returns totals only (breakdown/totals), with an empty buckets array — no series to draw.
+      enum:
+      - hour
+      - day
+      - week
+      - month
+      - none
+      default: day
+    UsageScope:
+      type: string
+      description: Whose spend to return. workspace (the default) is every row in the workspace, self is the deployments the caller created, user is the rows for the given userId. Spend is visible workspace-wide to every member, so no scope is role-gated; the workspace comes from the caller's identity and is the only boundary.
+      enum:
+      - self
+      - workspace
+      - user
+      default: workspace
+    UsageSort:
+      type: string
+      description: Ranks groups by their total charged amount over the whole filtered set, or by group key. Accepted but inert when groupBy=none, since a single group has no order to rank.
+      enum:
+      - costDesc
+      - costAsc
+      - keyAsc
+      - keyDesc
+      default: costDesc
+    UsageGroup:
+      type: object
+      required:
+      - key
+      - label
+      properties:
+        key:
+          type: string
+          description: 'Opaque group identifier: a deployment id, a Comfy user id, a GPU class name, a resource kind, or for groupBy=release a deployment id and a release id joined by a slash, depending on groupBy. A usage row whose deployment was erased keeps its own id as its key.'
+        label:
+          type: string
+          nullable: true
+          description: 'Human-readable label. For groupBy=deployment, the deployment''s own label: its first copy''s invoice label with any trailing release version removed (null on legacy rows that predate the snapshot — never the id). For groupBy=release, the copy''s own invoice label, which names the release the copy runs (a deployment''s first copy may not name it yet); null where the deployment was erased or predates the snapshot. For groupBy=user, always null: the users table lives in a different database this service cannot join. For groupBy=gpuClass, equal to key.'
+    UsageBucket:
+      type: object
+      required:
+      - periodStart
+      - periodEnd
+      - groupKey
+      - chargedMicroUsd
+      - credits
+      properties:
+        periodStart:
+          type: string
+          format: date-time
+        periodEnd:
+          type: string
+          format: date-time
+        groupKey:
+          type: string
+          description: Matches a UsageGroup.key on this response.
+        chargedMicroUsd:
+          type: integer
+          format: int64
+          description: What the workspace was charged for this group and bucket, in micro-USD.
+        credits:
+          type: integer
+          format: int64
+          description: chargedMicroUsd converted at catalog.CreditsPerDollar, rounded half-up from this row alone. Does not sum exactly across rows; compute from chargedMicroUsd instead.
+    UsageBreakdownEntry:
+      type: object
+      required:
+      - groupKey
+      - chargedMicroUsd
+      - credits
+      - share
+      properties:
+        groupKey:
+          type: string
+          description: Matches a UsageGroup.key on this response.
+        chargedMicroUsd:
+          type: integer
+          format: int64
+          description: What the workspace was charged for this group across the whole requested range.
+        credits:
+          type: integer
+          format: int64
+        share:
+          type: number
+          format: double
+          description: chargedMicroUsd divided by totalChargedMicroUsd (the whole filtered set, not just the returned page). Shares on a page will not sum to 1 when truncated is true.
+    UsageServerlessResponse:
+      type: object
+      required:
+      - groupBy
+      - granularity
+      - timezone
+      - startingOn
+      - endingBefore
+      - groups
+      - buckets
+      - breakdown
+      - totalChargedMicroUsd
+      - totalCredits
+      - truncated
+      properties:
+        groupBy:
+          $ref: '#/components/schemas/UsageGroupBy'
+        granularity:
+          $ref: '#/components/schemas/UsageGranularity'
+        timezone:
+          type: string
+          description: The IANA zone actually used (the request's timezone, or UTC).
+        startingOn:
+          type: string
+          format: date-time
+        endingBefore:
+          type: string
+          format: date-time
+        groups:
+          type: array
+          description: The selected page of groups, in sort order.
+          items:
+            $ref: '#/components/schemas/UsageGroup'
+        buckets:
+          type: array
+          description: 'Sparse: a period with no matching rows is omitted, not zero-filled. Only covers the groups on this page. Empty when granularity=none.'
+          items:
+            $ref: '#/components/schemas/UsageBucket'
+        breakdown:
+          type: array
+          description: Per-group totals for the groups on this page, with share.
+          items:
+            $ref: '#/components/schemas/UsageBreakdownEntry'
+        totalChargedMicroUsd:
+          type: integer
+          format: int64
+          description: What the workspace was charged across every group in the filtered set, not just this page.
+        totalCredits:
+          type: integer
+          format: int64
+        truncated:
+          type: boolean
+          description: True when more groups exist beyond this page (limit/offset).

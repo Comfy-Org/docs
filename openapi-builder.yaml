@@ -1,0 +1,3190 @@
+# Comfy Builder API: public specification.
+#
+# Copied from the service's own spec with project_spec.py.
+# Change the service's spec, then copy it again.
+
+openapi: 3.0.3
+info:
+  title: Comfy Builder API
+  version: 0.1.0
+  description: 'Builder owns builds (editable environment definitions) and cuts immutable, deployable releases that Deploy later runs.
+
+    '
+servers:
+- url: https://platformapi.comfy.org/builder
+  description: Comfy Developer Platform
+security:
+- BearerAuth: []
+- ApiKeyAuth: []
+paths:
+  /v1/model-directories:
+    get:
+      operationId: listModelDirectories
+      summary: List the model directories a model may be placed in
+      description: 'The vetted set of ComfyUI model directories (checkpoints, loras, vae, ...) a build''s model may target, so the create/edit flow can offer them as a placement dropdown. Sorted, static, and identical for every caller; it is the same allow-list the builder validates a model''s type against.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelDirectoryList'
+  /v1/models/resolve:
+    post:
+      operationId: resolveModelSources
+      summary: Find download sources for model filenames
+      description: 'Resolves bare model filenames — the strings a ComfyUI workflow node carries, e.g. "flux1-dev-Q8_0.gguf" — into the places they can be downloaded from. A filename our model catalog lists with a HuggingFace link gets that link first, with its folder; HuggingFace and CivitAI are then searched live for the rest of the shortlist. Each candidate is shaped to drop straight into a definition''s models[] entry (sourceUri, type, filename, sha256), so the create/edit flow can offer a model without the user hunting for a link.
+
+
+        Candidates are ranked, never applied: a filename is a weak key, so the answer is a shortlist with its confidence attached and the caller picks. A filename that resolves to nothing returns an empty candidates array, not an error — plenty of models are private, renamed, or user-trained. Nothing is cached; every call queries the providers.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelResolveRequest'
+      responses:
+        '200':
+          description: 'Resolution ran. One result per requested filename, in request order; a result with no candidates means nothing was found, which is a normal outcome.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResolveResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/snapshots/resolve:
+    post:
+      operationId: resolveSnapshot
+      summary: Read a ComfyUI Desktop snapshot as a build definition
+      description: 'Turns a Desktop snapshot export into the definition it maps to, without writing anything. A snapshot describes a machine; a definition describes something the builder can reproduce, and most but not all of a snapshot survives that translation. Everything that does not is named in the report rather than dropped, because a pack that quietly vanishes between the import and the build is the failure this endpoint exists to avoid.
+
+
+        Every pack the snapshot attributes to the Comfy Registry is checked against the registry before the pin is believed, so a pack that was never published is reported here instead of failing deep inside a build. A registry that cannot be reached leaves its pins alone: the cut still catches a pin it cannot resolve, and dropping one over a network fault would mangle an import the registry never objected to.
+
+
+        A 400 carries the identifier a caller branches on, never the wording: `INVALID_REQUEST` when no snapshot was sent, `INVALID_SNAPSHOT` when the payload is not a Desktop export, and `SNAPSHOT_TOO_LARGE` when it names more custom nodes than a definition may hold.
+
+
+        Use POST /v1/builds/from-snapshot to create the build in one call instead.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SnapshotResolveRequest'
+      responses:
+        '200':
+          description: 'The snapshot was read. An empty report means everything in it translated, which is a normal outcome and not a guarantee the build will succeed.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResolveResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/import-bundles:
+    post:
+      operationId: createImportBundle
+      summary: Store a local ComfyUI installation for the Create a Build wizard
+      description: 'Stores a short-lived handoff of a local ComfyUI installation (its Desktop snapshot, the models it has installed, and optionally the workflow open in it) so the Create a Build wizard can open pre-filled from it. Local ComfyUI calls this on the user''s explicit request with the user''s own credential; the wizard then reads it back with GET /v1/import-bundles/{id}. Nothing is resolved or built here: the bundle is stored as sent, and the wizard runs the snapshot and workflow through the existing resolve endpoints.
+
+
+        The bundle belongs to the caller''s workspace AND the caller''s user (for an API key, the user who created the key). Only that same workspace and user can ever read it; it is never public and never readable by another member of the workspace. It is kept, in the builder''s private storage, for 24 hours from creation (expiresAt) and then reads as not found; it is deleted within about two hours after that. A user may hold a limited number of unexpired bundles per workspace (20 by default; each builder deployment sets its own).
+
+
+        The request body must be sent as `application/json` (parameters such as charset are allowed) and is capped in size (31,457,280 bytes, 30 MiB, by default; each builder deployment sets its own, and the 413 message states it). Validation (applied before anything is stored): the body is a JSON object; `snapshot` is an object whose `type` is "comfyui-desktop-2-snapshot" and whose `snapshots` array is non-empty; `models` is a non-null array of at most 50,000 objects, each with a `directory` string of 1-256 characters and a `filename` string of 1-1024 characters; `workflow` is absent, null or an object; `name` is absent, null or a string of at most 200 characters with no NUL (U+0000); `source` is exactly "comfyui"; keys are matched exactly (case-sensitive), and unknown top-level keys are ignored and not stored. `snapshot`, `models` and `workflow` are stored and read back byte for byte, unknown members and large integers included.
+
+
+        Errors carry the identifier a caller branches on, never the wording: `INVALID_IMPORT_BUNDLE` (400) when the body is malformed JSON or breaks any validation rule above, `UNSUPPORTED_MEDIA_TYPE` (415) when it is not sent as application/json, `IMPORT_BUNDLE_TOO_LARGE` (413) when the body exceeds the cap, `IMPORT_BUNDLE_TIMEOUT` (408) when the body does not finish arriving within 60 seconds, `IMPORT_BUNDLE_LIMIT` (429) when the caller already holds its limit of unexpired bundles in this workspace (checked before the body is read, so a caller at its limit can stop sending), `IMPORT_BUNDLE_STORAGE_UNAVAILABLE` (503, no Retry-After) when this builder has no storage configured for import bundles, which no retry fixes, `IMPORT_BUNDLE_IN_PROGRESS` (429, with Retry-After) when the caller already has another import-bundle request (create or read) in progress on the builder instance it reached, and `IMPORT_BUNDLE_BUSY` (503, with Retry-After) when the instance''s memory budget for bundles stayed full for 5 seconds; retry either after the given seconds. One caller''s slow upload or download never makes another caller''s request busy unless the bundles in flight together exceed the budget.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImportBundleRequest'
+      responses:
+        '201':
+          description: 'Stored. Hand `id` and `workspaceId` to the wizard; the bundle can be opened until expiresAt.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportBundleCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: No valid credential, or the credential names no workspace or user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '408':
+          description: 'The request body did not finish arriving within 60 seconds (IMPORT_BUNDLE_TIMEOUT). Nothing was stored.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: The request body exceeds this builder's size cap (IMPORT_BUNDLE_TOO_LARGE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '415':
+          description: The request body is not sent as application/json (UNSUPPORTED_MEDIA_TYPE).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: 'Either the caller already holds its limit of unexpired bundles in this workspace (IMPORT_BUNDLE_LIMIT), which clears on its own as older bundles expire, or (IMPORT_BUNDLE_IN_PROGRESS, with Retry-After) the caller already has another import-bundle request in progress; retry once it finishes.
+
+            '
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; sent with IMPORT_BUNDLE_IN_PROGRESS.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: 'Either the builder instance''s memory budget for import bundles stayed full for 5 seconds (IMPORT_BUNDLE_BUSY, with Retry-After), or the builder has no storage configured for import bundles (IMPORT_BUNDLE_STORAGE_UNAVAILABLE, no Retry-After; retrying does not help). Nothing was stored either way.
+
+            '
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; sent with IMPORT_BUNDLE_BUSY.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/import-bundles/{id}:
+    get:
+      operationId: getImportBundle
+      summary: Open a stored import bundle
+      description: 'Returns a bundle stored by POST /v1/import-bundles, for the Create a Build wizard to pre-fill from. Readable only by the workspace AND the user that created it, and only until it expires 24 hours after creation. Every other case (no such bundle, malformed id, expired, another workspace, another user in the same workspace) is the same 404 `IMPORT_BUNDLE_NOT_FOUND` with an identical body, so a 404 does not say whether the bundle exists: the wizard should tell the user the bundle is unavailable or belongs to another workspace or user, not that it was never created. `IMPORT_BUNDLE_IN_PROGRESS` (429, with Retry-After) means the caller already has another import-bundle request in progress, and `IMPORT_BUNDLE_BUSY` (503, with Retry-After) that the instance''s memory budget for bundles stayed full for 5 seconds; retry either after the given seconds. The body is written within 60 seconds; a caller that reads it slower than that is cut off with an incomplete body and should retry.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportBundle'
+        '401':
+          description: No valid credential, or the credential names no workspace or user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: 'The caller already has another import-bundle request in progress (IMPORT_BUNDLE_IN_PROGRESS); retry after the Retry-After seconds.
+
+            '
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: 'The builder instance''s memory budget for import bundles stayed full for 5 seconds (IMPORT_BUNDLE_BUSY); retry after the Retry-After seconds.
+
+            '
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/base-images:
+    get:
+      operationId: listBaseImages
+      summary: List the curated base images a build may build on
+      description: 'The curated menu of base images (each a CUDA/Python/torch runtime the builder builds and maintains) a build may select by id, so the create/edit flow can offer them as a dropdown. Static and identical for every caller; it is the same allow-list the builder validates a definition''s baseImage against, so the menu and validation cannot drift.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseImageList'
+  /v1/build-targets:
+    get:
+      operationId: listBuildTargets
+      summary: List the build targets a release can be cut for
+      description: 'The (os, gpu) pairs the builder can produce a verified artifact for, so the build dialog can offer them as a checklist. Static and identical for every caller; it is the same allow-list cutVersion and addArtifact validate a requested target against, so the menu and validation cannot drift. The Target enums are deliberately wider than this list (they carry pairs the builder does not build yet), so a client that reads the enums instead of this endpoint will offer targets that are rejected at cut time.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildTargetList'
+  /v1/limits:
+    get:
+      operationId: getWorkspaceLimits
+      summary: The build ceilings this workspace is held to
+      description: 'The caps the caller''s workspace is actually held to right now, resolved through the same gate a create and a cut run, so a number reported here is the number those refuse at. Every cap is raisable per workspace, so a client must read them rather than hold its own copy.
+
+
+        A cap that does not apply is absent from the response, which is the normal answer for a workspace billing did not resolve: it may keep any number of builds, and its running-build cap is the unenforced one rather than the configured one. An absent cap is a statement about enforcement as it stands right now, including while a billing check is failing open; a request the client could not complete is not, and a client that got no response shows nothing rather than inferring an absent cap.
+
+
+        Beside the caps, used carries what the workspace holds against each one, counted by the query the create and the cut compare to the cap, so a client can show "3 of 20". It is present on every 200, including when a cap is absent.
+
+
+        A workspace with no credit balance is refused here exactly as a create and a cut refuse it, because no count is what stops it and reporting one would name a ceiling that governs nothing.
+
+        '
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceLimits'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+  /v1/builds:
+    get:
+      operationId: listBuilds
+      summary: List the workspace's builds
+      description: Paginated, newest first. Scoped to the caller's workspace, optionally filtered by creator.
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - name: createdBy
+        in: query
+        required: false
+        description: 'Matched exactly against the createdBy a build already reports in BuildSummary. An id nobody in this workspace has built under returns an empty page rather than an error. Resend it with every cursor: the cursor carries the position, not the filter, so dropping it mid-page returns the whole workspace from that point.'
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      operationId: createBuild
+      summary: Create a build
+      description: 'Starts a new, mostly-empty custom-environment definition in the caller''s workspace, optionally seeded with an initial definition. Returns its id.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBuildRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+        '403':
+          $ref: '#/components/responses/PlanRequired'
+        '409':
+          description: The workspace has reached its build limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/builds/from-snapshot:
+    post:
+      operationId: createBuildFromSnapshot
+      summary: Create a build from a ComfyUI Desktop snapshot
+      description: 'Reads the snapshot exactly as POST /v1/snapshots/resolve does, then creates the build from what it read. For a caller that has a snapshot and wants an environment, rather than one that wants to show a person what the snapshot means first.
+
+
+        The report is returned twice and both copies are the same object: once at the top level, and once as the created build''s own `importReport`. It is stored on the build too, so a caller that hands the user off to the build page (Desktop opening a browser, say) does not have to carry the warnings across that gap itself. The stored copy is cleared the first time the definition is saved.
+
+
+        A 400 carries the identifier a caller branches on, never the wording: `INVALID_REQUEST` when the name or the snapshot is missing, `INVALID_SNAPSHOT` when the payload is not a Desktop export or what it maps to cannot be stored as a definition, and `SNAPSHOT_TOO_LARGE` when it names more custom nodes than a definition may hold.
+
+
+        Subject to the same subscription and per-workspace limits as POST /v1/builds. Cutting a release is a separate call.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBuildFromSnapshotRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotBuild'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+        '403':
+          $ref: '#/components/responses/PlanRequired'
+        '409':
+          description: The workspace has reached its build limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/workflows/resolve:
+    post:
+      operationId: resolveWorkflow
+      summary: Read a ComfyUI workflow as a build definition
+      description: 'Turns a workflow file into the definition it maps to, without writing anything. A workflow is a much poorer input than a Desktop snapshot: it records what a graph refers to, never what was installed. There are no versions in it, no Python, and no pip state, so everything here is a name resolved against something else, and everything that could not be resolved is named in the report rather than dropped.
+
+
+        Both export dialects are accepted, the API format and the UI format, and which one was read is reported. Every distinct node class is looked up against the Comfy Registry to find the pack that provides it. Many classes usually resolve to one pack, and that pack is installed once.
+
+
+        A class from a pack Cloud does not install is missing from the class map. When the UI export stamps such a class with a registry pack (`cnr_id`, read without regard to case), the stamp decides its pack. A class stamped with the id of a pack already going in is attached to that pack without asking the registry. Otherwise the registry''s class index is asked about up to three of the pack''s stamped classes, and once it names the stamped pack for one, the pack goes in and its other stamped classes follow without being asked about. A stamped pack the registry records under the repository of a pack already going in is attached to that pack rather than installed twice. A stamp nothing confirms leaves its classes in `unresolvedClasses`, or in `uncheckedClasses` when the registry did not answer. The check proves that the file and the index agree, not who wrote the class: the registry lets any publisher list any class name, so a publisher can make its own pack confirm for a name it chose. Packs that entered the definition this way are listed in `packsFromStamps`, and every class a stamp attributed, however it got there, in `classesFromStamps`. The class map never placed those classes, so Comfy Cloud cannot be assumed to have them. A file that stamps many packs has only the first 16 (by registry id) looked up; the classes of the rest are reported in `uncheckedClasses`.
+
+
+        A class the map lacks with no registry stamp, which is every class in an API-format export, is looked up in the registry''s class index (the first 16 by name). When the index names a pack already going in, by id or repository, the class is attached to it and listed in `classesFromStamps`. When it names another pack, nothing is added: the class stays in `unresolvedClasses` and its `unknownClasses` entry carries that pack as `suggestedPack`. A class stamped with only a GitHub repository (`aux_id`) counts the index''s answer only when it names that repository, and is otherwise offered the repository itself. A class the index gave no answer for (the registry did not reply in time, or the class is past the first 16) is listed in `uncheckedClasses`, since nothing said no pack publishes it. A registry stamp the class index cannot confirm, on a pack the registry has, is offered as that pack. A class that runs only in the browser (KJNodes GetNode and SetNode, Easy-Use getNode and setNode, rgthree''s group, label, reroute and bypass helpers) still needs its pack, whose script registers it in the editor: the pack goes in like a mapped class''s pack, and the class is listed in `classesFromStamps` when Comfy Cloud does not install that pack. Such a class stamped with another pack follows its stamp instead. When the registry''s class index names another pack for the same name (GetNode and SetNode), an unstamped class is placed only in its pack already going in, and is otherwise offered that pack as `suggestedPack` (`browserRegistration`) and stays in `unresolvedClasses`. ComfyUI''s own notes, reroute and primitive install nothing and are not reported.
+
+
+        A class Comfy Cloud hides (labelled in Cloud''s supported-nodes config and left out of its node list) is not in the class map. Cloud''s config names its pack, so the class goes into that pack, stamped or not, and the pack is added when nothing else brought it in. A hidden ComfyUI built-in installs nothing. Either way the class is listed in `classesFromStamps`, since Cloud does not run it.
+
+
+        Two things a workflow cannot supply. It names no version, so a pack is pinned to the registry''s newest published release and `pinnedToLatest` says when that happened; the same file resolved weeks apart can therefore differ. It names no model source, only a filename that existed on someone else''s disk, so models never enter the definition and are returned in the report for the caller to resolve and add.
+
+
+        A registry that cannot be reached leaves its classes in `uncheckedClasses` rather than in `unresolvedClasses`. Nothing about a network fault says a pack is missing, and reporting one as the other would tell a person to delete nodes that are perfectly fine.
+
+
+        A 400 carries the identifier a caller branches on, never the wording: `INVALID_REQUEST` when no workflow was sent, `INVALID_WORKFLOW` when the payload is not a workflow or holds no nodes, and `WORKFLOW_TOO_LARGE` when it names more node classes than one import may carry.
+
+
+        Use POST /v1/builds/from-workflow to create the build in one call instead.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowResolveRequest'
+      responses:
+        '200':
+          description: 'The workflow was read. A report naming models is the normal outcome, not a failure: resolving them to sources is the caller''s next step.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResolveResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/workflows/validate:
+    post:
+      operationId: validateWorkflow
+      summary: Check that a definition installs every node a workflow uses
+      description: 'Compares a workflow with a definition the caller supplies, before any build exists or before one is saved, and writes nothing. Each distinct node class is attributed to a pack exactly as POST /v1/workflows/resolve attributes it, then that pack is looked for in the definition''s `customNodes` by the source each entry installs from: a registry version by its registry id, a repository by that repository. Built-in, partner and canvas classes install nothing and are left out.
+
+
+        A class is `missing` only when the registry names its pack and the definition plainly lacks it. A class that cannot be decided either way is `unverified` with a reason, never counted as covered: nothing attributes it to a pack, the registry did not answer, the pack is pinned to a version other than the registry''s latest (or to a git ref or commit) so nothing shows that version has the class, the entry with the pack''s id installs from another repository, only the workflow file''s own stamp attributes the class to the pack, or the pack may be an uploaded file. `complete` is true only when nothing is missing or unverified, so an unreachable registry never reads as an all-clear.
+
+
+        A 400 carries the identifier a caller branches on: `INVALID_REQUEST` when the workflow or the definition is absent, `INVALID_WORKFLOW` when the payload is not a workflow or holds no nodes, `WORKFLOW_TOO_LARGE` when it names more node classes than one import may carry, and `INVALID_DEFINITION` when `customNodes` cannot be read as nodes.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowValidateRequest'
+      responses:
+        '200':
+          description: 'The comparison. Missing or unverified classes are the normal outcome of a definition that is not finished, not a failure.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowCoverage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/builds/from-workflow:
+    post:
+      operationId: createBuildFromWorkflow
+      summary: Create a build from a ComfyUI workflow
+      description: 'Reads the workflow exactly as POST /v1/workflows/resolve does, then creates the build from what it read. For a caller that has a workflow file and wants an environment, rather than one that wants to show a person what the workflow means first.
+
+
+        The report is returned twice and both copies are the same object: once at the top level, and once as the created build''s own `workflowImportReport`, which is stored so a caller that hands the user off to the build page does not have to carry the warnings across that gap. The stored copy is cleared the first time the definition is saved.
+
+
+        The build this creates installs the workflow''s custom nodes and no models, because a workflow carries no model sources. A caller that wants the models too resolves them separately and saves them into the definition before cutting.
+
+
+        A 400 carries the identifier a caller branches on, never the wording: `INVALID_REQUEST` when the name or the workflow is missing, `INVALID_WORKFLOW` when the payload is not a workflow or what it maps to cannot be stored as a definition, and `WORKFLOW_TOO_LARGE` when it names more node classes than one import may carry.
+
+
+        Subject to the same subscription and per-workspace limits as POST /v1/builds. Cutting a version is a separate call.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBuildFromWorkflowRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowBuild'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+        '403':
+          $ref: '#/components/responses/PlanRequired'
+        '409':
+          description: The workspace has reached its build limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/builds/{id}:
+    get:
+      operationId: getBuild
+      summary: Get a build with its full definition
+      description: 'Returns the build and its current definition (the list endpoint returns summaries only). The editor loads this to render the definition and to capture updatedAt for the next optimistic-concurrency save.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updateBuild
+      summary: Edit a build's definition
+      description: 'Saves a change to the environment; the website calls this on every edit. The caller passes the updatedAt it last saw; if it is stale the save is rejected with 409 so the UI reloads instead of clobbering a concurrent edit.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBuildRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/PlanRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Your copy is out of date; reload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deleteBuild
+      summary: Delete a build
+      description: 'Soft-deletes the build so it drops out of the workspace''s list, and deletes every release cut from it, so they stop counting against maxTotalReleases and their archives and sealed manifests are taken away; their images are kept. Idempotent. Refused with 409 while any deployment the workspace has not deleted still references one of those releases, whatever its status: a stopped deployment starts again by staging its models from the release''s sealed manifest, which this delete takes away.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '204':
+          description: Deleted (or already gone).
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A deployment still references one of its releases.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/builds/{id}/validate:
+    post:
+      operationId: validateBuild
+      summary: Dry-run resolve a definition
+      description: 'Resolves the current definition and reports any problems without cutting a release, so the editor catches mistakes before a real build. The lookups outside the definition run side by side and answer within about two seconds; a lookup the budget stops early reports only what it reached, and a release cut re-runs its own. A refusal carries its warnings and the definition as saved too.
+
+
+        The body is optional. Without one, or without a `workflow` in it, the answer is exactly the check above. With a workflow, the answer also carries `workflowCoverage`: which of the workflow''s custom node classes the saved definition installs, lacks, or leaves undecided, read the way POST /v1/workflows/validate reads it. A workflow that is not one is a 400 with `error` INVALID_WORKFLOW (or WORKFLOW_TOO_LARGE) and the reason at field `workflow`, before any other check runs.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateBuildRequest'
+      responses:
+        '200':
+          description: Resolvable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateResult'
+        '400':
+          description: The definition has problems, or the workflow sent is not one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/builds/{id}/releases:
+    get:
+      operationId: listReleases
+      summary: List a build's releases
+      description: Paginated, newest first, optionally filtered by status.
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+      - name: status
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ReleaseStatus'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: cutRelease
+      summary: Cut and build a release
+      description: 'Freezes the current definition and starts a build. A retry of the same definition returns the same release (dedupe by manifest_sha256) rather than making a second, and re-drives that release''s builds: a target whose build failed is built again, so a transient failure is recovered by re-cutting. There is no separate build route. The cut checks the definition before it looks for that release, so a retry whose baseComfyVersion is a branch or commit upstream ComfyUI has since dropped answers 400 INVALID_DEFINITION instead; the release it made stays deployable. A new release is also refused with 400 INVALID_DEFINITION, at `models[<n>].sha256`, when a model''s declared sha256 differs from the one its link''s host states; a host that states none, errs or is out of time never refuses.
+
+        The returned status is the release''s status as it stood before the re-drive, so poll statusUrl rather than treating it as final.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CutReleaseRequest'
+      responses:
+        '202':
+          description: Accepted; poll statusUrl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CutReleaseResult'
+        '400':
+          description: The definition has problems.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ReleaseLimit'
+        '429':
+          $ref: '#/components/responses/ConcurrencyLimit'
+  /v1/release-labels:
+    get:
+      operationId: listReleaseLabels
+      summary: Name releases by their build and version
+      description: 'For each given release of the caller''s workspace, its version and the name of the build it was cut from, and nothing else. Any member of the workspace may ask, on every tier: listBuilds shows a member who is not on the enterprise tier only the builds they made, so this is how Cloud''s editor names a deployment another member''s build runs without showing the build itself. An id that is not one of the workspace''s releases, or whose release or build is deleted, is left out of the answer rather than refused, so another workspace''s ids read the same as ids that never existed.
+
+        '
+      parameters:
+      - name: id
+        in: query
+        required: true
+        description: A release id; repeat it for more (?id=a&id=b), up to 100.
+        style: form
+        explode: true
+        schema:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseLabelList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/releases/{id}:
+    get:
+      operationId: getRelease
+      summary: Check a release's status
+      description: 'Returns the release''s status, the step-by-step timeline, a machine-readable error if it failed, a short-lived link to the full build log, and the artifacts produced. The UI polls this and stops once the status is final.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteRelease
+      summary: Delete a release
+      description: 'Stamps the release deleted and frees the slot it held against the workspace''s release limit, so a workspace at the limit can make room itself. Idempotent: a release already deleted answers 204 again. Refused with 409 while a deployment in the workspace serves the release (its current routes send it any traffic, stopped deployments included), is moving onto it, is being deleted and has not yet torn down its copy on it, or predates recorded revisions. A copy a deployment only keeps from an earlier update, for a move back, does not refuse it; once the release is deleted, a move, rollback or start back onto it is refused, and the release''s stored files stay while that copy does: until comfy-deploy retires it, which it does not yet in any environment, and with no end date for a copy its owner or a spend policy paused. A deleted release drops out of its build''s release list, takes no more added targets, and stops satisfying a re-cut of the same definition, which makes a new release instead.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '204':
+          description: Deleted (or already deleted).
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A deployment still uses this release; the message names each one and how to clear it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/releases/{id}/manifest:
+    get:
+      operationId: getReleaseManifest
+      summary: List a release's models, custom nodes, pip dependencies, ComfyUI commit and runtime policies
+      description: 'Returns the release''s pre-installed models (each with a ready-to-use download URL and its target model directory), its pinned custom nodes, its frozen pip dependency overrides, the ComfyUI commit it was built from, and its runtime allow/deny policies for models, partner nodes and custom nodes, projected from the release''s sealed manifest. A client uses this after downloading the archive to stage models into models/<type>/<filename> before starting ComfyUI. The archive itself carries only code and the environment, never weights. A release that has not been frozen yet, or a deleted release whose stored files are gone, returns empty. The base image the release sealed is not yet part of this projection. The tenant guard is the whole authorization model: a release in another workspace is a 404, not a 403.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildManifest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/logs:
+    get:
+      operationId: getReleaseLogs
+      summary: Read a release's full build log
+      description: 'Returns the full captured build log for one target of a release: the complete transcript from inside the sandbox (source fetch, uv install resolution, ComfyUI boot), served inline for troubleshooting. Defaults to the failed target when the build failed, else the first target; os and gpu select a specific target. Empty log until a build has been captured.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: os
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+      - name: gpu
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildLogContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/catalog:
+    get:
+      operationId: getReleaseCatalog
+      summary: Read a release's node catalog (object_info) for one built target
+      description: 'Returns the node catalog the release''s ComfyUI served at build time: the /object_info captured by the sandbox boot smoke, rendered with the release''s sealed model list so every loader combo names exactly the files the release stages. This is what an editor needs to offer this build''s nodes and models without a running instance, and it is the same template shape Cloud''s own catalog is rendered from, so the two cannot drift. os and gpu select a target; the default is the first ready one. raw=true returns the captured template unrendered (loader combos hold put_<folder>.safetensors placeholders) for a caller that renders itself. When a declared node pack failed to import on the build check, the build still passes without it and its catalog is the partial one, which lacks that pack''s nodes. This route serves the partial catalog only to a caller that passes partial=true, when no whole catalog exists, with X-Catalog-Complete false; /v1/releases/{id}/unsupported-packs names the missing packs and why. Without partial=true such a release answers 404, as a release with no captured catalog always has, so a caller that would take any catalog it is served as the whole node set never takes a partial one. 404 when the release has no ready target with a captured catalog. The tenant guard is the whole authorization model: a release in another workspace is a 404, not a 403.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: os
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+      - name: gpu
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+      - name: raw
+        in: query
+        required: false
+        schema:
+          type: boolean
+      - name: partial
+        in: query
+        required: false
+        description: 'true to be served the partial catalog when the target has no whole one. A caller passing it must read X-Catalog-Complete and not refuse a node for its absence from a partial catalog.
+
+          '
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Catalog-Complete:
+              description: 'false when the document is the partial catalog, which lacks the nodes of a declared pack that failed to import, so a caller must not refuse a node for its absence; true otherwise.
+
+                '
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                type: object
+                description: 'The object_info document, keyed by node class. Rendered unless raw=true. Served as the exact bytes the build''s ComfyUI produced: a node''s widget values are read positionally, so the key order inside a node is load-bearing, and a seed maximum is 2**64-1, which no double can hold. Parse it with a decoder that keeps key order and does not widen integers.
+
+                  '
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/extensions:
+    get:
+      operationId: getReleaseExtensions
+      summary: Read a release's custom-node frontend files for one built target
+      description: 'Returns what an editor must load for this release''s node packs to draw their widgets: the /extensions paths the release''s ComfyUI listed at build time (its own core extensions excluded, since every editor ships those) and a short-lived download link to a gzipped tar holding every file of every pack web directory, laid out as extensions/<name>/<file> exactly as ComfyUI serves them, with manifest.json as the first entry. os and gpu select a target; the default is the first ready one, ordered by os, gpu and accel variant. 404 when no ready target matches, or when the target picked has no captured archive, even if another ready target has one (pass os and gpu to ask for that one). The tenant guard is the whole authorization model: a release in another workspace is a 404, not a 403.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: os
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+      - name: gpu
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseExtensions'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/routes:
+    get:
+      operationId: getReleaseRoutes
+      summary: Read the HTTP routes a release's custom node packs register, for one built target
+      description: 'Returns the routes and static folders the release''s custom node packs registered on ComfyUI''s web server, captured when the build check booted the target''s ComfyUI on CPU. A route is listed when its handler''s code lives under a custom_nodes folder, and a static folder when its directory does, each named by its pack; ComfyUI''s own routes, the /api copy ComfyUI adds for each route a pack registers on its route table (PromptServer.instance.routes), and the folders ComfyUI serves for a pack under /extensions/ and /api/workflow_templates/ are left out. A route a pack adds straight onto the app or onto a sub-application gets no /api copy, so it is listed once, at the path the pack gave it. A pack that failed to import on the CPU-only build check registered nothing there, so its routes are absent. The list is written by the code the build runs, so it is a claim by the build, not a verdict: a caller must not let it override a path the caller serves itself. os and gpu select a target; the default is the first ready one. 404 when no ready target matches, or when the target selected has no captured route list, which includes every release built before the list was captured; another ready target''s list is not tried in its place. The tenant guard is the whole authorization model: a release in another workspace is a 404, not a 403.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: os
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+      - name: gpu
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseRoutes'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/unsupported-packs:
+    get:
+      operationId: getReleaseUnsupportedPacks
+      summary: Read the custom node packs a release built without, for one built target
+      description: 'Returns the declared custom node packs that failed to import when the build check booted the target''s ComfyUI on CPU, each with a short cause: the last line of the import error, or "needs a GPU" when the pack needs an NVIDIA or CUDA library the check does not have. Such a pack no longer fails the build: the build passes without it, and its nodes are missing from the catalog. Where the build then booted the target''s image on a GPU, the list names only the packs that still failed there, and is empty when every pack loaded there, beside a whole catalog. The list is stored only for a build where a pack failed, so 404 when the target has none: every declared pack imported, the release was built before the list was captured, or the list could not be saved. A 404 says nothing about which packs a partial catalog lacks. os and gpu select a target; the default is the first ready one. 404 also when no ready target matches. The tenant guard is the whole authorization model: a release in another workspace is a 404, not a 403.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      - name: os
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+      - name: gpu
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseUnsupportedPacks'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/releases/{id}/artifacts:
+    post:
+      operationId: addBuildArtifact
+      summary: Build an additional target for a cut release
+      description: 'Builds one more target (e.g. linux/amd) for a release that is already cut, reusing the same frozen manifest, so it is the same environment on different hardware. A deleted release takes no more targets and answers 404, the same as a release the workspace does not have. A release whose ComfyUI pin is older than the minimum `/v1/base-images` serves answers 400 `INVALID_DEFINITION`, with `invalid` naming that minimum, for any target that would start a build (new, failed, queued or building), since such a build fails its test step; a target already built still answers 409.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddArtifactRequest'
+      responses:
+        '202':
+          description: Accepted; poll statusUrl.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddArtifactResult'
+        '400':
+          description: 'INVALID_TARGET for a missing body or a target this release cannot build; INVALID_DEFINITION for a release whose definition a new build would refuse. Either names each problem in invalid and the first in message.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddArtifactError'
+        '402':
+          $ref: '#/components/responses/SubscriptionRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: That target is already built.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/build-artifacts/{id}/download:
+    get:
+      operationId: getBuildArtifactDownload
+      summary: Get a signed download link for a build artifact
+      description: 'Returns a short-lived signed URL to the artifact''s archive in storage, so the caller can download the built target''s archive directly without any standing storage access.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedDownload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/blobs:
+    get:
+      operationId: listBlobs
+      summary: List the workspace's private content
+      description: 'Lists the private custom-node zips and models the workspace has uploaded, newest first. A build definition references these by blobId.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - name: kind
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - node_zip
+          - model
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobList'
+    post:
+      operationId: createBlobUpload
+      summary: Get a scoped upload URL for private content
+      description: 'Private custom nodes and private models upload the same way: ask for a scoped upload URL, then PUT the bytes straight to GCS so the file never passes through Builder. The returned blobId is referenced from the definition.
+
+        A request with `reuse: true` may instead be answered with a blob the workspace already holds for these exact bytes and no upload URL; see BlobUpload.deduplicated. Without it every request mints a fresh upload, which is also how a client replaces a blob whose stored bytes turned out wrong: ask again without `reuse` and upload to the fresh address.
+
+        A request with `parts: true` is answered with one link per piece instead of one uploadUrl (see BlobUpload.parts). The client PUTs each piece, asks POST /v1/blobs/{id}/parts for fresh links to the pieces not landed when the first ones expire, and calls POST /v1/blobs/{id}/complete once every piece is in, which joins them into the one object a one-PUT upload leaves.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBlobRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobUpload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /v1/blobs/{id}:
+    delete:
+      operationId: deleteBlob
+      summary: Delete a private upload
+      description: 'Deletes one of the workspace''s private uploads: its record, so it drops out of the list and no build can name it, then its bytes. An upload whose bytes were never sent deletes the same way. Refused with 409 while a build''s definition, or a release that still has its storage, names it, or a live deployment adds it as a model; when only deployments hold it, buildIds is empty and message names them. A release counts until its storage is taken away after it or its build is deleted: soon for a finished release, up to about six hours after the deletion for one that was still queued or building. Answers 403 UPLOAD_DELETE_OFF, and deletes nothing, while deleting uploads is turned off for the workspace.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '204':
+          description: Deleted.
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 'A build or one of its releases still names this upload, or a live deployment adds it as a model (then buildIds may be empty).
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobInUseError'
+  /v1/blobs/{id}/parts:
+    post:
+      operationId: refreshBlobUploadParts
+      summary: Get fresh links for the pieces of an upload not landed yet
+      description: 'For an upload created with `parts: true`: answers a fresh link for every piece not yet stored, so an upload slower than one link''s expiry can go on. A piece already stored gets no link; its link was signed no-overwrite and the piece stays as it is. A refresh counts as use of the upload, so an upload resumed late is not removed as abandoned before it completes. Answers 409 UPLOAD_NOT_IN_PARTS for an upload created without `parts`, and 409 UPLOAD_COMPLETE once the pieces are joined.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobUploadParts'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The upload was not created in pieces, or its pieces are already joined.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/blobs/{id}/complete:
+    post:
+      operationId: completeBlobUpload
+      summary: Join an upload's pieces into its one object
+      description: 'For an upload created with `parts: true`: checks every piece is stored at its planned size, joins them in order into the upload''s object, the same one a one-PUT upload leaves, then empties the pieces, so a piece link still unexpired stores nothing more. The bytes are then checked as a one-PUT upload''s are: size at the release cut, sha256 when a build reads them. Calling it again after it succeeded, or while another call is joining, answers the same. Answers 409 PART_MISSING or PART_WRONG_SIZE naming the first piece that is not right, and 409 UPLOAD_NOT_IN_PARTS for an upload created without `parts` whose bytes are not there.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: The upload's object is whole.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlobUploadComplete'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A piece is missing or the wrong size, or the upload was not created in pieces.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'A workspace-scoped Cloud JWT. A missing or invalid token is 401 UNAUTHORIZED in the Error body.
+
+        '
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 'A workspace API key, sent alone. The service checks it on every request and acts as the key''s user in the key''s workspace. A request carrying a key and a Bearer token is 400 INVALID_REQUEST, and a value that is not a key''s shape is 401 UNAUTHORIZED. A refused key answers 401 (UNAUTHORIZED), 403 (FORBIDDEN), 404 (NOT_FOUND) or 429 (RATE_LIMITED) with its message and Retry-After; a 503 (SERVICE_UNAVAILABLE) means the key could not be checked right now, so retry. Each refusal answers the Error body.
+
+        '
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor from a previous response's nextCursor.
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PlanRequired:
+      description: 'The request sets, changes or removes an active governance rule (an allowlist, or a blocklist with an entry, in customNodePolicy, partnerNodePolicy, nodeIdPolicy or modelPolicy), and the workspace holds no active Team or Enterprise plan, or its plan could not be read (PLAN_REQUIRED). The message names the workspace''s plan. A save that leaves the active rules as they are is never refused for this.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ConcurrencyLimit:
+      description: 'The workspace has as many builds running at once as maxRunningBuilds allows (CONCURRENCY_LIMIT). Not ReleaseLimit, which bounds how many build versions it holds in total. Deleting a build version does not clear this one: the delete does not stop the build that version started, which keeps its place here until it finishes.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ReleaseLimit:
+      description: 'The workspace holds as many build versions as maxTotalReleases allows (RELEASE_LIMIT). Not ConcurrencyLimit, which bounds how many are building at once. Retrying alone never clears this: the workspace has to delete a build version it no longer needs, or delete the build, which removes all its versions, or move to a plan with a higher limit.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    SubscriptionRequired:
+      description: 'An operator blocked the workspace (PAYMENT_REQUIRED, reason spend_blocked). A workspace with no credit is not refused here; it is held to the Standard plan''s caps and asked for credit when it deploys.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaymentRequiredError'
+  schemas:
+    ReleaseExtensions:
+      type: object
+      description: 'A release''s custom-node frontend files for one built target: the /extensions paths to load and where to fetch the files from.
+
+        '
+      required:
+      - files
+      - archiveUrl
+      - expiresAt
+      properties:
+        files:
+          type: array
+          description: 'The "/extensions/<name>/<path>.js" paths ComfyUI listed for the release''s packs, grouped by pack in pack-name order (each pack''s paths in the order ComfyUI listed them), with <name> re-escaped by Go''s url.PathEscape, which leaves $ & + : = @ as they are where ComfyUI''s quote escapes them. These are the paths the archive''s files sit under. Empty when no pack ships a web directory.
+
+            '
+          items:
+            type: string
+        archiveUrl:
+          type: string
+          format: uri
+          description: 'Presigned GET for the gzipped tar (manifest.json first, then extensions/<name>/<file> for every file of every pack web directory). Expires at expiresAt.
+
+            '
+        expiresAt:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+        message:
+          type: string
+          description: Human-readable detail.
+    BlobInUseError:
+      type: object
+      description: 'A 409 body for a private upload something still names. error is always BLOB_IN_USE.
+
+        '
+      required:
+      - error
+      - buildIds
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code. Always BLOB_IN_USE.
+        message:
+          type: string
+          description: Human-readable detail.
+        buildIds:
+          type: array
+          description: 'The builds that name the upload, sorted: each one''s definition names it, or a release cut from it does. Remove the upload from the definition, or delete the release, then retry. A release already deleted keeps naming it until its storage cleanup finishes: soon for a finished release, up to about six hours after the deletion for one that was still queued or building. Deleting it again changes nothing, so wait for the cleanup, then retry. message says which applies. Empty when only deployments hold the upload, as an added model; message names them, and removing the model from each lets the delete go through.
+
+            '
+          items:
+            type: string
+    PaymentRequiredError:
+      type: object
+      description: 'A 402 body. error is always PAYMENT_REQUIRED; reason says which gate refused. This service refuses only a workspace an operator blocked, so every 402 it sends carries spend_blocked -- the enum matches the deploy API''s so one client can branch on one vocabulary across both.
+
+        '
+      required:
+      - error
+      - reason
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code. Always PAYMENT_REQUIRED.
+        message:
+          type: string
+          description: Human-readable detail.
+        reason:
+          type: string
+          description: 'no_credit_balance: the workspace has neither an active subscription nor a positive credit balance, so subscribing or topping up clears it. No longer sent by this service. spend_blocked: an operator blocked this workspace, which topping up does not clear.
+
+            '
+          enum:
+          - no_credit_balance
+          - spend_blocked
+    ModelResolveRequest:
+      type: object
+      required:
+      - filenames
+      properties:
+        filenames:
+          type: array
+          description: 'Bare model filenames to resolve. Each must be a plain filename (no path separators) made of the same characters a definition''s model filename allows; anything else is rejected outright, since the value becomes a provider query.
+
+            '
+          minItems: 1
+          maxItems: 32
+          items:
+            type: string
+    ModelResolveResult:
+      type: object
+      required:
+      - results
+      properties:
+        results:
+          type: array
+          maxItems: 32
+          description: One entry per requested filename, in request order.
+          items:
+            $ref: '#/components/schemas/ModelResolution'
+    ModelResolution:
+      type: object
+      description: What was found for a single requested filename.
+      required:
+      - filename
+      - candidates
+      properties:
+        filename:
+          type: string
+          description: The requested filename, echoed back so results can be matched up.
+        candidates:
+          type: array
+          maxItems: 5
+          description: 'Download sources, best first, capped at five. Empty when nothing was found. A candidate at or above confidence 0.5 is safe to offer as a default selection; below that a human should look before applying.
+
+            '
+          items:
+            $ref: '#/components/schemas/ModelSourceCandidate'
+        error:
+          type: string
+          description: 'Set only when this filename could not be looked up at all (both providers failed, or the name was rejected). Distinct from an empty candidates array, which means the lookup ran and found nothing.
+
+            '
+    ModelSourceCandidate:
+      type: object
+      description: 'One place a model can be downloaded from. The field names mirror a definition''s models[] entry so a chosen candidate needs no translation.
+
+        '
+      required:
+      - sourceUri
+      - filename
+      - source
+      - confidence
+      - verified
+      properties:
+        sourceUri:
+          type: string
+          description: Direct https download URL, ready to use as a model's sourceUri.
+        type:
+          type: string
+          description: 'The ComfyUI model directory this file belongs in, always a member of the /v1/model-directories list. Omitted when neither provider gave a confident signal — the caller must then pick the directory.
+
+            '
+        filename:
+          type: string
+          description: 'The on-disk filename as the provider publishes it, which may differ in case from the requested name.
+
+            '
+        sha256:
+          type: string
+          description: 'The file''s SHA-256, when the provider states one. Omitted rather than guessed: this is an integrity claim a build enforces.
+
+            '
+        sizeBytes:
+          type: integer
+          format: int64
+          description: File size in bytes, when known.
+        source:
+          type: string
+          description: Which provider answered.
+          enum:
+          - huggingface
+          - civitai
+        repo:
+          type: string
+          description: 'The containing repository or model, for a human to sanity-check provenance (e.g. "city96/FLUX.1-dev-gguf").
+
+            '
+        confidence:
+          type: number
+          format: double
+          description: '0..1. Dominated by how exactly the filename matched; a verified URL, a known directory, and provider popularity adjust it from there. A link from our own model catalog that HuggingFace confirmed serves the file scores 1 and comes first.
+
+            '
+          minimum: 0
+          maximum: 1
+        verified:
+          type: boolean
+          description: 'A HEAD against sourceUri succeeded, so the URL serves this file now. False can mean the check failed for access reasons (a gated repo answers 401), so it is not evidence the file is missing.
+
+            '
+    ModelDirectoryList:
+      type: object
+      required:
+      - directories
+      properties:
+        directories:
+          type: array
+          description: Sorted model directory names a model's type may be set to.
+          items:
+            type: string
+    BaseImage:
+      type: object
+      description: 'One curated base image the frontend renders as a menu option. id is the stable key a definition''s baseImage references; the rest is display metadata. The per-env image ref is resolved at the build edge, not here.
+
+        '
+      required:
+      - id
+      - label
+      - cuda
+      - python
+      - torch
+      - minComfyVersion
+      - default
+      properties:
+        id:
+          type: string
+          description: Stable id a definition selects (e.g. cuda128-py311).
+        label:
+          type: string
+          description: Short human label, e.g. "CUDA 12.8 · Python 3.11".
+        cuda:
+          type: string
+          description: CUDA version the image ships, e.g. "12.8".
+        python:
+          type: string
+          description: Python version the image ships, e.g. "3.11".
+        torch:
+          type: string
+          description: Torch version pinned to the image's CUDA build, e.g. "2.8.0".
+        minComfyVersion:
+          type: string
+          description: 'Oldest ComfyUI version a build can pin, e.g. "v0.11.1". A cut of a new release whose baseComfyVersion is a release older than this is refused, because the node-test framework every build runs cannot load it. A commit or branch pin is not compared. The value belongs to that framework rather than to one image, so every entry carries the same one.
+
+            '
+        default:
+          type: boolean
+          description: True for the image a build is built on when it names none.
+    BaseImageList:
+      type: object
+      required:
+      - baseImages
+      properties:
+        baseImages:
+          type: array
+          description: The curated base images, in catalog order.
+          items:
+            $ref: '#/components/schemas/BaseImage'
+    BuildTargetOption:
+      type: object
+      description: 'One build target the frontend renders as a menu option. Post target''s os and gpu back in a cut or add-artifact request; the rest is display metadata. This menu is base-agnostic, so its accelVariant is the DEFAULT base''s and may not be the one a given build produces. It is ignored on a request and derived from the release''s base, so echoing it back is harmless.
+
+        '
+      required:
+      - target
+      - label
+      - artifactKind
+      - default
+      properties:
+        target:
+          $ref: '#/components/schemas/Target'
+        label:
+          type: string
+          description: Short human label, e.g. "Linux · NVIDIA".
+        artifactKind:
+          type: string
+          enum:
+          - image
+          - archive
+          description: 'image: the artifact is a baked container image a deployment runs. archive: a downloadable desktop archive, with no image to deploy.
+
+            '
+        default:
+          type: boolean
+          description: True for the target a cut builds when the request names none.
+    BuildTargetList:
+      type: object
+      required:
+      - targets
+      properties:
+        targets:
+          type: array
+          description: The buildable targets, in menu order.
+          items:
+            $ref: '#/components/schemas/BuildTargetOption'
+    WorkspaceLimits:
+      type: object
+      description: 'The build ceilings a workspace is held to. An absent optional field means no ceiling of that kind applies rather than that the value is unknown: a client that could not reach this route knows nothing and shows nothing, while one that read an absent field knows the cap is off.
+
+        '
+      required:
+      - maxRunningBuilds
+      - used
+      properties:
+        maxBuilds:
+          type: integer
+          description: 'How many builds the workspace may keep at once. Deleting one frees a slot. The same number on every plan: a build is a definition and costs nothing to keep, so plans differ on releases, not builds. Absent while neither rollout has reached this workspace -- an active subscription, or the per-workspace build-caps switch -- which is when a create applies no count cap at all.
+
+            '
+          example: 50
+        maxRunningBuilds:
+          type: integer
+          description: 'How many of the workspace''s releases may be building at once, which is what a cut is refused on -- not how many builds it may keep, which is maxBuilds. Always present, because a cut is capped on every path. It rises only where an active subscription resolves the tier''s caps; the build-caps switch sets a build ceiling and never raises this one.
+
+            '
+          example: 50
+        maxTotalReleases:
+          type: integer
+          description: 'How many build versions the workspace may hold, counting every status. A build version costs to keep whether or not anything deploys it, which is what this bounds; maxRunningBuilds bounds concurrent building instead. The number is the workspace''s plan''s own where the plan has one (Standard and Creator 5, Pro 10, Team 40), and the deployment''s default for any other plan. Comfy can also save a number from 1 to 100 for one workspace, which replaces the one above from its next request; a saved number outside that range is ignored. A workspace Comfy has set a number for in code gets that number or the one above, whichever is higher. Enforced wherever it is present: unlike maxBuilds it is not gated behind the billing or build-caps rollouts. Deleted build versions do not count, so a workspace that reaches this number makes room by deleting one, or by moving to a plan with a higher one. Absent means no ceiling, the same way an absent maxBuilds does, which is what a deployment that has set the cap to zero reports. That zero turns the cap off for every workspace, including one with its own number.
+
+            '
+          example: 5
+        used:
+          $ref: '#/components/schemas/WorkspaceLimitsUsed'
+    WorkspaceLimitsUsed:
+      type: object
+      description: 'How much of each cap the workspace holds right now, counted by the same query the create and the cut compare to the cap, so once used.totalReleases reaches maxTotalReleases a cut that would make a new build version is refused. An identical re-cut of a definition that already has a build version is answered with that version before any cap is checked, so it is accepted even at the cap. Always present, every count included, even where the cap beside it is absent: an absent cap means no ceiling, not that nothing is counted.
+
+        '
+      required:
+      - builds
+      - runningBuilds
+      - totalReleases
+      properties:
+        builds:
+          type: integer
+          description: 'How many builds the workspace keeps, what maxBuilds bounds. Deleted builds do not count.
+
+            '
+          example: 3
+        runningBuilds:
+          type: integer
+          description: 'How many of the workspace''s releases are building now (queued, building or stopping), what maxRunningBuilds bounds. A release deleted while its build runs still counts until the build finishes, because deleting a build version does not stop its build.
+
+            '
+          example: 1
+        totalReleases:
+          type: integer
+          description: 'How many build versions the workspace holds, counting every status, what maxTotalReleases bounds. Deleted build versions do not count.
+
+            '
+          example: 3
+    Definition:
+      type: object
+      description: 'The user''s environment choices (nodes, models, base version). Free-form for MVP, except that a field named like a known one in another case (customnodes for customNodes) is rejected: create and update refuse one they bring in, and check and cut refuse it wherever it sits. A public custom node declares an https github.com repository URL plus an optional gitRef (absent means the default branch); a private one references an uploaded blobId; exactly one of the two per node. A model declares a type (the ComfyUI model folder it lands in, e.g. checkpoints, loras, vae) plus exactly one source, a public sourceUri (https) or a private blobId, and an optional filename and sha256; the built release records each model so it can be placed at deploy time (models are not baked into the image). A CivitAI sourceUri is saved without its token query parameter and any user:password@ part, since a deployment downloads CivitAI links with the platform''s own token, so a saved definition can read back without them. A CivitAI sourceUri (civitai.com or civitai.red, with or without www.) should be a download link (https://civitai.com/api/download/models/<versionId>) or a model page link (https://civitai.com/models/<modelId>), since a deployment can download no other CivitAI link: create and update warn on any other, and check and cut refuse it. An optional baseImage names the curated base image (the CUDA/Python/torch runtime the build is built on) by id; omitted means the default, and an unrecognized id is rejected (only images we build are selectable, never an arbitrary ref). pipDependencies is a requirements.txt string (one requirement per line). A version pin (`numpy<2.5`) is applied as an override in the single dependency resolution, so it beats every other declaration of that package; it forces a version rather than adding a package, so use it to correct versions your nodes already bring in, and the build warns about a pin nothing else requires. A direct reference to an https wheel (`nunchaku @ https://host/nunchaku-1.0.1-cp311-cp311-linux_x86_64.whl`) is instead a root of the resolution and adds that package, which is how an engine published only as a wheel outside PyPI gets in; an optional `#sha256=` fragment on the address is verified at install. Local paths, file: URLs, git+ references and addresses carrying credentials are dropped with a warning, and so is an address for a package a version pin in the same blob also names, whatever markers either line carries, because the pin would replace the address in the resolution. modelPolicy, partnerNodePolicy and customNodePolicy are allow/deny lists for which models, partner nodes and custom nodes the build permits: each is an object with a mode of "allowlist" (allow only the list) or "blocklist" (allow all except the list) plus a list of string ids. An optional uiOrigin string records which client flow authored the definition; the platform currently writes "desktop-snapshot" or "comfyui-bundle". It is attribution only: stored and read back as sent, never validated, and it changes nothing about the build (the worker reports it, truncated to 64 characters, as ui_origin on its build analytics events).
+
+        '
+      additionalProperties: true
+    DesktopSnapshot:
+      type: object
+      description: 'A ComfyUI Desktop snapshot export, exactly as Desktop writes it. Read rather than validated field by field: what the builder can install from is carried across, and what it cannot is reported. A payload that is not a Desktop export at all is a 400.
+
+
+        Only the FIRST entry in `snapshots` is read — Desktop lists newest first, so that is the state the machine is in. An export-all envelope''s remaining entries are history and are ignored, so trim before sending: they cost request size for nothing, and the request is bounded like every other. A snapshot naming more custom nodes than a definition may hold is a 400.
+
+
+        An optional top-level `models` list, `[{folder, name, size}]`, names the model files the install has on disk: the ComfyUI model folder kind, the name relative to it, and the size in bytes. It is carried into the report as localModels, never into the definition. A malformed entry is dropped on its own, and a `models` that is not a list is ignored. A top-level `modelsTruncated: true` says the sender cut the list itself, and is passed on as localModelsTruncated.
+
+        '
+      additionalProperties: true
+    ImportBundleSnapshot:
+      type: object
+      description: 'A ComfyUI Desktop snapshot export (the same format DesktopSnapshot reads), constrained for storage: `type` must be "comfyui-desktop-2-snapshot" and `snapshots` must be non-empty. Stored and returned as sent; feed it to POST /v1/snapshots/resolve to learn what it maps to.
+
+        '
+      required:
+      - type
+      - snapshots
+      properties:
+        type:
+          type: string
+          enum:
+          - comfyui-desktop-2-snapshot
+        snapshots:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    ImportBundleModel:
+      type: object
+      description: 'One model file installed in the local ComfyUI. Answers "which models does the user already have, and where": a folder name plus a path relative to it, never an absolute path and never a hash, so it is not proof of the file''s contents.
+
+        '
+      required:
+      - directory
+      - filename
+      properties:
+        directory:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: The ComfyUI model folder name it was found under, e.g. "checkpoints" or "loras".
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: 'Path relative to that folder, with any subfolders, as ComfyUI lists it (e.g. "sdxl/model.safetensors").
+
+            '
+    CreateImportBundleRequest:
+      type: object
+      required:
+      - snapshot
+      - models
+      - source
+      properties:
+        snapshot:
+          allOf:
+          - $ref: '#/components/schemas/ImportBundleSnapshot'
+          x-go-type: json.RawMessage
+        models:
+          type: array
+          maxItems: 50000
+          x-go-type: json.RawMessage
+          description: 'Every model file installed locally, possibly empty. Not the models the workflow needs; the wizard works those out from the workflow.
+
+            '
+          items:
+            $ref: '#/components/schemas/ImportBundleModel'
+        workflow:
+          allOf:
+          - $ref: '#/components/schemas/ComfyWorkflow'
+          nullable: true
+          description: The workflow open in ComfyUI, stored as sent. Absent or null when none was sent.
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+        name:
+          type: string
+          nullable: true
+          maxLength: 200
+          description: Optional label for the bundle, at most 200 characters.
+        source:
+          type: string
+          enum:
+          - comfyui
+          description: Which client produced the bundle. Always "comfyui".
+    ImportBundleCreated:
+      type: object
+      required:
+      - id
+      - workspaceId
+      - expiresAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The bundle id to open it by.
+        workspaceId:
+          type: string
+          description: 'The workspace the bundle belongs to (the caller''s). The wizard must be in this workspace to open it.
+
+            '
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the bundle stops being readable (24 hours after creation).
+    ImportBundle:
+      type: object
+      description: 'A stored import bundle as its creator reads it back. Answers "what did the user''s local ComfyUI have installed and open when they asked to deploy it". It is a record of the local machine, not a build definition: nothing in it has been resolved or checked against the registry.
+
+        '
+      required:
+      - id
+      - workspaceId
+      - createdAt
+      - expiresAt
+      - snapshot
+      - models
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspaceId:
+          type: string
+          description: The workspace the bundle belongs to; always the caller's.
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: 'When the bundle stops being readable. Not a countdown the wizard needs to enforce: the builder already refuses expired bundles.
+
+            '
+        name:
+          type: string
+          description: The label sent at create. Absent when none was sent.
+        snapshot:
+          allOf:
+          - $ref: '#/components/schemas/ImportBundleSnapshot'
+          x-go-type: json.RawMessage
+        models:
+          type: array
+          x-go-type: json.RawMessage
+          description: 'Every model file installed locally, as sent. Not the models the workflow needs, and not a statement that any of them can be downloaded for a build.
+
+            '
+          items:
+            $ref: '#/components/schemas/ImportBundleModel'
+        workflow:
+          allOf:
+          - $ref: '#/components/schemas/ComfyWorkflow'
+          description: The workflow sent at create, as sent. Absent when none was sent.
+          x-go-type: json.RawMessage
+          x-go-type-skip-optional-pointer: true
+    SnapshotNode:
+      type: object
+      description: 'One custom node as the snapshot described it, before the definition decided what to do with it. Carried so a caller with its own node catalog can still place a pack the definition had to leave out, for example one naming a registry id with no pinnable version.
+
+        '
+      required:
+      - name
+      properties:
+        name:
+          type: string
+        cnrId:
+          type: string
+          description: The Comfy Registry id, for a pack installed from the registry.
+        registryVersion:
+          type: string
+          description: A pinnable registry package version. Absent when the snapshot recorded none the builder can pin.
+        repository:
+          type: string
+          description: The normalized https://github.com/{org}/{repo} the pack was cloned from.
+        commit:
+          type: string
+          description: The commit the pack was checked out at.
+    SnapshotImportReport:
+      type: object
+      description: 'What a snapshot could not carry into its definition. Everything here is advisory: the definition is still usable, and each entry names something the user may want to fix before building.
+
+
+        An empty list is omitted rather than sent as [], so an absent field carries no claim in either direction: it does not assert that the check ran and found nothing.
+
+        '
+      required:
+      - pythonSatisfied
+      properties:
+        unresolvedNodes:
+          type: array
+          description: 'Packs the definition cannot install, by name — no fetchable remote in the snapshot, or a registry pin the registry disowned. This is a superset: every name in notInRegistry and registryPending also appears here, because a pack the snapshot attributed to the registry has no other source to fall back on. Render one or the other, not both.'
+          items:
+            type: string
+        notInRegistry:
+          type: array
+          description: Packs whose registry pin the registry does not have, by name. The pin is wrong; remove the pack or upload it privately.
+          items:
+            type: string
+        registryPending:
+          type: array
+          description: Packs the registry has but has not finished publishing, by name. The pin is right and the import is worth retrying later.
+          items:
+            type: string
+        skippedPins:
+          type: array
+          description: Packages left out because the build already decides them (the accelerator stack, ComfyUI's own packages, OS-specific wheels), by name.
+          items:
+            type: string
+        unpinnablePins:
+          type: array
+          description: Packages with no PyPI version to write, by name — an editable or direct reference rather than a released version.
+          items:
+            type: string
+        collidingNodes:
+          type: array
+          description: Packs left out because another pack already claimed the directory they would install into, by name. The folder is derived the way the cut derives it, from the registry id or the repository basename, so a fork and its upstream collide just as two registry ids differing only in case do. Cutting a release from a definition carrying both is refused, so importing both would hand the caller a build that cannot be built. The first pack to claim a folder is kept, the rest are named here, and none of them appear in nodes.
+          items:
+            type: string
+        droppedComfyVersion:
+          type: string
+          description: The ComfyUI release the snapshot named and the import would not use, because it is not a git ref this can pass to the cut. Present so a caller can say which release was refused instead of showing an empty version field. Absent when the snapshot named a usable release, or named none at all.
+        unverifiedPins:
+          type: array
+          description: Packs the registry never answered about, by name. Their pins are carried unchanged, and this says only that nothing confirmed them, so a registry outage cannot be mistaken for an import that verified clean. The cut remains the authority on a pin that cannot resolve.
+          items:
+            type: string
+        localModels:
+          type: array
+          maxItems: 2000
+          description: 'The model files the install had on disk, read from the export''s top-level `models` list, sorted by folder then name and de-duplicated. Not a loss like the fields above: a definition cannot hold a model with no download source, so the list rides here for a caller to match against what Cloud can supply. An entry whose folder or name looks like a path on the machine is dropped. Absent when the export carried no usable list.'
+          items:
+            $ref: '#/components/schemas/SnapshotLocalModel'
+        localModelsTruncated:
+          type: boolean
+          description: 'True when localModels is not the whole library: either the export set its own `modelsTruncated: true` (Desktop cuts the list before sending it), or it listed more than an import keeps (2,000), in which case 2,000 are kept by taking from each folder in turn. Absent otherwise.'
+        pythonSatisfied:
+          type: boolean
+          description: 'False when the chosen base image''s Python does not match the one the snapshot''s pins were resolved on, so a pin may reject the wheels that install worked with. True also when nothing could be compared.
+
+            '
+    SnapshotLocalModel:
+      type: object
+      description: 'One model file on the install, never a path on the machine. The same idea as ImportBundleModel ({directory, filename}), which is what local ComfyUI uploads in an import bundle and is stored as sent. This is what the builder kept after checking a Desktop snapshot''s list: the folder and name passed the path checks below and carry an optional size, so the limits are tighter and the field names follow the snapshot.'
+      required:
+      - folder
+      - name
+      properties:
+        folder:
+          type: string
+          maxLength: 64
+          description: The ComfyUI model folder kind the file sits in (checkpoints, loras, or a pack's own such as ipadapter), as ComfyUI names it.
+        name:
+          type: string
+          maxLength: 255
+          description: The file's name relative to that folder, as a loader lists it, with "/" between subfolders (sdxl/foo.safetensors). Kept exactly as sent, leading and trailing spaces included, except that backslashes are turned into "/". At most 255 characters (Unicode code points, not bytes); a name with a control, line separator or bidi control character is dropped.
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The file's size in bytes. Absent when the export did not give a whole, non-negative number.
+    SnapshotResolveRequest:
+      type: object
+      required:
+      - snapshot
+      properties:
+        snapshot:
+          $ref: '#/components/schemas/DesktopSnapshot'
+        baseImageId:
+          type: string
+          description: 'Build on this base image rather than the one the snapshot''s Python selects. The report still says whether the choice fits the snapshot.
+
+            '
+    SnapshotResolveResult:
+      type: object
+      required:
+      - definition
+      - report
+      properties:
+        definition:
+          $ref: '#/components/schemas/Definition'
+        report:
+          $ref: '#/components/schemas/SnapshotImportReport'
+        installationName:
+          type: string
+          description: The name Desktop gave the install, as a starting point for the build's name.
+        comfyVersion:
+          type: string
+          description: The upstream ComfyUI release the install is on. Empty when the snapshot does not vouch for one.
+        pythonVersion:
+          type: string
+          description: The Python the install ran on, which is what the pins were resolved against.
+        nodes:
+          type: array
+          description: Every pack the snapshot named, as it was read.
+          items:
+            $ref: '#/components/schemas/SnapshotNode'
+    CreateBuildFromSnapshotRequest:
+      type: object
+      required:
+      - name
+      - snapshot
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        snapshot:
+          $ref: '#/components/schemas/DesktopSnapshot'
+        baseImageId:
+          type: string
+          description: 'Build on this base image rather than the one the snapshot''s Python selects. The report still says whether the choice fits the snapshot.
+
+            '
+        uiOrigin:
+          type: string
+          description: 'Which client flow sent the snapshot (Desktop writes "desktop-snapshot"). Stored on the definition as its uiOrigin, the same attribution-only field the other doors carry inside the definition: never validated, and it changes nothing about the build. Cut to its first 64 characters, the length analytics reports.
+
+            '
+    SnapshotBuild:
+      type: object
+      description: The created build, alongside what its snapshot could not carry.
+      required:
+      - build
+      - report
+      properties:
+        build:
+          $ref: '#/components/schemas/Build'
+        report:
+          $ref: '#/components/schemas/SnapshotImportReport'
+    CreateBuildRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        definition:
+          $ref: '#/components/schemas/Definition'
+    UpdateBuildRequest:
+      type: object
+      required:
+      - expectedUpdatedAt
+      - definition
+      properties:
+        expectedUpdatedAt:
+          type: string
+          format: date-time
+          description: The updatedAt the caller last saw; the save is rejected if it is stale.
+        definition:
+          $ref: '#/components/schemas/Definition'
+        name:
+          type: string
+        description:
+          type: string
+    Build:
+      type: object
+      required:
+      - id
+      - name
+      - workspaceId
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        workspaceId:
+          type: string
+        definition:
+          $ref: '#/components/schemas/Definition'
+        numModels:
+          type: integer
+          description: Count of pre-installed (staged) models in the definition (derived).
+        numAllowedModels:
+          type: integer
+          description: Count of open-source models the build allows at runtime, from the modelPolicy allow-list (derived; 0 when the policy is absent or a block-list).
+        numCustomNodes:
+          type: integer
+          description: Count of custom nodes in the definition (derived).
+        numPartnerNodes:
+          type: integer
+          description: Count of partner nodes the build allows, from the partnerNodePolicy allow-list (derived; 0 when the policy is absent or a block-list).
+        sizeBytes:
+          type: integer
+          format: int64
+          description: 'Total size of the content the definition references, in bytes (derived). When the build''s current definition is exactly the one a release of it that is not deleted was cut from, so that cutting the build now would return that release rather than a new one, and that release''s cut stored a model total, the build answers with that release''s size: the figure GET of the release returns (see ReleaseDetail sizeBytes), from the total the cut measured, whatever the release''s status. Any edit since that cut, such as a model added or a link or upload swapped under the same filename, leaves the build without one. Otherwise it is read live: private blobs from their upload records, public catalog models from the shared model mirror. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). The live read runs under a time budget rather than being stored, so a loaded server may size fewer of the public models than a quiet one and return a smaller total for the same build, and a public model at a link our mirror does not hold is counted unsized. Create and update always answer live, from the stored upload records alone.'
+        numUnsizedItems:
+          type: integer
+          description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, while numModels counts entries as the definition lists them, so a definition naming one unsizable model three times reports numModels 3 and numUnsizedItems 1. A definition the server cannot parse counts as one item, since nothing it names can be read. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Where sizeBytes is a release's, this is that release's count too (see ReleaseDetail numUnsizedItems). An absent field means the server does not report the count, which is not a claim that the total is exact. Create and update always answer from the stored upload records alone, so every public model is counted here until the build is read back.
+        importReport:
+          allOf:
+          - $ref: '#/components/schemas/SnapshotImportReport'
+          description: 'Set only when this build was created from a Desktop snapshot that had something outstanding or listed the install''s models (localModels), and cleared on the first save of its definition. A build created from a workflow file reports under `workflowImportReport` instead. Absent therefore means one of three things and cannot tell them apart: it was never imported from a snapshot, the import carried everything, or it has been saved since. Read it before the first save.'
+        workflowImportReport:
+          allOf:
+          - $ref: '#/components/schemas/WorkflowImportReport'
+          description: 'Set only when this build was created from a workflow file that had something outstanding, and cleared on the first save of its definition. A build carries this or `importReport`, never both, because it came from one kind of import or the other. Its models are the caller''s next job: the definition installs no model a workflow named. Read it before the first save.'
+        warnings:
+          type: array
+          description: 'Non-blocking preflight advisories about the definition as saved (e.g. a pin the base image''s Python cannot satisfy, or a pipDependencies line the build will ignore, quoted with the reason). Listed first, the definition''s shape problems a release cut refuses on (e.g. a model type that is not a model directory, a malformed filename or sha256, a sourceUri that is not an https URL), then each HuggingFace or CivitAI model link that is not a form a deployment downloads (at `models[<n>].sourceUri`: e.g. a HuggingFace /raw/ view or repo page rather than a /resolve/ or /blob/ file link, or a CivitAI image page rather than a download or model page link; the reason names the form to use), then the pipDependencies lines the build will ignore, then a baseComfyVersion older than the minimum, then each custom node that installs a pack known not to work fully on a deployment (at `customNodes[<n>]`: one warning per node class that waits for a browser, naming the class and why, and one naming the editor features that call the pack''s own routes, which nothing on Cloud answers yet, so they do nothing in the Cloud editor today), then the package, registry pin, model link and declared sha256 lookups, in that order (a registry pin warns when the Comfy Registry does not publish that version, or withdrew it; a model link warns when a deployment could not download it, naming how its host refused it; a model''s `sha256` warns, at `models[<n>].sha256`, when its link''s host states another sha256, and the reason names both), then each private blob the definition names that the workspace does not hold, at `blob:<id>` with reason "unknown blob". A field a shape problem names carries that warning alone. Any other field may carry more than one, so read each warning''s reason rather than keying warnings by field: a model link in a form a deployment does not download is still looked up, so its `models[<n>].sourceUri` can carry one warning for its form and another for how its host answered. Not listed: a missing baseComfyVersion, or what only the cut looks up (a private blob whose upload has not finished). Populated on the save response so an editor gets them without a second call; reads never carry them. A save is never rejected for a warning, and the cut path remains authoritative for what actually blocks a build.'
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BuildSummary:
+      type: object
+      required:
+      - id
+      - name
+      - createdBy
+      - updatedAt
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        createdBy:
+          type: string
+          description: Comfy user id of the person who created this build, not of whoever cut a release from it. A client that needs a display name or an email resolves this id against the workspace's member list, which returns both keyed by the same id.
+        numModels:
+          type: integer
+          description: Count of pre-installed (staged) models in the definition (derived).
+        numAllowedModels:
+          type: integer
+          description: Count of open-source models the build allows at runtime, from the modelPolicy allow-list (derived; 0 when the policy is absent or a block-list).
+        numCustomNodes:
+          type: integer
+          description: Count of custom nodes in the definition (derived).
+        numPartnerNodes:
+          type: integer
+          description: Count of partner nodes the build allows, from the partnerNodePolicy allow-list (derived; 0 when the policy is absent or a block-list).
+        sizeBytes:
+          type: integer
+          format: int64
+          description: 'Total size of the content the definition references, in bytes (derived), the same figure GET of the build returns for it (see Build sizeBytes): a release''s size where the build''s current definition is exactly the one that release was cut from and its cut stored a model total, otherwise the live read, private blobs from their upload records and public catalog models from the shared model mirror. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). The live read runs under a time budget rather than being stored, so a loaded server may size fewer of the public models than a quiet one and return a smaller total for the same build.'
+        numUnsizedItems:
+          type: integer
+          description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, while numModels counts entries as the definition lists them, so a definition naming one unsizable model three times reports numModels 3 and numUnsizedItems 1. A definition the server cannot parse counts as one item, since nothing it names can be read. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Where sizeBytes is a release's, this is that release's count too (see ReleaseDetail numUnsizedItems). An absent field means the server does not report the count, which is not a claim that the total is exact. Create and update always answer from the stored upload records alone, so every public model is counted here until the build is read back.
+        updatedAt:
+          type: string
+          format: date-time
+    BuildList:
+      type: object
+      required:
+      - builds
+      properties:
+        builds:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuildSummary'
+        nextCursor:
+          type: string
+          description: Present when more results follow.
+    ReleaseStatus:
+      type: string
+      description: 'Closed enum for a release''s build lifecycle: queued (nothing started), building (a target is in flight), stopping (a target is stopping), stopped (all targets are terminal and some stopped), complete (all targets are terminal and none stopped). It says only whether the build is DONE, not whether it succeeded or is deployable. A complete release may have built all, some, or none of its targets; see artifactCounts and deployable. Adding or retrying a target reopens it to building.
+
+        '
+      enum:
+      - queued
+      - building
+      - complete
+      - stopping
+      - stopped
+    ArtifactStatus:
+      type: string
+      description: Closed enum for one target. stopping is unfinished; ready, failed and stopped are terminal.
+      enum:
+      - queued
+      - building
+      - ready
+      - failed
+      - stopping
+      - stopped
+    Target:
+      type: object
+      required:
+      - os
+      - gpu
+      properties:
+        os:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+        gpu:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+        accelVariant:
+          type: string
+          readOnly: true
+          description: 'Accelerator build variant, e.g. cu128. Part of the target identity. Server-derived from the gpu and the release''s base image: exactly one variant is valid per pair, so a value sent on a request is IGNORED. Present on responses to report what was built.
+
+            '
+    CutReleaseRequest:
+      type: object
+      properties:
+        targets:
+          type: array
+          description: Defaults to a single linux/nvidia target when omitted.
+          items:
+            $ref: '#/components/schemas/Target'
+    CutReleaseResult:
+      type: object
+      required:
+      - releaseId
+      - status
+      - statusUrl
+      properties:
+        releaseId:
+          type: string
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+        statusUrl:
+          type: string
+        queuePosition:
+          type: integer
+          description: Present when the build was queued behind the workspace's concurrency cap.
+    ReleaseSummary:
+      type: object
+      required:
+      - id
+      - version
+      - status
+      - deployable
+      - artifactCounts
+      - createdAt
+      properties:
+        id:
+          type: string
+        version:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+        deployable:
+          type: boolean
+          description: 'Whether this release is eligible for deployment: it is not deleted and has a ready linux/nvidia artifact with a nonempty image ref. Release completion alone does not decide eligibility: a live release can be deployable while another target is pending or failed. A windows-only release is not deployable. This flag does not replace Deploy''s other create checks, such as workspace credit and compute availability.
+
+            '
+        artifactCounts:
+          $ref: '#/components/schemas/ArtifactCounts'
+        sizeBytes:
+          type: integer
+          format: int64
+          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A cut made before the cut kept the first model on each shared path may have stored the smallest one; such a row is repaired on the row by cmd/releaseresize -shared-paths, not by the read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent on a legacy release cut before a definition was sealed onto it.'
+        numUnsizedItems:
+          type: integer
+          description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, not raw entries, so a definition naming one unsizable model three times reports numUnsizedItems 1. Where the cut stored a total, the models in it are the ones the cut could not size (zero on any release cut with a live sizer, since such a cut refuses an unsized model), plus any custom-node archive whose upload record is gone. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Absent under the same condition as sizeBytes.
+        createdAt:
+          type: string
+          format: date-time
+    ReleaseList:
+      type: object
+      required:
+      - releases
+      properties:
+        releases:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReleaseSummary'
+        nextCursor:
+          type: string
+    ReleaseLabelList:
+      type: object
+      required:
+      - labels
+      properties:
+        labels:
+          type: array
+          description: One entry per known release asked for, in no set order.
+          items:
+            $ref: '#/components/schemas/ReleaseLabel'
+    ReleaseLabel:
+      type: object
+      required:
+      - releaseId
+      - buildId
+      - buildName
+      - version
+      properties:
+        releaseId:
+          type: string
+        buildId:
+          type: string
+        buildName:
+          type: string
+        version:
+          type: integer
+    TimelineEntry:
+      type: object
+      required:
+      - phase
+      - level
+      - message
+      - at
+      properties:
+        phase:
+          type: string
+        artifactId:
+          type: string
+          description: The build artifact (target) this entry belongs to; absent for release-level events.
+        level:
+          type: string
+          enum:
+          - info
+          - error
+        message:
+          type: string
+        at:
+          type: string
+          format: date-time
+    Artifact:
+      type: object
+      required:
+      - id
+      - os
+      - gpu
+      - accelVariant
+      - status
+      properties:
+        id:
+          type: string
+        os:
+          type: string
+          enum:
+          - linux
+          - windows
+          - mac
+        gpu:
+          type: string
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+        accelVariant:
+          type: string
+          description: Accelerator build variant, e.g. cu128. Part of the target identity.
+        imageRef:
+          type: string
+          description: Baked container image ref (what cloud runs). Absent for archive-only targets that never bake an image.
+        imageDigest:
+          type: string
+          description: Baked image digest (sha256:...). Absent until a bake produces one.
+        archiveRef:
+          type: string
+          description: Archive object path the desktop download presigns. Absent until the target is ready.
+        archiveSha256:
+          type: string
+          description: SHA-256 of the signed archive. Absent until the signer's content scan computes it.
+        status:
+          $ref: '#/components/schemas/ArtifactStatus'
+        failureReason:
+          type: string
+          description: Why this target's build failed. Present only when status is failed.
+    ArtifactCounts:
+      type: object
+      description: 'Per-target build tallies for a release, so a client can show "3 of 4 built" without deriving it, and can tell a partial build (some failed, some ready) from a total one. total is the number of targets; the rest partition it.
+
+        '
+      required:
+      - total
+      - ready
+      - failed
+      - stopped
+      - pending
+      properties:
+        total:
+          type: integer
+        ready:
+          type: integer
+        failed:
+          type: integer
+        stopped:
+          type: integer
+        pending:
+          type: integer
+          description: queued, building or stopping, i.e. not yet terminal.
+    SignedDownload:
+      type: object
+      required:
+      - downloadUrl
+      - expiresAt
+      properties:
+        downloadUrl:
+          type: string
+          description: Short-lived presigned GET URL to the artifact's archive in storage.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the signed URL expires.
+    BuildManifest:
+      type: object
+      required:
+      - models
+      - customNodes
+      properties:
+        models:
+          type: array
+          description: 'The release''s pre-installed models. Empty when the release declares none.
+
+            '
+          items:
+            $ref: '#/components/schemas/BuildModel'
+        customNodes:
+          type: array
+          description: 'The release''s pinned custom nodes: public nodes cloned or downloaded at a resolved commit or registry version, and private nodes installed from an uploaded zip. Empty when the release declares none.
+
+            '
+          items:
+            $ref: '#/components/schemas/BuildCustomNode'
+        comfyuiCommit:
+          type: string
+          description: 'The ComfyUI commit this release was built from: the full SHA the definition''s baseComfyVersion (a tag, a branch or a commit) resolved to when the release was frozen, so a release cut from a branch names which point of it went in. The version the definition asked for is on the release''s own `definition`, where the release carries one. Absent when the release has not been frozen yet, froze without resolving one, or was deleted and its stored files are gone.
+
+            '
+        pipDependencies:
+          type: string
+          description: 'The release''s frozen pipDependencies, as a requirements.txt (one requirement per line, `#` comments allowed): version pins applied as overrides in the resolve so these exact pins won, and https wheel addresses added to the resolve as roots. Absent when the release set none.
+
+            '
+        modelPolicy:
+          allOf:
+          - $ref: '#/components/schemas/BuildPolicy'
+          description: 'Runtime allow/deny list for models the user may add. Absent when the release sets none. Advisory metadata for the client to enforce; the backend does not gate on it here.
+
+            '
+        partnerNodePolicy:
+          allOf:
+          - $ref: '#/components/schemas/BuildPolicy'
+          description: 'Runtime allow/deny list for partner nodes. Absent when the release sets none.
+
+            '
+        customNodePolicy:
+          allOf:
+          - $ref: '#/components/schemas/BuildPolicy'
+          description: 'Runtime allow/deny list for custom nodes the user may add. An entry names a node the way the definition''s author wrote it, which today is a registry node id ("rgthree-comfy") or a pack''s display name ("ComfyUI Impact Pack"). Absent when the release sets none.
+
+            '
+    BuildModel:
+      type: object
+      required:
+      - type
+      - filename
+      - downloadUrl
+      properties:
+        type:
+          type: string
+          description: 'The ComfyUI model directory the file installs into, relative to the models root (e.g. "checkpoints", "loras"). The client places the file at models/<type>/<filename>.
+
+            '
+        filename:
+          type: string
+          description: The on-disk filename the model installs as.
+        sha256:
+          type: string
+          description: 'Lowercase-hex SHA-256 of the model content, when known. A public model whose author supplied no hash omits this, so the client cannot verify integrity for those.
+
+            '
+        downloadUrl:
+          type: string
+          description: 'A URL the client can GET the model bytes from. For a public model this is the author''s source URL as-is; for a private model it is a short-lived presigned URL, so treat it as a capability and do not log it. A CivitAI source URL arrives without its token query parameter or any user:password@ part. When present, expiresAt gives its expiry.
+
+            '
+        expiresAt:
+          type: string
+          format: date-time
+          description: 'When downloadUrl expires. Set only for a presigned (private) URL; a public source URL has no expiry and omits this.
+
+            '
+    BuildCustomNode:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          description: 'The custom_nodes/<name> directory the node installs into.
+
+            '
+        repository:
+          type: string
+          description: 'The git repository the node was cloned from. Set only for a git-sourced node.
+
+            '
+        commit:
+          type: string
+          description: 'The resolved git commit SHA the release pinned. Set only for a git-sourced node.
+
+            '
+        nodeId:
+          type: string
+          description: 'The Comfy Registry node id (cnr_id). Set only for a registry-sourced node.
+
+            '
+        version:
+          type: string
+          description: 'The Comfy Registry package version the release pinned. Set only for a registry-sourced node.
+
+            '
+    BuildPolicy:
+      type: object
+      nullable: true
+      required:
+      - mode
+      properties:
+        mode:
+          type: string
+          enum:
+          - allowlist
+          - blocklist
+          description: '"allowlist" permits only the listed entries; "blocklist" permits everything except the listed entries.
+
+            '
+        list:
+          type: array
+          description: The entries the mode applies to.
+          items:
+            type: string
+    ReleaseDetail:
+      type: object
+      required:
+      - id
+      - buildId
+      - version
+      - status
+      - deployable
+      - artifactCounts
+      - timeline
+      - artifacts
+      - createdAt
+      properties:
+        id:
+          type: string
+        buildId:
+          type: string
+        version:
+          type: integer
+        definition:
+          allOf:
+          - $ref: '#/components/schemas/Definition'
+          description: 'What this release builds: the build''s definition as it stood at cut, sealed onto the release and never rewritten, so it can differ from the build''s current one. Absent only on legacy releases cut before the field existed.
+
+            '
+        deployable:
+          type: boolean
+          description: 'Same eligibility rule as on the summary: the release is not deleted and has a ready linux/nvidia artifact with a nonempty image ref. False after either direct release deletion or deletion of its build, even though the owning workspace can still read this detail.
+
+            '
+        reproducible:
+          type: boolean
+          description: 'Whether a rebuild installs the same Python packages this release''s build did (derived from the sealed definition). False when a pipDependencies line pins a package by the https address of a wheel without a `#sha256=` fragment: the resolve fetches whatever that address serves on the day and records the address, not the bytes, so two builds of the release can differ. True when every such address carries the fragment, which uv verifies at install, or when there is none. Absent under the same condition as definition: a legacy release cut before the field existed.
+
+            '
+        artifactCounts:
+          $ref: '#/components/schemas/ArtifactCounts'
+        sizeBytes:
+          type: integer
+          format: int64
+          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A cut made before the cut kept the first model on each shared path may have stored the smallest one; such a row is repaired on the row by cmd/releaseresize -shared-paths, not by the read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent under the same condition as definition: a legacy release cut before the field existed.'
+        numUnsizedItems:
+          type: integer
+          description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, not raw entries, so a definition naming one unsizable model three times reports numUnsizedItems 1. Where the cut stored a total, the models in it are the ones the cut could not size (zero on any release cut with a live sizer, since such a cut refuses an unsized model), plus any custom-node archive whose upload record is gone. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Absent under the same condition as sizeBytes.
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineEntry'
+        logUrl:
+          type: string
+          description: Short-lived link to the full build log.
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Artifact'
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          description: When the build first completed (every target terminal).
+    BuildLogContent:
+      type: object
+      required:
+      - releaseId
+      - log
+      - truncated
+      properties:
+        releaseId:
+          type: string
+        os:
+          type: string
+          description: The target OS of the served log; absent when no target has been built yet.
+          enum:
+          - linux
+          - windows
+          - mac
+        gpu:
+          type: string
+          description: The target GPU of the served log; absent when no target has been built yet.
+          enum:
+          - nvidia
+          - amd
+          - cpu
+          - mps
+        log:
+          type: string
+          description: The full captured build log for the target; empty if none was captured yet.
+        truncated:
+          type: boolean
+          description: True when the stored log was capped (head and tail kept, middle dropped).
+    ReleaseRoutes:
+      type: object
+      required:
+      - routes
+      - static
+      properties:
+        routes:
+          type: array
+          description: The routes the packs registered, sorted by path then method.
+          items:
+            $ref: '#/components/schemas/PackRoute'
+        static:
+          type: array
+          description: The static folders the packs serve, sorted by prefix.
+          items:
+            $ref: '#/components/schemas/PackStatic'
+    PackRoute:
+      type: object
+      required:
+      - method
+      - path
+      - pack
+      properties:
+        method:
+          type: string
+          description: The HTTP method, or "*" for a route that takes any method.
+          example: GET
+        path:
+          type: string
+          description: The path pattern as the pack registered it, in aiohttp's form, with {name} and {name:regex} segments kept.
+          example: /rgthree/api/{type}/info
+        pack:
+          type: string
+          description: The pack's folder under custom_nodes.
+          example: rgthree-comfy
+    PackStatic:
+      type: object
+      required:
+      - prefix
+      - pack
+      properties:
+        prefix:
+          type: string
+          description: The URL prefix the folder is served under; every path below it is the pack's.
+          example: /kjweb_async
+        pack:
+          type: string
+          description: The pack's folder under custom_nodes.
+          example: comfyui-kjnodes
+    ReleaseUnsupportedPacks:
+      type: object
+      required:
+      - packs
+      properties:
+        packs:
+          type: array
+          description: The declared packs that failed to import, in the order the build declared them.
+          items:
+            $ref: '#/components/schemas/UnsupportedPack'
+    UnsupportedPack:
+      type: object
+      required:
+      - folder
+      - cause
+      properties:
+        folder:
+          type: string
+          description: The pack's folder under custom_nodes.
+          example: seedvr2_videoupscaler
+        registryId:
+          type: string
+          description: The pack's Comfy Registry id, from the release's sealed manifest; absent for a pack not installed from the registry.
+          example: seedvr2_videoupscaler
+        repository:
+          type: string
+          description: 'The repository URL the pack''s own pyproject.toml names under [project.urls] Repository, which ties a registry pack to the folder a git clone of it has. Written by the pack, so it identifies the pack only for matching, never as a verified source. Absent when the pack names none.
+
+            '
+          example: https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler
+        cause:
+          type: string
+          description: 'Why the pack failed to import: the last line of its import error, scrubbed and cut to about 200 bytes, or "needs a GPU". Empty when ComfyUI logged no reason.
+
+            '
+          example: No module named 'cv2'
+    AddArtifactRequest:
+      type: object
+      required:
+      - target
+      properties:
+        target:
+          $ref: '#/components/schemas/Target'
+    AddArtifactResult:
+      type: object
+      required:
+      - artifactId
+      - status
+      - statusUrl
+      properties:
+        artifactId:
+          type: string
+        status:
+          $ref: '#/components/schemas/ReleaseStatus'
+        statusUrl:
+          type: string
+    ValidateResult:
+      type: object
+      required:
+      - ok
+      properties:
+        ok:
+          type: boolean
+        resolved:
+          type: object
+          additionalProperties: true
+          description: The resolved definition when ok is true.
+        warnings:
+          type: array
+          description: 'Non-blocking, best-effort advisories: a git ref or repository that could not be resolved against its remote, a model link a deployment could not download at `models[<n>].sourceUri`, a declared sha256 its link''s host contradicts at `models[<n>].sha256`, or a custom node that installs a pack known not to work fully on a deployment at `customNodes[<n>]`. Never affects ok: these are surfaced to the editor but do not block submit or cut.'
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        workflowCoverage:
+          $ref: '#/components/schemas/WorkflowCoverage'
+    ValidateBuildRequest:
+      type: object
+      description: The optional body of POST /v1/builds/{id}/validate.
+      properties:
+        workflow:
+          $ref: '#/components/schemas/ComfyWorkflow'
+    AddArtifactError:
+      type: object
+      description: 'The 400 body of adding a target: the Error fields, plus each problem with the target or with the release''s definition.
+
+        '
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: INVALID_TARGET or INVALID_DEFINITION.
+        message:
+          type: string
+          description: The first problem, as its field then its reason.
+        invalid:
+          type: array
+          description: One entry per problem.
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+    ValidationIssue:
+      type: object
+      required:
+      - field
+      - reason
+      properties:
+        field:
+          type: string
+        reason:
+          type: string
+    ValidationError:
+      type: object
+      required:
+      - error
+      - invalid
+      properties:
+        error:
+          type: string
+          description: INVALID_DEFINITION, or, from POST /v1/builds/{id}/validate only, INVALID_WORKFLOW or WORKFLOW_TOO_LARGE for the workflow it was sent.
+        invalid:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        workflowCoverage:
+          $ref: '#/components/schemas/WorkflowCoverage'
+        warnings:
+          type: array
+          description: 'POST /v1/builds/{id}/validate only: the non-blocking advisories it found beside the problems, such as a model link a deployment could not download at `models[<n>].sourceUri`. A release cut never sets it.'
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        resolved:
+          type: object
+          additionalProperties: true
+          description: 'POST /v1/builds/{id}/validate only: the definition as saved, so a caller can name the model a `models[<n>]` finding is about. A release cut never sets it.'
+    CreateBlobRequest:
+      type: object
+      required:
+      - kind
+      - filename
+      - sizeBytes
+      - sha256
+      properties:
+        kind:
+          type: string
+          enum:
+          - node_zip
+          - model
+        filename:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: 'Size of the file in bytes. A node_zip can be at most 2 GiB (2147483648 bytes), the most a build installs; a larger one answers 400.
+
+            '
+        sha256:
+          type: string
+        blake3:
+          type: string
+          description: 'Optional BLAKE3 digest of the same bytes, 64 hex characters. Sealed into the release manifest beside sha256, so a deploy can verify the staged file with whichever hash it holds.
+
+            '
+        reuse:
+          type: boolean
+          default: false
+          description: 'True lets the answer be a blob the workspace already holds for these exact bytes, with `deduplicated: true` and no uploadUrl; a client that sends it must branch on `deduplicated`. Absent or false, the answer is always a fresh upload URL, whatever the workspace holds, which is what a client written before this field expects and how a client replaces a held blob whose stored bytes are wrong.
+
+            '
+        parts:
+          type: boolean
+          default: false
+          description: 'True asks for the upload in pieces: the answer carries `parts`, one link per piece, and no uploadUrl. sizeBytes is split into at most 32 pieces of at least 64 MiB each (one piece below 128 MiB), and may be at most 128 GiB (137438953472 bytes); a larger one answers 400. Re-use applies first, as without it: a deduplicated answer has no pieces. Absent or false, the answer is one uploadUrl, as before this field.
+
+            '
+    BlobUpload:
+      type: object
+      required:
+      - blobId
+      - deduplicated
+      properties:
+        blobId:
+          type: string
+          description: Random, workspace-scoped id referenced from the definition.
+        deduplicated:
+          type: boolean
+          description: 'True when the request said `reuse: true` and this workspace already held these exact bytes (same kind, filename, sha256, size and blake3): blobId names the blob it already has, uploadUrl and expiresAt are absent, and the client must transfer nothing. False on every fresh mint, where both are present, and always false for a request that did not ask to reuse.
+
+            Branch on this rather than on uploadUrl being absent. A presigned PUT is signed create-only, so replaying an old one against content that already exists fails rather than harmlessly re-uploading.
+
+            '
+        uploadUrl:
+          type: string
+          description: 'Presigned PUT; size-locked and no-overwrite. Present unless deduplicated is true, which only a request with `reuse: true` can get, or the request said `parts: true`.'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When uploadUrl stops being accepted. Absent with it.
+        parts:
+          type: array
+          description: 'Present only when the request said `parts: true` and the answer is not deduplicated: one link per piece, in order. PUT each piece''s bytes to its link, then call POST /v1/blobs/{id}/complete.
+
+            '
+          items:
+            $ref: '#/components/schemas/BlobUploadPart'
+    BlobUploadPart:
+      type: object
+      required:
+      - partNumber
+      - offsetBytes
+      - sizeBytes
+      - uploadUrl
+      - expiresAt
+      properties:
+        partNumber:
+          type: integer
+          description: The piece's place in the file, from 1.
+        offsetBytes:
+          type: integer
+          format: int64
+          description: Where the piece starts in the file.
+        sizeBytes:
+          type: integer
+          format: int64
+          description: The piece's length; the link refuses a body of any other length.
+        uploadUrl:
+          type: string
+          description: Presigned PUT for this piece; size-locked and no-overwrite.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When uploadUrl stops being accepted.
+    BlobUploadParts:
+      type: object
+      required:
+      - blobId
+      - parts
+      properties:
+        blobId:
+          type: string
+        parts:
+          type: array
+          description: A fresh link for each piece not stored yet, in order; empty when every piece is in.
+          items:
+            $ref: '#/components/schemas/BlobUploadPart'
+    BlobUploadComplete:
+      type: object
+      required:
+      - blobId
+      - sizeBytes
+      properties:
+        blobId:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: The size of the joined object, the size declared at upload.
+    BlobSummary:
+      type: object
+      required:
+      - blobId
+      - kind
+      - filename
+      - sizeBytes
+      - sha256
+      - status
+      - createdAt
+      properties:
+        blobId:
+          type: string
+        kind:
+          type: string
+          enum:
+          - node_zip
+          - model
+        filename:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        blake3:
+          type: string
+          description: BLAKE3 digest declared at upload, 64 hex characters. Absent when the client sent none.
+        status:
+          type: string
+          enum:
+          - pending
+          - ready
+        createdAt:
+          type: string
+          format: date-time
+    BlobList:
+      type: object
+      required:
+      - blobs
+      properties:
+        blobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlobSummary'
+    ComfyWorkflow:
+      type: object
+      description: 'A ComfyUI workflow, in either export dialect. The API format is a flat object of node id to node, each carrying `class_type` and its values under `inputs`. The UI format carries a `nodes` array with positional `widgets_values` alongside a `links` array, which is what identifies it, and may hold reusable groups under `definitions.subgraphs` that are expanded when read.
+
+
+        Read rather than validated field by field: the node classes and model filenames are taken out, and everything else is ignored. A payload that matches neither dialect is a 400.
+
+        '
+      additionalProperties: true
+    WorkflowModelNeed:
+      type: object
+      description: 'One model file the workflow names and the definition cannot carry. A definition''s model needs exactly one source and a workflow supplies neither, so this is handed back for the caller to resolve, typically through POST /v1/models/resolve, and save into the definition.
+
+        '
+      required:
+      - filename
+      - status
+      properties:
+        filename:
+          type: string
+          description: The basename, which is what a catalog is searched by.
+        raw:
+          type: string
+          description: The value as the file wrote it, subfolder prefix and all, so a person can recognise it even when the catalog cannot.
+        directories:
+          type: array
+          description: With status matched, the catalog folders holding this exact name. Otherwise the Build folders the workflow's own models list names for it, else those its loaders read in Cloud's catalog. Absent means no folder is known.
+          items:
+            type: string
+        suggestions:
+          type: array
+          description: 'Catalog names this might have meant, closest first. Offered for a person to judge, never applied: `v1-5-pruned` and `v2-1-pruned` score alike.'
+          items:
+            $ref: '#/components/schemas/WorkflowModelSuggestion'
+        status:
+          type: string
+          enum:
+          - matched
+          - suggested
+          - missing
+          description: Which answer this is, so a caller branches on a value.
+        usedBy:
+          type: array
+          description: The node classes that referenced it.
+          items:
+            type: string
+    WorkflowModelSuggestion:
+      type: object
+      description: One catalog name a model might have meant, and why.
+      required:
+      - filename
+      - score
+      properties:
+        filename:
+          type: string
+          description: The catalog's name for it.
+        directory:
+          type: string
+          description: A folder holding it, so a caller can say where it comes from.
+        score:
+          type: number
+          format: double
+          description: Similarity in [0, 1]. Ranks candidates; not confidence that two names mean the same weights.
+    WorkflowClassSuggestion:
+      type: object
+      description: One pack offered for an unknown class, and the class that earned it.
+      required:
+      - packId
+      - nearestClass
+      - score
+      properties:
+        packId:
+          type: string
+        nearestClass:
+          type: string
+          description: The class in that pack whose name is closest.
+        score:
+          type: number
+          format: double
+    WorkflowSuggestedPack:
+      type: object
+      description: A pack the registry or the workflow file points to for an unknown class, which the definition does not install. The registry lets any publisher list any class name (its class index answers GetNode with an unrelated pack), so this is offered for a person to add and never added by the builder.
+      required:
+      - source
+      properties:
+        packId:
+          type: string
+          description: The registry id. Absent when `source` is `fileRepository`.
+        name:
+          type: string
+          description: The registry's display name, when it has one.
+        repository:
+          type: string
+          description: The pack's clone URL, shown so a person can see what they would add. Absent when the registry records none, or records one that is not an https URL.
+        source:
+          type: string
+          enum:
+          - classIndex
+          - fileStamp
+          - fileRepository
+          - browserRegistration
+          description: 'What pointed to the pack. classIndex: the registry''s class index names it for the class. This is the weakest source: the index names whatever pack declared the name, so a generic name such as GetNode can name an unrelated pack, and a ComfyUI class newer than the class map can be offered one. fileStamp: the file''s node names this registry pack (`cnr_id`) and the registry has it, but its class index does not list the class. fileRepository: the file''s node names only a GitHub repository (`aux_id`), which the class index does not name for the class. browserRegistration: the pack''s editor script registers the class, which runs only in the browser, but the registry''s class index names another pack for the same name, so the pack is offered rather than added. The list is open: clients must accept a value not listed here, and treat it as a lead of unknown origin.'
+    WorkflowUnknownClass:
+      type: object
+      description: A class nothing attributes, with the packs its nearest known class names belong to, and the pack the registry or the file points to. A lead, never an answer.
+      required:
+      - classType
+      - status
+      properties:
+        classType:
+          type: string
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowClassSuggestion'
+        suggestedPack:
+          $ref: '#/components/schemas/WorkflowSuggestedPack'
+        status:
+          type: string
+          enum:
+          - suggested
+          - missing
+          description: suggested when `suggestions` or `suggestedPack` holds a lead.
+    WorkflowImportReport:
+      type: object
+      description: Everything a workflow could not carry into its definition.
+      required:
+      - pinnedToLatest
+      - comfyVersionRequired
+      properties:
+        unresolvedClasses:
+          type: array
+          description: 'Node classes nothing installable provides and which the file did not claim were built in: either no pack claims them, or the pack that does publishes nothing to fetch. These are the ones a person has to act on: the graph will not run without them.
+
+            '
+          items:
+            type: string
+        uncheckedClasses:
+          type: array
+          description: 'Classes the registry never answered about, or was not asked about: the classes of stamped packs past the 16 one import looks up, unstamped classes past the first 16 sent to the class index, and every class the registry would be asked about when no registry is configured. Their packs are absent from the definition, and this says only that nothing confirmed they are missing, so a registry outage cannot read like a clean resolve.
+
+            '
+          items:
+            type: string
+        packsWithoutVersion:
+          type: array
+          description: 'Packs the registry knows but publishes no installable version of, by name. They are carried by repository instead, so they install from source rather than from a pinned release.
+
+            '
+          items:
+            type: string
+        collidingPacks:
+          type: array
+          description: 'Packs left out because another pack already claimed the directory they would install into. The cut refuses a definition carrying two of them, so keeping both would produce a build that cannot be cut.
+
+            '
+          items:
+            type: string
+        models:
+          type: array
+          description: The model files the workflow names. Never part of the definition.
+          items:
+            $ref: '#/components/schemas/WorkflowModelNeed'
+        unknownClasses:
+          type: array
+          description: Classes nothing attributes, with the packs their nearest known class names belong to and any `suggestedPack`. The detailed form of `unresolvedClasses`.
+          items:
+            $ref: '#/components/schemas/WorkflowUnknownClass'
+        partnerClasses:
+          type: object
+          additionalProperties:
+            type: string
+          description: Classes served by a partner provider, mapped to that provider. Nothing to install, named so a caller sees the workflow needs partner access.
+        comfyVersionRequired:
+          type: boolean
+          description: True when `baseComfyVersion` still has to be pinned before a cut. A workflow names no ComfyUI version and this service has no list to default from, so a fresh import always owes one.
+        pinnedToLatest:
+          type: boolean
+          description: 'True when any pack was pinned to the registry''s newest published version. A workflow names no versions, so this is the normal case rather than an error, and it is the one way two imports of the same file can differ.
+
+            '
+        packsFromStamps:
+          type: array
+          description: 'Packs in the definition only because the file stamped them on a class the class map lacks and the registry''s class index named the same pack, by name. The class map did not choose them, and the index lets any publisher list any class name, so agreement is not proof the pack is the one the author had installed.
+
+            '
+          items:
+            type: string
+        classesFromStamps:
+          type: array
+          description: 'Classes attributed to a pack only through the file''s stamp, by class name, sorted: confirmed by the class index, carried along with a pack another class confirmed, or attached to a pack already going in by id or repository. Also every class with no registry stamp that the class index placed in a pack already going in, every class that runs only in the browser from a pack Comfy Cloud does not install, and every class Comfy Cloud hides, placed in the pack Cloud''s config names for it, or in none for a ComfyUI built-in. The class map never placed them, and the map is what Comfy Cloud installs, so Cloud cannot be assumed to have them. They are absent from `unresolvedClasses` and `uncheckedClasses`, so a caller deciding whether Cloud runs the workflow as it is must read a non-empty list as no.
+
+            '
+          items:
+            type: string
+    WorkflowResolveRequest:
+      type: object
+      required:
+      - workflow
+      properties:
+        workflow:
+          $ref: '#/components/schemas/ComfyWorkflow'
+    WorkflowResolveResult:
+      type: object
+      required:
+      - definition
+      - report
+      - format
+      properties:
+        definition:
+          $ref: '#/components/schemas/Definition'
+        report:
+          $ref: '#/components/schemas/WorkflowImportReport'
+        format:
+          type: string
+          enum:
+          - api
+          - ui
+          description: Which export dialect the file was read as.
+    WorkflowValidateRequest:
+      type: object
+      required:
+      - workflow
+      - definition
+      properties:
+        workflow:
+          $ref: '#/components/schemas/ComfyWorkflow'
+        definition:
+          $ref: '#/components/schemas/Definition'
+    WorkflowCoverage:
+      type: object
+      description: 'Which of a workflow''s custom node classes a definition installs. Every such class is counted in `covered`, listed under one pack in `missing`, or listed in `unverified`, exactly once.
+
+        '
+      required:
+      - format
+      - complete
+      - covered
+      - missing
+      - unverified
+      properties:
+        format:
+          type: string
+          description: Which export dialect the file was read as, `api` or `ui` (the same values as WorkflowResolveResult's `format`).
+        complete:
+          type: boolean
+          description: 'True only when the definition provably installs every custom class: nothing missing and nothing unverified. Not a statement about models, Python packages or partner access.
+
+            '
+        covered:
+          type: integer
+          description: How many distinct custom classes the definition provides.
+        missing:
+          type: array
+          description: The packs to add, sorted by `packId`.
+          items:
+            $ref: '#/components/schemas/WorkflowMissingPack'
+        unverified:
+          type: array
+          description: The classes nothing could decide, sorted by `classType`.
+          items:
+            $ref: '#/components/schemas/WorkflowUnverifiedClass'
+    WorkflowMissingPack:
+      type: object
+      description: A pack the registry names for the workflow's classes and the definition lacks.
+      required:
+      - packId
+      - classes
+      properties:
+        packId:
+          type: string
+          description: The registry id, or the clone URL for a pack the registry does not publish.
+        name:
+          type: string
+        repository:
+          type: string
+        latestVersion:
+          type: string
+          description: The registry's newest published version, the one known to carry these classes.
+        classes:
+          type: array
+          description: The workflow's classes this pack provides, sorted.
+          items:
+            type: string
+    WorkflowUnverifiedClass:
+      type: object
+      required:
+      - classType
+      - reason
+      properties:
+        classType:
+          type: string
+        reason:
+          type: string
+          enum:
+          - unknownClass
+          - lookupFailed
+          - pinnedVersion
+          - otherRepository
+          - stampOnly
+          - uploadedPack
+          - unmatchedUpload
+          description: 'unknownClass: nothing attributes the class to a pack. lookupFailed: the registry did not answer for its pack. pinnedVersion: the pack is in the definition at a registry version other than the latest, or at a git ref or commit. otherRepository: an entry carries the pack''s registry id but installs from a different repository, such as a fork. stampOnly: the pack is in the definition, but only the pack the workflow file stamped on the class, or for a class with no registry stamp the registry''s class index, attributes the class to it, so the pack may no longer ship it. uploadedPack: the pack is in the definition as an uploaded file. unmatchedUpload: the pack is absent by id and repository, but the definition holds an upload that may be it.
+
+            '
+        packId:
+          type: string
+          description: The pack the class is attributed to, when one is known.
+    CreateBuildFromWorkflowRequest:
+      type: object
+      required:
+      - name
+      - workflow
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        workflow:
+          $ref: '#/components/schemas/ComfyWorkflow'
+    WorkflowBuild:
+      type: object
+      description: The created build, alongside what its workflow could not carry.
+      required:
+      - build
+      - report
+      properties:
+        build:
+          $ref: '#/components/schemas/Build'
+        report:
+          $ref: '#/components/schemas/WorkflowImportReport'
