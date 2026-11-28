@@ -35,7 +35,7 @@ paths:
     post:
       operationId: resolveModelSources
       summary: Find download sources for model filenames
-      description: 'Resolves bare model filenames — the strings a ComfyUI workflow node carries, e.g. "flux1-dev-Q8_0.gguf" — into the places they can be downloaded from. A filename our model catalog lists with a HuggingFace link gets that link first, with its folder; HuggingFace and CivitAI are then searched live for the rest of the shortlist. Each candidate is shaped to drop straight into a definition''s models[] entry (sourceUri, type, filename, sha256), so the create/edit flow can offer a model without the user hunting for a link.
+      description: 'Resolves bare model filenames — the strings a ComfyUI workflow node carries, e.g. "flux1-dev-Q8_0.gguf" — into the places they can be downloaded from. A filename our model catalog lists with a HuggingFace link gets that link first, with its folder; HuggingFace and CivitAI are then searched live for the rest of the shortlist. Each candidate carries the fields of a definition''s models[] entry (sourceUri, type, filename, sha256), so the create/edit flow can offer a model without the user hunting for a link. A candidate omits type when no model directory is known for it; the caller then picks one from GET /v1/model-directories, since a check or a cut refuses a model with no type.
 
 
         Candidates are ranked, never applied: a filename is a weak key, so the answer is a shortlist with its confidence attached and the caller picks. A filename that resolves to nothing returns an empty candidates array, not an error — plenty of models are private, renamed, or user-trained. Nothing is cached; every call queries the providers.
@@ -49,7 +49,7 @@ paths:
               $ref: '#/components/schemas/ModelResolveRequest'
       responses:
         '200':
-          description: 'Resolution ran. One result per requested filename, in request order; a result with no candidates means nothing was found, which is a normal outcome.
+          description: 'Resolution ran. One result per requested filename, in request order; a result with no candidates means nothing was found, which is a normal outcome. A filename that could not be looked up, including a malformed one, carries error instead of failing the request.
 
             '
           content:
@@ -263,13 +263,13 @@ paths:
       description: 'The caps the caller''s workspace is actually held to right now, resolved through the same gate a create and a cut run, so a number reported here is the number those refuse at. Every cap is raisable per workspace, so a client must read them rather than hold its own copy.
 
 
-        A cap that does not apply is absent from the response, which is the normal answer for a workspace billing did not resolve: it may keep any number of builds, and its running-build cap is the unenforced one rather than the configured one. An absent cap is a statement about enforcement as it stands right now, including while a billing check is failing open; a request the client could not complete is not, and a client that got no response shows nothing rather than inferring an absent cap.
+        A cap that does not apply is absent from the response, which is the normal answer for a workspace billing did not resolve: it may keep any number of builds, and its running-build cap is a fixed default rather than the configured one. An absent cap is a statement about enforcement as it stands right now, including while a billing check is failing open; a request the client could not complete is not, and a client that got no response shows nothing rather than inferring an absent cap.
 
 
         Beside the caps, used carries what the workspace holds against each one, counted by the query the create and the cut compare to the cap, so a client can show "3 of 20". It is present on every 200, including when a cap is absent.
 
 
-        A workspace with no credit balance is refused here exactly as a create and a cut refuse it, because no count is what stops it and reporting one would name a ceiling that governs nothing.
+        A workspace an operator blocked is refused here with 402, exactly as a create and a cut refuse it, because no count is what stops it and reporting one would name a ceiling that governs nothing. A workspace with no credit is not refused; it is held to the Standard plan''s caps.
 
         '
       responses:
@@ -342,7 +342,7 @@ paths:
       description: 'Reads the snapshot exactly as POST /v1/snapshots/resolve does, then creates the build from what it read. For a caller that has a snapshot and wants an environment, rather than one that wants to show a person what the snapshot means first.
 
 
-        The report is returned twice and both copies are the same object: once at the top level, and once as the created build''s own `importReport`. It is stored on the build too, so a caller that hands the user off to the build page (Desktop opening a browser, say) does not have to carry the warnings across that gap itself. The stored copy is cleared the first time the definition is saved.
+        The report is always returned at the top level; read it there. When the import left something outstanding or listed the install''s models, the same report is also stored on the build and returned as its `importReport`, so a caller that hands the user off to the build page (Desktop opening a browser, say) does not have to carry the warnings across that gap itself. A clean import stores none. The stored copy is cleared the first time the definition is saved.
 
 
         A 400 carries the identifier a caller branches on, never the wording: `INVALID_REQUEST` when the name or the snapshot is missing, `INVALID_SNAPSHOT` when the payload is not a Desktop export or what it maps to cannot be stored as a definition, and `SNAPSHOT_TOO_LARGE` when it names more custom nodes than a definition may hold.
@@ -715,7 +715,7 @@ paths:
     delete:
       operationId: deleteRelease
       summary: Delete a release
-      description: 'Stamps the release deleted and frees the slot it held against the workspace''s release limit, so a workspace at the limit can make room itself. Idempotent: a release already deleted answers 204 again. Refused with 409 while a deployment in the workspace serves the release (its current routes send it any traffic, stopped deployments included), is moving onto it, is being deleted and has not yet torn down its copy on it, or predates recorded revisions. A copy a deployment only keeps from an earlier update, for a move back, does not refuse it; once the release is deleted, a move, rollback or start back onto it is refused, and the release''s stored files stay while that copy does: until comfy-deploy retires it, which it does not yet in any environment, and with no end date for a copy its owner or a spend policy paused. A deleted release drops out of its build''s release list, takes no more added targets, and stops satisfying a re-cut of the same definition, which makes a new release instead.
+      description: 'Stamps the release deleted and frees the slot it held against the workspace''s release limit, so a workspace at the limit can make room itself. Idempotent: a release already deleted answers 204 again. Refused with 409 while a deployment in the workspace serves the release (its current routes send it any traffic, stopped deployments included), is moving onto it, is being deleted and has not yet torn down its copy on it, or predates recorded revisions. A copy a deployment only keeps from an earlier update, for a move back, does not refuse it; once the release is deleted, a move, rollback or start back onto it is refused, and the release''s stored files stay while that copy does: until Deploy retires it, which it does not do yet, and with no end date for a copy its owner or a spend policy paused. A deleted release drops out of its build''s release list, takes no more added targets, and stops satisfying a re-cut of the same definition, which makes a new release instead.
 
         '
       parameters:
@@ -1319,7 +1319,7 @@ components:
       properties:
         filenames:
           type: array
-          description: 'Bare model filenames to resolve. Each must be a plain filename (no path separators) made of the same characters a definition''s model filename allows; anything else is rejected outright, since the value becomes a provider query.
+          description: 'Bare model filenames to resolve. Each must be a plain filename (no path separators) made of the same characters a definition''s model filename allows; anything else is not looked up and comes back with error set in its result, since the value would become a provider query. A 400 is only for an empty list or more than 32 names.
 
             '
           minItems: 1
@@ -1362,7 +1362,7 @@ components:
             '
     ModelSourceCandidate:
       type: object
-      description: 'One place a model can be downloaded from. The field names mirror a definition''s models[] entry so a chosen candidate needs no translation.
+      description: 'One place a model can be downloaded from. The field names mirror a definition''s models[] entry. type is absent when no model directory is known, and a chosen candidate needs one before a check or a cut accepts it.
 
         '
       required:
@@ -1523,19 +1523,19 @@ components:
       properties:
         maxBuilds:
           type: integer
-          description: 'How many builds the workspace may keep at once. Deleting one frees a slot. The same number on every plan: a build is a definition and costs nothing to keep, so plans differ on releases, not builds. Absent while neither rollout has reached this workspace -- an active subscription, or the per-workspace build-caps switch -- which is when a create applies no count cap at all.
+          description: 'How many builds the workspace may keep at once. Deleting one frees a slot. The same number on every plan: a build is a definition and costs nothing to keep, so plans differ on releases, not builds. Absent when billing could not resolve the workspace and no build cap has been turned on for it, which is when a create applies no count cap at all.
 
             '
           example: 50
         maxRunningBuilds:
           type: integer
-          description: 'How many of the workspace''s releases may be building at once, which is what a cut is refused on -- not how many builds it may keep, which is maxBuilds. Always present, because a cut is capped on every path. It rises only where an active subscription resolves the tier''s caps; the build-caps switch sets a build ceiling and never raises this one.
+          description: 'How many of the workspace''s releases may be building at once, which is what a cut is refused on -- not how many builds it may keep, which is maxBuilds. Always present, because a cut is capped on every path. Where billing resolves the workspace, with or without credit, it is the configured number, the same on every plan. Where billing does not resolve it, a fixed default applies instead, which a per-workspace build cap can only lower.
 
             '
           example: 50
         maxTotalReleases:
           type: integer
-          description: 'How many build versions the workspace may hold, counting every status. A build version costs to keep whether or not anything deploys it, which is what this bounds; maxRunningBuilds bounds concurrent building instead. The number is the workspace''s plan''s own where the plan has one (Standard and Creator 5, Pro 10, Team 40), and the deployment''s default for any other plan. Comfy can also save a number from 1 to 100 for one workspace, which replaces the one above from its next request; a saved number outside that range is ignored. A workspace Comfy has set a number for in code gets that number or the one above, whichever is higher. Enforced wherever it is present: unlike maxBuilds it is not gated behind the billing or build-caps rollouts. Deleted build versions do not count, so a workspace that reaches this number makes room by deleting one, or by moving to a plan with a higher one. Absent means no ceiling, the same way an absent maxBuilds does, which is what a deployment that has set the cap to zero reports. That zero turns the cap off for every workspace, including one with its own number.
+          description: 'How many build versions the workspace may hold, counting every status. A build version costs to keep whether or not anything deploys it, which is what this bounds; maxRunningBuilds bounds concurrent building instead. The number is the workspace''s plan''s own where the plan has one (Standard and Creator 5, Pro 10, Team 40), and the deployment''s default for any other plan. Comfy can also save a number from 1 to 100 for one workspace, which replaces the one above from its next request; a saved number outside that range is ignored. A workspace Comfy has set a number for in code gets that number or the one above, whichever is higher. Enforced wherever it is present, whether or not billing resolves the workspace. Deleted build versions do not count, so a workspace that reaches this number makes room by deleting one, or by moving to a plan with a higher one. Absent means no ceiling, the same way an absent maxBuilds does, which is what a deployment that has set the cap to zero reports. That zero turns the cap off for every workspace, including one with its own number.
 
             '
           example: 5
@@ -2112,7 +2112,7 @@ components:
           type: string
         queuePosition:
           type: integer
-          description: Present when the build was queued behind the workspace's concurrency cap.
+          description: 'Not sent: a new release at the running-build cap is refused with 429 (CONCURRENCY_LIMIT) rather than queued.'
     ReleaseSummary:
       type: object
       required:
@@ -2139,7 +2139,7 @@ components:
         sizeBytes:
           type: integer
           format: int64
-          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A cut made before the cut kept the first model on each shared path may have stored the smallest one; such a row is repaired on the row by cmd/releaseresize -shared-paths, not by the read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent on a legacy release cut before a definition was sealed onto it.'
+          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A release cut before the cut kept the first model on each shared path may have stored the smallest one; such a stored total is corrected on the release itself, not by this read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent on a legacy release cut before a definition was sealed onto it.'
         numUnsizedItems:
           type: integer
           description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, not raw entries, so a definition naming one unsizable model three times reports numUnsizedItems 1. Where the cut stored a total, the models in it are the ones the cut could not size (zero on any release cut with a live sizer, since such a cut refuses an unsized model), plus any custom-node archive whose upload record is gone. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Absent under the same condition as sizeBytes.
@@ -2356,13 +2356,13 @@ components:
             '
         downloadUrl:
           type: string
-          description: 'A URL the client can GET the model bytes from. For a public model this is the author''s source URL as-is; for a private model it is a short-lived presigned URL, so treat it as a capability and do not log it. A CivitAI source URL arrives without its token query parameter or any user:password@ part. When present, expiresAt gives its expiry.
+          description: 'Where to fetch the model. For a public model this is a short-lived presigned URL to a stored copy of the file where one exists, or else the author''s source URL. A CivitAI model page link stays a page link, which answers HTML rather than the file, so the client resolves it to the file of the model version it names (`modelVersionId`). For a private model it is a short-lived presigned URL. Treat a presigned URL as a capability and do not log it. A CivitAI source URL arrives without its token query parameter or any user:password@ part. When present, expiresAt gives its expiry.
 
             '
         expiresAt:
           type: string
           format: date-time
-          description: 'When downloadUrl expires. Set only for a presigned (private) URL; a public source URL has no expiry and omits this.
+          description: 'When downloadUrl expires. Set only for a presigned URL (a private model, or a public model served from a stored copy); an author''s source URL has no expiry and omits this.
 
             '
     BuildCustomNode:
@@ -2454,7 +2454,7 @@ components:
         sizeBytes:
           type: integer
           format: int64
-          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A cut made before the cut kept the first model on each shared path may have stored the smallest one; such a row is repaired on the row by cmd/releaseresize -shared-paths, not by the read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent under the same condition as definition: a legacy release cut before the field existed.'
+          description: 'Total size of the content the release''s own sealed definition references, in bytes (derived): models and custom-node archives. Each distinct object is counted once, and an item no source could size contributes nothing (see numUnsizedItems). Sized from the definition as it stood at cut, not the build''s current one, so an older release with a different model set reports its own size rather than the build''s. The models come from the total the cut measured and stored, the same one the deploy estimate reads and a deployment downloads: every model, private or public, sized from its upload record, our mirror or its own host, one file per models/<type>/<filename>. Custom-node archives are added to it from their upload records, except one whose upload is the model the cut counted on its path. That answer is there as soon as the release is cut, whatever its status: a release with a stored total answers exactly that total plus its custom-node archives. A release cut before the cut kept the first model on each shared path may have stored the smallest one; such a stored total is corrected on the release itself, not by this read. A release cut before the cut stored a total is read live instead, under a time budget and from the mirror alone, so a loaded server may size fewer of its public models than a quiet one, and a public model at a link our mirror does not hold is counted unsized; until such a release''s build has finished once, the endpoint a client polls for status answers from the stored upload records alone, so every public model is counted unsized, and retrying a target afterwards does not take the size away again. Absent under the same condition as definition: a legacy release cut before the field existed.'
         numUnsizedItems:
           type: integer
           description: Count of the distinct items (models and custom-node archives) whose size could not be read, so they contribute nothing to sizeBytes (derived). It counts distinct items, not raw entries, so a definition naming one unsizable model three times reports numUnsizedItems 1. Where the cut stored a total, the models in it are the ones the cut could not size (zero on any release cut with a live sizer, since such a cut refuses an unsized model), plus any custom-node archive whose upload record is gone. Zero means every item this endpoint sizes was read; a custom node installed from a repository or the registry is sized by neither route and counted by neither, so it is never in the total. Non-zero means sizeBytes is a lower bound on top of that and should be shown as approximate. Absent under the same condition as sizeBytes.
@@ -2626,7 +2626,7 @@ components:
           description: The resolved definition when ok is true.
         warnings:
           type: array
-          description: 'Non-blocking, best-effort advisories: a git ref or repository that could not be resolved against its remote, a model link a deployment could not download at `models[<n>].sourceUri`, a declared sha256 its link''s host contradicts at `models[<n>].sha256`, or a custom node that installs a pack known not to work fully on a deployment at `customNodes[<n>]`. Never affects ok: these are surfaced to the editor but do not block submit or cut.'
+          description: 'Non-blocking, best-effort advisories: a git ref or repository that could not be resolved against its remote, a model link a deployment could not download at `models[<n>].sourceUri`, a declared sha256 its link''s host contradicts at `models[<n>].sha256`, or a custom node that installs a pack known not to work fully on a deployment at `customNodes[<n>]`. Never affects ok, and none blocks a submit. A cut checks the models again and can still refuse a new release with 400 INVALID_DEFINITION, for example where a declared sha256 differs from the one its link''s host states.'
           items:
             $ref: '#/components/schemas/ValidationIssue'
         workflowCoverage:
@@ -2721,7 +2721,7 @@ components:
         reuse:
           type: boolean
           default: false
-          description: 'True lets the answer be a blob the workspace already holds for these exact bytes, with `deduplicated: true` and no uploadUrl; a client that sends it must branch on `deduplicated`. Absent or false, the answer is always a fresh upload URL, whatever the workspace holds, which is what a client written before this field expects and how a client replaces a held blob whose stored bytes are wrong.
+          description: 'True lets the answer be a blob the workspace already holds for these exact bytes, with `deduplicated: true` and no uploadUrl; a client that sends it must branch on `deduplicated`. Absent or false, the answer is always a fresh upload (one uploadUrl, or `parts` when parts is true), whatever the workspace holds, which is what a client written before this field expects and how a client replaces a held blob whose stored bytes are wrong.
 
             '
         parts:
