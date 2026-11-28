@@ -1,0 +1,245 @@
+---
+title: "Node-Ersetzung"
+description: "Node-Ersetzungen registrieren, damit Nutzer von veralteten Nodes migrieren können"
+translationSourceHash: 2ac538b1
+translationFrom: custom-nodes/backend/node-replacement.mdx
+translationBlockHashes:
+  "_intro": 0dc318ee
+  "When to use": df3092ae
+  "Where to register replacements": c2c95bb5
+  "Complete example": 6def7f45
+  "Core examples": 77a9e90a
+  "NodeReplace parameters": 22f2bd38
+  "Input mapping": 573af3a3
+  "Output mapping": 9520b317
+  "Widget ID binding": 37e95b97
+  "REST API": e15f8cd2
+  "Frontend behavior": 2fc5a2b5
+---
+Die Node Replacement API ermöglicht es Entwicklern von Custom Nodes, Migrationspfade von veralteten Nodes zu ihren neueren Entsprechungen zu definieren. Wenn Sie Nodes aktualisieren oder umbenennen, können Benutzer ihre Workflows automatisch upgraden.
+
+## Wann Sie dies verwenden
+
+- **Ändern von Node-Klassennamen**: Sie haben den Klassennamen eines Nodes geändert (verwenden Sie für Änderungen am Anzeigenamen stattdessen `DISPLAY_NAME`).
+- **Zusammenführen von Nodes**: Mehrere Nodes wurden zu einem zusammengefasst (z. B. `Load3DAnimation` in `Load3D` integriert).
+- **Umgestalten von Eingaben**: Eingabenamen oder -typen haben sich zwischen Versionen geändert.
+- **Korrigieren von Tippfehlern**: Node-Namen richtigstellen, ohne bestehende Workflows zu beschädigen.
+
+## Wo Ersetzungen registriert werden
+
+Registrieren Sie Ersetzungen im `on_load`-Lifecycle-Hook Ihrer Extension. Erstellen Sie dazu eine eigene Datei (z. B. `node_replacements.py`) in Ihrem Custom-Node-Paket:
+
+```
+my_custom_nodes/
+├── __init__.py
+├── nodes.py
+└── node_replacements.py   # Ersetzungen hier registrieren
+```
+
+## Vollständiges Beispiel
+
+Das folgende vollständige Beispiel zeigt, wie Sie Node-Ersetzungen in einem Custom-Node-Paket strukturieren:
+
+```python
+# node_replacements.py
+from comfy_api.latest import ComfyExtension, io, ComfyAPI
+
+api = ComfyAPI()
+
+
+async def register_my_replacements():
+    """Registriert alle Node-Ersetzungen für dieses Paket."""
+    
+    # Einfache Umbenennung, keine Änderung der Eingaben nötig
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyNewNode",
+        old_node_id="MyOldNode",
+    ))
+    
+    # Komplexe Ersetzung mit Eingabe-Zuordnung
+    await api.node_replacement.register(io.NodeReplace(
+        new_node_id="MyImprovedSampler",
+        old_node_id="MyOldSampler",
+        old_widget_ids=["steps", "cfg"],
+        input_mapping=[
+            {"new_id": "model", "old_id": "model"},
+            {"new_id": "num_steps", "old_id": "steps"},
+            {"new_id": "guidance", "old_id": "cfg"},
+            {"new_id": "scheduler", "set_value": "normal"},  # Neue Eingabe mit Standardwert
+        ],
+        output_mapping=[
+            {"new_idx": 0, "old_idx": 0},
+        ],
+    ))
+
+
+class MyExtension(ComfyExtension):
+    async def on_load(self) -> None:
+        await register_my_replacements()
+
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return []  # Hier sind keine Nodes definiert, nur Ersetzungen
+
+
+async def comfy_entrypoint() -> MyExtension:
+    return MyExtension()
+```
+
+ComfyUI liest `comfy_entrypoint` aus der `__init__.py` des Pakets. Wenn Sie den Einstiegspunkt in einer eigenen Datei belassen, müssen Sie ihn dort erneut exportieren:
+
+```python
+# __init__.py
+from .node_replacements import comfy_entrypoint
+```
+
+## Beispiele aus dem Core
+
+Der ComfyUI-Core verwendet Node-Ersetzungen für die Migration integrierter Nodes. Hier sind echte Beispiele aus [`comfy_extras/nodes_replacements.py`](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_replacements.py):
+
+### Einfache Node-Zusammenführung
+
+Als `Load3DAnimation` in `Load3D` integriert wurde:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="Load3D",
+    old_node_id="Load3DAnimation",
+))
+```
+
+### Tippfehler-Korrektur
+
+Korrektur eines Tippfehlers in `SDV_img2vid_Conditioning` → `SVD_img2vid_Conditioning`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="SVD_img2vid_Conditioning",
+    old_node_id="SDV_img2vid_Conditioning",
+))
+```
+
+### Eingaben umbenennen mit Standardwerten
+
+Ersetzen von `ImageScaleBy` durch `ResizeImageMaskNode`:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="ResizeImageMaskNode",
+    old_node_id="ImageScaleBy",
+    old_widget_ids=["upscale_method", "scale_by"],
+    input_mapping=[
+        {"new_id": "input", "old_id": "image"},
+        {"new_id": "resize_type", "set_value": "scale by multiplier"},
+        {"new_id": "resize_type.multiplier", "old_id": "scale_by"},
+        {"new_id": "scale_method", "old_id": "upscale_method"},
+    ],
+))
+```
+
+### Zuordnung von Autogrow-Eingaben
+
+Verwenden Sie bei Nodes mit Autogrow (dynamischen Eingaben) die Punktnotation:
+
+```python
+await api.node_replacement.register(io.NodeReplace(
+    new_node_id="BatchImagesNode",
+    old_node_id="ImageBatch",
+    input_mapping=[
+        {"new_id": "images.image0", "old_id": "image1"},
+        {"new_id": "images.image1", "old_id": "image2"},
+    ],
+))
+```
+
+## NodeReplace-Parameter
+
+| Parameter | Typ | Beschreibung |
+|-----------|------|-------------|
+| `new_node_id` | str | Klassenname des Ersatz-Nodes |
+| `old_node_id` | str | Klassenname des veralteten Nodes |
+| `old_widget_ids` | list[str] \| None | Geordnete Liste, die Widget-IDs ihren relativen Indizes zuordnet |
+| `input_mapping` | list \| None | Legt fest, wie Eingänge vom alten auf das neue Node abgebildet werden |
+| `output_mapping` | list \| None | Legt fest, wie Ausgänge vom alten auf das neue Node abgebildet werden |
+
+## Eingabe-Zuordnung
+
+Jeder Eintrag der Eingabe-Zuordnung legt fest, wie eine Eingabe vom alten Node auf den neuen übertragen wird.
+
+**Aus einer alten Eingabe zuordnen:**
+```python
+{"new_id": "model", "old_id": "model"}
+```
+
+**Einen festen Wert setzen:**
+```python
+{"new_id": "scheduler", "set_value": "normal"}
+```
+
+**Dynamische bzw. Autogrow-Eingaben zuordnen (Punktnotation verwenden):**
+```python
+{"new_id": "images.image0", "old_id": "image1"}
+```
+
+## Ausgabe-Zuordnung
+
+Ausgabe-Zuordnungen verwenden indexbasierte Referenzen:
+
+```python
+{"new_idx": 0, "old_idx": 0}  # Erste Ausgabe zuordnen
+{"new_idx": 1, "old_idx": 0}  # Alte Ausgabe 0 -> neue Ausgabe 1
+```
+
+## Bindung von Widget-IDs
+
+Das Feld `old_widget_ids` ordnet Widget-IDs ihren Positionsindizes zu. Das ist erforderlich, weil das Workflow-JSON Widget-Werte über die Position und nicht über die ID speichert.
+
+```python
+old_widget_ids=["steps", "cfg", "sampler"]
+# Widget an Index 0 = "steps"
+# Widget an Index 1 = "cfg"
+# Widget an Index 2 = "sampler"
+```
+
+## REST API
+
+So rufen Sie alle registrierten Ersetzungen ab:
+
+```
+GET /api/node_replacements
+```
+
+**Antwort:**
+```json
+{
+  "OldSamplerNode": [
+    {
+      "new_node_id": "NewSamplerNode",
+      "old_node_id": "OldSamplerNode",
+      "old_widget_ids": ["num_steps", "cfg_scale", "sampler_name"],
+      "input_mapping": [
+        {"new_id": "model", "old_id": "model"},
+        {"new_id": "steps", "old_id": "num_steps"},
+        {"new_id": "scheduler", "set_value": "normal"}
+      ],
+      "output_mapping": [
+        {"new_idx": 0, "old_idx": 0}
+      ]
+    }
+  ]
+}
+```
+
+## Verhalten des Frontends
+
+Wenn ein Workflow einen veralteten Node enthält, führt das Frontend folgende Schritte aus:
+
+1. Ruft die Ersetzungen über `GET /api/node_replacements` ab
+2. Erkennt Nodes, die `old_node_id` entsprechen
+3. Fordert den Benutzer zum Upgraden auf
+4. Wendet die Zuordnungen für Eingaben und Ausgaben automatisch an
+5. Behält Verbindungen und Widget-Werte bei
+
+Die Frontend-Implementierung finden Sie hier:
+- [PR #8364 zur Geschäftslogik](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8364)
+- [PR #8483 zur zusätzlichen Logik](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8483)
+- [PR #8604 zu den UI-Ansichten](https://github.com/Comfy-Org/ComfyUI_frontend/pull/8604)

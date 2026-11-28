@@ -1,0 +1,192 @@
+---
+title: "Funktionen und Grenzen von Comfy Router"
+sidebarTitle: "Funktionen und Grenzen"
+description: "Wählen Sie Router oder einen Partner-Proxy, planen Sie lang andauernde Aufrufe und verstehen Sie Wiederherstellung, Ratenlimits und Assetspeicherung."
+translationSourceHash: 7587b465
+translationFrom: development/comfy-router/limitations.mdx
+translationBlockHashes:
+  "_intro": 6b871cf3
+  "What Router supports": 1ef495de
+  "Queued submission": 98cdbec0
+  "Calls are cut off at a server deadline": c8724f59
+  "Recovery depends on the provider": da9d8904
+  "Request bodies are capped": 675b77c8
+  "Requests are rate limited per caller": e9ecdda2
+  "No progress while a call runs": 75d42d8d
+  "Comfy charges and usage": 06a72e74
+  "Models without a pre-flight estimate": d3c0dd13
+  "Router does not cover every partner operation": 97498758
+  "Model outputs and stored assets": 06c737c1
+  "Next": be85b789
+---
+
+
+Router führt ein Partnermodell über einen synchronen HTTP-Aufruf aus oder über eine Anforderung in der Warteschlange, die Sie absenden und später abholen. Verwenden Sie es, wenn Ihre Anwendung auf ein abgeschlossenes Ergebnis warten oder es später abholen kann und mit den Ein- und Ausgabefeldern des Modells umgehen kann.
+
+## Was Router unterstützt
+
+| Anforderung | Router-Support | Alternative oder nächster Schritt |
+| --- | --- | --- |
+| Mit einer Anfrage generieren | `POST /v2/models/{provider}/{model}` gibt das abgeschlossene Ergebnis zurück. | Beginnen Sie mit dem [Quickstart](/de/development/comfy-router/quickstart). |
+| Eine Aufgabe absenden und später abholen | Zustellung über die Warteschlange: `POST /v2/models/{provider}/{model}/requests` gibt eine `request_id` zurück, die Sie abfragen und abholen können. Kein Webhook bei Abschluss. | Nutzen Sie die [Zustellung über die Warteschlange](/de/development/comfy-router/queue). Ein Partner-Proxy mit Submit-and-Poll-Operationen bietet Zugriff auf die eigenen Steuerelemente des Anbieters. |
+| Fortschritt anzeigen oder Ausgabe streamen | Keine Live-Fortschrittsanzeige, kein Streaming und keine Vorschau-Frames während des Aufrufs. | Zeigen Sie einen unbestimmten Status an oder verwenden Sie eine unterstützte Proxy-Operation. |
+| Live mit einem Modell interagieren | Einige Realtime-Modelle laufen als Live-Sitzungen über WebSocket oder WebRTC und werden pro Sekunde abgerechnet. | Siehe [Realtime-Modelle](/de/development/comfy-router/realtime). |
+| Nach einer verlorenen Verbindung wiederherstellen | Die Abholung mit demselben Schlüssel ist verfügbar, wenn Router ein Handle zu einer angenommenen Generierung behalten hat. | Behalten Sie den Schlüssel und befolgen Sie die [Hinweise zu erneuten Versuchen](/de/development/comfy-router/errors#wiederholungsergebnisse). |
+| Comfy-Abrechnungen abgleichen | Kein allgemeingültiges Feld für Comfy-Kosten oder Guthaben in der Antwort. | Nutzen Sie die [Workspace-Abrechnung](https://platform.comfy.org/settings/billing). |
+| Ergebnisse dauerhaft speichern | Asset-URLs können ablaufen, auch neu gehostete und erneut ausgelieferte URLs. | Laden Sie die Assets herunter; siehe [Ergebnis-Assets](/de/development/comfy-router/reference#result-assets). |
+| Große Medien inline senden | Der Request-Body ist begrenzt, und base64-kodierte Medien zählen gegen dieses Limit. | Halten Sie Bodies unter dem Limit; siehe [Größe des Request-Bodys](#request-bodies-are-capped). |
+
+<span id="no-queued-submission" />
+
+## Absenden über die Warteschlange
+
+Die synchrone Route hält die Verbindung offen, während das Modell läuft; bei asynchronen Anbietern übermittelt Router die Aufgabe und fragt den Status intern ab. Die [Zustellung über die Warteschlange](/de/development/comfy-router/queue) (Absenden, eine `request_id` erhalten, Status abfragen, Ergebnis abholen) ist die Alternative. Sie ist an den Workspace hinter dem Credential gebunden und erfordert daher einen Schlüssel, der in Ihrem Comfy-Workspace erstellt wurde. Bei einem Legacy-Schlüssel ohne Workspace, einer Anfrage mit eigenem Schlüssel oder einem Modell, das die Warteschlange nicht ausführen kann, antwortet die Route zum Absenden mit `403` und `not_enabled`. Keiner der beiden Modi bietet einen Callback oder Webhook.
+
+Wenn Ihre Anfrage nicht lange genug offen bleiben kann, stellen Sie sie in die Warteschlange. Verwenden Sie einen [Partner-Proxy](#router-does-not-cover-every-partner-operation), wenn Sie die eigenen Steuerungsmöglichkeiten des Anbieters zum Absenden und Abfragen benötigen.
+
+Fünf Modelle sind derzeit ausschließlich synchron verfügbar und werden mit `403` / `not_enabled` abgelehnt, wenn Sie sie an die Warteschlange übermitteln: `elevenlabs/eleven_sfx_v2`, `elevenlabs/eleven_sfx_v3`, `elevenlabs/eleven_v3`, `elevenlabs/eleven_v4` und `elevenlabs/eleven_v4_turbo`. Sie liefern rohe Audio-Bytes statt eines JSON-Ergebnisdokuments, das die Zustellung über die Warteschlange nicht speichern kann. Führen Sie sie auf der synchronen Route aus, die diese Bytes normal zurückgibt.
+
+Sieben Modelle sind ausschließlich für die Warteschlange verfügbar und werden auf der synchronen Route mit `403` / `not_enabled` abgelehnt: `ltx/ltx-video-alpha-gen`, `ltx/ltx-video-to-video-hdr`, `ltx/ltx-video-to-video-reframe`, `ltx/ltx-video-upscale`, `pruna/p-video-2-pro-avatar`, `pruna/p-video-2-pro-reference` und `pruna/p-video-upscale`. Ihre Aufträge können länger dauern, als ein synchroner Aufruf offen gehalten wird. Senden Sie denselben Body an `POST /v2/models/{provider}/{model}/requests` und holen Sie das Ergebnis aus der Warteschlange ab.
+
+Die Text-zu-Video- und Bild-zu-Video-Operationen von LTX v1 liefern aus demselben Grund rohe Video-Bytes, und die Zustellung über die Warteschlange kann sie ebenfalls nicht speichern. Sie sind jedoch nur über den [Partner-Proxy](#router-does-not-cover-every-partner-operation) unter `/proxy/ltx/v1/…` erreichbar, nicht über eine Router-Modell-ID: Jedes Katalogmodell `ltx/*` wird auf die über die Warteschlange ausführbare v2-Operation zum Absenden und Abfragen abgebildet.
+
+## Aufrufe werden bei Erreichen einer Serverfrist abgebrochen
+
+Die Standardfrist von Router beträgt **10 Minuten** und kann je nach Deployment konfiguriert werden. Sie beginnt beim Eintreffen der Anfrage, daher umfasst die Frist auch das Hochladen der Anfrage: Ein Body, der bis dahin nicht vollständig angekommen ist, wird vor jedem Partneraufruf mit `504` / `deadline_exceeded` beantwortet, und ein Aufruf, für den zu wenig Restfrist zum Abschließen bleibt, wird ebenso abgelehnt. Setzen Sie Ihr Client-Timeout höher als diese Frist, damit Router seinen Fehler und die Request-ID vorher zurückgeben kann.
+
+`504` / `deadline_exceeded` bedeutet, dass Router das Warten gestoppt hat; `504` / `provider_timeout` bedeutet, dass beim Anbieter ein Timeout aufgetreten ist. Ein Timeout oder eine verlorene Verbindung beweist nicht, dass eine Generierung nicht abgerechnet wurde, und bricht vom Anbieter angenommene Arbeit nicht ab. Lesen Sie [Timeouts und Abrechnung](/de/development/comfy-router/errors#timeouts-und-ergebnisabholung), bevor Sie es erneut versuchen.
+
+<span id="no-way-to-resume-a-call-you-lost" />
+
+## Wiederherstellung hängt vom Anbieter ab
+
+Router behält das Handle des Anbieters für eine Generierung nach dem Submit-and-Poll-Muster, sobald der Anbieter das Absenden akzeptiert. Geht die Verbindung nach diesem Punkt verloren, ruft ein erneutes Senden mit demselben `Idempotency-Key` und demselben Body die ursprüngliche Generierung ab, statt eine zweite zu starten, und wird nicht erneut abgebucht. Das gilt, wenn Router den Aufruf beendet (durch seine Deadline oder weil Ihr Client auflegt), und in fast allen Fällen auch dann, wenn der Router-Server, der den Aufruf verarbeitet, mitten im Aufruf neu startet. Die Ausnahme ist ein Neustart in dem kurzen Moment zwischen der Annahme des Absendens durch den Anbieter und der Aufzeichnung durch Router: Der Key wird dann bis zu 15 Minuten lang gehalten, danach startet ein erneutes Senden und wird als neue Generierung abgebucht. Nach einem Neustart kann ein erneutes Senden bis zu etwa einer Minute lang `409` / `concurrency_limit_exceeded` mit `Retry-After` erhalten, während Router bestätigt, dass der ursprüngliche Handler nicht mehr läuft; senden Sie weiterhin denselben Key, und das Ergebnis wird abgerufen. Abgeschlossene, wiedergabefähige Antworten können auch aus dem Key-Datensatz stammen.
+
+Nicht jeder Aufruf mit getrennter Verbindung ist wiederherstellbar. Bewahren Sie die Anfrage und den Key vor dem Senden auf, und nutzen Sie dann die [Tabelle der Retry-Ergebnisse](/de/development/comfy-router/errors#wiederholungsergebnisse). Ein neuer Key erzeugt einen neuen Aufruf und kann eine weitere Abbuchung verursachen.
+
+## Anfragekörper sind begrenzt {#request-bodies-are-capped}
+
+Router lehnt eine Anfrage ab, deren Body größer als **100 MiB (104,857,600 Bytes)** ist. Die Grenze gilt für die Rohbytes, die Sie senden, gemessen bevor Router irgendetwas parst, daher gilt sie für jede Route und sowohl für synchrone Zustellung als auch für Zustellung über die Warteschlange.
+
+Bei Inline-Medien stoßen Aufrufer auf diese Grenze. Die Base64-Kodierung bläht Binärdaten um etwa 4/3 auf, daher erreicht ein Body mit kodierten Medien die Obergrenze bei ungefähr **75 MB tatsächlicher Bild-, Audio- oder Video-Bytes**. Bemessen Sie die kodierte Zeichenkette, nicht die Datei auf der Festplatte, und zählen Sie jede Eingabe in einem Aufruf mit: Eine Anfrage mit zwei Referenzbildern verbraucht das Kontingent für beide, und auch Prompt, Parameter und JSON-Struktur zählen mit.
+
+**Wie die Ablehnung aussieht.** `413`, mit `invalid_input` in `X-Comfy-Error-Type` und `X-Comfy-Request-Id` gesetzt wie bei jeder anderen Antwort. Der Body ist eine [`RouterErrorResponse`](/de/development/comfy-router/reference#routererrorresponse), deren `detail` die überschrittene Grenze beschreibt. Verzweigen Sie auf `error_type`, anstatt `detail` zu parsen, und behandeln Sie das, was die API zurückgibt, als maßgeblich, falls es und diese Seite sich jemals über den Wert widersprechen sollten. Router erzeugt die Ablehnung, bevor irgendetwas ausgeliefert wird, daher lief keine Generierung und es wurde nichts berechnet.
+
+Die Obergrenze gilt für jede Anfrage, unabhängig davon, ob sie einen `Idempotency-Key` trägt. Sie ist kein Idempotenz-Limit, und das erneute Senden desselben Schlüssels ändert das Ergebnis nicht: Ein zu großer Body ist bei jedem Versuch zu groß.
+
+**Ein Anbieter kann ein eigenes, niedrigeres Limit festlegen, und bei dieser Obergrenze tut er das meist auch.** Anbieter veröffentlichen eigene Grenzen für Inline-Medien, und die bindende Einschränkung ist die jeweils kleinere. Googles Modelle akzeptieren zum Beispiel bis zu 20 MB (dezimal, 20,000,000 Bytes) Inline-Payload, und die Zeile `Size limit: 20MB` auf den Google-Modellseiten ist diese Google-Grenze pro Feld, zitiert aus Googles eigener Spezifikation, nicht Routers Grenze für den gesamten Anfragekörper. Routers Obergrenze liegt bewusst über jeder Partner-Grenze, die er vermittelt, daher stoßen Sie bei einem einzelnen Inline-Asset normalerweise zuerst auf das Limit des Anbieters; Routers Obergrenze greift, wenn mehrere Assets in einem Body enthalten sind. Ein Body, der Routers Obergrenze unterschreitet, aber das eigene Limit eines Anbieters überschreitet, wird vom Anbieter statt von Router abgelehnt und kommt als Anbieter-Fehler statt als `413` zurück.
+
+## Anfragen sind pro Aufrufer ratenbegrenzt
+
+| Antwort | Ursache | Maßnahme |
+| --- | --- | --- |
+| `429` / `concurrency_limit_exceeded` | Zu viele gleichzeitige Aufrufe oder zu wenig Spielraum unter der Obergrenze für das zugesagte Budget (committed-spend ceiling). | Reduzieren Sie die gleichzeitige Arbeit. Die Ausgaben-Header unterscheiden die Ausgabenobergrenze von der Grenze der Aufrufanzahl. |
+| `429` / `rate_limited` | Das Anfragekontingent ist erschöpft, oder der Anbieter hat den Aufruf gedrosselt, bevor eine Generierung begann (`X-Comfy-Upstream-Status: 429`). | Warten Sie `Retry-After` ab, bevor Sie es erneut versuchen. Das Limit eines Anbieters enthält `Retry-After` nur, wenn der Anbieter eines gesendet hat, und nur auf der synchronen Route. |
+
+Die Ratenbegrenzung für Anfragen gilt für jede Router-Operation: Aufrufe, Lesezugriffe auf Katalog und Schema, Kostenschätzungen sowie die Aufrufe zum Absenden, zum Status, zum Ergebnis und zum Abbrechen in der Warteschlange, einschließlich der Anfragen, die vor der Generierung abgelehnt werden. Sie richtet sich nach dem authentifizierten Aufrufer, nicht nach der Quell-IP. Aufrufe mit dem Anbieterschlüssel des Aufrufers sind ausgenommen; die Limits des Anbieters gelten weiterhin. Das Polling einer Anfrage in der Warteschlange verbraucht dasselbe Kontingent wie jeder andere Aufruf; pollen Sie daher in dem Intervall, das die Statusabfrage vorschlägt, statt in einer engen Schleife. Eine Ablehnung mit `rate_limited` ändert nichts an einer Anfrage in der Warteschlange: Sie läuft weiter, und ein abgelehntes Abbrechen hat nichts abgebrochen; senden Sie es daher nach `Retry-After` erneut. Anders ist es bei einer Anfrage in der Warteschlange, die ein `429` des Anbieters beendet hat: Ihre Statusabfrage meldet `COMPLETED` mit `error_type: rate_limited`, und die Ergebnisabfrage antwortet mit `429` / `rate_limited` ohne `Retry-After` und ohne `X-Comfy-Upstream-Status`. Diese Anfrage ist beendet, und Warten ändert die Antwort nicht; senden Sie sie daher erneut.
+
+Cachen Sie Lesezugriffe auf Katalog und Schema. Validieren Sie sie mit `ETag` und `If-None-Match` neu. Felder zum erneuten Versuch und zum zugesagten Budget finden Sie unter [Headers](/de/development/comfy-router/headers).
+
+## Kein Fortschritt während eines laufenden Aufrufs
+
+Router liefert eine abschließende Antwort, ohne gestreamte Tokens, Server-Sent Events, prozentuale Aktualisierungen oder zwischenzeitliche Vorschau-Frames. Der interne Polling-Status eines Anbieters wird während der Anfrage nicht weitergegeben.
+
+Zeigen Sie eine unbestimmte Fortschrittsanzeige an. Wenn Sie Fortschritt oder Streaming benötigen, verwenden Sie eine Partner-Proxy-Operation, die dies bereitstellt.
+
+<span id="no-cost-or-credit-figures-on-a-response" />
+
+## Comfy-Abbuchungen und Nutzung {#comfy-charges-and-usage}
+
+Die Antwort kann Nutzungs- oder Kostenfelder des Anbieters enthalten. Sie stellen keine allgemeine Comfy-Abbuchung dar. `X-Comfy-Credits-Used` ist optional: Ein fehlender Header bedeutet, dass die Kosten nicht gemeldet wurden, nicht dass der Lauf kostenlos war. Eine wiedergegebene Antwort (`Idempotent-Replayed: true`) wird nie erneut abgebucht, kann aber den Betrag des ursprünglichen Laufs erneut angeben; addieren Sie den Header daher nicht über mehrere Wiederholungen mit demselben `Idempotency-Key` hinweg. Nutzen Sie die Comfy-Plattform für Guthaben, Nutzung und Rechnungen.
+
+Der Katalog liefert Abrechnungsfakten, einschließlich `billing.charges_on_policy_rejection`, aber keine Preise. Behandeln Sie `yes`, `no` und `unknown` explizit. Wenn dieser Wert `yes` ist, kann ein synchroner `content_policy_violation`-Fehler `X-Comfy-Credits-Used` enthalten: Dies ist der Fall, wenn der Anbieter die generierte Ausgabe des Modells abgelehnt hat und Comfy die Nutzung für diese abgelehnte Generierung erfasst hat; dann enthält er diesen Betrag. Eine Ablehnung auf der Eingabeseite, eine Wiederholung mit demselben Key und eine Abbuchung, die zu klein ist, um in den zwei Dezimalstellen des Headers angezeigt zu werden, enthalten ihn nicht; eine Ablehnung ohne den Header wird nicht gemeldet und ist nicht kostenlos. Siehe [Abrechnung](/de/development/comfy-router/billing#fakten-zur-modellabrechnung).
+
+Um einen Preis vor einem Lauf zu sehen, rufen Sie `POST /v2/models/{provider}/{model}/estimate` auf oder lesen Sie das `estimate`-Objekt in der `201`-Antwort eines in die Warteschlange gestellten Absendens. Wenn Schätzungen für eine Bereitstellung deaktiviert sind, antwortet die Route mit `403` und `error_type: not_enabled`, und das Absenden lässt `estimate` weg. Jede Schätzung wird zum Standardlistenpreis von Comfy berechnet (ein Modell, für das die von seinem Anbieter gemeldeten Kosten abgebucht werden, wird stattdessen anhand der veröffentlichten Preisliste des Anbieters bepreist: `exact` für eine kleine Gruppe von Modellen mit Opt-in, wenn diese Liste den Betrag vollständig bestimmt; andernfalls `estimated`, auch bei einigen Angeboten, die die Liste vollständig bestimmen würde) und spiegelt keine vertrags- oder kundenspezifischen Tarife wider: Ein Workspace mit ausgehandelten Preisen erhält den Listenpreis als Angebot und wird zu seinem Vertragstarif abgebucht. Der Betrag ist eine Schätzung, nicht die endgültige Abbuchung, und die festgeschriebene Abbuchung in den Nutzungs- und Abrechnungsdatensätzen Ihres Workspace ist endgültig. Er ist auch keine Preisgarantie. Ein Lauf mit Ihrem eigenen Anbieterschlüssel wird nicht von Comfy abgebucht, selbst wenn `/estimate` einen Betrag dafür zurückgibt, und eine `unknown`-Schätzung enthält keinen Betrag; das bedeutet nicht, dass sie kostenlos ist. `X-Comfy-Credits-Used` bleibt ein gerundeter nachträglicher Betrag für einen Lauf, kein Beleg. Unter [Kostenschätzungen vor dem Start](/de/development/comfy-router/reference#pre-flight-cost-estimates) erfahren Sie, wie Sie `exact`, `estimated` und `unknown` lesen. Die Modelle, die vor einem Lauf nicht bepreist werden können, sind unter [Modelle ohne Kostenschätzung vor dem Start](#models-without-a-pre-flight-estimate) aufgeführt.
+
+## Modelle ohne Schätzung vorab {#models-without-a-pre-flight-estimate}
+
+Router kann einen Aufruf der unten aufgeführten Modelle vor der Ausführung noch nicht zuverlässig bepreisen. Daher liefern `/estimate` und das `estimate` eines in die Warteschlange gestellten Absendens für diese Modelle `source: unknown`, obwohl einige für einen bestimmten Body möglicherweise einen Wert zurückgeben. `unknown` bedeutet, dass kein Wert angegeben wurde, nicht, dass die Ausführung kostenlos ist. Die Regeln unter [Comfy-Gebühren und -Nutzung](#comfy-charges-and-usage) gelten weiterhin: Eine Ausführung mit Ihrem eigenen Anbieter-Schlüssel wird nicht von Comfy abgerechnet, und `X-Comfy-Credits-Used` ist optional, ein fehlender Header bedeutet also, dass die Kosten nicht gemeldet wurden. Ein hier nicht aufgeführtes Modell kann für einen bestimmten Body ebenfalls `unknown` liefern, lesen Sie daher bei jeder Schätzung die Angabe `source`.
+
+Diese Liste wird kürzer, je mehr Modelle von der Schätzung abgedeckt werden. Sie wird aus dem Preiscode von Router generiert, und Modelle, die nicht öffentlich verfügbar sind, werden nie aufgeführt.
+
+{/* BEGIN GENERATED: models without a pre-flight estimate. Do not hand-edit; regenerate with -update-quote-coverage-docs. */}
+
+- **bfl**: `bfl/erase-v1`, `bfl/video-edit-v1`, `bfl/video-upscale-v1`, `bfl/vto-v1`
+- **byteplusomnihuman**: `byteplusomnihuman/omnihuman-2.0`
+- **fal**: `fal/fal-seedance-2.0`, `fal/fal-seedance-2.5`
+- **freepik**: `freepik/ai-image-relight`, `freepik/ai-image-style-transfer`
+- **heygen**: `heygen/starfish`
+- **ideogram**: `ideogram/ideogram-4-6`, `ideogram/ideogram-v3`, `ideogram/ideogram-v4`
+- **kelly**: `kelly/kelly-kling-4.0`, `kelly/kelly-seedance-2.0`, `kelly/kelly-seedance-2.0-fast`, `kelly/kelly-seedance-2.5`
+- **kling**: `kling/kling-4.0-flash`, `kling/kling-image-4.0`, `kling/kling-long-image-4.0`, `kling/videos-avatar-image2video`, `kling/videos-lip-sync`
+- **ltx**: `ltx/ltx-video-alpha-gen`, `ltx/ltx-video-to-video-hdr`, `ltx/ltx-video-to-video-reframe`, `ltx/ltx-video-upscale`
+- **meshy**: `meshy/meshy-n1`
+- **minimax**: `minimax/minimax-gpt-image-2`, `minimax/minimax-gpt-image-2.5-flare`, `minimax/minimax-gpt-image-2.5-sunburst`, `minimax/minimax-gpt-image-2.6-flare`, `minimax/minimax-gpt-image-2.6-sunburst`, `minimax/minimax-h3-image`, `minimax/minimax-h3-image-highspeed`
+- **openai**: `openai/gpt-image-1.5`
+- **openrouter**: `openrouter/images`
+- **pika**: `pika/pika-music`, `pika/pika-nano-banana-2`, `pika/pika-nano-banana-pro`, `pika/pika-soundtrack`
+- **pixverse**: `pixverse/v3.5`, `pixverse/v6`, `pixverse/v6-max`
+- **pruna**: `pruna/p-video-2-pro-avatar`, `pruna/p-video-2-pro-reference`, `pruna/p-video-upscale`
+- **quiver**: `quiver/arrow-2`, `quiver/arrow-2-telos`
+- **runware**: `runware/runware-gpt-image-2`, `runware/runware-gpt-image-2.5-flare`, `runware/runware-gpt-image-2.5-sunburst`, `runware/runware-nano-banana-2`, `runware/runware-nano-banana-pro`, `runware/runware-seedance-2.0`, `runware/runware-seedance-2.5`
+- **synclabs**: `synclabs/sync-3`
+- **tripo**: `tripo/p1-20260311-image-to-model`, `tripo/p1-20260311-multiview-to-model`, `tripo/p1-20260311-text-to-model`, `tripo/p2-20260801-image-to-model`, `tripo/p2-20260801-multiview-to-model`, `tripo/p2-20260801-text-to-model`, `tripo/v3.0-20250812-image-to-model`, `tripo/v3.0-20250812-multiview-to-model`, `tripo/v3.0-20250812-text-to-model`, `tripo/v3.1-20260211-image-to-model`, `tripo/v3.1-20260211-multiview-to-model`, `tripo/v3.1-20260211-text-to-model`
+- **typesafe**: `typesafe/jev-1.13.0`, `typesafe/jev-1.14.0`
+- **veed**: `veed/video-background-removal`, `veed/video-background-removal-fast`, `veed/video-background-removal-green-screen`
+- **viggle**: `viggle/jst-2-scene`, `viggle/jst-2-scene-view`, `viggle/motion-capture`, `viggle/text-to-motion`, `viggle/video-remix`
+- **wavespeed**: `wavespeed/wavespeed-gpt-image-2`, `wavespeed/wavespeed-gpt-image-2.5-flare`, `wavespeed/wavespeed-gpt-image-2.5-sunburst`
+
+{/* END GENERATED: models without a pre-flight estimate */}
+
+Auch Bearbeitungen an `openai/gpt-image-2`, `openai/gpt-image-2.5-flare`, `openai/gpt-image-2.5-sunburst`, `openai/gpt-image-2.6-flare` und `openai/gpt-image-2.6-sunburst` haben keine Schätzung vorab. Ein Bearbeitungsaufruf an eines dieser Modelle oder ein Generierungsaufruf mit einem Eingabebild liefert `source: unknown`. Ein reiner Text-Generierungsaufruf an diese Modelle wird geschätzt, weshalb sie nicht in der obigen Liste stehen.
+
+## Router deckt nicht jede Partner-Operation ab {#router-does-not-cover-every-partner-operation}
+
+Router führt Modelle aus. Datei-Uploads, Kontoabfragen, Asset-Verwaltung, Streaming und die Steuerung von Anbieter-Aufgaben können Partner-Proxy-Routen unter `/proxy/…` erfordern, die außerhalb von Router liegen und nicht durch dessen Vertrag beschrieben werden. Die eigene Oberfläche von Router ist die [Comfy-Router-Spezifikation](/router-openapi.yaml); der Support variiert je nach Anbieter.
+
+### Krea-3-Referenzbilder: zuerst hochladen oder eine öffentliche https-URL verwenden
+
+In `image_urls` von `krea/krea-3` wird eine `image_url`, die von `POST /proxy/krea/assets` zurückgegeben wurde (eine `https://app-uploads.krea.ai/...`-URL), immer akzeptiert. Ob andere Links akzeptiert werden, hängt von der Umgebung ab; auf api.comfy.org werden sie derzeit akzeptiert. Mehr als 8 Einträge werden durch die Schema-Prüfung der Anfrage mit `422` abgelehnt, bevor ein Abruf erfolgt.
+
+- **Wo andere Links akzeptiert werden**, funktioniert jede öffentliche `https`-Bild-URL. Router ruft jede Referenz selbst ab, um ihre Größe zu lesen, bevor das Modell läuft. Vor jedem Abruf wird eine Anfrage mit einem Link, der kein `app-uploads.krea.ai`-Link ist, außerdem mit `400` `invalid_input` abgelehnt, wenn ihr Body mehr als 25100288 Bytes groß ist, kein gültiges UTF-8 ist oder ein Feld auf oberster Ebene enthält, das das krea-3-Anfrageschema nicht deklariert; senden Sie daher nur die dokumentierten Felder. Eine Referenz, die Sie korrigieren müssen, wird mit `400` `invalid_input` abgelehnt, wobei ihr Host genannt wird: ein Host, der nicht existiert oder nicht öffentlich erreichbar ist, ein Origin, der mit einem `4xx` außer `408` oder `429` antwortet, zu viele Weiterleitungen, eine Weiterleitung auf einen Link, der nicht `https` ist, oder auf einen Host, der nicht öffentlich erreichbar ist, Inhalt, der kein unterstütztes Bild ist, eine Antwort ohne Länge, die vor dem Größen-Header des Bildes endet, oder ein Bild, dessen Größen-Header nicht innerhalb der ersten 2 MiB liegt (siehe unten). Jeder andere Abruffehler ist stattdessen ein `5xx`-Fehler (`500` `internal_error` auf Router). Einige davon lösen sich von selbst auf (ein DNS-Resolver-Fehler, ein Timeout, eine abgebrochene Verbindung, ein Origin, der mit `5xx`, `408` oder `429` antwortet, oder ein Host, dessen DNS-Antwort zwischen der Host-Prüfung von Router und seiner Verbindung auf eine nicht öffentliche Adresse wechselt, was bei einem erneuten Versuch gelingen oder mit dem `400` für einen nicht öffentlichen Host abgelehnt werden kann), versuchen Sie sie daher später erneut. Andere schlagen jedes Mal auf dieselbe Weise fehl, zum Beispiel ein TLS-Zertifikat, dem der Abruf nicht vertraut (selbstsigniert, abgelaufen oder für den falschen Hostnamen), oder ein Origin, der mit einem `2xx` außer `200` oder einem `3xx` antwortet, dem der Abruf nicht folgt (etwa `204`, `206`, `300`, `304` oder `305`, oder ein `301`, `302`, `303`, `307` oder `308` ohne `Location`). Wenn ein erneuter Versuch auf dieselbe Weise fehlschlägt, laden Sie das Bild zuerst hoch. Eine Anfrage, die mit `POST /v2/models/krea/krea-3/requests` in die Warteschlange gestellt wurde, wird bei einem solchen `5xx` nicht erneut versucht, wenn einer ihrer Links kein `app-uploads.krea.ai`-Link ist; reichen Sie sie daher selbst erneut ein, wenn die Ursache sich auflösen kann. Ein `app-uploads.krea.ai`-Link, der kein aktiver Upload ist, wird wie jede andere nicht erreichbare Referenz mit `400` abgelehnt. Die `400` einer in der Warteschlange befindlichen Anfrage enthält nur das generische `invalid_input`-Detail, nennt den Host also nicht, und die Warteschlange versucht es nicht erneut. Eine `400` aus der Warteschlange kann von jedem Feld stammen, nicht nur von `image_urls` (zum Beispiel eine nicht unterstützte `resolution` oder `thinking_mode`), prüfen Sie daher zuerst die anderen Felder. Wenn diese gültig sind, laden Sie jedes Bild mit `POST /proxy/krea/assets` hoch und reichen Sie es mit diesen `image_url`-Werten und einem neuen `Idempotency-Key` (oder keinem) erneut ein: die Wiederverwendung des Schlüssels mit einem geänderten Body wird mit `409` `invalid_input` abgelehnt, was nichts über die Bilder aussagt, und die Wiederverwendung mit demselben Body wird mit `201` und der ursprünglichen `request_id` sowie `Idempotent-Replayed: true` beantwortet, startet also keinen neuen Lauf, und ihre Ergebnis-URL (`GET /v2/models/krea/krea-3/requests/{request_id}`) gibt dieselbe `400` zurück (ihre Status-URL antwortet mit `200` und `error_type` `invalid_input`). Wenn auch diese erneute Einreichung mit `400` fehlschlägt, ist das Bild selbst das Problem (zum Beispiel ist es kein unterstütztes Bild, oder sein Größen-Header liegt nicht innerhalb der ersten 2 MiB).
+- **Wo andere Links nicht akzeptiert werden**, muss jeder Eintrag eine `image_url` eines Uploads sein. Router prüft nur, ob der Link als `https`-URL parst, deren Host exakt `app-uploads.krea.ai` ist (kein anderer Host und kein expliziter Port): jeder andere Link, einschließlich einer öffentlichen `https`-URL, die Sie selbst hosten, wird vor dem Lauf des Modells mit `400` `invalid_input` und der Meldung „image_urls must be image_url values returned by POST /proxy/krea/assets“ abgelehnt; laden Sie das Bild stattdessen hoch. Ein Link, der diese Prüfung besteht, aber kein aktiver Upload ist (abgelaufen, gelöscht oder falsch geschrieben), kommt dennoch durch, und Router kann dann die Größe des Bildes nicht lesen und antwortet mit einem `5xx`-Fehler, nicht mit einem `400`. Ein hochgeladenes Bild, das Router nicht lesen kann (zum Beispiel ist es kein unterstütztes Bild, oder sein Größen-Header liegt nicht innerhalb der ersten 2 MiB), schlägt hier ebenfalls mit einem `5xx` (`500` `internal_error` auf Router) statt mit einem `400` fehl, und das Bild ist weiterhin das Problem; ein erneutes Hochladen hilft also nicht.
+- **Direkt nach dem Start eines Servers**, bevor er gelernt hat, welche Regel gilt, kann jede `https`-URL, die kein `app-uploads.krea.ai`-Link ist, mit einem `503` (`service_unavailable` auf Router) fehlschlagen, das gefahrlos erneut versucht werden kann (eine in der Warteschlange befindliche Anfrage wird darauf automatisch erneut versucht).
+
+Router liest nur die ersten 2 MiB jeder Referenz, um ihre Größe zu finden; ein Bild, dessen Größeninformationen er innerhalb dieses Fensters nicht zu Ende lesen kann (zum Beispiel ein JPEG mit mehr als 2 MiB eingebetteter Metadaten, oder ein palettiertes PNG, dessen Transparenzdaten, oder ohne solche der Beginn seines ersten Bilddaten-Chunks, jenseits von 2 MiB liegt, etwa nach mehr als 2 MiB an Text- oder Farbprofil-Chunks), wird daher mit `400` abgelehnt, mit der Angabe, dass sein Größen-Header nicht innerhalb der ersten 2 MiB liegt, und ein erneutes Hochladen hilft nicht: speichern Sie es zuerst ohne die großen Metadaten neu, oder speichern Sie ein palettiertes PNG als nicht palettiertes (Truecolor-)PNG. Senden Sie einen internationalisierten Hostnamen in seiner ASCII-Form (Punycode), zum Beispiel `xn--bcher-kva.de` statt `bücher.de`: Router schlägt den Host so nach, wie er geschrieben ist, und ein nicht-ASCII-Name wird als nicht existierender Host abgelehnt.Das Hochladen funktioniert in jeder Umgebung und ist daher die portable Option; übergeben Sie `image_url` immer genau so, wie sie beim Hochladen zurückgegeben wurde. Wenn Ihr Bild nicht bereits über eine öffentliche `https`-URL verfügbar ist, laden Sie es zuerst hoch:
+
+1. Laden Sie jedes Referenzbild als `multipart/form-data` hoch, wobei das Bild im Formularfeld `file` liegt (JPEG, PNG oder WebP, bis zu 75 MB). Authentifizieren Sie sich genauso wie bei Router, mit `X-API-Key` oder `Authorization: Bearer`.
+
+   ```bash
+   curl -X POST https://api.comfy.org/proxy/krea/assets \
+     -H "X-API-Key: $COMFY_API_KEY" \
+     -F "file=@reference.png"
+   ```
+
+2. Lesen Sie `image_url` aus der JSON-Antwort und übergeben Sie sie in `image_urls`:
+
+   ```json
+   {
+     "prompt": "Place the product on a clean studio background",
+     "resolution": "1k",
+     "image_urls": ["<image_url from step 1>"]
+   }
+   ```
+
+Text-zu-Bild-Aufrufe lassen `image_urls` weg und benötigen keinen Upload.
+
+## Modellausgaben und gespeicherte Assets
+
+Eingabe- und Ausgabefelder variieren je nach Modell. Ein Umstieg von einem Anbieter-SDK oder Proxy kann sowohl die Route als auch die Art und Weise ändern, wie Sie das Ergebnis lesen.
+
+Einige Assets werden im Comfy-Speicher neu gehostet; andere sind Anbieter-URLs oder Inline-Bytes. Informationen zu Lebensdauer und Replay-Verhalten finden Sie unter [Ergebnis-Assets](/de/development/comfy-router/reference#result-assets).
+
+## Nächste Schritte
+
+<CardGroup cols={2}>
+  <Card title="Schnellstart" icon="rocket" href="/de/development/comfy-router/quickstart">
+    Generieren Sie Ihr erstes Bild über Comfy Router.
+  </Card>
+  <Card title="Die Router-API verwenden" icon="code" href="/de/development/comfy-router/api">
+    Wählen Sie ein Modell, prüfen Sie dessen Schema und behandeln Sie Ergebnisse und Wiederholungsversuche.
+  </Card>
+</CardGroup>

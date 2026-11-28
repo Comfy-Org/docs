@@ -1,0 +1,106 @@
+---
+title: "ComfyUI-Server-Routen (HTTP- und WebSocket-API)"
+sidebarTitle: "HTTP- & WebSocket-Routen"
+description: "Integrierte GET-, POST- und WebSocket-Endpunkte des ComfyUI-Servers für Prompts, Warteschlange, Verlauf, Modelle und Benutzerdaten sowie eigene Routen."
+icon: "route"
+translationSourceHash: f6c2de44
+translationFrom: development/comfyui-server/comms_routes.mdx
+---
+
+## Routen
+
+Der Server definiert eine Reihe von `get`- und `post`-Methoden, die Sie finden, indem Sie in `server.py` nach `@routes` suchen. Wenn Sie im Web-Client einen Workflow absenden, wird er an `/prompt` gesendet. Dieser Endpunkt validiert den Prompt und fügt ihn einer Ausführungswarteschlange hinzu; zurückgegeben wird entweder eine `prompt_id` und `number` (die Position in der Warteschlange) oder `error` und `node_errors`, wenn die Validierung fehlschlägt.
+Die Prompt-Warteschlange ist in `execution.py` definiert, wo auch die Klasse `PromptExecutor` definiert ist.
+
+### Integrierte Routen
+
+`server.py` definiert die folgenden Routen:
+
+#### Kern-API-Routen
+
+| path                           | get/post/ws | purpose                                                                     |
+| ------------------------------ | ----------- | --------------------------------------------------------------------------- |
+| `/`                            | get         | lädt die Comfy-Webseite                                                     |
+| `/ws`                          | websocket   | WebSocket-Endpunkt für die Echtzeitkommunikation mit dem Server             |
+| `/embeddings`                  | get         | ruft eine Liste der Namen der verfügbaren Embeddings ab                     |
+| `/extensions`                  | get         | ruft eine Liste der Erweiterungen ab, die ein `WEB_DIRECTORY` registrieren  |
+| `/features`                    | get         | ruft Serverfunktionen und -fähigkeiten ab                                   |
+| `/models`                      | get         | ruft eine Liste der verfügbaren Modelltypen ab                              |
+| `/models/{folder}`             | get         | ruft Modelle in einem bestimmten Ordner ab                                  |
+| `/workflow_templates`          | get         | ruft eine Zuordnung von Custom-Node-Modulen und zugehörigen Vorlagen-Workflows ab |
+| `/upload/image`                | post        | ein Bild hochladen                                                          |
+| `/upload/mask`                 | post        | eine Maske hochladen                                                        |
+| `/view`                        | get         | ein Bild anzeigen. Viele Optionen, siehe `@routes.get("/view")` in `server.py` |
+| `/view_metadata`/{folder_name} | get         | ruft Metadaten für ein Modell ab                                            |
+| `/system_stats`                | get         | ruft Informationen über das System ab (Python-Version, Geräte, VRAM usw.)   |
+| `/prompt`                      | get         | ruft den aktuellen Warteschlangenstatus und Ausführungsinformationen ab     |
+| `/prompt`                      | post        | sendet einen Prompt an die Warteschlange ab                                 |
+| `/object_info`                 | get         | ruft Details aller Node-Typen ab                                            |
+| `/object_info/{node_class}`    | get         | ruft Details eines Node-Typs ab                                             |
+| `/history`                     | get         | ruft den Warteschlangenverlauf ab                                           |
+| `/history/{prompt_id}`         | get         | ruft den Warteschlangenverlauf für einen bestimmten Prompt ab               |
+| `/history`                     | post        | leert den Verlauf oder löscht einen Verlaufseintrag                         |
+| `/queue`                       | get         | ruft den aktuellen Zustand der Ausführungswarteschlange ab                  |
+| `/queue`                       | post        | verwaltet Warteschlangen-Operationen (Ausstehendes/Laufendes leeren)        |
+| `/interrupt`                   | post        | stoppt die Ausführung des aktuellen Workflows                               |
+| `/free`                        | post        | gibt Speicher frei, indem angegebene Modelle entladen werden                |
+| `/userdata`                    | get         | listet Benutzerdatendateien in einem angegebenen Verzeichnis auf            |
+| `/v2/userdata`                 | get         | erweiterte Version, die Dateien und Verzeichnisse in strukturiertem Format auflistet |
+| `/userdata/{file}`             | get         | ruft eine bestimmte Benutzerdatendatei ab                                   |
+| `/userdata/{file}`             | post        | lädt eine Benutzerdatendatei hoch oder aktualisiert sie                     |
+| `/userdata/{file}`             | delete      | löscht eine bestimmte Benutzerdatendatei                                    |
+| `/userdata/{file}/move/{dest}` | post        | verschiebt oder benennt eine Benutzerdatendatei um                           |
+| `/users`                       | get         | ruft Benutzerinformationen ab                                               |
+| `/users`                       | post        | erstellt einen neuen Benutzer (nur im Mehrbenutzermodus)                    |
+
+### WebSocket-Kommunikation
+
+Der Endpunkt `/ws` ermöglicht eine bidirektionale Echtzeitkommunikation zwischen Client und Server. Er wird verwendet für:
+- den Empfang von Fortschrittsaktualisierungen während der Ausführung
+- das Abrufen des Node-Ausführungsstatus in Echtzeit
+- den Empfang von Fehlermeldungen und Debugging-Informationen
+- Live-Aktualisierungen bei Änderungen des Warteschlangenstatus
+
+Die WebSocket-Verbindung sendet JSON-Nachrichten mit verschiedenen Typen, zum Beispiel:
+- `status` - Aktualisierungen des gesamten Systemstatus
+- `execution_start` - wenn die Ausführung eines Prompts beginnt
+- `execution_cached` - wenn zwischengespeicherte Ergebnisse verwendet werden
+- `executing` - Aktualisierungen während der Node-Ausführung
+- `progress` - Fortschrittsaktualisierungen für lang laufende Operationen
+- `executed` - wenn ein Node die Ausführung abgeschlossen hat
+
+### Benutzerdefinierte Routen
+
+Wenn Sie während der Ausführung eine Nachricht vom Client an den Server senden möchten, müssen Sie dem Server eine benutzerdefinierte Route hinzufügen.
+Für alles Komplizierte müssen Sie sich in die [aiohttp-Framework-Dokumentation](https://docs.aiohttp.org/) einarbeiten, aber die meisten Fälle lassen sich wie folgt behandeln:
+
+```Python
+from server import PromptServer
+from aiohttp import web
+routes = PromptServer.instance.routes
+@routes.post('/my_new_path')
+async def my_function(request):
+    the_data = await request.post()
+    # the_data enthält jetzt ein Dictionary der gesendeten Werte
+    MyClass.handle_my_message(the_data)
+    return web.json_response({})
+```
+
+<Tip>Sofern Sie nicht genau wissen, was Sie tun, versuchen Sie nicht, `my_function` innerhalb einer Klasse zu definieren.
+Der Decorator `@routes.post` erledigt eine Menge Arbeit! Definieren Sie die Funktion stattdessen wie oben
+und rufen Sie dann eine Klassenmethode auf.</Tip>
+
+<Tip>Sie können auch ein `@routes.get` definieren, wenn Sie nichts ändern.</Tip>
+
+Der Client kann diese neue Route nutzen, indem er ein `FormData`-Objekt mit ungefähr folgendem Code sendet;
+im obigen Code würde `the_data` dann die Schlüssel `message` und `node_id` enthalten:
+
+```Javascript
+import { api } from "../../scripts/api.js";
+function send_message(node_id, message) {
+    const body = new FormData();
+    body.append('message',message);
+    body.append('node_id', node_id);
+    api.fetchApi("/my_new_path", { method: "POST", body, });
+}
+```

@@ -1,0 +1,78 @@
+---
+title: "Canvas-Zeiger-API für Widgets und Cursor"
+sidebarTitle: "Canvas-Zeiger-API"
+description: "Klicks, Doppelklicks und Ziehen auf eigenen Canvas-Widgets mit onPointerDown behandeln und Canvas-Cursor aus einer ComfyUI-Frontend-Erweiterung steuern."
+translationSourceHash: 16ea7f38
+translationFrom: custom-nodes/js/canvas-pointer-api.mdx
+translationBlockHashes:
+  "_intro": b1d4c464
+  "Default behavior": 27a8751b
+  "Handle pointer input on a widget": e4fc63fc
+  "Control the canvas cursor": 9bcc33c8
+---
+
+Der Canvas leitet Zeigereingaben über einen `CanvasPointer`. Er entscheidet, ob ein Drücken zu einem Klick, einem Doppelklick oder einem Ziehen wird, und führt die Callbacks aus, die Sie diesem Drücken zuweisen. Widgets, die auf dem Canvas gezeichnet werden, verwenden ihn über `onPointerDown`.
+
+## Standardverhalten
+
+- Das Ziehen mehrerer ausgewählter Elemente erfordert nicht mehr das Halten von Shift. Ein Klick auf ein Element, während mehrere ausgewählt sind, hebt weiterhin die Auswahl der übrigen auf.
+- Eine an einer Eingabe angeschlossene Verbindung wird beim Anklicken nicht mehr getrennt und neu verbunden.
+- Eine geringe Bewegung zwischen dem Drücken und dem Loslassen des Zeigers gilt weiterhin als Klick. Sobald der Zeiger die Klick-Drift-Grenze überschreitet, wird das Drücken zum Ziehen. Die Zeit spielt für diese Entscheidung keine Rolle.
+- Ein Doppelklick erfordert zwei Drückvorgänge innerhalb der Doppelklick-Zeit, die höchstens das Dreifache des Klick-Drifts auseinanderliegen. Nur ein Drückvorgang, bei dem `onDoubleClick` zugewiesen wird, kann einen Doppelklick abschließen.
+
+Sie legen den Klick-Drift und die Doppelklick-Zeit in den Einstellungen fest
+(`Comfy.Pointer.ClickDrift` und `Comfy.Pointer.DoubleClickTime`).
+
+### Mehrere Elemente auswählen
+
+- `Ctrl` + Ziehen: beginnt eine Mehrfachauswahl
+- `Ctrl` + `Shift` + Ziehen: fügt zur Auswahl hinzu
+- `Ctrl` + Ziehen, dann `Shift`: fügt zur Auswahl hinzu
+- `Ctrl` + Ziehen, dann `Alt`: entfernt aus der Auswahl
+
+## Zeigereingaben auf einem Widget verarbeiten
+
+Weisen Sie `onPointerDown` einem Widget zu. Er wird beim Drücken des Zeigers ausgeführt und erhält den Zeiger, den Node und den Canvas. Weisen Sie dem Zeiger die benötigten Callbacks zu; der Canvas führt die passenden aus, sobald der Druck abgeschlossen ist:
+
+```js
+widget.onPointerDown = function (pointer, node, canvas) {
+  const e = pointer.eDown
+  const offsetFromNode = [e.canvasX - node.pos[0], e.canvasY - node.pos[1]]
+
+  pointer.onClick = (upEvent) => {
+    console.log(pointer.eDown, pointer.eMove, pointer.eUp)
+  }
+  pointer.onDoubleClick = (upEvent) => this.customFunction(upEvent)
+
+  pointer.onDragStart = () => {}
+  pointer.onDrag = (moveEvent) => {}
+  pointer.onDragEnd = (upEvent) => {}
+  pointer.onDragCancel = () => {}
+
+  pointer.finally = () => {}
+
+  return true
+}
+```
+
+- `onClick` und `onDoubleClick` werden nie bei demselben Druck ausgeführt wie `onDragStart`, `onDragEnd` oder `onDragCancel`. `onDrag` kann bei einem Druck ausgeführt werden, der als Klick endet, da er auch Bewegungen innerhalb der Klick-Drift-Grenze erhält.
+- `onDragStart` wird einmal pro Ziehbewegung ausgeführt, wenn der Zeiger die Klick-Drift-Grenze erstmals überschreitet. Wenn der Zeiger die Grenze überschritten hat und losgelassen wird, bevor ein Bewegungsereignis gemeldet wird, wird `onDragStart` beim Loslassen ausgeführt, `onDragEnd` direkt danach, und `onDrag` wird nicht ausgeführt.
+- Wenn Sie bei einem Druck sowohl `onClick` als auch `onDoubleClick` zuweisen, wird beim Loslassen des ersten Drucks eines Doppelklicks `onClick` ausgeführt. Der zweite Druck führt `onDoubleClick` statt `onClick` aus; stellen Sie daher sicher, dass `onClick` sicher zuerst ausgeführt werden kann. Der erste Klick kann auch auf einem benachbarten Element statt auf Ihrem Widget landen, sodass `onDoubleClick` ausgeführt werden kann, ohne dass Ihr `onClick` ausgeführt wurde.
+- `onDragEnd` erhält das Ereignis beim Loslassen des Zeigers am Ende einer Ziehbewegung. `onDragCancel` wird stattdessen ausgeführt, wenn die Ziehbewegung unterbrochen wird, zum Beispiel wenn die Zeigeraufnahme verloren geht.
+- `finally` wird einmal ausgeführt, wenn der Druck endet. Das Zuweisen von `pointer.finally` führt den Callback, den es ersetzt, sofort aus. Wenn `onPointerDown` nicht `true` zurückgibt, weist der Canvas sein eigenes `finally` zu, sodass Ihr `finally` bereits beim Drücken des Zeigers ausgeführt wird. Geben Sie `true` zurück, wenn Sie sich bei der Bereinigung auf `finally` verlassen.
+- `pointer.eDown`, `pointer.eMove` und `pointer.eUp` geben jedem Callback Zugriff auf die gesamte Ereignisabfolge.
+- Geben Sie `true` zurück, um zu verhindern, dass der Canvas den Druck selbst verarbeitet.
+- Entfernen Sie jeden veralteten `widget.mouse`-Handler, wenn Sie `onPointerDown` hinzufügen. Wenn `onPointerDown` `true` zurückgibt, verfolgt der Canvas das Widget nach dem Loslassen weiter und ruft `widget.mouse` bei jeder Zeigerbewegung weiter auf.
+
+Der Canvas erkennt Doppelklicks und Ziehbewegungen für Sie, sodass ein Widget separate Zeigerereignisse nicht mehr zeitlich steuern oder messen muss. Er berücksichtigt außerdem die Klick-Drift- und Doppelklick-Einstellungen des Benutzers.
+
+## Canvas-Cursor steuern
+
+`canvas.state.hoveringOver` enthält Bit-Flags für die Elementtypen unter dem Zeiger, etwa Node, Gruppe, Umleitung oder Verbindung. Setzen Sie `canvas.state.shouldSetCursor` auf `false`, um zu verhindern, dass der Canvas den Cursor-Stil setzt, und setzen Sie ihn anschließend selbst:
+
+```js
+canvas.state.shouldSetCursor = false
+canvas.canvas.style.cursor = 'pointer'
+```
+
+Beim Start einer Größenänderung an einem Node wird weiterhin ein Resize-Cursor gesetzt, solange `shouldSetCursor` `false` ist. Setzen Sie Ihren Cursor nach Abschluss der Größenänderung erneut.

@@ -1,0 +1,228 @@
+---
+title: "ComfyUI Subgraphs"
+sidebarTitle: "Subgraphs"
+description: "Arbeiten mit Subgraphs in ComfyUI-Erweiterungen: Node-IDs, Graph-Traversierung, Events, Widget-Promotion und Bereinigung."
+translationSourceHash: ae2fd7bc
+translationFrom: custom-nodes/js/subgraphs.mdx
+translationBlockHashes:
+  "Overview": 227bb063
+  "Node Identifiers": 7899f492
+  "Traversing Nodes": c992584f
+  "Root vs Active Graph": bab1d3eb
+  "Events": 98abc485
+  "Widget Promotion": 3e5658d9
+  "Cleanup": fa9bac21
+  "See Also": 8736e3b6
+---
+## Überblick
+
+Subgraphs ermöglichen es Benutzern, Nodes zu wiederverwendbaren, verschachtelbaren Komponenten zu gruppieren. Jeder Subgraph ist ein eigenes `LGraph` mit einer UUID. Die Anleitung für Benutzer finden Sie unter [Subgraphs](/de/interface/features/subgraph).
+
+## Node-Identifikatoren
+
+ComfyUI verwendet drei verschiedene Arten von Node-Identifikatoren. Wenn Sie den falschen Typ verwenden, schlägt der Vorgang ohne Fehlermeldung fehl.
+
+| Typ | Format | Verwendet für |
+|------|--------|----------|
+| `node.id` | `42` (Zahl) | Gilt nur innerhalb der unmittelbaren Graph-Ebene. `graph.getNodeById(id)` |
+| Execution ID | `"1:2:3"` (durch Doppelpunkte getrennter String) | Fortschrittsmeldungen des Backends, `UNIQUE_ID` |
+| Locator ID | `"<uuid>:<localId>"` oder `"<localId>"` | UI-Zustand: Badges, Fehler, Bilder |
+
+So erstellen Sie die Locator ID eines Nodes innerhalb einer Erweiterung:
+
+```javascript
+function getLocatorId(node) {
+  const graphId = node.graph?.id
+  return graphId ? `${graphId}:${node.id}` : String(node.id)
+}
+```
+
+## Nodes durchlaufen
+
+### Nur die aktuelle Ebene
+
+```javascript
+for (const node of app.graph.nodes) {
+  console.log(node.id, node.type)
+}
+```
+
+### Alle Nodes rekursiv
+
+Um auch verschachtelte Subgraphs zu betreten, verwenden Sie einen rekursiven Helfer, der für jeden Node einen Callback aufruft:
+
+```javascript
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+```
+
+Vollständiges Beispiel:
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.SubgraphWalker",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node, graph) => {
+      console.log(`[${graph.id ?? "root"}] node ${node.id}: ${node.type}`)
+    })
+  }
+})
+```
+
+## Root-Graph und aktiver Graph
+
+| Sie möchten... | Verwenden Sie |
+|-----------------|-----|
+| Alle Nodes im Workflow bearbeiten | `app.graph` (Root) |
+| Nur die sichtbare Ebene bearbeiten | `app.canvas?.graph` |
+| Auf einen bestimmten Subgraph zugreifen | `someNode.subgraph` |
+
+```javascript
+// Alle Nodes (einschließlich verschachtelter Subgraphs)
+walkGraph(app.graph, (node) => { /* ... */ })
+
+// Nur die Nodes, die der Benutzer aktuell sieht
+for (const node of app.canvas?.graph?.nodes ?? []) { /* ... */ }
+```
+
+## Events
+
+### Events auf Subgraph-Ebene
+
+Werden auf `subgraph.events` ausgelöst:
+
+| Event | Payload | Wann |
+|-------|---------|------|
+| `widget-promoted` | `{ widget, subgraphNode }` | Widget wurde auf den übergeordneten Node befördert |
+| `widget-demoted` | `{ widget, subgraphNode }` | Widget wurde vom übergeordneten Node entfernt |
+| `input-added` | `{ input }` | Eingabe-Slot wurde hinzugefügt |
+| `removing-input` | `{ input, index }` | Eingabe-Slot wird gerade entfernt |
+| `output-added` | `{ output }` | Ausgabe-Slot wurde hinzugefügt |
+| `removing-output` | `{ output, index }` | Ausgabe-Slot wird gerade entfernt |
+| `renaming-input` | `{ input, index, oldName, newName }` | Eingabe-Slot wurde umbenannt |
+| `renaming-output` | `{ output, index, oldName, newName }` | Ausgabe-Slot wurde umbenannt |
+
+### Events auf Canvas-Ebene
+
+Werden auf `app.canvas.canvas` ausgelöst (dem HTML-Canvas-Element):
+
+| Event | Payload | Wann |
+|-------|---------|------|
+| `subgraph-opened` | `{ subgraph, closingGraph, fromNode }` | Der Benutzer wechselt in einen Subgraph |
+| `subgraph-converted` | `{ subgraphNode }` | Die Auswahl wurde in einen Subgraph umgewandelt |
+
+### Listener-Muster
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.SubgraphEvents",
+  async setup() {
+    app.canvas.canvas.addEventListener("subgraph-opened", (e) => {
+      const { subgraph, fromNode } = e.detail
+      console.log(`Opened subgraph from node ${fromNode.id}`)
+    })
+  }
+})
+```
+
+## Widget-Promotion
+
+Wenn ein `SubgraphInput` mit einem Widget innerhalb eines Subgraphs verbunden wird, erscheint eine Kopie dieses Widgets auf dem übergeordneten Subgraph-Node. Dadurch wird `widget-promoted` ausgelöst. Das Entfernen der Verbindung löst `widget-demoted` aus.
+
+<Warning>
+Das Verhalten der Widget-Promotion entwickelt sich noch weiter und kann sich in zukünftigen Versionen ändern.
+</Warning>
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+function walkGraph(graph, callback) {
+  for (const node of graph.nodes ?? []) {
+    callback(node, graph)
+    if (node.subgraph) walkGraph(node.subgraph, callback)
+  }
+}
+
+app.registerExtension({
+  name: "MyExtension.WidgetPromotion",
+  async afterConfigureGraph() {
+    walkGraph(app.graph, (node) => {
+      if (!node.subgraph) return
+      if (node._promCleanup) node._promCleanup.abort()
+      const controller = new AbortController()
+      node._promCleanup = controller
+      const { signal } = controller
+
+      node.subgraph.events.addEventListener("widget-promoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" promoted`)
+      }, { signal })
+
+      node.subgraph.events.addEventListener("widget-demoted", (e) => {
+        console.log(`Widget "${e.detail.widget.name}" demoted`)
+      }, { signal })
+
+      const origRemoved = node.onRemoved
+      node.onRemoved = function () {
+        controller.abort()
+        origRemoved?.apply(this, arguments)
+      }
+    })
+  }
+})
+```
+
+## Bereinigung
+
+Verwenden Sie einen `AbortController`, um alle Event-Listener zu entfernen, wenn ein Node entfernt wird.
+
+```javascript
+import { app } from "../../scripts/app.js"
+
+app.registerExtension({
+  name: "MyExtension.Cleanup",
+  async nodeCreated(node) {
+    if (!node.subgraph) return
+
+    const controller = new AbortController()
+    const { signal } = controller
+
+    node.subgraph.events.addEventListener("input-added", (e) => {
+      console.log(`Input added: ${e.detail.input.name}`)
+    }, { signal })
+
+    node.subgraph.events.addEventListener("removing-input", (e) => {
+      console.log(`Input removing: ${e.detail.input.name}`)
+    }, { signal })
+
+    const origRemoved = node.onRemoved
+    node.onRemoved = function () {
+      controller.abort()
+      origRemoved?.apply(this, arguments)
+    }
+  }
+})
+```
+
+<Tip>
+`onRemoved` kann auch während der Umwandlung in einen Subgraph ausgelöst werden, nicht nur beim Löschen. Sichern Sie die Teardown-Logik ab, wenn Sie den Zustand über Umstrukturierungen hinweg erhalten müssen.
+</Tip>
+
+## Siehe auch
+
+- [Subgraphs (Benutzerhandbuch)](/de/interface/features/subgraph)
+- [Erweiterungshooks](/de/custom-nodes/js/javascript_hooks)

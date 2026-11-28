@@ -1,0 +1,95 @@
+---
+title: "Migration von Serialisierungs-Callbacks für Frontend-Erweiterungen"
+sidebarTitle: "Serialisierungs-Callbacks"
+description: "Wie sich onSerialize und onConfigure bei store-gestützten Graphen verhalten und wo Frontend-Erweiterungen eigene Daten speichern sollten."
+translationSourceHash: de116a13
+translationFrom: custom-nodes/js/serialization-callbacks-migration.mdx
+translationBlockHashes:
+  "_intro": 87be7894
+  "Store custom data in properties or extra": 9bd7e443
+  "Serialize nodes instead of enumerating properties": f9850471
+---
+
+Das Konfigurieren eines Root-`LGraph` aus serialisierten Daten erfordert jetzt
+eine aktive Pinia-Instanz. `LGraph.configure()` leert den Graphen und baut ihn
+direkt gegen die ECS-Stores neu auf. Ein Test-Harness, ein Worker oder ein
+eigenständiger LiteGraph-Consumer, der `new LGraph(data)` oder
+`graph.configure(data)` ohne aktive Pinia-Instanz aufruft, schlägt daher jetzt
+offen fehl, statt still einen leeren Graphen zu erzeugen. Es gilt dieselbe
+Anforderung, die in der
+[Migration der Link-Registrierung](/de/custom-nodes/js/link-registration-migration)
+beschrieben ist.
+
+Erweiterungen, die in ComfyUI laufen, verwenden die aktive Pinia-Instanz der
+Anwendung. Erstellen oder aktivieren Sie keine eigene Pinia-Instanz aus
+Erweiterungscode heraus.
+
+`node.onConfigure`, `node.onSerialize`, `graph.onConfigure` und
+`graph.onSerialize` behalten ihre bestehenden Signaturen und ihre
+Auslösereihenfolge. Hooks zum Zeitpunkt von Verbindungen finden Sie unter
+[Migration der Verbindungs-Callbacks](/de/custom-nodes/js/connection-callbacks-migration);
+zu `node.widgets` und der Speicherung von Widget-Werten siehe
+[Widget-System-Migration](/de/custom-nodes/js/widgets-migration).
+
+`onConfigure` erhält jetzt eine flache Kopie der serialisierten Daten und nicht
+mehr das Objekt des Aufrufers selbst. Das Hinzufügen, Entfernen oder
+Neuzuweisen von Top-Level-Schlüsseln am Callback-Argument verändert das
+Workflow-JSON des Aufrufers nicht und wird nicht persistiert. Verschachtelte
+Objekte (zum Beispiel `inputs`, `pos`, `properties`) werden weiterhin mit dem
+Aufrufer geteilt, sodass eine Mutation an Ort und Stelle weiterhin durchschlägt.
+Erweiterungen, die sich auf eine dieser beiden Arten der Mutation verlassen
+haben, müssen benutzerdefinierten Zustand stattdessen in `node.properties` oder
+`graph.extra` speichern.
+
+## Eigene Daten in properties oder extra speichern
+
+Verwenden Sie `node.properties` für erweiterungsspezifische Daten pro Node und
+`graph.extra` für erweiterungsspezifische Daten pro Graph. Diese bleiben die
+stabilen und vorgesehenen Schnittstellen für persistierte Daten.
+
+`onSerialize` und `onConfigure` werden mit `this` aufgerufen, das an das lebende
+Node- bzw. Graph-Objekt gebunden ist; das an den Callback übergebene Argument
+ist das serialisierte Datenobjekt (`ISerialisedNode`/`ISerialisedGraph`) und
+nicht der lebende Node bzw. Graph. Da `this` weiterhin das lebende Objekt ist,
+kann ein Hook jedes Feld darauf verändern, auch Felder, die jetzt store-gestützt
+sind. Verwenden Sie diese Hooks nicht, um Kernfelder zu überschreiben: Ein
+Schreibzugriff über `this` aus `onSerialize`/`onConfigure` heraus geht direkt an
+den Store und hat keine eigene Schema-, Zuständigkeits- oder Undo-Grenze.
+
+`onSerialize` läuft, nachdem das Frontend `graph.extra` und `node.properties` in
+das Datenobjekt kopiert hat. Ein Schlüssel, den der Hook zu `this.extra` oder
+`this.properties` hinzufügt, fehlt daher im aktuellen Speichervorgang. Schreiben
+Sie innerhalb von `onSerialize` stattdessen in das Callback-Argument:
+`data.extra` für einen Graphen, `data.properties` für einen Node. Andernfalls
+aktualisieren Sie `graph.extra` oder `node.properties`, bevor die Serialisierung
+beginnt.
+
+`onSerialize` nimmt nur einen Callback auf, bewahren Sie daher jeden Hook, den
+eine andere Erweiterung bereits installiert hat:
+
+```js
+const previous = graph.onSerialize
+graph.onSerialize = function (data) {
+  previous?.call(this, data)
+  data.extra.myExtension = { version: 1 }
+}
+```
+
+Nur der Root-Graph führt `onSerialize` aus. Subgraph-Definitionen werden
+gespeichert, ohne dass am Subgraph ein Hook aufgerufen wird; speichern Sie
+Subgraph-Daten daher in `subgraph.extra`, bevor der Workflow gespeichert wird.
+
+Ein benutzerdefinierter Top-Level-Schlüssel, den ein Hook zu `data` hinzufügt,
+bleibt in `LGraph.asSerialisable()` auf der obersten Ebene. Der Legacy-Einstiegspunkt
+`LGraph.serialize()` verschiebt ihn stattdessen unter `data.extensions` und lässt
+Werte weg, die nicht JSON-kompatibel sind. Beim Laden des Workflows erhält
+`onConfigure` den Schlüssel wieder auf der obersten Ebene. Schlüssel unter
+`extra` behalten in beiden Einstiegspunkten ihren Platz.
+
+## Nodes serialisieren statt Eigenschaften aufzuzählen
+
+Wenn Ihre Erweiterung eine serialisierte Darstellung oder eine Debug-Darstellung eines Nodes erstellt, indem sie dessen eigene Eigenschaften aufzählt, stellen Sie sie auf `node.serialize()` um.
+
+`id`, `type`, `title`, `flags`, `mode`, `color`, `bgcolor`, `shape` und `showAdvanced` sind jetzt Accessor-Eigenschaften über den Node-Datenspeicher und keine eigenen Dateneigenschaften der Node-Instanz mehr. `Object.keys(node)`, `for...in` und `{ ...node }` geben diese Felder nicht mehr aus, direkte Lese- und Schreibzugriffe (`node.title`, `node.mode = ...`) funktionieren jedoch unverändert weiter. `inputs`, `outputs` und `widgets` bleiben eigene, aufzählbare Eigenschaften, sodass Spread und Enumeration diese drei weiterhin erfassen.
+
+Für `serializeValue` auf Widget-Ebene, also die separate Serialisierungsschicht, die das API-Prompt-Payload aufbaut und nicht das Workflow-JSON, siehe [Widget-System-Migration](/de/custom-nodes/js/widgets-migration).

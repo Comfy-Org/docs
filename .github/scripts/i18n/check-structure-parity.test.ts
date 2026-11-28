@@ -236,6 +236,7 @@ describe("path helpers", () => {
       "zh/tutorials/flux/flux-1-text-to-image.mdx",
       "ko/tutorials/flux/flux-1-text-to-image.mdx",
       "es/tutorials/flux/flux-1-text-to-image.mdx",
+      "de/tutorials/flux/flux-1-text-to-image.mdx",
     ]);
   });
 
@@ -244,7 +245,7 @@ describe("path helpers", () => {
     const files = changedEnglishFiles(repoRoot, "HEAD~1");
     expect(
       files.every(
-        (f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/") && !f.startsWith("es/"),
+        (f) => !f.startsWith("ja/") && !f.startsWith("zh/") && !f.startsWith("ko/") && !f.startsWith("es/") && !f.startsWith("de/"),
       ),
     ).toBe(true);
   });

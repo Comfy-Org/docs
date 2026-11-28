@@ -1,0 +1,106 @@
+---
+title: "Comfy API v2: Überblick"
+sidebarTitle: "Überblick"
+description: "Referenz zur offiziellen Comfy API v2: ComfyUI-Workflows aus externen Anwendungen starten, Eingaben hochladen, Aufträge senden und Ergebnisse abrufen."
+keywords: ["ComfyAPI", "Comfy API"]
+translationSourceHash: db0cd7ee
+translationFrom: api-reference/v2/overview.mdx
+translationBlockHashes:
+  "_intro": 2a79607a
+  "Where v2 Runs": 1498d78b
+  "Design Principles": c1639f8c
+  "Base URLs": 2180d192
+  "Endpoint Categories": cfe96710
+  "Output URLs and How Long They Last": 0de0fb84
+  "Comfy Router": 12abc772
+---
+<Note>
+  Comfy API v2 ist eine versionierte API. Änderungen innerhalb von v2 sind additiv; Breaking Changes erscheinen als v3.
+</Note>
+
+Die offizielle, versionierte HTTP-API zum Ausführen von ComfyUI-Workflows aus externen Anwendungen: Eingaben hochladen, einen Workflow absenden, die Ausführung beobachten, Ergebnisse abrufen.
+
+Die meisten sollten mit den [Comfy SDKs](/de/development/api-development/sdks) beginnen, die diese API in Python und TypeScript kapseln. Rufen Sie diese Endpunkte direkt auf, wenn Sie in einer anderen Sprache arbeiten. Die vollständige Endpunktdokumentation finden Sie in den API-Referenzseiten dieses Abschnitts, die aus der OpenAPI-Spezifikation generiert werden.
+
+## Wo v2 läuft
+
+Dieselbe API wird von drei Oberflächen bereitgestellt, sodass eine Integration durch Ändern der Basis-URL zwischen ihnen wechseln kann.
+
+**Comfy Cloud.** Der verwaltete Multi-Tenant-Dienst unter `https://cloud.comfy.org`. Erstellen Sie einen [API-Schlüssel](/de/development/api-development/getting-an-api-key), und Sie können jeden Workflow absenden. Cloud-spezifische Funktionen wie Credits, das Durchsuchen von Modellen und die Verwaltung der Warteschlange finden Sie in der [v1 Cloud API](/de/development/cloud/overview), nicht in v2.
+
+**Comfy API-Deployments.** Eine Umgebung, die Sie über die [Developer Platform](https://platform.comfy.org) bereitstellen, erhält einen eigenen dedizierten Endpunkt unter `https://{deployment}.run.comfy.app`, der dieselbe v2 API mit demselben API-Schlüssel bereitstellt. Ein Comfy API-Deployment führt Workflows in einer angehefteten Umgebung aus, skaliert also unabhängig, und `GET /workflow` gibt den ausgeführten Graphen zurück. Wie Sie ein Deployment erstellen und bereitstellen, lesen Sie im [Leitfaden für Comfy API-Deployments](/de/development/serverless/overview).
+
+**Open-Source-ComfyUI über den Proxy.** Ein selbst gehostetes ComfyUI spricht v2 über [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), einen kleinen Open-Source-Dienst, der daneben läuft:
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+```
+
+Standardmäßig leitet der Proxy Anfragen an das ComfyUI unter `127.0.0.1:8188` weiter und stellt die v2 API unter `127.0.0.1:8189` bereit, wobei er nur an Loopback bindet. Die Authentifizierung ist standardmäßig deaktiviert, optional ist ein statisches Bearer-Token möglich. Details zur Konfiguration finden Sie unter [Ihr eigenes ComfyUI](/de/development/api-development/sdks#ihr-eigenes-comfyui) im SDK-Leitfaden.
+
+## Designprinzipien
+
+- **Zuerst pollen.** Jede Funktion ist über einfaches GET-Polling erreichbar. Der SSE-Stream ist eine Live-Erweiterung, niemals die Quelle der Wahrheit.
+- **Alles ist wiederaufnehmbar.** Die Übermittlung ist idempotent, und Aufgabenstatus und Ausgaben sind bis `expires_at` per ID abrufbar. Die URL, die Sie für eine Ausgabe erhalten, hat eine kürzere Lebensdauer: siehe [Ausgabe-URLs und wie lange sie gültig bleiben](#ausgabe-urls-und-ihre-gültigkeitsdauer).
+- **Inhaltsadressierte Assets.** Assets sind über UUID identifizierte Datensätze, die auf Blobs verweisen, welche anhand eines serverseitig berechneten blake3-Hash adressiert werden, sodass identische Eingaben nicht zweimal hochgeladen werden.
+- **Folgen Sie Links, statt URLs selbst zusammenzubauen.** Antworten betten ihre Folge-URLs ein.
+
+Unter [Design Notes](/de/development/api-development/sdks-design) finden Sie die Begründung dafür.
+
+## Basis-URLs
+
+| Oberfläche | URL | Authentifizierung |
+|---------|-----|----------------|
+| Comfy Cloud | `https://cloud.comfy.org` | `Authorization: Bearer <api-key>` |
+| Comfy API-Bereitstellung | `https://{deployment}.run.comfy.app` | `Authorization: Bearer <api-key>` |
+| Selbst gehostet, über [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) | `http://127.0.0.1:8189` | Standardmäßig keine, optional statisches Bearer-Token |
+
+## Endpunktkategorien
+
+| Kategorie | Beschreibung |
+|----------|-------------|
+| Assets | UUID-identifizierte Datensätze über inhaltsadressierte Blobs. Laden Sie Eingaben hoch und Ausgaben herunter. |
+| Jobs | Eine Ausführung eines Workflows. Dauerhaft, abfragbar und abbrechbar. |
+
+## Ausgabe-URLs und ihre Gültigkeitsdauer
+
+Drei verschiedene Laufzeiten bestimmen „die URL für meine Ausgabe“, und sie sind nicht identisch. Jede Anwendung, die Ausgaben gegenüber ihren eigenen Benutzern anzeigt, muss alle drei einplanen.
+
+### Die beiden URL-Formen
+
+| Form | Wo Sie sie erhalten | Kann ein Dritter sie öffnen? | Wie lange sie gilt |
+|-------|------------------|----------------------------|-------------------|
+| Content-Endpunkt, `{base}/api/v2/assets/{id}/content` | `url` bei jedem Eintrag der `outputs` einer Aufgabe | Nein. Er ist eine authentifizierte Route und antwortet mit `401` ohne Ihren API-Schlüssel. | Stabil. Er ist auflösbar, solange das Asset existiert. |
+| Signierte Speicher-URL | `url` in einer `Asset`-Antwort, der `302` `Location`, auf den der Content-Endpunkt weiterleitet, und `getDownloadUrl()` in beiden SDKs | Ja. Sie bringt ihre eigene Autorisierung mit, sodass ein Browser oder ein anderer Dienst sie ohne eigenen Schlüssel lesen kann. | Kurz. Derzeit etwa 6 Stunden bei Comfy Cloud. |
+
+Die praktische Konsequenz: `Output.url` ist kein teilbarer Link. Setzen Sie ihn in ein `<img src>`, das die Browser Ihrer Benutzer laden, erhalten diese ein `401`, weil ihr Browser Ihren API-Schlüssel nicht mitführt. Die signierte URL ist die, die Sie weitergeben können.
+
+Selbst gehostetes ComfyUI hinter [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) kennt überhaupt keine signierten URLs. Der Proxy liefert die Bytes über den Content-Endpunkt aus, die normale Authentifizierung greift, und die SDKs melden das Ablaufdatum als `null` (Python: `None`).
+
+### Das Ablaufdatum der signierten URL auslesen
+
+Bei Deployments von Comfy Cloud und Comfy API wird eine signierte URL mit einer Gültigkeit von **etwa 6 Stunden** erzeugt. Diese Zahl ist eine serverseitige Einstellung und nicht Teil des API-Vertrags. Behandeln Sie sie daher als Größenordnung und kodieren Sie sie niemals fest. Lesen Sie das Ablaufdatum stattdessen aus der Antwort, die Sie erhalten haben:
+
+- `url_expires_at` in einer `Asset`-Antwort ist das tatsächliche Ablaufdatum der `url` in genau dieser Antwort.
+- `getDownloadUrl()` liefert es zusammen mit der URL zurück, als `expiresAt` in TypeScript und als `expires_at` in Python.
+
+### `url_expires_at` bei einer Aufgaben-Ausgabe ist eine andere Zahl
+
+`url_expires_at` bei einem Eintrag der `outputs` einer Aufgabe ist **nicht** das Ablaufdatum der signierten URL. Bei Comfy Cloud wiederholt es das `expires_at` der Aufgabe selbst, das derzeit dem `created_at` der Aufgabe plus einem festen Fenster von 30 Tagen entspricht.
+
+Dieses Fenster ist ein Platzhalter. Die Plattform hat dahinter noch keine Aufbewahrungs- oder Garbage-Collection-Richtlinie für Aufgaben, daher sind die 30 Tage ein Platzhalter, der das Feld nicht-null sein lässt, und keine Bindung dafür, wie lange eine Ausgabe abrufbar bleibt. Lesen Sie es nicht als Versprechen und hängen Sie keinen Cache daran auf. Diese Seite wird aktualisiert, falls eine echte Aufbewahrungsrichtlinie dies ersetzt.
+
+### Eine Ausgabe im eigenen Produkt anzeigen
+
+Wenn Sie eine Ausgabe noch einen Tag später anzeigen möchten, tun Sie eines davon:
+
+- **Hosten Sie die Bytes erneut.** Laden Sie die Ausgabe einmal herunter und kopieren Sie sie in Ihren eigenen Speicher. Die meisten Anwendungen landen hier.
+- **Erzeugen Sie sie bei Bedarf neu.** Speichern Sie die `id` des Assets dauerhaft und lösen Sie sie in dem Moment, in dem Sie rendern, zu einer frischen URL auf (`GET /api/v2/assets/{id}` oder `getDownloadUrl()`), und verwenden Sie diese URL sofort.
+- **Leiten Sie sie per Proxy weiter.** Rufen Sie `Output.url` von Ihrem eigenen Backend ab, das bereits den API-Schlüssel enthält, und streamen Sie die Bytes an Ihren Benutzer.
+
+Was nicht funktioniert, ist das dauerhafte Speichern einer signierten URL. Sie gilt für Stunden, nicht für Tage. Eine gespeicherte Kopie funktioniert daher während der lokalen Tests weiter und bricht für Ihre Benutzer, sobald sie abläuft.
+
+## Comfy Router
+
+Die Comfy API v2 führt Workflows als dauerhafte Aufträge aus, die Sie absenden und abfragen. Für direkte Modellaufrufe (ein Partnermodell, eine Anfrage, die native Eingabe und Ausgabe des Modells) sehen Sie sich den [Comfy Router](/de/development/comfy-router/quickstart) an. Lesen Sie zuerst die [Einschränkungen des Routers](/de/development/comfy-router/limitations).

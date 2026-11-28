@@ -1,0 +1,78 @@
+---
+title: "Comfy API v2: Designnotizen zu Versionierung und Aufträgen"
+description: "Warum die Comfy API v2 neben der ComfyUI-Server-API existiert, was ihre Versionierung verspricht und wie sich Aufträge und SSE-Fortschritt unterscheiden."
+sidebarTitle: "Designnotizen"
+icon: "compass"
+translationSourceHash: 39d03940
+translationFrom: development/api-development/sdks-design.mdx
+translationBlockHashes:
+  "_intro": 2ba7fb25
+  "Why a new API": 7291cd07
+  "Why not wrap the endpoints that already exist": 29068809
+  "Poll first, stream for progress": a30e855f
+  "Relationship to the existing APIs": abe8074f
+  "Scope of the first version": 5978d997
+  "The local proxy": a8eec09f
+  "Why Python and TypeScript first": 2d0132b9
+  "What we want from you": e9660749
+---
+Hintergrund zu den [Comfy SDKs](/de/development/api-development/sdks) und der [Comfy API v2](/de/api-reference/v2/overview), die sie aufrufen. Sie benötigen nichts davon, um die SDKs zu verwenden. Lesen Sie diesen Abschnitt, wenn Sie entscheiden, ob Sie auf der neuen API oder den bestehenden APIs aufbauen möchten.
+
+## Warum eine neue API
+
+Sie können ComfyUI bereits über HTTP steuern, indem Sie `/prompt` und `/history` aufrufen. Diese Endpunkte existieren, um die ComfyUI-Weboberfläche zu bedienen, und auf ihnen aufzubauen bedeutet, sich auf Interna zu verlassen, die Ihnen nie zugesagt wurden. Die v2-API fügt drei Dinge hinzu, die diese Ihnen nicht bieten können.
+
+**Eine Bindung.** v2 ist versioniert, dokumentiert und unterstützt. Änderungen innerhalb von v2 sind additiv; alles, was Kompatibilität bricht, würde als v3 erscheinen. Neue Releases von ComfyUI werden Ihre Integration nicht brechen.
+
+**Portabilität.** Dasselbe Verhalten gegenüber lokalem ComfyUI, gegenüber Comfy Cloud und gegenüber einer Bereitstellung der Comfy API. Derselbe Code, eine andere Basis-URL.
+
+**Eine Form, die den Produktivbetrieb übersteht.** Dauerhafte Aufgaben-IDs, idempotente Übermittlung, typisierte Fehler, normalisierte Ausgaben und echtes Backpressure, statt dass jede Integration alle fünf auf `prompt_id` und `/history` neu erfindet.
+
+## Warum bestehende Endpunkte nicht gekapselt werden
+
+Weil sie von einer ComfyUI-Instanz ausgehen, die jeweils nur einen Workflow gleichzeitig ausführt, und diese Annahme ist fest in `prompt_id`, `/history` und das WebSocket-Protokoll eingebaut.
+
+Die v2 API geht nicht davon aus. Viele gleichzeitig laufende Workflows, jeder über eine dauerhafte Job-ID adressiert, sind der Normalfall und nicht die Ausnahme.
+
+## Zuerst abfragen, für Fortschritt streamen {#poll-first-stream-for-progress}
+
+Jede Funktion in v2 ist mit einfachen GET-Anfragen erreichbar. `GET /api/v2/jobs/{id}` liefert den aktuellen Status, die neueste Fortschrittsaufnahme und jeden bisher festgeschriebenen Ausgang. Er ist die maßgebliche Sicht auf eine Aufgabe und bleibt bis zum `expires_at` der Aufgabe verfügbar.
+
+Der SSE-Stream unter `GET /api/v2/jobs/{id}/events`, in beiden SDKs als `job.events()` verfügbar, ist eine Live-Ergänzung darüber hinaus. Verwenden Sie ihn, um einen Fortschrittsbalken anzutreiben. Verwenden Sie ihn nicht als Quelle der Wahrheit: Er enthält keine Event-IDs, hat keinen Cursor zum Fortsetzen, und Frames, die gesendet wurden, während Sie nicht verbunden waren, sind verloren.
+
+Zwei Gründe, warum der maßgebliche Weg eine Abfrage und nicht ein Stream oder ein Webhook ist:
+
+- Workflows können lange laufen. Eine Verbindung, die drei Sekunden lang aussetzt, sollte Sie niemals ein Ergebnis kosten.
+- Webhooks funktionieren gut für einen Dienst mit öffentlicher Adresse. Sie funktionieren nicht für ein Blender-Plugin auf dem Desktop von jemandem, das nicht auf einem Port lauscht, und das sollten sie auch nicht.
+
+Der praktische Effekt ist, dass jeder Schritt fortgesetzt werden kann. Wenn Ihr Prozess mitten in der Aufgabe abstürzt, können Sie eine Stunde später zurückkommen, und `GET /api/v2/jobs/{id}` liefert weiterhin den Status und die Ausgänge. Andere Transportwege können später für Fälle ergänzt werden, die zu ihnen passen; dieser hier funktioniert überall.
+
+## Verhältnis zu den bestehenden APIs
+
+Bestehende APIs, einschließlich der [Cloud API](/de/development/cloud/overview), funktionieren auch weiterhin. `/prompt`, `/history`, `/ws` und die übrigen funktionieren ebenfalls weiter. Wenn Ihre Integration heute funktioniert, wird sie durch nichts davon beeinträchtigt. Beide existieren nebeneinander.
+
+| | Comfy API v2 | Bestehende APIs |
+|---|---|---|
+| **Kompatibilität** | Versioniert. Innerhalb von v2 nur additive Änderungen | Keine Kompatibilitätsgarantie über Releases hinweg |
+| **Nebenläufigkeitsmodell** | Viele Aufträge gleichzeitig in Bearbeitung, jeder mit einer dauerhaften ID | Eine Instanz, jeweils ein Workflow |
+| **Zielumgebung** | Comfy Cloud, Comfy API-Bereitstellungen und selbst gehostetes ComfyUI, mit demselben Vertrag | Cloud API und ComfyUI Server API unterscheiden sich |
+| **Offizielle Clients** | Python- und TypeScript-SDKs | Keine |
+| **Am besten geeignet für** | Neue Integrationen | Integrationen, die bereits funktionieren |
+
+## Umfang der ersten Version {#scope-of-the-first-version}
+
+Eine Sache, richtig gemacht: einen Workflow ausführen und die Ergebnisse zurückbekommen. Eingänge hochladen, einen Graph im API-Format absenden, seine Ausführung beobachten, Ausgänge herunterladen.
+
+Das ist bewusst der gesamte Umfang. Gespeicherte Workflows, Verwaltung der Modellbibliothek, Node-Introspektion und benannte Workflow-Parameter gibt es hier noch nicht. Wir liefern lieber eine kleine Schnittstelle, die wir über alle Bereitstellungswege von ComfyUI hinweg wirklich unterstützen können, als eine große, die nur bei einem davon funktioniert. Sie wird von hier aus wachsen.
+
+## Der lokale Proxy {#the-local-proxy}
+
+Selbst gehostetes ComfyUI spricht v2 über [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy), der neben Ihrer Instanz läuft und den v2-Vertrag davor bereitstellt. Der Proxy ist Open Source. Anweisungen zur Einrichtung finden Sie in der [API-Proxy-Anleitung](/de/development/comfyui-server/api-proxy).
+
+## Warum Python und TypeScript zuerst
+
+Dort lag die Nachfrage, als wir Personen befragten, die ComfyUI bereits im großen Maßstab betreiben. Beide SDKs basieren auf demselben dokumentierten HTTP-Vertrag, sodass jede Sprache schon jetzt mit der API kommunizieren kann. Wenn Sie ein offizielles SDK für eine andere Sprache wünschen, teilen Sie es uns im Kanal `#developer-platform` in [unserem Discord](https://discord.com/invite/comfyorg) mit.
+
+## Was wir von Ihnen erwarten
+
+Wir freuen uns über Ihr Feedback zu den SDKs und der API. Sagen Sie uns, was umständlich ist, was Sie erwartet hätten und was Sie umgehen mussten. Siehe [Feedback](/de/development/api-development/sdks#feedback).

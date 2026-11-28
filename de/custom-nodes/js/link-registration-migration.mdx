@@ -1,0 +1,30 @@
+---
+title: "Migration der Verbindungsregistrierung für Frontend-Erweiterungen"
+sidebarTitle: "Verbindungsregistrierung"
+description: "Umgang mit undefined von addFloatingLink, store-basierten graph.links-Ansichten und Verbindungs-ID-Konflikten in ComfyUI-Frontend-Erweiterungen."
+translationSourceHash: ee31d5df
+translationFrom: custom-nodes/js/link-registration-migration.mdx
+---
+
+`LinkNetwork.addFloatingLink(link)` gibt jetzt `LLink | undefined` zurück.
+
+Übergeben Sie für eine neue Laufzeit-Verbindung die noch nicht zugewiesene Verbindungs-ID und verwenden Sie die zurückgegebene Verbindung:
+
+```ts
+const registeredLink = graph.addFloatingLink(link)
+if (!registeredLink) return
+```
+
+Die Registrierung gibt die gespeicherte Verbindung zurück, wenn sie erfolgreich ist oder wenn dieselbe Verbindung bereits im Topologie-Store vorhanden ist. Besitzt eine andere Laufzeit-Verbindung bereits die ID, protokolliert die Registrierung einen Fehler, lässt die eingehende Verbindung getrennt und gibt `undefined` zurück. Sie ersetzt die aktive Verbindung nicht stillschweigend und weist der eingehenden Verbindung keine andere Identität zu. `graph.floatingLinks` bleibt die gefilterte Kompatibilitätsansicht für einendige Verbindungen.
+
+`graph.links` und `graph.floatingLinks` sind nach Inhaber gefilterte, store-basierte Kompatibilitätsansichten und kein unabhängiger nativer `Map`-Speicher. Ihre normalen `Map`-Lesemethoden verwenden einen zwischengespeicherten Snapshot der Mitgliedschaft; holen Sie nach Änderungen der Topologie-Mitgliedschaft einen neuen Iterator, statt einen bestehenden Iterator zu behalten. Beide Ansichten erfordern eine aktive Pinia und stellen einen fehlenden Store nicht mehr als leeren Graphen dar.
+
+Wie das native `Map.set()` gibt `view.set(id, link)` die Ansicht zurück und kein Registrierungsergebnis. Die Registrierung kann eine ID- oder Ziel-Kollision ablehnen und dabei den bisherigen Eintrag beibehalten; Erweiterungen, die über eine Ansicht einfügen, sollten den Erfolg deshalb mit `view.get(link.id) === link` bestätigen. Nach einer ID-Kollision mit einer Verbindung in derselben Ansicht liefert `has()` `true` und `get()` die bisherige Verbindung. Bevorzugen Sie die APIs für Graph-Verbindungen und schwebende Verbindungen, wenn sie den Vorgang abdecken, da diese APIs den umgebenden Lebenszyklus koordinieren. Rufen Sie keine `Map.prototype`-Methoden direkt auf einer der beiden Ansichten auf und verlassen Sie sich nicht auf den internen Speicher der nativen `Map`.
+
+Beim Ersetzen einer Eingabe wird die neue Verbindung vor den Disconnect-Callbacks der alten Verbindung festgeschrieben, sodass Callback-Abfragen die Ersetzung sehen und nicht eine leere Eingabe. Die normalen Verbindungs-Callbacks folgen danach.
+
+Erweiterungen, die den Rückgabewert bisher ignoriert haben, sollten `undefined` behandeln, bevor sie die eingehende Verbindung behalten, rendern oder verändern. Wählen Sie für eine neue Laufzeit-Verbindung keine positive Verbindungs-ID vor; lassen Sie den Graphen eine erzeugen.
+
+Die Reparatur von Kollisionen persistierter IDs gehört zum Workflow-Import und zur Deserialisierung. Erweiterungen, die serialisierte Topologie importieren, sollten konfliktbehaftete IDs an dieser Grenze normalisieren, bevor sie die Laufzeit-Registrierungs-API verwenden.
+
+Das Erstellen eines Root-`LGraph` oder dessen Konfiguration aus serialisierten Daten erfordert eine aktive Pinia, da die Graph-Topologie über ihren gesamten Lebenszyklus store-basiert ist.

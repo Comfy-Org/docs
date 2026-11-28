@@ -1,0 +1,96 @@
+---
+title: "Header für Comfy Router"
+sidebarTitle: "Header"
+description: "Anfrage- und Antwort-Header für alle Comfy Router Modelle: Authentifizierung, Idempotenzschlüssel, Request-IDs, Fehler-Buckets, Retry-Taktung, Ausgabenlimits."
+translationSourceHash: 1a5ab40d
+translationFrom: development/comfy-router/headers.mdx
+translationBlockHashes:
+  "_intro": 6e9409a3
+  "Request headers": be659e29
+  "Response headers": 3901ffe9
+  "Status codes that carry two meanings": e6089b85
+  "Next": 31f315d9
+---
+Jedes Router-Modell verwendet `POST /v2/models/{provider}/{model}` mit einem eigenen JSON-Body. Diese Seite behandelt die Header, die von allen Modellen gemeinsam genutzt werden; die [API-Referenz](/de/development/comfy-router/reference) enthält den generierten Vertrag.
+
+Die Comfy SDKs (`comfy-sdk` für Python, `@comfyorg/sdk` für TypeScript) übernehmen die Authentifizierung und generieren Idempotenzschlüssel. Sie stellen ausgewählte Antwort-Metadaten bereit, wie unten beschrieben. Reine HTTP-Clients müssen die Header selbst senden und lesen.
+
+## Anfrage-Header
+
+<ParamField header="X-API-Key" type="string">
+  Ein Comfy API-Schlüssel, `comfyui-...`, erstellt in [Ihrem Comfy Workspace](https://platform.comfy.org/profile/api-keys?onboarding=router). Er nutzt den Modellzugriff und das Guthaben Ihres Workspace. Sie können ihn auch als `Authorization: Bearer comfyui-...` senden; sind beide Header vorhanden, hat `X-API-Key` Vorrang.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>`. Ein Wert, der mit `comfyui-` beginnt, ist ein API-Schlüssel. Jeder andere Wert wird als Comfy Cloud JWT behandelt.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string">
+  Identifiziert eine logische Generierung. Generieren und speichern Sie vor dem Aufruf eine UUID und verwenden Sie dieselbe bei erneuten Versuchen der unveränderten Anfrage. Der Schlüssel kann bis zu 24 Stunden lang ein Ergebnis erneut ausliefern oder angenommene Arbeit sammeln. Die SDKs generieren Schlüssel und erlauben es Ihnen, einen eigenen anzugeben (`idempotency_key=` in Python, `idempotencyKey` in TypeScript). Unter [Ergebnisse erneuter Versuche](/de/development/comfy-router/errors#wiederholungsergebnisse) finden Sie Informationen zu Konflikten, Ablauf und nicht wiedergebbaren Ergebnissen.
+</ParamField>
+
+<ParamField header="Content-Type" type="string">
+  `application/json`. Senden Sie die native JSON-Eingabe des Modells. Felder und Validierungsanforderungen variieren je nach Modell; siehe [Verwendung der Router-API](/de/development/comfy-router/api).
+</ParamField>
+
+<ParamField header="If-None-Match" type="string">
+  Nur bei `GET /v2/models/{provider}/{model}/openapi.json`. Senden Sie das `ETag` aus einer früheren `200`-Antwort; stimmt es noch überein, ist die Antwort ein rumpfloser `304` mit demselben `ETag`. Cachen Sie das Schema eines Modells für die gesamte Laufzeit Ihres Prozesses und validieren Sie es auf diese Weise erneut, statt es vor jedem Aufruf neu zu lesen.
+</ParamField>
+
+## Antwort-Header
+
+<ResponseField name="X-Comfy-Request-Id" type="string" required>
+  Identifiziert diese HTTP-Anfrage. Geben Sie ihn an, wenn Sie den Support kontaktieren. TypeScript stellt ihn als `requestId` bereit, Python stellt `request_id` bei Fehlern bereit.
+</ResponseField>
+
+<ResponseField name="X-Comfy-Error-Type" type="string">
+  Die maschinenlesbare Fehlerkategorie. Bei einem `422` verwenden Sie diesen Header, da der Validierungs-Body `detail[]` und kein `error_type` enthält. Kombinieren Sie ihn mit dem HTTP-Status, um zu entscheiden, was zu tun ist. Behandeln Sie einen unbekannten Wert für die Ablaufsteuerung wie `internal_error` und behalten Sie ihn für die Diagnose bei.
+</ResponseField>
+
+<ResponseField name="Idempotent-Replayed" type="boolean">
+  Vorhanden und `true`, wenn Router ein gespeichertes Ergebnis liefert, anstatt das Modell erneut auszuführen. Bei einer neuen Ausführung fehlt er. Auf der Route für das Absenden in die Warteschlange gibt ein erneut abgespielter `201` das ursprüngliche Request-Handle zurück, anstatt eine zweite Ausführung in die Warteschlange zu stellen.
+</ResponseField>
+
+<ResponseField name="Retry-After" type="integer">
+  Sekunden, die vor einem erneuten Versuch gewartet werden soll. Bei `409` / `concurrency_limit_exceeded` oder `504` / `deadline_exceeded` wiederholen Sie dieselbe Anfrage und denselben Key nach der Wartezeit. Bei `429` / `rate_limited` teilt er Ihnen mit, wann das Rate-Limit zurückgesetzt wird. Beim Lesen des Status einer in der Warteschlange befindlichen Anfrage und beim Lesen ihres `202`-Ergebnisses ist er der Hinweis von Router, wann ein erneutes Polling den Round Trip wert ist.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Limit" type="integer">
+  Die Obergrenze für Partner-Ausgaben, die für noch laufende Aufrufe gebunden sind, in US-Cent. Ein durchsetzendes Spend-Gate kann ihn bei zugelassenen Antworten und bei seinen `429`-Ablehnungen zurückgeben. Er fehlt, wenn das Gate nicht durchsetzt oder eine andere Kontrolle die Anfrage abgelehnt hat.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Current" type="integer">
+  US-Cent, die derzeit für laufende Aufrufe gebunden sind. Eine zugelassene Antwort enthält den eigenen Aufruf, ein `429` schließt den abgelehnten Aufruf aus. Wird zusammen mit `X-Committed-Spend-Limit` gesendet.
+</ResponseField>
+
+<ResponseField name="X-Committed-Spend-Remaining" type="integer">
+  Verbleibende US-Cent unterhalb der Obergrenze für gebundene Ausgaben. Er kann bei einer Ablehnung positiv sein, wenn der angeforderte Aufruf mehr kostet als der verbleibende Betrag.
+</ResponseField>
+
+<ResponseField name="ETag" type="string">
+  Bei `GET /v2/models/{provider}/{model}/openapi.json`. Speichern Sie ihn und senden Sie ihn als `If-None-Match` zurück, um ein zwischengespeichertes Schema erneut zu validieren.
+</ResponseField>
+
+<ResponseField name="Cache-Control" type="string">
+  Auf der Schema-Route: `private, must-revalidate`. Behalten Sie die Antwort in einem privaten Cache und validieren Sie veraltete Kopien mit dem `ETag` erneut.
+</ResponseField>
+
+## Statuscodes mit zwei Bedeutungen
+
+Drei Statuscodes werden von zwei Buckets gemeinsam genutzt, und der Header ist es, der sie unterscheidet:
+
+| Status | `X-Comfy-Error-Type` | Was zu tun ist |
+| --- | --- | --- |
+| `409` | `concurrency_limit_exceeded` | Der ursprüngliche Aufruf für diesen Schlüssel läuft noch. Warten Sie `Retry-After` ab und senden Sie denselben Schlüssel erneut. |
+| `409` | `invalid_input` | Prüfen Sie den Konflikt. Stellen Sie die ursprüngliche Anfrage wieder her, falls Sie sie geändert haben. Ein verbrauchter, nicht wiederverwendbarer Schlüssel kann das Ergebnis nicht wiederherstellen; verwenden Sie nur dann einen neuen Schlüssel, wenn Sie eine neue, möglicherweise kostenpflichtige Generierung beabsichtigen. |
+| `429` | `concurrency_limit_exceeded` | Zu viele Aufrufe gleichzeitig unterwegs oder die Obergrenze für zugesagte Ausgaben (siehe die Header `X-Committed-Spend-*`). Der Zustand endet, sobald einer Ihrer eigenen Aufrufe abgeschlossen ist. |
+| `429` | `rate_limited` | Warten Sie `Retry-After` ab, bevor Sie es erneut versuchen. |
+| `504` | `deadline_exceeded` | Die eigene 10-Minuten-Grenze des Routers. Mit `Retry-After` senden Sie denselben Schlüssel erneut, um die laufende Generierung abzuholen. |
+| `504` | `provider_timeout` | Der Partner hat das Zeitlimit überschritten. Folgen Sie der [Guidance zu erneutem Versuch und Abrechnung](/de/development/comfy-router/errors#wiederholungsergebnisse); behandeln Sie dies nicht als Garantie dafür, dass keine Abbuchung erfolgt. |
+
+## Nächstes
+
+- [Quickstart](/de/development/comfy-router/quickstart): Senden Sie eine Anfrage und lesen Sie das Ergebnis.
+- [Comfy Router API verwenden](/de/development/comfy-router/api): Modellerkennung, Schemas, Fehler, Wiederholungsversuche und Abrechnung.
+- [API-Referenz](/de/development/comfy-router/reference): der generierte Vertrag, in dem diese Header definiert sind.
+- [Einschränkungen](/de/development/comfy-router/limitations): was Router heute nicht leistet und was Sie stattdessen verwenden sollten.

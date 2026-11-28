@@ -1,0 +1,133 @@
+---
+title: "Comfy Router mit LiteLLM verwenden"
+sidebarTitle: "LiteLLM"
+description: "Comfy Router als Pass-through hinter LiteLLM Proxy betreiben und die Kosten jedes Runs aus dem x-litellm-response-cost-Header aufzeichnen, ohne Preistabelle."
+translationSourceHash: c1513832
+translationFrom: development/comfy-router/litellm.mdx
+translationBlockHashes:
+  "_intro": 1ddb0d0a
+  "Configure the pass-through": 380c3ae3
+  "How spend is recorded": 897945b8
+  "Queued delivery": 46044c93
+  "Notes": 50e3cf6b
+---
+Wenn Sie Ausgaben bereits mit [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/pass_through) verfolgen, können Sie Comfy Router als weiteren Pass-through-Endpunkt hinzufügen. Ihre Aufrufer behalten ihre LiteLLM-Schlüssel, und Ihr Comfy API-Schlüssel bleibt beim Proxy.
+
+Router meldet im Response-Header `x-litellm-response-cost`, was ein Lauf gekostet hat, in US-Dollar (bei einem synchronen Lauf in der Antwort des Laufs und bei einem [in der Warteschlange](#auslieferung-über-die-warteschlange) befindlichen Lauf in der Ergebnisabholung), und zwar für die Modelle, die einen Comfy-Credit-Preis pro Lauf melden (siehe [Läufe, die keine Kosten melden](#ausführungen-die-keine-kosten-melden)). LiteLLM liest diesen Header bei jeder Pass-through-Antwort und erfasst ihn als Ausgaben der Anfrage, sodass Sie für diese Modelle keine Preistabelle pflegen müssen.
+
+<Note>
+  Der integrierte Anbieter `fal_ai/` von LiteLLM deckt nur die Bildgenerierung ab. Um eine allgemeine Arbeitslast durch LiteLLM zu leiten, verwenden Sie einen Pass-through-Endpunkt wie hier gezeigt und keinen nativen Anbieter.
+</Note>
+
+## Pass-through konfigurieren
+
+<Steps>
+  <Step title="Comfy API-Schlüssel erstellen">
+    Erstellen Sie einen Schlüssel in [Ihrem Comfy Workspace](https://platform.comfy.org/profile/api-keys) und stellen Sie ihn dem LiteLLM Proxy-Prozess zur Verfügung:
+
+    ```bash
+    export COMFY_API_KEY="comfyui-..."
+    ```
+  </Step>
+
+  <Step title="Router zu config.yaml hinzufügen">
+    ```yaml config.yaml
+    general_settings:
+      pass_through_endpoints:
+        # Runs und Übermittlungen an die Warteschlange. Synchrone Runs melden ihre exakten Kosten,
+        # die cost_per_request für diese Zeile ersetzen. Übermittlungen an die Warteschlange nicht;
+        # siehe „Queued delivery“ unten.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["POST"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+            content-type: application/json
+          cost_per_request: 0.10   # Ihre Fallback-Schätzung, in USD
+          timeout: 660             # über der Run-Deadline von Router (standardmäßig 10 Minuten)
+
+        # Modellkatalog, Abfragen des Warteschlangen-Status und Ergebnissammlung. Die Ergebnissammlung
+        # eines Runs in der Warteschlange meldet ihre exakten Kosten, die die
+        # 0 unten für diese Zeile ersetzen.
+        - path: "/comfy/v2/models"
+          target: "https://api.comfy.org/v2/models"
+          include_subpath: true
+          methods: ["GET"]
+          headers:
+            X-API-Key: "os.environ/COMFY_API_KEY"
+          cost_per_request: 0
+    ```
+
+    - `include_subpath: true` leitet `/comfy/v2/models/{provider}/{model}` an `https://api.comfy.org/v2/models/{provider}/{model}` weiter, sodass ein Paar Einträge alle Router-Modelle abdeckt.
+    - Behalten Sie `path` und `target` auf `/v2/models` beschränkt. Wenn der Pass-through auf die API-Wurzel zeigt, könnte jeder Aufrufer mit einem LiteLLM-Schlüssel Ihren Comfy-Schlüssel auf allen anderen Comfy-API-Routen verwenden, außerhalb der Kostenverfolgung von LiteLLM.
+    - `methods` trennt die beiden Einträge auf demselben Pfad. Dafür ist eine LiteLLM Proxy-Version nötig, deren Pass-through-Endpunkte `methods` unterstützen; diese Seite wurde gegen v1.103.0 geprüft.
+    - `X-API-Key` überträgt Ihren `comfyui-`-Schlüssel. Router akzeptiert denselben Schlüssel auch als `Authorization: Bearer comfyui-...`.
+    - Lassen Sie `forward_headers` deaktiviert. Wenn es aktiviert ist, leitet LiteLLM jeden eingehenden Header an Router weiter, einschließlich des LiteLLM-Schlüssels des Aufrufers. Ist es deaktiviert, übergeben Aufrufer einen `Idempotency-Key` als `x-pass-Idempotency-Key`: LiteLLM entfernt das Präfix `x-pass-` und leitet ihn weiter. Ein einfacher `Idempotency-Key`-Header erreicht Router nicht, sodass ein erneuter Versuch eine zweite Generierung ausführen und berechnen würde.
+    - Setzen Sie `timeout` höher als die [Run-Deadline](/de/development/comfy-router/limitations) von Router, damit Router sein eigenes `504` und die Request-ID zurückgeben kann, bevor LiteLLM aufgibt. Die Deadline liegt standardmäßig bei 10 Minuten, ebenso wie der Standard-Pass-through-Timeout von LiteLLM von 600 Sekunden.
+  </Step>
+
+  <Step title="Router über den Proxy aufrufen">
+    Aufrufer authentifizieren sich mit ihrem LiteLLM-Schlüssel. Der Body ist die Eingabe des Modells selbst, genau wie in der [Comfy Router-Referenz](/de/development/comfy-router/reference):
+
+    ```bash
+    curl --max-time 660 \
+      http://localhost:4000/comfy/v2/models/byteplus/dreamina-seedance-2-5-260628 \
+      -H "Authorization: Bearer $LITELLM_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"content": [{"text": "A red fox trotting through a snowy pine forest", "type": "text"}], "duration": 5, "ratio": "16:9", "resolution": "720p"}'
+    ```
+  </Step>
+</Steps>
+
+## So werden Ausgaben erfasst
+
+Eine Ausführung, die Kosten meldet, enthält diese Antwort-Header, und zwar in der Antwort einer synchronen Ausführung sowie beim Ergebnisabruf einer in der Warteschlange befindlichen Ausführung:
+
+```http
+X-Comfy-Credits-Used: 12.5
+X-Litellm-Response-Cost: 0.0592417062
+X-Litellm-Total-Tokens: 0
+```
+
+`X-Comfy-Credits-Used` ist der Preis der Ausführung in Comfy-Credits, gerundet auf zwei Dezimalstellen. `X-Litellm-Response-Cost` ist derselbe Preis, aus dem ungerundeten Credit-Betrag in USD umgerechnet, sodass das Ergebnis der Division der angezeigten Credits durch den Umrechnungskurs in den letzten Ziffern abweichen kann. Bei Header-Namen wird die Groß-/Kleinschreibung nicht unterschieden, daher liest LiteLLM ihn als `x-litellm-response-cost`. LiteLLM erfasst ihn genau so, wie er gesendet wurde, und verwendet ihn anstelle Ihres `cost_per_request`. `x-litellm-total-tokens` ist immer `0`, da Medien-Ausführungen nicht in Tokens abgerechnet werden.
+
+Wie bei `X-Comfy-Credits-Used` meldet der Header einen Preis und keine endgültig abgerechnete Abbuchung. Gleichen Sie dies mit der [Workspace-Abrechnung](https://platform.comfy.org/settings/billing) ab, nicht mit den Gesamtsummen von LiteLLM.
+
+### Ausführungen, die keine Kosten melden
+
+Einige Ausführungen enthalten `x-litellm-response-cost` nicht. In den meisten dieser Fälle fehlt auch `X-Comfy-Credits-Used`:
+
+- eine Ausführung, die über Ihren eigenen Anbieter-Schlüssel statt über Ihre Comfy-Credits abgerechnet wird
+- ein Modell, das noch nicht in Routers Liste der Modelle steht, die einen Credit-Preis pro Ausführung melden. Diese Liste ist konservativ, und einige Anbieter stehen gar nicht darauf
+- eine Abbuchung, die die Comfy-Abrechnung nicht erreicht hat
+
+Ein Fall liegt anders: eine Fehlerantwort. Eine synchrone `content_policy_violation` von einem Modell, dessen `billing.charges_on_policy_rejection` auf `yes` steht, kann `X-Comfy-Credits-Used` mit der Nutzung enthalten, die Comfy für die abgelehnte Generierung erfasst hat; selbst dann enthält sie nie `x-litellm-response-cost`, da ein Fehler kein Ergebnis ist, das LiteLLM verbuchen sollte.
+
+Er fehlt auch, wenn Router ein gespeichertes Ergebnis für einen erneuten Versuch mit demselben `Idempotency-Key` erneut abspielt (über den Proxy als `x-pass-Idempotency-Key` gesendet). Dieser erneute Versuch wird nicht erneut abgerechnet, daher meldet die Wiedergabe die genauen Kosten der Ausführung nicht ein zweites Mal. Aus demselben Grund enthält ihn nur ein Ergebnisabruf einer in der Warteschlange befindlichen Ausführung, nämlich der erste Abruf, nachdem der Preis der Ausführung erfasst wurde; beim erneuten Abrufen desselben Ergebnisses wird `X-Comfy-Credits-Used` weiterhin zurückgegeben, `x-litellm-response-cost` jedoch nicht.
+
+Wenn der Header fehlt, greift LiteLLM auf `cost_per_request` des Endpunkts zurück. Das gilt für alle oben genannten Fälle. Fehlerantworten, über Ihren eigenen Anbieter-Schlüssel abgerechnete Ausführungen und idempotente Wiedergaben werden daher mit Ihrem Schätzwert erfasst. Die meisten davon wurden nicht Ihren Credits belastet, aber nicht alle: Eine Ablehnung aufgrund der Inhaltsrichtlinie, die `X-Comfy-Credits-Used` enthält, wurde mit einem Preis versehen, lesen Sie ihre Kosten daher aus diesem Header ab; und einige andere Fehler, etwa eine Generierung, die Router Ihnen nicht zurückgeben konnte, können abgerechnet werden, ohne Kosten zu melden. Gleichen Sie dies mit den Nutzungsdatensätzen Ihres Workspace ab. Setzen Sie diesen Wert auf eine sinnvolle Schätzung Ihrer typischen Ausführung statt auf `0`, damit eine Ausführung, die keine Kosten meldet, in Ihren Ausgabenberichten nicht kostenlos erscheint, und rechnen Sie damit, dass diese Zeilen die Gesamtsummen von LiteLLM über Ihre Comfy-Rechnung hinaus anheben. Eine Ausführung, die mit einem Preis versehen wurde und tatsächlich nichts gekostet hat, meldet `x-litellm-response-cost: 0`, was LiteLLM als Null erfasst.
+
+## Auslieferung über die Warteschlange
+
+Mit der [Auslieferung über die Warteschlange](/de/development/comfy-router/queue) erreicht eine Generierung LiteLLM als mehrere Anfragen, und jede davon ist eine eigene Zeile in der Kostenabrechnung:
+
+| Anfrage | Methode | Zeilenkosten mit der obigen Konfiguration |
+| --- | --- | --- |
+| Absenden: `/v2/models/{provider}/{model}/requests` | `POST` | Ihre Schätzung für `cost_per_request` |
+| Jede Statusabfrage: `.../requests/{request_id}/status` | `GET` | `0` |
+| Abholung des Ergebnisses: `.../requests/{request_id}` | `GET` | der exakte Preis des Laufs, und zwar bei der ersten Abholung, die ihn meldet |
+| Abbrechen: `.../requests/{request_id}/cancel` | `POST` | Ihre Schätzung für `cost_per_request` |
+
+Die Felder `status_url`, `response_url` und `cancel_url` in der Antwort auf das Absenden sind absolute URLs der Form `https://api.comfy.org/...`, und LiteLLM schreibt Antwortinhalte nicht um. Rufen Sie sie über den Proxy auf, indem Sie `https://api.comfy.org` durch das Präfix `/comfy` Ihres Proxys ersetzen, zum Beispiel `http://localhost:4000/comfy/v2/models/...`. Direkt an Comfy gesendet, wird Ihr LiteLLM-Schlüssel abgelehnt.
+
+Die Abholung des Ergebnisses enthält `x-litellm-response-cost` genau einmal, und zwar bei der ersten Abholung, nachdem der Preis des Laufs erfasst wurde. Bei den meisten Modellen ist das die erste Abholung. Bei einigen Modellen wird der Preis erst erfasst, nachdem das Ergebnis bereit ist; eine frühe Abholung kann daher ohne diesen Wert zurückkommen, und eine spätere Abholung derselben Anfrage meldet ihn.
+
+Der Router markiert den Preis als gemeldet, wenn er diese Abholung beantwortet. Wenn die Antwort LiteLLM nicht erreicht, etwa weil die Anfrage in ein Timeout lief oder die Verbindung abbrach, enthält auch eine spätere Abholung kein `x-litellm-response-cost`, und LiteLLM erfasst diesen Lauf mit den Kosten des `GET`-Eintrags.
+
+Die Zeile für das Absenden erfasst weiterhin Ihre Schätzung für `cost_per_request`, sodass mit der obigen Konfiguration ein Lauf in der Warteschlange doppelt gezählt wird: einmal mit Ihrer Schätzung und einmal mit seinem exakten Preis. Wenn Sie ausschließlich die Auslieferung über die Warteschlange nutzen, setzen Sie `cost_per_request` des `POST`-Eintrags auf `0`, damit jeder Lauf in der Warteschlange einmal erfasst wird, und zwar mit seinem exakten Preis. Ein Lauf, dessen Ergebnis Sie nie abholen, erscheint dann nicht in den Summen von LiteLLM, wird aber dennoch Ihrem Workspace in Rechnung gestellt. Stehen beide Einträge auf `0`, wird ein Lauf, der keine Kosten meldet, als `0` erfasst. Das gilt auch für einen Lauf, dessen Preis erst erfasst wird, nachdem sein Ergebnis bereit ist, wenn Sie dieses Ergebnis nur einmal abholen, bevor der Preis vorliegt, sowie für die oben genannten Fälle, in denen die Abholung ihn nicht meldet. Wenn Ihr Client jedes Ergebnis nur einmal abholt, sobald es bereit ist, behalten Sie die Schätzung im `POST`-Eintrag bei.
+
+## Hinweise
+
+- LiteLLM erfasst den Verbrauch, ändert aber nichts an der Abrechnung. Comfy rechnet Ihren Workspace genau so ab wie ohne den Proxy.
+- Die vollständigen Schemas für Anfragen und Antworten aller Modelle finden Sie in der [Comfy Router-Referenz](/de/development/comfy-router/reference). Fristen, Wiederholungsversuche und weitere Limits finden Sie unter [Funktionen und Limits](/de/development/comfy-router/limitations).

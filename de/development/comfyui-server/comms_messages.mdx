@@ -1,0 +1,93 @@
+---
+title: "ComfyUI Server-Nachrichten (WebSocket-API)"
+sidebarTitle: "WebSocket-Nachrichten"
+icon: "comment"
+description: "Wie der PromptExecutor von ComfyUI WebSocket-Nachrichten sendet, integrierte Typen wie execution_start und progress sowie eigene Nachrichtentypen."
+translationSourceHash: 3de48bb1
+translationFrom: development/comfyui-server/comms_messages.mdx
+---
+
+## Nachrichten
+
+Während der Ausführung (oder wenn sich der Zustand der Warteschlange ändert) sendet der `PromptExecutor` Nachrichten über die Methode `send_sync` von `PromptServer` an den Client zurück.
+
+Diese Nachrichten werden von einem Socket-Event-Listener empfangen, der in `api.js` definiert ist (zum Zeitpunkt der Erstellung etwa um Zeile 90, oder suchen Sie nach `this.socket.addEventListener`). Dieser erstellt für jeden bekannten Nachrichtentyp ein `CustomEvent`-Objekt und leitet es an alle registrierten Listener weiter.
+
+Eine Erweiterung kann sich für den Empfang von Events registrieren (normalerweise in der Funktion `setup()`), indem sie dem standardmäßigen Javascript-Idiom folgt:
+
+```Javascript
+api.addEventListener(message_type, messageHandler);
+```
+
+Wenn `message_type` kein integrierter Typ ist, wird er automatisch zur Liste der bekannten Nachrichtentypen hinzugefügt. Der `messageHandler` wird mit einem `CustomEvent`-Objekt aufgerufen, das das vom Socket ausgelöste Event erweitert, um eine Eigenschaft `.detail` hinzuzufügen, bei der es sich um ein Dictionary der vom Server gesendeten Daten handelt. Die Nutzung sieht daher in der Regel so aus:
+
+```Javascript
+function messageHandler(event) {
+    if (event.detail.node == aNodeIdThatIsInteresting) {
+        // do something with event.detail.other_things
+    }
+}
+```
+
+### Integrierte Nachrichtentypen
+
+Während der Ausführung (oder wenn sich der Zustand der Warteschlange ändert) sendet der `PromptExecutor` die folgenden Nachrichten über die Methode `send_sync` von `PromptServer` an den Client zurück. Eine Erweiterung kann sich als Listener für jede dieser Nachrichten registrieren.
+
+| Ereignis               | Wann                                                                                   | Daten                                                                                                              |
+| ----------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `execution_start`       | Wenn ein Prompt ausgeführt werden soll                                              | `prompt_id`                                                                                             |
+| `execution_error`       | Wenn während der Ausführung ein Fehler auftritt                                      | `prompt_id` sowie zusätzliche Informationen                                                                |
+| `execution_interrupted` | Wenn die Ausführung durch einen Node gestoppt wird, der `InterruptProcessingException` auslöst | `prompt_id`, `node_id`, `node_type` und `executed` (eine Liste der ausgeführten Nodes)                           |
+| `execution_cached`      | Zu Beginn der Ausführung                                                  | `prompt_id`, `nodes` (eine Liste der Nodes, die übersprungen werden, weil ihre zwischengespeicherten Ausgaben verwendet werden können) |
+| `execution_success`     | Wenn alle Nodes aus dem Prompt erfolgreich ausgeführt wurden             | `prompt_id`, `timestamp`                                                                                |
+| `executing`             | Wenn ein neuer Node ausgeführt werden soll                                    | `node` (Node-ID oder `None`, um den Abschluss anzuzeigen), `prompt_id`                                          |
+| `executed`              | Wenn ein Node ein UI-Element zurückgibt                                           | `node` (Node-ID), `prompt_id`, `output`                                                                 |
+| `progress`              | Während der Ausführung eines Nodes, der den erforderlichen Hook implementiert               | `node` (Node-ID), `prompt_id`, `value`, `max`                                                           |
+| `status`                | Wenn sich der Zustand der Warteschlange ändert                                        | `exec_info`, ein Dictionary mit `queue_remaining`, der Anzahl der Einträge in der Warteschlange                 |
+
+### executed verwenden
+
+Trotz des Namens wird eine `executed`-Nachricht nicht immer dann gesendet, wenn ein Node die Ausführung abschließt (anders als bei `executing`), sondern nur, wenn der Node ein UI-Update zurückgibt.
+
+Dazu muss die Hauptfunktion ein Dictionary anstelle eines Tupels zurückgeben:
+
+```python
+# am Ende meiner Hauptmethode
+        return { "ui":a_new_dictionary, "result": the_tuple_of_output_values }
+```
+
+`a_new_dictionary` wird dann als Wert von `output` in einer `executed`-Nachricht gesendet.
+Der Schlüssel `result` kann weggelassen werden, wenn der Node keine Ausgänge hat (siehe zum Beispiel den Code für `SaveImage` in `nodes.py`)
+
+### Benutzerdefinierte Nachrichtentypen
+
+Wie oben beschrieben, lässt sich clientseitig ein benutzerdefinierter Nachrichtentyp hinzufügen, indem Sie sich einfach als Listener für einen eindeutigen Namen eines Nachrichtentyps registrieren.
+
+```Javascript
+api.addEventListener("my.custom.message", messageHandler);
+```
+
+Auf dem Server ist der Code ebenso einfach:
+
+```Python
+from server import PromptServer
+# dann in Ihrer Hauptausführungsfunktion (normalerweise)
+        PromptServer.instance.send_sync("my.custom.message", a_dictionary)
+```
+
+#### node\_id ermitteln
+
+Die meisten integrierten Nachrichten enthalten die aktuelle Node-ID im Wert von `node`. Wahrscheinlich möchten Sie dasselbe tun.
+
+Die node\_id ist serverseitig über einen ausgeblendeten Eingang verfügbar, der mit dem Schlüssel `hidden` im Dictionary `INPUT_TYPES` abgerufen wird:
+
+```Python
+    @classmethod    
+    def INPUT_TYPES(s):
+        return {"required" : { }, # was auch immer Ihre erforderlichen Eingaben sind 
+                "hidden": { "node_id": "UNIQUE_ID" } } # Den ausgeblendeten Schlüssel hinzufügen
+
+    def my_main_function(self, required_inputs, node_id):
+        # einige Dinge tun
+        PromptServer.instance.send_sync("my.custom.message", {"node": node_id, "other_things": etc})
+```

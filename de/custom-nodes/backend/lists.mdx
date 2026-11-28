@@ -1,0 +1,81 @@
+---
+title: "Datenlisten und Listenverarbeitung in ComfyUI"
+sidebarTitle: "Listen & Listenverarbeitung"
+description: "Wie ComfyUI Daten zwischen Custom Nodes als Python-Listen übergibt: Verpackung bei Länge eins, Listen für Batches und INPUT_IS_LIST/OUTPUT_IS_LIST."
+translationSourceHash: fcb4a5e2
+translationFrom: custom-nodes/backend/lists.mdx
+translationBlockHashes:
+  "Length one processing": d68c6465
+  "List processing": 9f0138d8
+---
+## Verarbeitung von Listen der Länge eins
+
+Intern stellt der Comfy-Server die Daten, die von einem Node zum nächsten fließen, als Python-`list` des jeweiligen Datentyps dar, normalerweise mit der Länge 1.
+Im Normalbetrieb wird jedes Element im Ausgabe-`tuple` eines Nodes separat in eine Liste (Länge 1) verpackt; wenn anschließend der nächste Node aufgerufen wird, werden die Daten wieder entpackt und an die Hauptfunktion übergeben.
+
+<Tip>
+  Darüber müssen Sie sich in der Regel keine Gedanken machen, da Comfy das Verpacken und Entpacken übernimmt.
+</Tip>
+
+<Tip>
+  Dabei geht es nicht um Batches. Ein Batch (etwa von Latents oder Bildern) ist ein *einzelner Eintrag* in der Liste (siehe [Tensor-Datentypen](./images_and_masks))
+</Tip>
+
+## Listenverarbeitung
+
+In manchen Fällen werden mehrere Dateninstanzen in einem einzigen Workflow verarbeitet; dann sind die internen Daten eine Liste, die diese Dateninstanzen enthält.
+Ein Beispiel dafür ist die Verarbeitung einer Reihe von Bildern nacheinander, um zu vermeiden, dass der VRAM ausgeht, oder der Umgang mit Bildern unterschiedlicher Größe.
+
+Standardmäßig verarbeitet Comfy die Werte in der Liste sequenziell:
+- wenn die Eingänge `list`s unterschiedlicher Länge sind, werden die kürzeren durch Wiederholen des letzten Werts aufgefüllt
+- die Hauptmethode wird für jeden Wert in den Eingabelisten einmal aufgerufen
+- die Ausgänge sind `list`s, die jeweils dieselbe Länge wie der längste Eingang haben
+
+Der zugehörige Code befindet sich in der Methode `map_node_over_list` in `execution.py`.
+
+Da Comfy die Ausgänge von Nodes jedoch in eine `list` der Länge eins einpackt, wird ein `list`, das im von einem Custom Node zurückgegebenen `tuple` enthalten ist, eingepackt und als ein einzelnes Datenelement behandelt.
+Damit Comfy weiß, dass die zurückgegebene Liste nicht eingepackt, sondern als eine Reihe von Daten für die sequenzielle Verarbeitung behandelt werden soll, sollte der Node ein Klassenattribut `OUTPUT_IS_LIST` bereitstellen. Es ist ein `tuple[bool]` mit derselben Länge wie `RETURN_TYPES` und gibt an, welche Ausgänge so behandelt werden sollen.
+
+Ein Node kann auch das Standardverhalten für Eingänge überschreiben und die gesamte Liste in einem einzigen Aufruf erhalten. Dazu setzen Sie ein Klassenattribut `INPUT_IS_LIST` auf `True`.
+
+Hier ist ein (leicht kommentiertes) Beispiel aus den integrierten Nodes: `ImageRebatch` nimmt einen oder mehrere Bild-Batches (die als Liste empfangen werden, weil `INPUT_IS_LIST - True`) und teilt sie in Batches der angeforderten Größe neu auf.
+
+<Tip>
+  `INPUT_IS_LIST` gilt auf Node-Ebene: Alle Eingänge werden gleich behandelt. Der Wert des Widgets `batch_size` ergibt sich also aus `batch_size[0]`.
+</Tip>
+
+```Python
+
+class ImageRebatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "images": ("IMAGE",),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}) }}
+    RETURN_TYPES = ("IMAGE",)
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (True, )
+    FUNCTION = "rebatch"
+    CATEGORY = "image/batch"
+
+    def rebatch(self, images, batch_size):
+        batch_size = batch_size[0]    # alles kommt als Liste, daher ist batch_size list[int]
+
+        output_list = []
+        all_images = []
+        for img in images:                    # img ist jeweils ein Batch von Bildern
+            for i in range(img.shape[0]):     # i ist jeweils ein einzelnes Bild
+                all_images.append(img[i:i+1])
+
+        for i in range(0, len(all_images), batch_size): # batch_size Blöcke entnehmen und jeden in einen neuen Batch umwandeln
+            output_list.append(torch.cat(all_images[i:i+batch_size], dim=0))  # schlägt fürchterlich fehl, wenn die Bild-Batches unterschiedliche Breite oder Höhe haben!
+
+        return (output_list,)
+```
+
+
+
+
+
+
+
+#### INPUT_IS_LIST

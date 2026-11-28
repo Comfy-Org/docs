@@ -1,0 +1,92 @@
+---
+title: "Python-Snippets für ComfyUI Custom Nodes"
+description: "Kommentierte Codebeispiele für ComfyUI Custom Nodes: Bilder laden und speichern, Masken invertieren, Maskenformen umwandeln und Rauschen erzeugen."
+sidebarTitle: "Python-Snippets"
+translationSourceHash: 0a092769
+translationFrom: custom-nodes/backend/snippets.mdx
+---
+
+Eine wachsende Sammlung von Beispielcode-Fragmenten...
+
+## Bilder und Masken
+
+### Ein Bild laden
+
+Ein Bild in einen Batch der Größe 1 laden (basierend auf dem Quellcode von `LoadImage` in `nodes.py`)
+```python
+i = Image.open(image_path)
+i = ImageOps.exif_transpose(i)
+if i.mode == 'I':
+    i = i.point(lambda i: i * (1 / 255))
+image = i.convert("RGB")
+image = np.array(image).astype(np.float32) / 255.0
+image = torch.from_numpy(image)[None,]
+```
+
+### Einen Bild-Batch speichern
+
+Einen Batch von Bildern speichern (basierend auf dem Quellcode von `SaveImage` in `nodes.py`)
+```python     
+for (batch_number, image) in enumerate(images):
+    i = 255. * image.cpu().numpy()
+    img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+    filepath = # ein Pfad, der die Batch-Nummer berücksichtigt
+    img.save(filepath)
+```
+
+### Eine Maske invertieren
+
+Das Invertieren einer Maske ist unkompliziert. Da Masken auf den Bereich [0,1] normalisiert sind:
+
+```python
+mask = 1.0 - mask
+```
+
+### Eine Maske in Bildform umwandeln
+
+```Python
+# Wir wollen [B,H,W,C] mit C = 1
+if len(mask.shape)==2: # wir haben [H,W], also B und C als Dimension 1 einfügen
+    mask = mask[None,:,:,None]
+elif len(mask.shape)==3 and mask.shape[2]==1: # wir haben [H,W,C]
+    mask = mask[None,:,:,:]
+elif len(mask.shape)==3:                      # wir haben [B,H,W]
+    mask = mask[:,:,:,None]
+```
+
+### Masken als Transparenzebenen verwenden
+
+Bei Aufgaben wie Inpainting oder Segmentierung werden die Werte der MASK schließlich auf die nächste ganze Zahl gerundet, sodass sie binär sind: 0 kennzeichnet Bereiche, die ignoriert werden, und 1 kennzeichnet Bereiche, die bearbeitet werden. Das geschieht jedoch erst, wenn die MASK an diese Nodes übergeben wird. Diese Flexibilität erlaubt es Ihnen, MASKs wie in der digitalen Fotografie als Transparenzebene zu verwenden:
+
+```python
+# Maske zurück in die ursprüngliche Transparenzebene invertieren
+mask = 1.0 - mask
+
+# Die Dimension `C` (Kanäle) mit unsqueeze erweitern
+mask = mask.unsqueeze(-1)
+
+# Entlang der Dimension `C` verketten ("cat")
+rgba_image = torch.cat((rgb_image, mask), dim=-1)
+```
+
+## Rauschen
+
+### Rauschvarianten erstellen
+
+Hier ist ein Beispiel für ein Rausch-Objekt, das das Rauschen zweier Quellen mischt. Damit lassen sich durch Variieren von `weight2` leichte Rauschvarianten erzeugen.
+
+```python
+class Noise_MixedNoise:
+    def __init__(self, nosie1, noise2, weight2):
+        self.noise1  = noise1
+        self.noise2  = noise2
+        self.weight2 = weight2
+
+    @property
+    def seed(self): return self.noise1.seed
+
+    def generate_noise(self, input_latent:torch.Tensor) -> torch.Tensor:
+        noise1 = self.noise1.generate_noise(input_latent)
+        noise2 = self.noise2.generate_noise(input_latent)
+        return noise1 * (1.0-self.weight2) + noise2 * (self.weight2)
+```

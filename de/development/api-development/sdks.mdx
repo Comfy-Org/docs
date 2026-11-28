@@ -1,0 +1,591 @@
+---
+title: "Comfy SDKs: Python- und TypeScript-Clients für ComfyUI"
+description: "ComfyUI-Workflows mit Python oder TypeScript ausführen: auf Comfy Cloud, einer Bereitstellung oder lokal. Assets, Aufträge, Live-Events."
+sidebarTitle: "SDKs"
+icon: "code"
+translationSourceHash: 482e70a3
+translationFrom: development/api-development/sdks.mdx
+translationBlockHashes:
+  "_intro": c92c7b51
+  "Install": da9a0a57
+  "Coding agents": eed20c28
+  "Quickstart": 02297586
+  "Choosing a base URL": 0e77e81c
+  "Retrying a submit: the idempotency key": 7c83d78f
+  "Watching a job run": 34d74bcc
+  "Failure categories": 3771ee22
+  "Tracing an output back to its workflow": b01886a3
+  "Label jobs and find them later": 5e8d85e5
+  "What the SDKs cover today": 69ebfcc7
+  "Reference": 71489703
+  "Feedback": 14dd521e
+---
+import SdkSurfaces from "/snippets/de/sdk/surfaces.mdx";
+import SdkVersions from "/snippets/de/sdk/versions.mdx";
+
+<Note>
+  Comfy API v2 ist versioniert. Änderungen innerhalb von v2 sind additiv; Breaking Changes erscheinen als v3. Melden Sie Probleme über [Feedback](#feedback).
+</Note>
+
+<SdkSurfaces />
+
+Diese Seite dokumentiert die zweite Zeile: den Client für Comfy Cloud und Comfy API v2. Für den Modell-Router beginnen Sie mit dem [Comfy Router Quickstart](/de/development/comfy-router/quickstart).
+
+Mit den Comfy SDKs kann Ihre Anwendung ComfyUI-Workflows ausführen und die Ergebnisse abrufen. Sie senden einen Workflow ab, ComfyUI führt ihn aus, und Sie laden die Ausgaben herunter. Derselbe Code läuft gegen Comfy Cloud oder gegen eine ComfyUI-Instanz, die Sie selbst hosten. Es ändert sich nur die Basis-URL, mit Ausnahme von [Auftrags-Labels](#aufträge-mit-labels-versehen-und-später-wiederfinden), die ausschließlich bei einem Comfy API-Deployment funktionieren, sowie der Auftragsliste, die Comfy Cloud noch nicht anbietet.
+
+Die SDKs sind Clients für die [Comfy API v2](/de/api-reference/v2/overview), eine versionierte HTTP-API, die wir langfristig unterstützen wollen. Neue ComfyUI-Versionen brechen keine Integrationen, die darauf aufbauen.
+
+Was auf diese Weise entsteht:
+
+- Plugins, die Inhalte in einer anderen Anwendung erzeugen, etwa in Blender oder Krita
+- Consumer-Apps, die die Generierung im Auftrag ihrer Nutzer ausführen
+- Batch-Pipelines, zum Beispiel um einen Workflow auf jedes Einzelbild eines Videos anzuwenden
+- Backend-Dienste, die viele Workflows gleichzeitig in Bearbeitung haben müssen
+
+<Note>
+  Diese SDKs steuern ComfyUI **von außen**. Wenn Sie Custom Nodes oder Frontend-Erweiterungen schreiben, die **innerhalb** von ComfyUI laufen, benötigen Sie stattdessen [Develop Custom Nodes](/de/custom-nodes/overview). Diese bilden einen eigenen Satz von APIs.
+</Note>
+
+## Installieren
+
+<CodeGroup>
+```bash Python
+pip install comfy-sdk
+```
+
+```bash TypeScript
+npm i @comfyorg/sdk
+```
+</CodeGroup>
+
+Python 3.10 oder neuer. Node 22 oder neuer.
+
+<SdkVersions />
+
+## Coding-Agents
+
+Wenn ein Coding-Agent Ihre Comfy Router-Integration erstellt, geben Sie ihm den `comfy-sdk`-Skill.
+
+Der Skill deckt ab, was Agents üblicherweise falsch machen:
+
+- Welcher Client verwendet werden sollte
+- Den API-Schlüssel auf dem Server zu belassen
+- Ein Modell zu ermitteln, bevor es aufgerufen wird
+- `run` gegenüber `submit`
+- Timeouts
+- Verzweigung nach Fehlerkategorien
+
+Er deckt keine ComfyUI-Workflows ab. Für den Workflow-Client auf dieser Seite verweisen Sie den Agent auf diese Anleitung und die [Comfy API v2-Referenz](/de/api-reference/v2/overview).
+
+Um ihn in Claude Code zu installieren, führen Sie aus:
+
+```
+/plugin marketplace add Comfy-Org/comfy-skills
+/plugin install comfy-sdk@comfy-skills
+```
+
+Für jeden anderen Agent kopieren Sie die Datei [`SKILL.md`](https://github.com/Comfy-Org/comfy-skills/blob/main/claude-code-sdk/skills/comfy-sdk/SKILL.md) in `AGENTS.md` oder Ihre Cursor-Regeln.
+
+## Schnellstart
+
+Laden Sie ein Eingabebild hoch, führen Sie einen Workflow aus und schreiben Sie die Ergebnisse auf die Festplatte.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Comfy
+
+# Comfy Cloud
+client = Comfy(api_key="comfyui-...")
+
+wf = client.workflows.from_file("workflow_api.json")
+
+asset = client.assets.from_file("photo.png")
+wf.set_input("10", "image", asset)
+
+job = client.run(wf)
+for output in job.get_outputs("9"):
+    output.to_file(output.name)
+```
+
+```typescript TypeScript
+import { Comfy } from "@comfyorg/sdk";
+
+// Comfy Cloud
+const client = new Comfy({ apiKey: "comfyui-..." });
+
+const wf = await client.workflows.fromFile("workflow_api.json");
+
+const asset = client.assets.fromFile("photo.png");
+wf.setInput("10", "image", asset);
+
+const job = await client.run(wf);
+await job.getOutputs("9")[0].toFile("out.png");
+```
+</CodeGroup>
+
+`workflow_api.json` ist ein Workflow, der im [API-Format](/de/development/api-development/workflow-api-format) gespeichert wurde. `"10"` und `"9"` sind Node-IDs aus dieser Datei: der Node, in den das Eingabebild fließt, und der Ausgabe-Node, dessen Ergebnisse Sie erhalten möchten.
+
+Asset-Handles sind lazy. `photo.png` wird lokal gehasht und nur hochgeladen, wenn der Server diese Bytes noch nicht hat. Ein erneuter Lauf mit derselben Eingabe kostet daher nichts.
+
+`run()` sendet die Aufgabe ab und wartet, bis sie einen terminalen Zustand erreicht. Wenn Sie während der Ausführung weiterarbeiten möchten, verwenden Sie stattdessen `submit()` und beobachten Sie den [Event-Stream](#eine-aufgabe-überwachen).
+
+Wenn Sie stattdessen Ihr eigenes ComfyUI verwenden möchten, setzen Sie `COMFY_BASE_URL` und lassen Sie den Key weg. Siehe unten.
+
+## Basis-URL auswählen {#choosing-a-base-url}
+
+| Oberfläche | Basis-URL | API-Schlüssel |
+|---|---|---|
+| **Comfy Cloud** | `https://cloud.comfy.org` (der Standard) | Erforderlich |
+| **Comfy API-Deployment** | `https://<deployment>.run.comfy.app` | Erforderlich |
+| **Ihr eigenes ComfyUI** | `http://127.0.0.1:8189` (der lokale Proxy) | Standardmäßig keiner. Optional ein statisches Bearer-Token |
+
+Die Basis-URL stammt aus der Umgebungsvariable `COMFY_BASE_URL`, nicht aus einem Konstruktorargument:
+
+```bash
+export COMFY_BASE_URL="https://<deployment>.run.comfy.app"  # Comfy API-Deployment
+export COMFY_BASE_URL="http://127.0.0.1:8189"               # selbst gehosteter Proxy
+```
+
+Sie wird bei jeder Erstellung eines Clients gelesen, muss eine `http(s)`-URL sein, und wenn sie nicht gesetzt oder leer ist, bedeutet das Comfy Cloud. Der Client selbst ist also überall gleich:
+
+<CodeGroup>
+```python Python
+client = Comfy(api_key="comfyui-...")
+```
+
+```typescript TypeScript
+const client = new Comfy({ apiKey: "comfyui-..." });
+```
+</CodeGroup>
+
+<Note>
+  Sie aktualisieren von einem frühen Build? `Comfy("<url>", "<key>")` heißt jetzt `Comfy(api_key="<key>")` mit gesetztem `COMFY_BASE_URL`. `api_key` ist keyword-only, daher löst der alte positionale Aufruf einen `TypeError` aus, statt stillschweigend eine URL als Schlüssel zu lesen.
+</Note>
+
+### Comfy Cloud
+
+Funktioniert ohne weitere Einrichtung. Erstellen Sie einen [API-Schlüssel](/de/development/api-development/getting-an-api-key) und übergeben Sie ihn an den Client.
+
+<Note>
+  Der API-Zugriff erfordert ein kostenpflichtiges Comfy Cloud-Abonnement. Der kostenlose Tarif enthält ihn nicht. Wie viele Aufträge Sie gleichzeitig ausführen können, hängt von Ihrem Tarif ab. Siehe [Parallelitätslimits](/de/development/deploy/cloud-usage#parallelitätslimits).
+</Note>
+
+<a id="serverless-deployment"></a>
+
+### Comfy API-Deployment
+
+Ein Workflow, den Sie über die [Entwicklerplattform](https://platform.comfy.org) bereitgestellt haben, erhält einen eigenen Endpunkt. Richten Sie `COMFY_BASE_URL` darauf und verwenden Sie Ihren API-Schlüssel, genau wie bei Comfy Cloud. Alles in dieser Anleitung funktioniert auf dieselbe Weise, außer [Auftragsbezeichnungen und der Auftragsliste](#aufträge-mit-labels-versehen-und-später-wiederfinden), die Comfy Cloud noch nicht unterstützt.
+
+Ein Comfy API-Deployment kann mehrere Workflows mit den Modellen und Custom Nodes ausführen, die in seinem Build enthalten sind. Für jeden Auftrag gibt `get_workflow()` eine Workflow-Antwort mit `format: "api"` und dem ausgeführten Graph in der Eigenschaft `.graph` zurück.
+
+### Ihr eigenes ComfyUI
+
+Die v2-API wird auf selbst gehostetem ComfyUI von [comfy-api-proxy](https://github.com/Comfy-Org/comfy-api-proxy) bereitgestellt, einem kleinen Open-Source-Dienst, der neben Ihrem ComfyUI läuft. Installieren Sie ihn, starten Sie ihn und setzen Sie `COMFY_BASE_URL="http://127.0.0.1:8189"`:
+
+```bash
+pip install comfy-api-proxy
+comfy-api-proxy
+export COMFY_BASE_URL="http://127.0.0.1:8189"
+```
+
+Siehe [API Proxy for Self-Hosted ComfyUI](/de/development/comfyui-server/api-proxy) für Details zu Konfiguration und Authentifizierung.
+
+## Absenden erneut versuchen: der Idempotenzschlüssel
+
+`submit()` und `run()` senden bei jeder Übermittlung einen `Idempotency-Key`, und der Vertrag der Comfy API v2 für diesen Schlüssel lautet **Duplikate ablehnen statt aufzuzeichnen und wiederzugeben**. Lesen Sie dies, bevor Sie ein Absenden in eine Wiederholungsschleife einbetten.
+
+- **Jeder Aufruf erzeugt einen neuen Schlüssel.** Zwei Aufrufe von `submit()` mit demselben Workflow sind zwei Übermittlungen, zwei Aufgaben und zwei Abrechnungen. Eine naive Schleife `for attempt in range(3)` um `submit()` ist eine doppelte Abrechnung, kein erneuter Versuch.
+- **Ein wiederverwendeter Schlüssel wird abgelehnt, nicht wiedergegeben.** Übergeben Sie Ihren eigenen `idempotency_key` (`idempotencyKey` in TypeScript), um einen erneuten Versuch idempotent zu machen; die zweite Anfrage mit diesem Schlüssel schlägt dann mit `422 idempotency_key_reuse` fehl, statt die erste Aufgabe zurückzugeben. Die SDKs werfen `IdempotencyKeyReuse`. Das ist das Gegenteil dessen, was man unter „idempotentem erneutem Versuch“ üblicherweise versteht; behandeln Sie es daher explizit.
+- **Die Wiederherstellung besteht darin, die Aufgabe zu suchen, nicht darin, erneut abzusenden.** Bei `IdempotencyKeyReuse` hat der erste Versuch möglicherweise bereits eine Aufgabe erstellt. Rufen Sie sie mit `client.jobs.get(job_id)` ab. Diese Suche benötigt eine ID, die Sie bereits gespeichert haben; sie stellt daher nur den Fall wieder her, in dem das Absenden eine Antwort zurückgegeben hat und Sie die ID vor dem Fehler gespeichert haben. Wenn die Verbindung abgebrochen ist, bevor die ID aufgezeichnet wurde, gibt es nichts nachzuschlagen und keine automatische Wiederherstellung: Die folgenden Beispiele werfen den Fehler erneut zur manuellen Behandlung, statt unter einem beanspruchten Schlüssel erneut abzusenden.
+- **Der Schlüssel wird freigegeben, wenn das Absenden endgültig fehlgeschlagen ist.** Ein Validierungsfehler, eine Ablehnung wegen fehlender Credits oder eine Ablehnung wegen voller Warteschlange erzeugt keine Aufgabe und gibt den Schlüssel frei; ein erneutes Absenden unter diesem Schlüssel ist daher in Ordnung. Nach einem *mehrdeutigen* Fehler (ein Lese-Timeout, eine mitten in der Anfrage abgebrochene Verbindung) bleibt der Schlüssel beansprucht: Suchen Sie die Aufgabe, statt erneut abzusenden.
+- **Schlüssel verfallen nach 24 Stunden** und müssen nicht leer sein, aus druckbarem ASCII bestehen und innerhalb der Längengrenze liegen. Ein ungültiger Schlüssel wirft `ValueError`, bevor eine Anfrage gestellt wird; ein explizites `""` fällt daher niemals stillschweigend auf einen neu erzeugten Schlüssel zurück.
+
+Ein erneuter Versuch, der sicher mehr als einmal ausgeführt werden kann, muss daher zwei Dinge über die Versuche hinweg mitführen: den Schlüssel, damit der Server einen erneuten Versuch von einer neuen Übermittlung unterscheiden kann, und die Job-ID, damit Sie die Aufgabe finden können, die ein beanspruchter Schlüssel bereits erstellt hat.
+
+<CodeGroup>
+```python Python
+import uuid
+from comfy_sdk import IdempotencyKeyReuse
+
+# Beide Werte gehören in Ihren eigenen Speicher, indiziert nach dem, was die
+# Anfrage für Sie bedeutet. `key` wird einmal erzeugt, beim ersten Versuch; `job_id`
+# wird eingetragen, sobald ein Absenden zurückkehrt.
+state = load_submission_state()  # {"key": ..., "job_id": ...} oder {}
+key = state.get("key") or str(uuid.uuid4())
+save_submission_state(key=key)
+
+try:
+    job = client.submit(wf, idempotency_key=key)
+    save_submission_state(key=key, job_id=job.id)
+except IdempotencyKeyReuse:
+    # Ein früherer Versuch unter diesem Schlüssel hat die Übermittlung bereits
+    # erreicht, daher kann eine Aufgabe existieren. Nicht erneut absenden: Suchen Sie sie.
+    job_id = state.get("job_id")
+    if job_id is None:
+        raise  # nichts aufgezeichnet, das nachgeschlagen werden könnte; hier ist ein Mensch gefragt
+    job = client.jobs.get(job_id)
+```
+
+```typescript TypeScript
+import { IdempotencyKeyReuse } from "@comfyorg/sdk";
+
+// Beide Werte gehören in Ihren eigenen Speicher, indiziert nach dem, was die
+// Anfrage für Sie bedeutet. `key` wird einmal erzeugt, beim ersten Versuch; `jobId`
+// wird eingetragen, sobald ein Absenden zurückkehrt.
+const state = await loadSubmissionState(); // { key?, jobId? }
+const key = state.key ?? crypto.randomUUID();
+await saveSubmissionState({ key });
+
+let job;
+try {
+  job = await client.submit(wf, { idempotencyKey: key });
+  await saveSubmissionState({ key, jobId: job.id });
+} catch (err) {
+  // Ein früherer Versuch unter diesem Schlüssel hat die Übermittlung bereits
+  // erreicht, daher kann eine Aufgabe existieren. Nicht erneut absenden: Suchen Sie sie.
+  if (!(err instanceof IdempotencyKeyReuse) || !state.jobId) throw err;
+  job = await client.jobs.get(state.jobId);
+}
+```
+</CodeGroup>
+
+`client.jobs.get(job_id)` ist der Rehydrierungspfad des SDK und benötigt eine ID. Aus diesem Grund macht erst das Aufzeichnen der ID in dem Moment, in dem ein Absenden zurückkehrt, diesen Vorgang überhaupt wiederherstellbar. Unter [Comfy API v2](/de/api-reference/v2/overview) finden Sie den vollständigen Vertrag für den Schlüssel bei `POST /api/v2/jobs`.
+
+<Note>
+  Der `Idempotency-Key` von Comfy Router verhält sich **anders**. Bei Router dient der Schlüssel als Handle für die Wiedergabe und nicht als Einweg-Token: Das erneute Senden eines in der Warteschlange befindlichen Absendens unter demselben Schlüssel gibt die ursprüngliche Anfrage zurück, statt eine zweite in die Warteschlange einzustellen. Siehe [Idempotenz und Abrechnung in der Warteschlange](/de/development/comfy-router/queue#idempotenz-und-abrechnung) und [Ergebnisse erneuter Versuche bei Router](/de/development/comfy-router/errors#wiederholungsergebnisse). Die beiden Oberflächen teilen lediglich einen Header-Namen, keinen Vertrag.
+</Note>
+
+## Eine Aufgabe überwachen
+
+`job.events()` liefert Ihnen einen Live-Stream des Zustands der Aufgabe: Fortschritt pro Node und Schritt, Vorschau-Frames und jede Ausgabe in dem Moment, in dem sie festgeschrieben wird. Bei einem Verbindungsabbruch verbindet es sich automatisch neu.
+
+<CodeGroup>
+```python Python
+from comfy_sdk import Progress, Preview, OutputReady, StatusChange
+
+job = client.submit(wf)
+
+for event in job.events():
+    match event:
+        case Progress() as p:
+            print(f"{p.value:.0%} {p.message}")
+        case Preview() as pv:
+            image = pv.to_pil()
+        case OutputReady() as o:
+            o.output.to_file(f"partial/{o.output.name}")
+        case StatusChange(status="succeeded"):
+            break
+
+result = job.result()
+```
+
+```typescript TypeScript
+const job = await client.submit(wf);
+
+// Das Label ist erforderlich: ein bloßes `break` in einem switch verlässt das switch,
+// nicht die Schleife.
+eventLoop: for await (const event of job.events()) {
+  switch (event.kind) {
+    case "progress":
+      console.log(event.value);
+      break;
+    case "outputReady":
+      await event.output.toFile(`${event.output.name}`);
+      break;
+    case "statusChange":
+      if (event.status === "succeeded") break eventLoop;
+  }
+}
+```
+</CodeGroup>
+
+`Preview.to_pil()` erfordert das optionale Pillow-Extra: `pip install "comfy-sdk[pil]"`.
+
+`result()` gibt die abgeschlossene Aufgabe zurück oder löst `JobFailed` mit Details auf Node-Ebene aus, wenn die Ausführung fehlgeschlagen ist. Den vollständigen Ereigniskatalog finden Sie in der [SDK-README](#referenz) für Ihre Sprache.
+
+### `events()` ist nicht `subscribe()`
+
+Über die beiden Schnittstellen hinweg gibt es drei ähnlich benannte Dinge, und nur eines davon steht auf dieser Seite:
+
+| Aufruf | Schnittstelle | Was es liefert |
+|---|---|---|
+| `job.events()` | Comfy Cloud (diese Seite) | Ein Live-SSE-Stream einer Workflow-Aufgabe: `Progress`, `Preview`, `OutputReady`, `StatusChange`. Automatische Wiederverbindung, mit Rückfall auf Polling. |
+| `handle.events()` (TypeScript) / `handle.iter_events()` (Python) | [Comfy Router: Zustellung über die Warteschlange](/de/development/comfy-router/queue) | Beobachtungen der Warteschlange für eine Router-Anfrage: Status und Warteschlangenposition. Es fragt die Status-Route per Polling ab; es gibt keinen Stream und es gibt keine Fortschritts- oder Vorschau-Ereignisse. |
+| `comfy.models.subscribe(...)` | [Comfy Router: Zustellung über die Warteschlange](/de/development/comfy-router/queue) | Kein Iterator. Absenden, Abfragen und Einsammeln in einem Aufruf, mit einem `on_queue_update` / `onQueueUpdate`-Callback, der zum Ergebnis auflöst. |
+
+Im Comfy-Cloud-Client gibt es kein `subscribe()`, und `job.subscribe()` gibt es nirgends. Das Cloud-Äquivalent zu `subscribe` ist `run()`: absenden und auf einen Endzustand warten.
+
+Der Stream ist ein Live-Feed, kein wiederholbares Protokoll. Er existiert, damit Sie Fortschritt darstellen können, nicht damit Sie sich für Ergebnisse darauf verlassen. Maßgeblich ist das Polling der Aufgabe, und `run()`, `wait()` und `result()` greifen automatisch auf Polling zurück. Warum das so ist, lesen Sie in den [Design Notes](/de/development/api-development/sdks-design#poll-first-stream-for-progress).
+
+## Fehlerkategorien {#failure-categories}
+
+Wenn ein Auftrag fehlschlägt, nennt `error.category` den Grund in einem einzigen Wort, sodass Ihr Code entscheiden kann, was zu tun ist, ohne `error.message` zu parsen. Nur Aufträge auf einer [Comfy API-Bereitstellung](#comfy-api-deployment) enthalten das Feld. Comfy Cloud setzt es nicht.
+
+| Kategorie | Was passiert ist |
+|---|---|
+| `invalid_input` | Ein Eingabewert oder eine Datei wurde abgelehnt oder überschritt ein Limit. |
+| `content_refused` | Die Moderation eines Partner-Nodes hat den Inhalt abgelehnt. |
+| `out_of_gpu_memory` | Auf der GPU war nicht genügend Arbeitsspeicher verfügbar. |
+| `missing_model_or_node` | Dem Workflow fehlt eine Modelldatei, eine Node-Klasse oder ein Python-Paket, das in der Bereitstellung nicht vorhanden ist. |
+| `workflow_logic` | Der Workflow selbst ist fehlerhaft: eine Typ-, Verbindungs- oder Formabweichung, kein Ausgabe-Node oder ein Abhängigkeitszyklus. |
+| `other` | Nichts davon. Auch ein Ausfall eines Anbieters oder ein Timeout allein landet hier. |
+
+Ein Auftrag erhält nur dann eine Kategorie, wenn sein Workflow oder seine Eingaben den Fehler verursacht haben.
+
+**Das Feld steht im `error`-Objekt des Auftrags** in der Antwort auf Absenden, Abrufen und Abbrechen. Die Auftragsliste enthält es nicht: Listeneinträge enthalten nur Fehlermeldung und Detail, lesen Sie den Auftrag daher über seine ID. Nach einem `failed`-Status im Event-Stream lesen Sie den Auftrag ebenfalls über seine ID.
+
+**Das Feld fehlt, wenn:**
+
+- der Auftrag nicht fehlgeschlagen ist.
+- die Plattform den Fehler verursacht hat oder der Fehler nicht auf Ihren Workflow oder Ihre Eingaben zurückzuführen war.
+- der Auftrag fehlgeschlagen ist, bevor Kategorien verfügbar waren.
+- der Inhalt des Auftrags im Konto bereinigt wurde.
+- der Auftrag auf Comfy Cloud lief.
+
+**Behandeln Sie einen unbekannten Wert wie `other`.** Die Menge der Kategorien kann innerhalb von v2 wachsen. Eine fehlende Kategorie bedeutet, dass der Auftrag keine hat, und Sie können das ebenfalls wie `other` behandeln.
+
+**Eine Kategorie beschreibt den mit dem Auftrag gespeicherten Fehlerbericht.** Ein erneutes Lesen des Auftrags klassifiziert ihn nie neu, und eine Kategorie ist eine Best-Effort-Kennzeichnung, keine Garantie für Genauigkeit. Verwenden Sie sie, um den nächsten Schritt zu wählen, etwa den Benutzer zu bitten, eine Eingabe zu korrigieren.
+
+Die aktuelle SDK-Version stellt das Feld noch nicht bereit. Das Python-SDK entfernt es aus `JobFailed.error`, lesen Sie den Auftrag daher über HTTP. Das TypeScript-SDK führt es zur Laufzeit mit, typisiert es aber nicht, casten Sie den Fehler daher:
+
+<CodeGroup>
+```python Python
+import os
+import httpx
+from comfy_sdk import JobFailed
+
+KNOWN_CATEGORIES = {
+    "invalid_input",
+    "content_refused",
+    "out_of_gpu_memory",
+    "missing_model_or_node",
+    "workflow_logic",
+    "other",
+}
+
+api_key = "comfyui-..."  # derselbe Schlüssel, den Sie an Comfy(api_key=...) übergeben
+base_url = os.environ.get("COMFY_BASE_URL") or "https://cloud.comfy.org"  # nicht gesetzt oder leer bedeutet Comfy Cloud, wie beim Client
+
+job = client.submit(wf)
+try:
+    job.result()
+except JobFailed:
+    response = httpx.get(
+        f"{base_url}/api/v2/jobs/{job.id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    response.raise_for_status()
+    category = (response.json().get("error") or {}).get("category")
+    if category not in KNOWN_CATEGORIES:
+        category = "other"  # fehlend oder unbekannt
+```
+
+```typescript TypeScript
+import { JobFailed } from "@comfyorg/sdk";
+
+const KNOWN_CATEGORIES = new Set([
+  "invalid_input",
+  "content_refused",
+  "out_of_gpu_memory",
+  "missing_model_or_node",
+  "workflow_logic",
+  "other",
+]);
+
+try {
+  await client.run(wf);
+} catch (err) {
+  if (!(err instanceof JobFailed)) throw err;
+  const raw = (err.error as { category?: string } | null)?.category;
+  const category =
+    raw !== undefined && KNOWN_CATEGORIES.has(raw) ? raw : "other"; // fehlend oder unbekannt
+}
+```
+</CodeGroup>
+
+## Eine Ausgabe bis zu ihrem Workflow zurückverfolgen
+
+Ausgänge tragen die ID der Aufgabe, die sie erzeugt hat. So können Sie von einer Datei ausgehen und rückwärts arbeiten, ohne eine zusätzliche Tabelle zu pflegen.
+
+<CodeGroup>
+```python Python
+output = job.outputs[0]
+output.job_id          # die Aufgabe, die diese Datei erzeugt hat
+```
+
+```typescript TypeScript
+const output = job.outputs[0];
+output.jobId; // die Aufgabe, die diese Datei erzeugt hat
+```
+</CodeGroup>
+
+Dieselbe ID steht auch an einem Asset, das Sie einzeln abrufen, sodass eine Datei, die Sie später finden, weiterhin zu ihrer Aufgabe zurückführt. Bei einem Asset, das Sie hochgeladen haben, ist sie `None` (TypeScript: `undefined`), denn dieses hat keine erzeugende Aufgabe.
+
+Von der Aufgabe aus können Sie den dahinterliegenden Workflow anfordern. Das funktioniert auch für eine Aufgabe, die Sie in diesem Prozess nicht abgesendet haben und die per ID neu geladen wurde:
+
+<CodeGroup>
+```python Python
+wf = job.get_workflow()
+
+if wf.format == "save":
+    ...  # der Workflow im Ursprungszustand, Canvas-Layout und Note-Nodes unverändert
+else:
+    ...  # der ausgeführte Graph im API-Format
+```
+
+```typescript TypeScript
+const wf = await job.getWorkflow();
+
+if (wf.format === "save") {
+  // der Workflow im Ursprungszustand, Canvas-Layout und Note-Nodes unverändert
+} else {
+  // der ausgeführte Graph im API-Format
+}
+```
+</CodeGroup>
+
+**Verzweigen Sie immer anhand von `format`.** Welche Form zurückkommt, hängt davon ab, wie die Aufgabe abgesendet wurde, und nicht von etwas, das Sie pro Anfrage steuern können:
+
+| `format` | Was Sie erhalten | Wann |
+|---|---|---|
+| `save` | Der Workflow im Ursprungszustand, in der Version, die die Aufgabe ausgeführt hat, mit Canvas-Layout und Nodes, die es nur im Editor gibt, etwa Note | Aufträge, die im Comfy Cloud Editor abgesendet wurden, der eine Workflow-Version fixiert |
+| `api` | Der ausgeführte Graph. Konstrukte, die es nur im Editor gibt, sind entfernt und Get/Set-Nodes sind expandiert | Alles andere, einschließlich jedes Auftrags, der heute über diese SDKs abgesendet wird |
+
+Aufträge, die Sie über das SDK absenden, liefern immer `api`, weil das Absenden mit v2 noch keine Felder zum Fixieren einer Version hat. Das wird sich ändern; das Unterscheidungsmerkmal ist vorhanden, damit Ihr Code es nicht selbst leisten muss.
+
+## Aufträge mit Labels versehen und später wiederfinden
+
+Ein Label besteht aus einem Schlüssel und einem Wert, die Sie einem Auftrag beim Absenden anhängen, zum Beispiel `client: acme` oder `project: spring`. Mit Labels halten Sie fest, für welchen Ihrer Kunden oder welches Ihrer Projekte ein Auftrag ausgeführt wurde. Anschließend können Sie die Aufträge für einen Kunden auflisten, ohne eine eigene Tabelle mit Auftrags-IDs führen zu müssen. Labels und die Auftragsliste erfordern die aktuelle SDK-Version, die in der Versionsnotiz unter [Installieren](#installieren) genannt wird.
+
+Labels funktionieren bei Aufträgen, die an ein [Comfy-API-Deployment](#comfy-api-deployment) gesendet werden. Setzen Sie daher `COMFY_BASE_URL` auf die Adresse des Deployments, wie unter [Auswählen einer Basis-URL](#basis-url-auswählen) gezeigt. Comfy Cloud lehnt sie derzeit ab und beantwortet die Auftragsliste mit `501` und dem Code `not_implemented`. Ein selbst gehosteter [comfy-api-proxy](#ihr-eigenes-comfyui) speichert sie ebenfalls nicht: Sein eigenes `metadata`-Feld ist eine einzelne Textzeichenkette, daher lehnt er eine Label-Zuordnung ab. Seine Auftragsliste ignoriert Label-Filter. Ein SDK-Listenaufruf mit Labels liefert dort daher keine Aufträge, und dieselben Filter über HTTP liefern jeden Auftrag.
+
+Die Limits:
+
+- Bis zu 16 Labels pro Auftrag.
+- Ein Schlüssel ist 1 bis 40 Zeichen lang: Buchstaben, Ziffern, `_`, `-` und `.`.
+- Ein Wert ist eine Zeichenkette mit bis zu 256 Bytes (UTF-8).
+- Labels werden beim Absenden des Auftrags festgelegt und können später nicht geändert werden.
+
+Ein Absendeversuch, der ein Limit verletzt, schlägt mit `422` und dem Code `metadata_invalid` fehl, und es wird kein Auftrag erstellt. Die Fehlermeldung nennt den Schlüssel, der die Regel verletzt hat, oder gibt die Anzahl an, wenn mehr als 16 Labels vorhanden sind. Die SDKs prüfen die Limits nicht selbst. Sie lösen einen Fehler aus, der den Code und die Meldung des Servers enthält.
+
+<Warning>
+  Jeder in Ihrem Workspace, der einen Auftrag sehen kann, kann auch dessen Labels sehen. Speichern Sie darin keine Geheimnisse oder personenbezogenen Daten.
+</Warning>
+
+Übergeben Sie `metadata` beim Absenden. Der Auftrag trägt die Labels, wenn Sie ihn wieder auslesen:
+
+<CodeGroup>
+```python Python
+job = client.submit(wf, metadata={"client": "acme", "project": "spring"})
+job.metadata  # {"client": "acme", "project": "spring"}
+```
+
+```typescript TypeScript
+const job = await client.submit(wf, {
+  metadata: { client: "acme", project: "spring" },
+});
+job.metadata; // { client: "acme", project: "spring" }
+```
+</CodeGroup>
+
+Ein Auftrag, der ohne Labels abgesendet wird, hat ein leeres `metadata`.
+
+Um die Aufträge für einen Kunden zu finden, listen Sie Aufträge nach Label gefiltert auf. Die Liste umfasst nur die Aufträge, die an das Deployment unter Ihrer Basis-URL gesendet wurden. Die neuesten Ergebnisse stehen zuerst, und das SDK ruft beim Iterieren die nächste Seite für Sie ab:
+
+<CodeGroup>
+```python Python
+for job in client.list_jobs(metadata={"client": "acme"}):
+    print(job.id, job.status)
+```
+
+```typescript TypeScript
+for await (const job of client.listJobs({ metadata: { client: "acme" } })) {
+  console.log(job.id, job.status);
+}
+```
+</CodeGroup>
+
+Sie können nach bis zu 3 Labels gleichzeitig filtern, und ein Auftrag muss allen genau entsprechen. Listeneinträge enthalten keine Ausgaben. Um die Ausgaben eines Auftrags abzurufen, lesen Sie den Auftrag anhand seiner ID mit `client.jobs.get(job.id)` aus.
+
+### Über HTTP
+
+Senden Sie `metadata` im Body von `POST /api/v2/jobs`:
+
+```bash
+curl -X POST "https://<deployment>.run.comfy.app/api/v2/jobs" \
+  -H "Authorization: Bearer $COMFY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow": { ... },
+    "metadata": { "client": "acme", "project": "spring" }
+  }'
+```
+
+Filtern Sie `GET /api/v2/jobs` mit einem `metadata[<key>]=<value>`-Abfrageparameter pro Label. Das Flag `-g` verhindert, dass curl die eckigen Klammern als Muster interpretiert:
+
+```bash
+curl -g "https://<deployment>.run.comfy.app/api/v2/jobs?metadata[client]=acme" \
+  -H "Authorization: Bearer $COMFY_API_KEY"
+```
+
+Die Antwort enthält eine Seite mit Aufträgen und, falls weitere Seiten vorhanden sind, einen `next_cursor`. Übergeben Sie ihn zusammen mit denselben `metadata[...]`-Filtern als `cursor`, um die nächste Seite zu erhalten. Ein Cursor, der ohne seine Filter gesendet wird, liefert ungefilterte Aufträge. Mit `limit` legen Sie die Seitengröße fest (höchstens 500).
+
+```json
+{
+  "jobs": [
+    {
+      "id": "6f1c2b9e-...",
+      "status": "succeeded",
+      "metadata": { "client": "acme", "project": "spring" }
+    }
+  ],
+  "next_cursor": "eyJ..."
+}
+```
+
+Mehr als 3 Label-Filter oder ein Schlüssel, der die Schlüsselregel verletzt, schlagen mit `400` und dem Code `invalid_metadata_filter` fehl. In der [Comfy API v2-Referenz](/de/api-reference/v2/overview) finden Sie alle Felder des Auftrags und der Liste.
+
+## Was die SDKs heute abdecken
+
+Die erste Version erledigt eine Sache richtig: einen Workflow ausführen und die Ergebnisse zurückbekommen.
+
+- **Assets.** Erstellen Sie Eingabe-Handles aus einer Datei, aus Bytes, einem Stream oder einer URL. Handles sind lazy und inhaltsadressiert, sodass ein erneuter Lauf mit derselben Eingabe sie nicht erneut hochlädt.
+- **Absenden.** Senden Sie einen Graphen im API-Format ab. Das Absenden ist idempotent, und eine volle Warteschlange wird für Sie innerhalb eines begrenzten Budgets erneut versucht.
+- **Ausführung.** Fragen Sie mit `wait()` ab oder folgen Sie `events()` für Live-Fortschritt.
+- **Ausgaben.** Auf die Festplatte schreiben, in den Speicher puffern, einen Byte-Bereich abrufen oder eine kurzlebige Download-URL beziehen. `getDownloadUrl()` liefert eine signierte URL zurück, die jeder ohne API-Schlüssel lesen kann und die etwa 6 Stunden gültig ist. Lesen Sie [Ausgabe-URLs und wie lange sie gültig bleiben](/de/api-reference/v2/overview#ausgabe-urls-und-ihre-gültigkeitsdauer), bevor Sie eine speichern: Um eine Ausgabe später weiterhin anzuzeigen, hosten Sie die Bytes erneut oder erzeugen Sie die URL bei Bedarf neu.
+- **Nachvollziehbarkeit.** Jede Ausgabe trägt die ID des Auftrags, der sie erzeugt hat, und ein Auftrag kann den dahinterliegenden Workflow zurückgeben.
+- **Assets löschen.** Entfernen Sie ein von Ihnen hochgeladenes Asset, entweder per Handle oder per ID.
+- **Fehler.** Typisierte Exceptions wie `JobFailed`, `Unauthorized`, `InsufficientCredits` und `QueueFull` statt roher Statuscodes.
+- **Abbruch.** Aufträge können während der Ausführung gekündigt werden. TypeScript akzeptiert zusätzlich ein `AbortSignal` bei jedem Aufruf.
+
+Python liefert sowohl einen synchronen `Comfy`-Client als auch einen `AsyncComfy`-Client mit derselben Oberfläche. TypeScript ist ausschließlich asynchron.
+
+Nicht in dieser Version enthalten: die Verwaltung gespeicherter Workflows, die Modellbibliothek, Node-Introspektion und benannte Workflow-Parameter. [Design Notes](/de/development/api-development/sdks-design#scope-of-the-first-version) erklärt, warum die Oberfläche so klein beginnt.
+
+## Referenz
+
+Die READMEs der SDKs sind die vollständige Referenz für jede Sprache, einschließlich Authentifizierung, Assets, Fehlern und der Low-Level-Escape-Hatches.
+
+<CardGroup cols={2}>
+  <Card title="Python SDK" icon="python" href="https://github.com/Comfy-Org/comfy-python-sdk">
+    <code>comfy-sdk</code> auf PyPI. Synchrone und asynchrone Clients.
+  </Card>
+  <Card title="TypeScript SDK" icon="js" href="https://github.com/Comfy-Org/comfy-typescript-sdk">
+    <code>@comfyorg/sdk</code> auf npm. Typisiert, asynchron, mit einem Low-Level-Client.
+  </Card>
+  <Card title="Comfy API v2 Reference" icon="code" href="/de/api-reference/v2/overview">
+    Die HTTP-API, die beiden SDKs zugrunde liegt. Verwenden Sie sie direkt aus jeder Sprache.
+  </Card>
+  <Card title="Design Notes" icon="compass" href="/de/development/api-development/sdks-design">
+    Warum diese API existiert, wie sie mit den bestehenden ComfyUI-APIs zusammenhängt und was als Nächstes kommt.
+  </Card>
+  <Card title="Comfy Router" icon="shuffle" href="/de/development/comfy-router/quickstart">
+    Die andere Oberfläche im selben Paket: <code>comfy.models.run</code> für Partnermodelle wie Flux, Veo und Gemini.
+  </Card>
+</CardGroup>
+
+## Feedback
+
+Melden Sie, was umständlich ist, was Sie erwartet und nicht gefunden haben und was Sie umgehen mussten. Der Kanal `#developer-platform` in [unserem Discord](https://discord.com/invite/comfyorg) ist der richtige Ort dafür.
+
+Wenn Sie ein First-Party-SDK in einer anderen Sprache wünschen, sagen Sie es dort. Beide SDKs basieren auf demselben dokumentierten HTTP-Vertrag, daher kann heute jede Sprache mit der API kommunizieren, aber wir möchten lieber wissen, wo die Nachfrage besteht.

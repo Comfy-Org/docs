@@ -851,6 +851,21 @@ const ES_MONTH_NAMES = [
   "diciembre",
 ] as const;
 
+const DE_MONTH_NAMES = [
+  "Januar",
+  "Februar",
+  "März",
+  "April",
+  "Mai",
+  "Juni",
+  "Juli",
+  "August",
+  "September",
+  "Oktober",
+  "November",
+  "Dezember",
+] as const;
+
 const EN_DATE_DESC_RE =
   /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})$/;
 
@@ -879,6 +894,8 @@ export function formatChangelogDateForLang(
       return `${year}년 ${month}월 ${day}일`;
     case "es":
       return `${day} de ${ES_MONTH_NAMES[month - 1]} de ${year}`;
+    case "de":
+      return `${day}. ${DE_MONTH_NAMES[month - 1]} ${year}`;
     default:
       return `${EN_MONTH_NAMES[month - 1]} ${day}, ${year}`;
   }

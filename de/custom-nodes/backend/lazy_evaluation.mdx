@@ -1,0 +1,155 @@
+---
+title: "Lazy Evaluation in ComfyUI für Custom Nodes"
+description: "Eingaben in Custom Nodes verzögert auswerten: Eingänge in INPUT_TYPES als lazy markieren und die benötigten Eingaben aus check_lazy_status zurückgeben."
+sidebarTitle: "Lazy Evaluation"
+translationSourceHash: 7295486b
+translationFrom: custom-nodes/backend/lazy_evaluation.mdx
+translationBlockHashes:
+  "Lazy Evaluation": 31ec63ad
+  "Execution Blocking": 7ef9a880
+---
+
+## Lazy Evaluation
+
+Standardmäßig werden alle Eingaben vom Typ `required` und `optional` ausgewertet, bevor ein Node ausgeführt werden kann. Manchmal wird eine Eingabe jedoch nicht unbedingt verwendet, und ihre Auswertung würde nur unnötige Verarbeitung verursachen. Hier sind einige Beispiele für Nodes, bei denen sich Lazy Evaluation lohnen kann:
+1. Ein `ModelMergeSimple`-Node, bei dem das Verhältnis entweder `0.0` ist (dann muss das erste Modell nicht geladen werden) oder `1.0` (dann muss das zweite Modell nicht geladen werden).
+2. Interpolation zwischen zwei Bildern, bei der das Verhältnis (oder die Maske) vollständig `0.0` oder vollständig `1.0` ist.
+3. Ein Switch-Node, bei dem eine Eingabe bestimmt, welche der anderen Eingaben durchgereicht wird.
+
+<Tip>
+  Eine Eingabe lazy zu machen kostet fast nichts. Wenn Sie es tun können, sollten Sie es in der Regel auch tun.
+</Tip>
+
+### Lazy-Eingaben erstellen
+
+Es gibt zwei Schritte, um eine Eingabe zu einer "lazy" Eingabe zu machen. Sie lauten:
+
+1. Markieren Sie die Eingabe im von `INPUT_TYPES` zurückgegebenen Dictionary als lazy.
+2. Definieren Sie eine Methode namens `check_lazy_status` (Hinweis: *keine* Klassenmethode), die vor der Auswertung aufgerufen wird, um zu entscheiden, ob weitere Eingaben nötig sind.
+
+Um das zu zeigen, bauen wir einen "MixImages"-Node, der zwei Bilder anhand einer Maske interpoliert. Ist die gesamte Maske `0.0`, müssen wir keinen Teil des Baums auswerten, der zum zweiten Bild führt. Ist die gesamte Maske `1.0`, können wir die Auswertung des ersten Bildes überspringen.
+
+#### `INPUT_TYPES` definieren
+
+Eine Eingabe als lazy zu deklarieren ist so einfach wie das Hinzufügen eines Schlüssel-Wert-Paars `lazy: True` zum Options-Dictionary der Eingabe.
+
+```python
+@classmethod
+def INPUT_TYPES(cls):
+    return {
+        "required": {
+            "image1": ("IMAGE",{"lazy": True}),
+            "image2": ("IMAGE",{"lazy": True}),
+            "mask": ("MASK",),
+        },
+    }
+```
+
+In diesem Beispiel sind `image1` und `image2` beide als lazy Eingaben markiert, `mask` wird aber immer ausgewertet.
+
+#### `check_lazy_status` definieren
+
+Eine `check_lazy_status`-Methode wird aufgerufen, wenn eine oder mehrere lazy Eingaben noch nicht verfügbar sind. Diese Methode erhält dieselben Argumente wie die Standard-Ausführungsfunktion. Alle verfügbaren Eingaben werden mit ihren endgültigen Werten übergeben, während nicht verfügbare lazy Eingaben den Wert `None` haben.
+
+Die Aufgabe der `check_lazy_status`-Funktion ist es, eine Liste mit den Namen aller lazy Eingaben zurückzugeben, die zum Fortfahren benötigt werden. Sind alle lazy Eingaben verfügbar, sollte die Funktion eine leere Liste zurückgeben.
+
+Beachten Sie, dass `check_lazy_status` mehrmals aufgerufen werden kann. (Sie stellen zum Beispiel nach der Auswertung einer lazy Eingabe möglicherweise fest, dass Sie eine weitere auswerten müssen.)
+
+<Tip>
+  Beachten Sie, dass die Funktion keine Klassenmethode ist, da sie tatsächliche Eingabewerte verwendet.
+</Tip>
+```python
+def check_lazy_status(self, mask, image1, image2):
+    mask_min = mask.min()
+    mask_max = mask.max()
+    needed = []
+    if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+        needed.append("image1")
+    if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+        needed.append("image2")
+    return needed
+```
+
+### Vollständiges Beispiel
+
+
+```python
+class LazyMixImages:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image1": ("IMAGE",{"lazy": True}),
+                "image2": ("IMAGE",{"lazy": True}),
+                "mask": ("MASK",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "mix"
+
+    CATEGORY = "Examples"
+
+    def check_lazy_status(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        needed = []
+        if image1 is None and (mask_min != 1.0 or mask_max != 1.0):
+            needed.append("image1")
+        if image2 is None and (mask_min != 0.0 or mask_max != 0.0):
+            needed.append("image2")
+        return needed
+
+    # Unterschiedliche Batch-Größen werden hier nicht behandelt, um das Beispiel einfach zu halten
+    def mix(self, mask, image1, image2):
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_min == 0.0 and mask_max == 0.0:
+            return (image1,)
+        elif mask_min == 1.0 and mask_max == 1.0:
+            return (image2,)
+
+        mask = mask.unsqueeze(-1)
+        result = image1 * (1. - mask) + image2 * mask
+        return (result,)
+```
+
+## Ausführung blockieren
+
+Lazy Evaluation ist der empfohlene Weg, einen Teil eines Graphen zu "deaktivieren". Es gibt aber Situationen, in denen Sie einen `OUTPUT`-Node deaktivieren möchten, der Lazy Evaluation selbst nicht implementiert. Handelt es sich um einen Ausgabe-Node, den Sie selbst entwickelt haben, sollten Sie Lazy Evaluation einfach wie folgt ergänzen:
+
+1. Fügen Sie eine erforderliche (bei einem neuen Node) oder optionale (wenn Ihnen Abwärtskompatibilität wichtig ist) Eingabe `enabled` hinzu, die standardmäßig `True` ist
+2. Machen Sie alle anderen Eingaben zu `lazy` Eingaben
+3. Werten Sie die anderen Eingaben nur aus, wenn `enabled` `True` ist
+
+Wenn es kein Node ist, den Sie selbst kontrollieren, können Sie ein `comfy_execution.graph.ExecutionBlocker` verwenden. Dieses spezielle Objekt kann als Ausgabe von jedem Socket zurückgegeben werden. Jeder Node, der einen `ExecutionBlocker` als Eingabe erhält, überspringt die Ausführung und gibt diesen `ExecutionBlocker` für alle Ausgaben zurück.
+
+<Tip>
+  **Es gibt bewusst keine Möglichkeit, die Weitergabe eines ExecutionBlocker zu stoppen.** Wenn Sie das für nötig halten, sollten Sie wirklich Lazy Evaluation verwenden.
+</Tip>
+
+### Verwendung
+
+Es gibt zwei Möglichkeiten, einen `ExecutionBlocker` zu erzeugen und zu verwenden
+
+1. Übergeben Sie `None` an den Konstruktor, um die Ausführung stillschweigend zu blockieren. Das ist nützlich, wenn das Blockieren der Ausführung Teil eines erfolgreichen Laufs ist, etwa beim Deaktivieren einer Ausgabe.
+```python
+def silent_passthrough(self, passthrough, blocked):
+    if blocked:
+        return (ExecutionBlocker(None),)
+    else:
+        return (passthrough,)
+```
+
+2. Übergeben Sie einen String an den Konstruktor, um eine Fehlermeldung anzuzeigen, wenn ein Node blockiert wird, weil er das Objekt erhält. Das kann sinnvoll sein, wenn Sie eine aussagekräftige Fehlermeldung anzeigen möchten, falls jemand eine bedeutungslose Ausgabe verwendet, zum Beispiel die `VAE`-Ausgabe beim Laden eines Modells, das keine VAEs enthält.
+
+```python
+def load_checkpoint(self, ckpt_name):
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    model, clip, vae = load_checkpoint(ckpt_path)
+    if vae is None:
+        # Diese Fehlermeldung ist hilfreicher als ein "'NoneType' has no attribute"-Fehler
+        # in einem späteren Node
+        vae = ExecutionBlocker(f"No VAE contained in the loaded model {ckpt_name}")
+    return (model, clip, vae)
+```

@@ -1,0 +1,191 @@
+---
+title: "Comfy Router: Fehler und erneute Versuche"
+sidebarTitle: "Fehler und erneute Versuche"
+description: "Comfy Router Fehlerantworten und Validierungsdetails lesen, mit demselben Idempotency-Key erneut versuchen und nach Timeouts wiederherstellen."
+translationSourceHash: 4aa30beb
+translationFrom: development/comfy-router/errors.mdx
+translationBlockHashes:
+  "_intro": c6490339
+  "Read errors defensively": 65a4930f
+  "Validation errors": 24eacd50
+  "Retry safely": e9469646
+  "Retry outcomes": 4ce558e5
+  "Timeouts and collection": cb83f8f6
+  "Next": 2ae95bd4
+---
+Ein fehlgeschlagener Router-Aufruf enthält seinen HTTP-Status, eine Fehlerkategorie in `X-Comfy-Error-Type` und eine Anfrage-ID in `X-Comfy-Request-Id`. Behalten Sie alle drei sowie den von Ihnen gesendeten `Idempotency-Key`, bevor Sie entscheiden, ob Sie es erneut versuchen.
+
+## Fehler defensiv auslesen
+
+Eine fehlgeschlagene Anfrage kann die HTML-Fehlerseite eines Proxys, abgeschnittenes JSON oder reinen Text zurückgeben. Lassen Sie nicht zu, dass ein JSON-Parsing-Fehler den HTTP-Status oder die Request-ID verdeckt. Diese Hilfsfunktionen verwenden in Python eine `httpx.Response` und in TypeScript eine Fetch-`Response`; die SDKs stellen für normale SDK-Aufrufe bereits Fehlerfelder bereit.
+
+<CodeGroup>
+
+```python
+def read_router_error(response):
+    body = None
+    if response.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return {
+        "status": response.status_code,
+        "request_id": response.headers.get("X-Comfy-Request-Id"),
+        "error_type": response.headers.get("X-Comfy-Error-Type", "internal_error"),
+        "message": detail if isinstance(detail, str) else f"HTTP {response.status_code}",
+        "validation": detail if isinstance(detail, list) else [],
+    }
+```
+
+```typescript
+async function readRouterError(response: Response) {
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    body = undefined;
+  }
+
+  const detail =
+    typeof body === "object" && body !== null ? (body as { detail?: unknown }).detail : undefined;
+
+  return {
+    status: response.status,
+    requestId: response.headers.get("X-Comfy-Request-Id"),
+    errorType: response.headers.get("X-Comfy-Error-Type") ?? "internal_error",
+    message: typeof detail === "string" ? detail : `HTTP ${response.status}`,
+    validation: Array.isArray(detail) ? detail : [],
+  };
+}
+```
+
+```swift
+// Zu Ihrer Package.swift hinzufügen:
+//   .package(url: "https://github.com/Comfy-Org/comfy-swift-sdk.git", from: "0.5.0")
+import ComfySwiftSDK
+
+// Das SDK liest die Antwort defensiv für Sie aus: Ein Router-Fehler wird als
+// ComfyError.router mit HTTP-Status, Request-ID, Fehlerkategorie und allen
+// bereits extrahierten Validierungsdetails pro Feld ausgelöst, selbst wenn der
+// Inhalt eine HTML-Fehlerseite oder abgeschnittenes JSON war. Fangen Sie ihn bei jedem client.models-Aufruf ab.
+struct RouterErrorInfo {
+    let status: Int
+    let requestId: String?
+    let errorType: String
+    let message: String
+    let validation: [RouterValidationErrorDetail]
+}
+
+// `client.models.run` ist `async throws`, daher bindet ein nicht typisierter `catch` `Error`.
+// Nehmen Sie hier `Error`, damit der gefangene Wert direkt übergeben werden kann.
+func readRouterError(_ error: Error) -> RouterErrorInfo? {
+    guard let comfyError = error as? ComfyError,
+          case .router(let router) = comfyError else { return nil }
+    return RouterErrorInfo(
+        status: router.httpStatus,
+        requestId: router.requestId,
+        errorType: router.errorType.rawValue,
+        message: router.detail,
+        validation: router.validationErrors
+    )
+}
+```
+
+</CodeGroup>
+
+## Validierungsfehler
+
+Ein Router-`422` bedeutet, dass die Validierung vor dem Aufruf des Anbieters fehlgeschlagen ist, und wird nicht abgerechnet. Der Body enthält ein `detail[]`-Array mit einem Eintrag pro abgelehntem Feld. Die Fehlerkategorie steht in `X-Comfy-Error-Type`, nicht im Body. Zum Beispiel:
+
+```json
+{"detail": [{"loc": ["body", "prompt"], "msg": "Field required", "type": "missing"}]}
+```
+
+Dies ist nur eine Beispielform. Modelle mit einem permissiven Eingabeschema können ein fehlendes Feld an den Anbieter weiterreichen, statt einen Router-`422` zurückzugeben.
+
+| Feld | Bedeutung |
+| --- | --- |
+| `loc` | Pfad zum abgelehnten Feld, äußerstes Segment zuerst. |
+| `msg` | Menschenlesbarer Grund für den Fehlschlag. |
+| `type` | Anbieterspezifischer Grund, etwa `missing`, `greater_than` oder `image_too_small`. |
+| `ctx` | Optionaler Grenzwert oder zusätzliche Daten zu diesem Anbieterfehler. |
+
+`400` beschreibt ein Problem auf Anfrageebene, etwa einen fehlerhaften Cursor, und nicht diesen Validierungs-Body pro Feld. Die [Fehlerreferenz](/de/development/comfy-router/reference#error-buckets) listet die unterstützten Kategorien auf. Behandeln Sie eine unbekannte Kategorie für die Ablaufsteuerung als `internal_error`, behalten Sie aber den ursprünglichen Wert für die Diagnose bei. Lehnen Sie einen neuen Fehlerwert nicht hart ab, und implementieren Sie vorhergesagte Fehlerkategorien nicht so, als würden sie bereits auftreten.
+
+## Sicher erneut versuchen
+
+Speichern Sie den Schlüssel zusammen mit der Modell-ID und dem Request-Body **vor dem Senden**. Verwenden Sie ihn für jeden Versuch dieses logischen Aufrufs erneut. Router gibt den `Idempotency-Key` nicht in seiner Antwort an Sie zurück. Das Python SDK nimmt seinen Schlüssel in ausgelöste Ausnahmen auf; in TypeScript behalten Sie den von Ihnen bereitgestellten Schlüssel selbst.
+
+Schlüssel werden innerhalb des Workspace geteilt, den die Anmeldeinformationen mitführen, oder dem Benutzer zugeordnet, wenn diese keinen Workspace mitführen. Verwenden Sie eine UUID, die innerhalb dieses Bereichs eindeutig ist, und wiederholen Sie den Aufruf mit denselben Anmeldeinformationen. Wenn Sie den Schlüssel eines anderen Workspace-Mitglieds wiederverwenden, kann dies dessen aufgezeichnetes Ergebnis oder einen Konflikt zurückgeben; ein Wechsel der Anmeldeinformationen kann einen separaten, kostenpflichtigen Aufruf starten.
+
+Router speichert den schlüsselgebundenen Antwort- oder Sammlungszustand 24 Stunden lang; ein Wiederholungsversuch startet kein neues Aufbewahrungsfenster. Nach Ablauf dieses Zustands sollten Sie nicht erwarten, dass der alte Schlüssel ein Ergebnis wiederherstellt oder verhindert, dass erneut gesendet wird. Ein Schlüssel macht eine abgelaufene Asset-URL auch nicht wieder nutzbar.
+
+## Wiederholungsergebnisse
+
+| Status | Kategorie | Bedeutung | Vorgehen |
+| --- | --- | --- | --- |
+| `200` | Header `Idempotent-Replayed: true` | Der Router hat ein Ergebnis erneut ausgeliefert oder eine gesammelte Generierung zurückgegeben. | Verwenden Sie das Ergebnis; die erneute Auslieferung ist keine zweite Comfy-Abbuchung. |
+| `409` | `concurrency_limit_exceeded` | Der ursprüngliche Aufruf für diesen Schlüssel läuft noch. | Warten Sie `Retry-After` ab und senden Sie denselben Schlüssel erneut. |
+| `504` | `deadline_exceeded`, mit `Retry-After` | Der Router hat eine Referenz auf die angenommene Arbeit des Anbieters behalten. | Warten Sie das angegebene Intervall ab und senden Sie dieselbe Anfrage und denselben Schlüssel erneut, um das Ergebnis abzuholen. Sie läuft möglicherweise noch. |
+| `429` | `rate_limited` | Das Anfragekontingent ist erschöpft. | Warten Sie `Retry-After` ab und versuchen Sie es dann mit demselben Schlüssel erneut. |
+| `429` | `concurrency_limit_exceeded` | Das Limit für gleichzeitige Aufrufe oder für zugesagte Ausgaben hat die Anfrage abgelehnt. | Reduzieren Sie die Parallelität und versuchen Sie es mit demselben Schlüssel erneut. Prüfen Sie die Ausgaben-Header. |
+| `409` | `invalid_input` | Die Anfrage weicht von der ursprünglichen Anfrage des Schlüssels ab, oder ihr Datensatz kann nicht erneut ausgeliefert werden. | Prüfen Sie den Konflikt. Stellen Sie die ursprüngliche Anfrage wieder her, falls sie sich geändert hat. Legen Sie einen neuen Schlüssel nur dann an, wenn Sie einen neuen, möglicherweise abzurechnenden Aufruf beabsichtigen. |
+| `504` ohne Abholhinweis, ein anderes `5xx` oder keine Antwort | Unterschiedlich | Der Status allein sagt nicht, ob Arbeit angenommen, behalten oder freigegeben wurde. | Behalten Sie denselben Schlüssel und dieselbe Anfrage bei. Verwenden Sie eine begrenzte Wiederholungsrichtlinie; eine Wiederherstellung ist nicht garantiert. |
+
+Konflikte vergleichen Methode, Modellpfad, Query und Body. Ein Schlüssel kann nach einer übergroßen Antwort, einem fehlgeschlagenen Schreiben der Antwort oder einem Asset, das nicht sicher erneut ausgeliefert werden kann, nicht mehr wiederverwendbar werden. Warten macht ein verbrauchtes Ergebnis nicht wieder verfügbar. Ein neuer Schlüssel startet einen neuen Aufruf; er ruft nicht die alte Ausgabe ab.
+
+Eine Ablehnung vor der Weitergabe an den Anbieter gibt den Schlüssel frei. Ein weitergegebener Aufruf kann eine Anbieter-Referenz behalten oder nicht mehr erneut auslieferbar werden. Leiten Sie den Zustand des Schlüssels oder die Abrechnung nicht allein aus dem Statuscode ab.
+
+Legen Sie keinen brandneuen Schlüssel an, nur weil ein Aufruf in ein Timeout gelaufen ist oder die Verbindung abgebrochen wurde. Wenn der Router die Generierung bereits angenommen hat, kann ein neuer Schlüssel einen zweiten logischen Lauf und damit ein zweites abrechenbares Ergebnis erzeugen. Verwenden Sie denselben Schlüssel weiter, bis Sie wissen, dass der ursprüngliche Aufruf nicht wiederherstellbar ist.
+
+## Timeouts und Ergebnisabholung
+
+Ein Router-Aufruf kann die Verbindung standardmäßig 10 Minuten lang offen halten. Legen Sie das Client-Timeout über dieser Grenze fest, damit Sie den typisierten `504`-Fehler und die Request-ID erhalten und nicht einen undurchsichtigen lokalen Abbruch. Wenn Ihre Anwendung eine Verbindung nicht so lange offen halten kann, liefert die [Zustellung über die Warteschlange](/de/development/comfy-router/queue) sofort eine `request_id` und ermöglicht es Ihnen, das Ergebnis später abzuholen.
+
+`deadline_exceeded` ist das Wartezeitlimit von Router; `provider_timeout` ist die Frist des Anbieters. Eine beim Anbieter abgeschlossene Generierung kann abgerechnet werden, auch wenn der Aufrufer ein Timeout erhalten hat oder nicht mehr verbunden ist. Der Abbruch durch den Client beendet das Warten und die SDK-Wiederholungen, bricht aber nicht unbedingt die vom Anbieter angenommene Arbeit ab.
+
+Bei Anbietern, die das Absenden mit anschließendem Abfragen unterstützen, kann eine Anfrage mit demselben Schlüssel über ein beibehaltenes Handle weiterhin die ursprüngliche Generierung abholen. Versandte Aufrufe, die ohne ein wiederherstellbares Handle abgebrochen werden, können den Schlüssel verbrauchen, ohne ein wiederholbares Ergebnis zu liefern; ein erneuter Versuch mit demselben Schlüssel gibt dann `409` zurück. Vorübergehende, dem Anbieter zugeschriebene Fehler ohne einen erfassten Erfolg können den Schlüssel dennoch für einen weiteren Versuch freigeben. Allein aus dem Fehlen eines Handles lässt sich nicht ableiten, welcher Ausgang zutrifft.
+
+Die SDKs wiederholen einige Fehler innerhalb eines begrenzten Budgets. Sobald sie einen Fehler zurückgeben, behalten Sie die Anfrage und den Schlüssel, anstatt einen neuen Schlüssel zu erzeugen. Für reines HTTP wiederholt dieses Beispiel nur die beiden expliziten Hinweise zur Abholung:
+
+```python
+import os
+import time
+
+import httpx
+
+
+def collect(model, arguments, key, attempts=3):
+    with httpx.Client(timeout=httpx.Timeout(660.0, connect=10.0)) as client:
+        for attempt in range(attempts):
+            response = client.post(
+                f"https://api.comfy.org/v2/models/{model}",
+                headers={"X-API-Key": os.environ["COMFY_API_KEY"],
+                         "Idempotency-Key": key},
+                json=arguments,
+            )
+            if response.is_success:
+                return response.json()
+
+            category = response.headers.get("X-Comfy-Error-Type")
+            collecting = (response.status_code, category) in {
+                (409, "concurrency_limit_exceeded"),
+                (504, "deadline_exceeded"),
+            }
+            delay = response.headers.get("Retry-After", "")
+            if not collecting or not delay.isdigit() or attempt == attempts - 1:
+                response.raise_for_status()
+            time.sleep(int(delay))
+    raise ValueError("attempts must be positive")
+```
+
+Übergeben Sie das ursprüngliche Modell, den Body und den gespeicherten Schlüssel. Dies begrenzt die Anzahl der Versuche, nicht die gesamte reale Laufzeit: Jeder Aufruf kann bis zum Client-Timeout dauern, und jede Wartezeit richtet sich nach `Retry-After`. Bei HTTP-Fehlern bleibt die Antwort zur Prüfung erhalten; Transportfehler werden weitergegeben, ohne den Schlüssel zu ersetzen. Planen Sie die spätere Abholung mit dem gespeicherten Schlüssel, wenn Ihre Anwendung ein längeres Wiederherstellungsfenster benötigt.
+
+## Nächste Schritte
+
+- [Abrechnung](/de/development/comfy-router/billing): Was eine Ablehnung, ein Timeout oder eine Wiederholung kostet.
+- [Headers](/de/development/comfy-router/headers): Idempotenz, Request-IDs und Header zur Steuerung der Wiederholungsversuche.
+- [API-Referenz](/de/development/comfy-router/reference#error-buckets): Alle Fehlerkategorien, die Router zurückgibt.

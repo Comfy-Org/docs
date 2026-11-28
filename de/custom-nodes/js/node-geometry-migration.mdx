@@ -1,0 +1,86 @@
+---
+title: "Node-Geometrie-Migration für Frontend-Erweiterungen"
+sidebarTitle: "Node-Geometrie-Migration"
+description: "Nodegröße vs. gerenderte Bounds, die Umbenennung von applyNodePositions und die Z-Order für Frontend-Erweiterungen nach der Layout-Store-Änderung."
+translationSourceHash: 833ab6fb
+translationFrom: custom-nodes/js/node-geometry-migration.mdx
+translationBlockHashes:
+  "Migration checklist": a95abc11
+  "What changed": f4ee15bc
+  "Writes through removed references stay local": ba9b1003
+---
+## Migrationscheckliste
+
+1. Verwenden Sie weiterhin `node.pos`, `node.size`, `boundingRect`, `getBounding()`, `setPos()`, `setSize()`: Es sind keine Signaturänderungen erforderlich.
+2. Ersetzen Sie Aufrufe von `repositionNodesVueMode()` durch `applyNodePositions()`.
+3. Wenn Sie sich darauf verlassen haben, dass `node.size` gemessenen/gerenderten Inhalt widerspiegelt, wechseln Sie zu `getBounding()` / `boundingRect`. Beim Vue-Renderer spiegelt `size` jetzt strikt den angeforderten Wert wider. Der Legacy-Renderer vergrößert `size` weiterhin, um Widgets einzupassen.
+4. Verwenden Sie die Geometrie-APIs für Nodes und Gruppen, nicht den zugrunde liegenden Store; importieren Sie `layoutStore` nicht und verlassen Sie sich nicht auf dessen internes Format.
+5. Schreibzugriffe über eine entfernte Referenz aktualisieren das abgetrennte Objekt, nicht den gemeinsamen Layout-Zustand.
+
+## Was sich geändert hat
+
+`LGraphNode.pos`, `size`, `boundingRect`, `getBounding()`, `setPos()` und
+`setSize()` behalten dieselben Signaturen. Diese Aufrufe bleiben quellkompatibel.
+Das Verhalten hat sich in den drei folgenden Fällen geändert.
+
+```ts
+node.pos = [100, 200]
+node.pos[0] += 50
+node.setSize([320, 200])
+node.updateArea()
+const box = node.getBounding()
+```
+
+Die Geometrie von Nodes und Gruppen liegt jetzt in einem gemeinsamen Layout-Store
+statt in Feldern pro Instanz. Verwenden Sie die oben genannten APIs und nicht
+direkt den Store: Er ist ein internes Implementierungsdetail.
+
+### `size` vs. gerenderte Grenzen
+
+`node.size` ist die Größe, die Sie angefordert haben, und die Größe, die
+serialisiert wird. Mit dem Vue-Renderer ändert das Rendern sie nie.
+`getBounding()` und `boundingRect` geben die gerenderten Grenzen zurück, die
+größer als `size` sein können, wenn der Inhalt der Widgets mehr Platz braucht.
+Mit dem Legacy-Canvas-Renderer wächst der Node weiterhin an seine Widgets
+angepasst, indem er `setSize()` aufruft, sodass sich `node.size` und die
+gespeicherte Größe nach einem Zeichnen ändern können. Verwenden Sie die
+gerenderten Grenzen, wenn Sie den tatsächlichen Platzbedarf des Nodes auf dem
+Bildschirm benötigen.
+
+Der Canvas berechnet `getBounding()` und `boundingRect` zu Beginn jedes Frames
+neu. Nachdem Sie `pos` oder `size` geändert haben, rufen Sie `node.updateArea()`
+auf, bevor Sie sie im selben Frame lesen. Mit dem Vue-Renderer erscheint das
+Wachstum durch DOM-Inhalt erst, nachdem der Node vermessen wurde.
+
+```ts
+// VOR: Eine Größenänderung durch gerenderten Inhalt konnte size überschreiben, sodass das Einklappen
+// eines Nodes und das erneute Ausklappen die ursprüngliche Größe verlor.
+node.size // konnte stillschweigend zum gerenderten Platzbedarf werden
+
+// NACH (Vue-Renderer): size bleibt, was Sie gesetzt haben; fragen Sie die gerenderten Grenzen explizit ab.
+node.size // die angeforderte Größe, unverändert durch das Rendern
+node.getBounding() // die tatsächlichen gerenderten Grenzen, können größer sein
+```
+
+### `repositionNodesVueMode()` umbenannt in `applyNodePositions()`
+
+```ts
+// VOR
+canvas.repositionNodesVueMode(newPositions)
+// NACH
+canvas.applyNodePositions(newPositions)
+```
+
+`repositionNodesVueMode()` bleibt als veralteter Alias aufrufbar.
+
+### Z-Reihenfolge ist jetzt eindeutig
+
+Die Z-Reihenfolge stammte früher aus zwei Quellen, die sich widersprechen
+konnten: der Position eines Nodes in der Node-Liste und seiner
+Ausführungsreihenfolge. Jetzt ist sie immer die Zeichenreihenfolge. Wenn Ihre
+Erweiterung die Stapel- oder Hit-Test-Reihenfolge aus der Ausführungsreihenfolge
+abgeleitet hat, wechseln Sie zur Zeichenreihenfolge.
+
+## Schreibzugriffe über entfernte Referenzen bleiben lokal
+
+Nach dem Entfernen aktualisieren Geometrie-Setter nur das abgetrennte Node-, Gruppen- oder Umleitung-Objekt. Sie aktualisieren weder den gemeinsamen Layout-Zustand noch eine andere Entität, die nun dieselbe ID besitzt.
